@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <PackageId>SharpInspect.NET.Wpf</PackageId>
+    <Description>WPF presentation adapter for SharpInspect.NET station snapshots and runtime commands.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+  </ItemGroup>
+</Project>

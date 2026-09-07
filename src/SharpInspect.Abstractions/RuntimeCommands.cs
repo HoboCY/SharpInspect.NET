@@ -1,0 +1,24 @@
+namespace SharpInspect.Abstractions;
+
+public enum CommandSource { PhysicalConsole, Integration }
+public enum CommandDisposition { Accepted, Rejected }
+
+/// <summary>Attribution only. Supplied identities and grants never prove authorization.</summary>
+public sealed record CommandInvocation(CommandSource Source, string? PrincipalId = null,
+    Guid? SessionId = null, Guid? StepUpGrantId = null);
+
+public abstract record RuntimeCommand(Guid CorrelationId, CommandInvocation Invocation);
+public sealed record ArmProductionCommand(Guid CorrelationId, CommandInvocation Invocation)
+    : RuntimeCommand(CorrelationId, Invocation);
+public sealed record GracefulProductionStopCommand(Guid CorrelationId, CommandInvocation Invocation)
+    : RuntimeCommand(CorrelationId, Invocation);
+
+/// <summary>Acceptance is admission of responsibility, not completion; query subsequent snapshots.</summary>
+public sealed record RuntimeCommandOutcome(Guid CorrelationId, CommandDisposition Disposition, string ReasonCode);
+
+public interface IStationRuntime
+{
+    ValueTask<StationStateSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
+    IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(CancellationToken cancellationToken = default);
+    ValueTask<RuntimeCommandOutcome> SubmitAsync(RuntimeCommand command, CancellationToken cancellationToken = default);
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net6.0-windows7.0": {
+      "SharpInspect.NET.Abstractions": {
+        "type": "Project"
+      }
+    }
+  }
+}

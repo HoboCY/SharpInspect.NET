@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>SharpInspect.SampleHost</AssemblyName>
+    <RootNamespace>SharpInspect.SampleHost</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' != 'true'">
+    <ProjectReference Include="../../src/SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Wpf/SharpInspect.Wpf.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' == 'true'">
+    <PackageReference Include="SharpInspect.NET.Abstractions" Version="0.1.0-dev.1" />
+    <PackageReference Include="SharpInspect.NET.Runtime" Version="0.1.0-dev.1" />
+    <PackageReference Include="SharpInspect.NET.Wpf" Version="0.1.0-dev.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
+  </ItemGroup>
+</Project>

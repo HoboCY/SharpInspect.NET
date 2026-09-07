@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.Abstractions</PackageId>
+    <Description>Platform-neutral SharpInspect station snapshots and command contracts.</Description>
+  </PropertyGroup>
+</Project>
