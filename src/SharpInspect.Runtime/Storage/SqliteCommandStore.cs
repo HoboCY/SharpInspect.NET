@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Storage;
 internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDisposable
 {
     internal const string SystemPrincipal = "SharpInspect.Runtime";
-    private int SchemaVersion => _policy is null ? 1 : 2;
+    private int SchemaVersion => _options.LocalIdentity is not null ? 3 : _policy is null ? 1 : 2;
     private const int EventVersion = 1;
     private const int MaximumReasonLength = 256;
     private const int MaximumPrincipalLength = 256;
@@ -46,6 +46,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         _options = options;
         _policy = options.AuditIntegrityPolicy;
         _policy?.Validate();
+        options.LocalIdentity?.Validate(_policy);
         _integrity = SqliteAuditIntegrityQuery.Report(_policy, _policy is null ? AuditIntegrityState.NotConfigured :
             AuditIntegrityState.Verifying, _policy is null ? "AuditPolicyNotConfigured" : "AuditStartupVerificationPending");
         _readWalLength = readWalLength ?? throw new ArgumentNullException(nameof(readWalLength));
@@ -199,7 +200,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 {
                     try
                     {
-                        result = request.Receipt is { } receipt ? AppendReceiptCore(connection, receipt, request.Deadline) :
+                        result = request.Identity is { } identity ? UpdateIdentityCore(connection.Handle!, identity, request.Deadline) :
+                            request.Receipt is { } receipt ? AppendReceiptCore(connection, receipt, request.Deadline) :
                             AppendCore(connection, request.Fact!, request.Deadline);
                     }
                     catch (TimeoutException)
@@ -277,7 +279,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         var objects = ReadSchemaObjects(database, deadline, includeInternalObjects: version == 0);
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion) return new StoreWriteResult(false, "StoreSchemaTooNew");
-        if (version == 1 && _policy is not null) return new StoreWriteResult(false, "AuditGovernedMigrationRequired");
+        if (version > 0 && version < SchemaVersion) return new StoreWriteResult(false, "AuditGovernedMigrationRequired");
         if (version == 0 && objects.Count != 0) return new StoreWriteResult(false, "StoreForeignSchema");
         if (version == SchemaVersion && !ValidateSchemaShape(database, deadline))
             return new StoreWriteResult(false, "StoreSchemaMismatch");
@@ -285,9 +287,10 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (_policy is not null)
         {
             _signingKey = WindowsMachineAuditKey.Open(_policy, version == 0, out _);
-            if (version == 2)
+            if (version >= 2)
                 AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId, _signingKey.PublicKeyBase64,
                     new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
+            if (version == 3) _ = ReadIdentityState(database, deadline);
         }
 
         if (!ConfigureProductionProfile(database, deadline))
@@ -303,9 +306,10 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             SqliteNative.Execute(database, SchemaSql, deadline);
             if (_policy is not null)
             {
-                SqliteNative.Execute(database, AuditChainDatabase.SchemaSql, deadline);
+                SqliteNative.Execute(database, AuditChainDatabase.SchemaSqlFor(SchemaVersion), deadline);
                 AuditChainDatabase.CreateGenesis(database, _policy, _signingKey!, deadline);
             }
+            if (_options.LocalIdentity is not null) InitializeIdentitySchema(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
             return new StoreWriteResult(true, "TraceStoreReady");
@@ -611,7 +615,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         using var canonical = SqliteNative.Open(":memory:", readOnly: false);
         var canonicalDatabase = canonical.Handle!;
         SqliteNative.Execute(canonicalDatabase, SchemaSql, deadline);
-        if (_policy is not null) SqliteNative.Execute(canonicalDatabase, AuditChainDatabase.SchemaSql, deadline);
+        if (_policy is not null) SqliteNative.Execute(canonicalDatabase, AuditChainDatabase.SchemaSqlFor(SchemaVersion), deadline);
+        if (_options.LocalIdentity is not null) SqliteNative.Execute(canonicalDatabase, IdentitySchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;
@@ -694,7 +699,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             ClaimedSessionId == fact.ClaimedSessionId && ClaimedStepUpGrantId == fact.ClaimedStepUpGrantId;
     }
 
-    private sealed record WriteRequest(CommandAuditFact? Fact, StoreDeadline Deadline, AuditAnchorReceipt? Receipt = null)
+    private sealed record WriteRequest(CommandAuditFact? Fact, StoreDeadline Deadline, AuditAnchorReceipt? Receipt = null, IdentityWork? Identity = null)
     {
         public TaskCompletionSource<StoreWriteResult> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);

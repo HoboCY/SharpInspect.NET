@@ -51,7 +51,7 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 var db = connection.Handle!;
                 SQLitePCL.raw.sqlite3_limit(db, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, 65536);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
-                AuditChainDatabase.Require(AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline) == 2, "AuditGovernedMigrationRequired");
+                AuditChainDatabase.Require(AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline) is 2 or 3, "AuditGovernedMigrationRequired");
                 var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64, request, startup, deadline);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);

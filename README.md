@@ -20,16 +20,17 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 ```
 
 普通关窗会遮蔽页面内容并保留后台 Runtime，本机停止按钮仍可到达；
-重新显示页面只恢复显示，不授予身份或权限。身份认证将在后续工单交付。
+重新显示页面只恢复显示，不授予身份或权限。显式配置本地身份后可建立首位个人管理员并登录，
+会话保护、操作授权与 Step-Up 随后续工单交付。
 此开发宿主不提供生产启用或宿主退出旁路，调试结束可由调试器终止进程；
 进程终止不代表完成了 PLC 停产握手。生产部署的受控关闭另有工单。
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket03.ps1
+pwsh -File tools/Test-Ticket04.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket03/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket04/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -59,7 +60,8 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 
 数据库必须位于固定本地 NTFS，路径验证会拒绝共享、已知云同步根、可移动盘和 reparse 路径。
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
-新空库显式启用政策时为 2；未知版本拒绝写入。旧库启用政策要求治理迁移，不自动补链。
+新空库显式启用审计政策时为 2，同时启用本地身份时为 3；未知版本拒绝写入。
+已有 schema1/2 启用身份会在只读 preflight 拒绝，治理迁移随专票提供，不自动补链或升级。
 只读查询每页 1–200 条，以记录位置和固定上界分页。更新、删除历史事实不属于公开 API。
 SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 
@@ -68,7 +70,7 @@ SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 `ProductionStoreOptions.AuditIntegrityPolicy` 显式绑定工位、版本、密钥位置、检查点频率和核验预算。
 默认未启用；查询显示 NotConfigured。开发样例可对全新空数据库使用 `--audit-key <unique-name>`，
 并通过 `--audit-key-directory <absolute-path>` 选择独立密钥目录。`AllowInitialKeyCreation` 仅用于
-当前非生产开发 bootstrap；正式站点初始化、身份授权、迁移与资格仍由后续工单提供。
+当前非生产开发 bootstrap；正式站点安装、身份授权、迁移与资格仍由后续工单提供。
 
 事实、站点审计序号、规范字节和 SHA-256 链在同一 SQLite 事务中追加；检查点使用 P-256 签名。
 私钥文件使用 Windows DPAPI LocalMachine 加密，并限制为运行账户、SYSTEM 和 Administrators 访问。
@@ -90,10 +92,44 @@ SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 本机、数据库和私钥同时失陷时，攻击者可能重写未锚定历史；纯本地历史回滚也不保证被检测。
 哈希链是篡改可检测机制，不是不可篡改存储或合规认证。
 
+## 本地身份开发入口
+
+新空库可通过 `ProductionStoreOptions.LocalIdentity` 显式提供 `LocalIdentityOptions`，同时绑定相同
+Station 的审计政策。配置必须包含完整离线 `PasswordBlocklist` 的 ID、版本、内容 hash 和值集合，
+以及版本化的 `LocalPasswordPolicy` / `PasswordHashBaseline`。缺失配置不创建默认账号。
+`ILocalAdministratorBootstrap.ProvisionBootstrapTokenAsync` 由宿主安装流程调用；Runtime 根据实际
+Windows 管理员令牌、活动物理控制台会话和远程会话检测判定资格，不信任调用方的布尔声明。
+Token 使用 256 位随机量，默认 15 分钟有效，绑定 Station 和安装密钥，仅能成功消费一次。
+`CreateFirstAdministratorAsync` 必须在物理控制台提交个人用户名、显示名和完整密码。
+
+密码按 NFC 后的 15–128 个 Unicode 码点检查，不 trim、改大小写、截断或附加成分规则；WPF
+PasswordBox 允许粘贴。离线 blocklist 比较完整值，并拒绝站点、用户名等可预测派生值。
+V1 本地库只接受内置的 PBKDF2-HMAC-SHA256 实现，记录包含算法、格式、参数版本、实际工作因子、
+随机盐及输出。当前开发下限为 600000 次、16 字节盐、32 字节输出，参考
+[OWASP 密码存储建议](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)。
+提高目标工作因子后，旧记录只在成功登录时与成功审计一起原子升级，升级不会降低旧参数。
+此开发基线尚未经过正式发行平台的性能资格评估。
+
+管理员、Token 消费和恢复码验证器与安全身份事件共用 SQLite 单写事务。机密状态使用 DPAPI，
+并由数据库外的受限审计密钥签名，绑定工位、安装、状态版本和审计位置。审计仅包含安全元数据，
+不会写入密码、Token、恢复码、盐、密码派生结果、机密密文或其签名。Schema3 的链 hash 同时覆盖
+事件类型、两类序号及规范载荷；有界核验仍只证明报告中的实际覆盖范围。
+
+成功创建后返回 `OneTimeSecret` 恢复包，只能领取一次。界面不会自动显示：切页/隐私遮蔽清除可见
+内容，已提交但尚未领取的包保留在当前进程供显式领取；显示后可复制并清除。权威库只保存恢复码的
+单向验证器和消费/撤销状态。进程终止不会重新显示恢复码；恢复和受控重新发行属于后续工单。
+`IIdentityProvider` 返回稳定、不可变的个人身份及显示 claims，不授予配方、设备或生产权限。
+具备管理员和有效恢复码只是后续准入前提，当前 Runtime 仍拒绝 Ready。
+
+开发样例使用 `--identity-policy <absolute-json-path>` 加载显式政策，格式示例由
+`tools/Test-Ticket04.ps1` 写入本次隔离 artifacts；该小型 blocklist 仅为测试夹具，不是发行名单。
+验证另启动独立 WPF 进程，通过私有标准输入传递测试密码，实际走 PasswordBox 登录，并核对重启前后
+PrincipalId 和审计链。密码不会作为进程参数、环境变量或报告内容写出。
+
 ## 验证边界
 
-逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)
-与 [V1-03 验证映射](docs/verification/v1-03.md)。
+逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)、
+[V1-03](docs/verification/v1-03.md) 与 [V1-04 验证映射](docs/verification/v1-04.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

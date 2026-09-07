@@ -8,28 +8,34 @@ internal sealed record StateRow(string Label, string Value);
 
 public partial class ShellWindow : Window
 {
+    internal Task SubmitIdentityLoginSmokeAsync(string userName, string password) => IdentityPanel.SubmitLoginSmokeAsync(userName, password);
     private readonly StationShellViewModel _viewModel;
     private readonly CommandTraceViewModel? _traceViewModel;
     private readonly AuditIntegrityViewModel? _integrityViewModel;
+    private readonly IdentityViewModel? _identityViewModel;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
+    private bool _identitySelectionLoaded;
     public bool IsPrivacyLocked { get; private set; }
 
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
-        AuditIntegrityViewModel? integrityViewModel = null)
+        AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _traceViewModel = traceViewModel;
         _integrityViewModel = integrityViewModel;
+        _identityViewModel = identityViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
+        IdentityPanel.DataContext = identityViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
         if (integrityViewModel is not null) integrityViewModel.PropertyChanged += IntegrityChanged;
+        if (identityViewModel is not null) identityViewModel.PropertyChanged += IdentityChanged;
         RenderState();
     }
 
@@ -53,6 +59,7 @@ public partial class ShellWindow : Window
     private void LockPage()
     {
         IsPrivacyLocked = true;
+        IdentityPanel.ClearSensitiveInputs();
         PrivacyCover.Visibility = Visibility.Visible;
     }
 
@@ -68,12 +75,15 @@ public partial class ShellWindow : Window
         _viewModel.State.PropertyChanged -= Refresh;
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
         if (_integrityViewModel is not null) _integrityViewModel.PropertyChanged -= IntegrityChanged;
+        if (_identityViewModel is not null) _identityViewModel.PropertyChanged -= IdentityChanged;
+        IdentityPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
     private void Refresh(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void TraceChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IntegrityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void IdentityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -89,8 +99,10 @@ public partial class ShellWindow : Window
             _ => "生产 · 当前完整状态"
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
-        SnapshotPanel.Visibility = traceSelected ? Visibility.Collapsed : Visibility.Visible;
-        BlockersPanel.Visibility = traceSelected ? Visibility.Collapsed : Visibility.Visible;
+        var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
+        if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导与登录";
+        SnapshotPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
+        BlockersPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
         if (_traceViewModel is null)
         {
@@ -123,6 +135,20 @@ public partial class ShellWindow : Window
                 _integritySelectionLoaded = true;
                 _ = _integrityViewModel.RefreshAsync();
             }
+        }
+        IdentityPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
+        if (!maintenanceSelected)
+        {
+            if (_identitySelectionLoaded)
+            {
+                _identitySelectionLoaded = false;
+                IdentityPanel.ClearSensitiveInputs();
+            }
+        }
+        else if (_identityViewModel is not null && !_identitySelectionLoaded)
+        {
+            _identitySelectionLoaded = true;
+            _ = _identityViewModel.RefreshAsync();
         }
         string Value(object? value) => s is null ? "未知" : value?.ToString() ?? "无";
         RuntimeRows.ItemsSource = new[]

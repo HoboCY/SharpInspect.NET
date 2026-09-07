@@ -24,5 +24,6 @@ public sealed class ProductionStoreOptions
     public int QueueCapacity { get; init; } = 64;
 
     public Integrity.AuditIntegrityPolicy? AuditIntegrityPolicy { get; init; }
+    public Identity.LocalIdentityOptions? LocalIdentity { get; init; }
     public SharpInspect.Abstractions.IExternalAuditAnchor? ExternalAuditAnchor { get; init; }
 }

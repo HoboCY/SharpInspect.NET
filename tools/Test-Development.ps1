@@ -9,6 +9,33 @@ function Invoke-TaskDotnet([string]$LogName, [string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "dotnet failed: $LogName (exit $LASTEXITCODE)" }
 }
 
+function Write-TaskIdentityPolicy([string]$Path) {
+    $taskBlocklistId = 'development-fixture'
+    $taskBlocklistVersion = 'v1'
+    $taskValues = [string[]]@('passwordpassword','123456789012345')
+    [Array]::Sort($taskValues, [StringComparer]::Ordinal)
+    $taskBytes = [IO.MemoryStream]::new()
+    function Write-TaskInt32([int]$Value) {
+        $taskInteger = [BitConverter]::GetBytes($Value)
+        if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($taskInteger) }
+        $taskBytes.Write($taskInteger,0,4)
+    }
+    function Write-TaskString([string]$Value) {
+        $taskUtf8 = [Text.Encoding]::UTF8.GetBytes($Value)
+        Write-TaskInt32 $taskUtf8.Length
+        $taskBytes.Write($taskUtf8,0,$taskUtf8.Length)
+    }
+    Write-TaskString $taskBlocklistId
+    Write-TaskString $taskBlocklistVersion
+    Write-TaskInt32 $taskValues.Length
+    foreach ($taskValue in $taskValues) { Write-TaskString $taskValue }
+    $taskHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($taskBytes.ToArray()))
+    $taskBytes.Dispose()
+    [ordered]@{ PasswordPolicyVersion='development-2026-09'; BlocklistId=$taskBlocklistId; BlocklistVersion=$taskBlocklistVersion;
+        BlocklistContentHash=$taskHash; BlocklistValues=$taskValues; HashBaselineVersion='development-2026-09'; WorkFactor=600000 } |
+        ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding utf8
+}
+
 function Test-TaskCloudRootRejection([string]$ConsumerDll, [string]$Database, [string]$Manifest) {
     $taskBefore = (Get-FileHash -LiteralPath $Database -Algorithm SHA256).Hash
     $taskStart = [Diagnostics.ProcessStartInfo]::new('dotnet')
@@ -98,6 +125,16 @@ try {
         '--configfile',$taskNugetConfig,'--packages',(Join-Path $taskRun 'consumer-cache'))
     Invoke-TaskDotnet 'consumer-build.log' @('build',$taskConsumerProject,'-c','Release','-p:UseLocalPackages=true','--no-restore')
     $taskConsumerDll = Join-Path $taskConsumer 'bin\Release\net6.0-windows\SharpInspect.SampleHost.dll'
+    if ($Ticket -ge 4) {
+        $taskPreviousIdentityConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_IDENTITY_CONSUMER','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_IDENTITY_CONSUMER',$taskConsumerDll,'Process')
+            Invoke-TaskDotnet 'identity-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~IdentityConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'identity-consumer-tests'))
+        }
+        finally { [Environment]::SetEnvironmentVariable('SHARPINSPECT_IDENTITY_CONSUMER',$taskPreviousIdentityConsumer,'Process') }
+    }
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'
@@ -107,6 +144,11 @@ try {
         $taskAuditKeyDirectory = Join-Path $taskRun 'private-keys'
         $taskAuditArguments = @('--audit-key',$taskAuditKeyName,'--audit-key-directory',$taskAuditKeyDirectory)
         $taskAuditKeyName | Set-Content -LiteralPath (Join-Path $taskRun 'development-key-identity.txt') -Encoding utf8
+    }
+    if ($Ticket -ge 4) {
+        $taskIdentityPolicy = Join-Path $taskRun 'development-identity-policy.json'
+        Write-TaskIdentityPolicy $taskIdentityPolicy
+        $taskAuditArguments += @('--identity-policy',$taskIdentityPolicy)
     }
     Invoke-TaskDotnet 'consumer-smoke.log' (@($taskConsumerDll,'--smoke','--screenshot',(Join-Path $taskRun 'consumer-window.png'),
         '--trace-db',$taskDatabase,'--trace-manifest',$taskTraceManifest) + $taskAuditArguments)

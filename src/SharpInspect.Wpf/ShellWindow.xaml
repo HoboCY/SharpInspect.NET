@@ -1,6 +1,7 @@
 <Window x:Class="SharpInspect.Wpf.ShellWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:SharpInspect.Wpf"
         Title="SharpInspect.NET · 工位工作台" Width="1120" Height="900" MinWidth="860" MinHeight="640"
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" Background="#F3F5F7">
     <Window.Resources>
@@ -42,7 +43,7 @@
                 </WrapPanel>
                 <TextBlock x:Name="OutcomeLabel" Text="命令：尚未提交" TextWrapping="Wrap" Foreground="#334E68" />
                 <TextBlock x:Name="ProgressLabel" Text="最终状态：等待关联快照" TextWrapping="Wrap" Foreground="#556679" Margin="0,4,0,0" />
-                <TextBlock Text="身份认证尚未交付；显示页面不授予权限。普通关窗仅遮蔽页面，后台 Runtime 持续运行。"
+                <TextBlock Text="登录不会自动武装生产。普通关窗仅遮蔽页面，后台运行继续。"
                            Foreground="#6B7888" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap" />
             </StackPanel>
         </Border>
@@ -154,6 +155,7 @@
                             </StackPanel>
                         </Grid>
                     </Border>
+                    <local:IdentityPanel x:Name="IdentityPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                 </StackPanel>
             </ScrollViewer>
             <Border x:Name="PrivacyCover" Visibility="Collapsed" Background="#F3F5F7">

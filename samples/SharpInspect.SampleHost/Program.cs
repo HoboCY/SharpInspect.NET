@@ -10,6 +10,7 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime;
 using SharpInspect.Runtime.Storage;
 using SharpInspect.Runtime.Integrity;
+using SharpInspect.Runtime.Identity;
 using SharpInspect.Wpf;
 
 namespace SharpInspect.SampleHost;
@@ -24,13 +25,15 @@ internal static class Program
             var index = Array.IndexOf(args, name);
             return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
         }
-        var smoke = args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
+        var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
+        var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
         var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
         if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         var auditKey = Option("--audit-key");
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
+            LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -53,12 +56,15 @@ internal static class Program
             p.GetRequiredService<IStationRuntime>(), new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton<CommandTraceViewModel>();
         services.AddSingleton<AuditIntegrityViewModel>();
+        services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
+            p.GetService<IIdentityProvider>(), "SampleDevelopmentStation"));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
         var trace = provider.GetRequiredService<CommandTraceViewModel>();
         var integrity = provider.GetRequiredService<AuditIntegrityViewModel>();
-        var window = new ShellWindow(vm, trace, integrity);
+        var identity = provider.GetRequiredService<IdentityViewModel>();
+        var window = new ShellWindow(vm, trace, integrity, identity);
         var exitCode = 0;
         if (smoke)
         {
@@ -78,13 +84,27 @@ internal static class Program
                 {
                     if (auditKey is not null)
                         await WaitAsync(() => vm.CurrentSnapshot?.AuditIntegrity?.State == AuditIntegrityState.Verified);
-                    await RunSmokeAsync(window, vm, runtime, trace, integrity, screenshot, Option("--trace-manifest"));
+                    if (identitySmoke)
+                    {
+                        vm.NavigateTo("Maintenance");
+                        await WaitAsync(() => !identity.IsBusy && identity.CanAuthenticate);
+                        var password = ReadSmokePassword();
+                        await window.SubmitIdentityLoginSmokeAsync(Option("--user-name") ?? "", password);
+                        Require(identity.CurrentIdentity?.PrincipalId == Guid.Parse(Option("--expected-principal") ?? ""), "identity login principal");
+                        Require(!vm.State.Ready, "identity login must not bypass production admission");
+                        if (screenshot is not null) RenderScreenshot(window, screenshot);
+                        window.Close();
+                        Require(window.IsPrivacyLocked, "identity ordinary Close remains privacy lock");
+                        Console.WriteLine("V104-P01 independent-process WPF password login/immutable identity/privacy PASS");
+                    }
+                    else await RunSmokeAsync(window, vm, runtime, trace, integrity, screenshot, Option("--trace-manifest"));
                 }
             }
             catch (Exception exception)
             {
                 exitCode = 1;
-                if (smoke) Console.Error.WriteLine($"SMOKE FAIL {exception.GetType().Name}: {exception.Message}");
+                if (identitySmoke) Console.Error.WriteLine($"V104 SMOKE FAIL {exception.GetType().Name}");
+                else if (smoke) Console.Error.WriteLine($"SMOKE FAIL {exception.GetType().Name}: {exception.Message}");
                 else window.ShowUnavailable();
             }
             finally
@@ -99,6 +119,35 @@ internal static class Program
         };
         app.Run();
         return exitCode;
+    }
+
+    private sealed record IdentityDevelopmentConfiguration(string PasswordPolicyVersion, string BlocklistId, string BlocklistVersion,
+        string BlocklistContentHash, string[] BlocklistValues, string HashBaselineVersion, int WorkFactor);
+
+    private static LocalIdentityOptions ReadIdentityOptions(string path)
+    {
+        if (new FileInfo(path).Length > 4 * 1024 * 1024) throw new InvalidOperationException("IdentityPolicyFileTooLarge");
+        var configuration = JsonSerializer.Deserialize<IdentityDevelopmentConfiguration>(File.ReadAllText(path))
+            ?? throw new InvalidOperationException("IdentityPolicyInvalid");
+        var policy = new LocalPasswordPolicy { Version = configuration.PasswordPolicyVersion,
+            Blocklist = new PasswordBlocklist(configuration.BlocklistId, configuration.BlocklistVersion,
+                configuration.BlocklistContentHash, configuration.BlocklistValues) };
+        return new LocalIdentityOptions("SampleDevelopmentStation", policy,
+            new Pbkdf2PasswordHasher(new PasswordHashBaseline(configuration.HashBaselineVersion, configuration.WorkFactor)));
+    }
+
+    private static string ReadSmokePassword()
+    {
+        // Development acceptance supplies this through a private stdin pipe, never arguments or logs.
+        var input = new System.Text.StringBuilder();
+        for (var i = 0; i <= 8192; i++)
+        {
+            var next = Console.In.Read();
+            if (next is -1 or '\n') return JsonSerializer.Deserialize<string>(input.ToString())
+                ?? throw new InvalidOperationException("IdentitySmokeInputInvalid");
+            input.Append((char)next);
+        }
+        throw new InvalidOperationException("IdentitySmokeInputTooLong");
     }
 
     private static async Task RunSmokeAsync(ShellWindow window, StationShellViewModel vm,
