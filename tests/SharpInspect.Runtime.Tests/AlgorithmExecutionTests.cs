@@ -29,7 +29,7 @@ public sealed class AlgorithmExecutionTests
         {
             var lease = CopyFrame(pool);
             var frameMetadata = lease.Frame.Metadata;
-            var attempt = await execution.ExecuteAsync(fixture.Prepared, lease, TimeSpan.FromSeconds(1));
+            var attempt = await execution.ExecuteAsync(fixture.Prepared, lease, ExecutionRequest(TimeSpan.FromSeconds(1)));
 
             Assert.True(attempt.Executed, attempt.ReasonCode);
             var outcome = Assert.IsType<AlgorithmExecutionOutcome>(attempt.Outcome);
@@ -76,7 +76,7 @@ public sealed class AlgorithmExecutionTests
             using var pool = new FrameBufferPool(new FrameBufferPoolOptions(1, 8, TimeSpan.FromSeconds(1)));
 
             var attempt = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-                TimeSpan.FromSeconds(1));
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
 
             Assert.True(attempt.Executed);
             Assert.Equal(expectedReason, attempt.ReasonCode);
@@ -104,7 +104,7 @@ public sealed class AlgorithmExecutionTests
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(1, 8, TimeSpan.FromSeconds(1)));
 
         var attempt = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-            TimeSpan.FromSeconds(1));
+            ExecutionRequest(TimeSpan.FromSeconds(1)));
 
         Assert.True(attempt.Executed);
         Assert.Equal("AlgorithmResultContractViolation", attempt.ReasonCode);
@@ -126,29 +126,29 @@ public sealed class AlgorithmExecutionTests
         await using var execution = new AlgorithmExecutionService(ExecutionOptions());
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(4, 8, TimeSpan.FromSeconds(1)));
 
-        var invalidTimeout = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), TimeSpan.Zero);
+        var invalidTimeout = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), ExecutionRequest(TimeSpan.Zero));
         AssertRejected(invalidTimeout, "AlgorithmExecutionTimeoutInvalid");
 
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         var cancelled = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-            TimeSpan.FromSeconds(1), cancellation.Token);
+            ExecutionRequest(TimeSpan.FromSeconds(1)), cancellation.Token);
         AssertRejected(cancelled, "AlgorithmExecutionCancelledBeforeStart");
 
         var production = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool, ExecutionKind.Production),
-            TimeSpan.FromSeconds(1));
+            ExecutionRequest(TimeSpan.FromSeconds(1)));
         AssertRejected(production, "ProductionExecutionAdmissionUnavailable");
 
         var disposedLease = CopyFrame(pool);
         disposedLease.Dispose();
-        var notOwned = await execution.ExecuteAsync(fixture.Prepared, disposedLease, TimeSpan.FromSeconds(1));
+        var notOwned = await execution.ExecuteAsync(fixture.Prepared, disposedLease, ExecutionRequest(TimeSpan.FromSeconds(1)));
         AssertRejected(notOwned, "FrameLeaseNotOwned");
 
         Assert.Equal(0, algorithm.ExecuteCalls);
         Assert.Equal(0, pool.GetSnapshot().OutstandingLeases);
 
         await execution.DisposeAsync();
-        var afterDispose = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), TimeSpan.FromSeconds(1));
+        var afterDispose = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), ExecutionRequest(TimeSpan.FromSeconds(1)));
         AssertRejected(afterDispose, "AlgorithmExecutionServiceDisposed");
         Assert.Equal(0, pool.GetSnapshot().OutstandingLeases);
     }
@@ -169,14 +169,14 @@ public sealed class AlgorithmExecutionTests
         await using var execution = new AlgorithmExecutionService(ExecutionOptions());
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(2, 8, TimeSpan.FromSeconds(1)));
 
-        var first = execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), TimeSpan.FromSeconds(2)).AsTask();
+        var first = execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), ExecutionRequest(TimeSpan.FromSeconds(2))).AsTask();
         try
         {
             await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.Equal(1, execution.ActiveExecutionCount);
 
             var second = await execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-                TimeSpan.FromSeconds(1));
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
             AssertRejected(second, "AlgorithmExecutionBusy");
             Assert.Equal(1, pool.GetSnapshot().OutstandingLeases);
 
@@ -208,12 +208,12 @@ public sealed class AlgorithmExecutionTests
         await using var secondService = new AlgorithmExecutionService(ExecutionOptions());
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(2, 8, TimeSpan.FromSeconds(1)));
 
-        var first = firstService.ExecuteAsync(fixture.Prepared, CopyFrame(pool), TimeSpan.FromSeconds(2)).AsTask();
+        var first = firstService.ExecuteAsync(fixture.Prepared, CopyFrame(pool), ExecutionRequest(TimeSpan.FromSeconds(2))).AsTask();
         try
         {
             await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var crossService = await secondService.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-                TimeSpan.FromSeconds(1));
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
             AssertRejected(crossService, "AlgorithmInstanceBusy");
             Assert.Equal(1, pool.GetSnapshot().OutstandingLeases);
 
@@ -223,7 +223,7 @@ public sealed class AlgorithmExecutionTests
             Assert.Equal(1, algorithm.DisposeCalls);
 
             var retired = await secondService.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-                TimeSpan.FromSeconds(1));
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
             AssertRejected(retired, "AlgorithmInstanceRetired");
             Assert.Equal(0, pool.GetSnapshot().OutstandingLeases);
         }
@@ -244,10 +244,11 @@ public sealed class AlgorithmExecutionTests
         });
         await using var fixture = await PrepareAsync(contract, algorithm);
         await using var execution = new AlgorithmExecutionService(new AlgorithmExecutionOptions(
-            TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(100)));
+            new AlgorithmExecutionPolicy("Test.AlgorithmExecution", "v1", TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)), TimeSpan.FromMilliseconds(100)));
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(1, 8, TimeSpan.FromSeconds(1)));
 
-        var running = execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), TimeSpan.FromSeconds(5)).AsTask();
+        var running = execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool), ExecutionRequest(TimeSpan.FromSeconds(5))).AsTask();
         Task? preparedDisposal = null;
         try
         {
@@ -291,7 +292,7 @@ public sealed class AlgorithmExecutionTests
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(1, 8, TimeSpan.FromSeconds(1)));
 
         var running = execution.ExecuteAsync(fixture.Prepared, CopyFrame(pool),
-            TimeSpan.FromMilliseconds(100)).AsTask();
+            ExecutionRequest(TimeSpan.FromMilliseconds(100))).AsTask();
         Task? preparedDisposal = null;
         try
         {
@@ -332,13 +333,13 @@ public sealed class AlgorithmExecutionTests
         await using var secondService = new AlgorithmExecutionService(ExecutionOptions());
         using var pool = new FrameBufferPool(new FrameBufferPoolOptions(1, 8, TimeSpan.FromSeconds(1)));
         var lease = CopyFrame(pool);
-        var first = firstService.ExecuteAsync(fixture.Prepared, lease, TimeSpan.FromSeconds(2)).AsTask();
+        var first = firstService.ExecuteAsync(fixture.Prepared, lease, ExecutionRequest(TimeSpan.FromSeconds(2))).AsTask();
 
         try
         {
             await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var duplicate = await secondService.ExecuteAsync(fixture.Prepared, lease,
-                TimeSpan.FromSeconds(1));
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
             AssertRejected(duplicate, "FrameLeaseNotOwned");
             Assert.Equal(1, firstService.ActiveExecutionCount);
             Assert.Equal(0, secondService.ActiveExecutionCount);
@@ -383,7 +384,11 @@ public sealed class AlgorithmExecutionTests
     }
 
     private static AlgorithmExecutionOptions ExecutionOptions() =>
-        new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1));
+        new(new AlgorithmExecutionPolicy("Test.AlgorithmExecution", "v1", TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)), TimeSpan.FromSeconds(1));
+
+    private static AlgorithmExecutionRequest ExecutionRequest(TimeSpan timeout) =>
+        new(new RecipeReference("test-recipe", "1", new string('a', 64)), timeout);
 
     private static void AssertRejected(AlgorithmExecutionAttempt attempt, string reasonCode)
     {

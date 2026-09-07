@@ -251,6 +251,10 @@ try {
             $taskExecutionOutput -notmatch 'exceptionSanitized=true preparedOnce=true productionReady=false') {
             throw 'The independent execution consumer did not validate whole-result semantics and instance reuse.'
         }
+        if ($Ticket -ge 13 -and $taskExecutionOutput -notmatch
+            'V113-N01 execution-policy-consumer PASS recipeBound=true policyBound=true monotonic=true productionReady=false') {
+            throw 'The independent execution consumer did not prove its frozen timing evidence.'
+        }
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

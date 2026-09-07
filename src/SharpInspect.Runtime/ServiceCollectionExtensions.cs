@@ -16,9 +16,11 @@ public static class ServiceCollectionExtensions
         AlgorithmExecutionOptions options)
     {
         ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(options);
-        if (services.Any(item => item.ServiceType == typeof(AlgorithmExecutionOptions) ||
+        if (services.Any(item => item.ServiceType == typeof(AlgorithmExecutionGuard) ||
+            item.ServiceType == typeof(AlgorithmExecutionOptions) ||
             item.ServiceType == typeof(AlgorithmExecutionService)))
             throw new ArgumentException("AlgorithmExecutionAlreadyRegistered", nameof(services));
+        services.AddSingleton(AlgorithmExecutionGuard.CurrentProcess);
         services.AddSingleton(options);
         services.AddSingleton<AlgorithmExecutionService>();
         return services;
@@ -58,7 +60,8 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetService<SqliteCommandStore>(), heartbeatInterval,
-            frameBufferPool: p.GetService<FrameBufferPool>()));
+            frameBufferPool: p.GetService<FrameBufferPool>(), executionGuard: p.GetService<AlgorithmExecutionGuard>(),
+            algorithmExecutionOptions: p.GetService<AlgorithmExecutionOptions>()));
         return services;
     }
 
@@ -93,7 +96,8 @@ public static class ServiceCollectionExtensions
         }
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
-            p.GetService<FrameBufferPool>()));
+            p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
+            p.GetService<AlgorithmExecutionOptions>()));
         return services;
     }
 }

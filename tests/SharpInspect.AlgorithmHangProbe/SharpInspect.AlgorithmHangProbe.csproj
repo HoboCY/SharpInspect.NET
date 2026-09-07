@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>SharpInspect.AlgorithmHangProbe</AssemblyName>
+    <RootNamespace>SharpInspect.AlgorithmHangProbe</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+  </ItemGroup>
+</Project>

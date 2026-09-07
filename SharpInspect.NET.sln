@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.OpenCvSharp", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.OpenCvSharp.Tests", "tests\SharpInspect.OpenCvSharp.Tests\SharpInspect.OpenCvSharp.Tests.csproj", "{83AFA877-B61D-4471-98D4-D6C04C9C6AA1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.AlgorithmHangProbe", "tests\SharpInspect.AlgorithmHangProbe\SharpInspect.AlgorithmHangProbe.csproj", "{57B2BBDC-C618-4A29-A444-E3295267909E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -66,6 +68,10 @@ Global
 		{83AFA877-B61D-4471-98D4-D6C04C9C6AA1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{83AFA877-B61D-4471-98D4-D6C04C9C6AA1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{83AFA877-B61D-4471-98D4-D6C04C9C6AA1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{57B2BBDC-C618-4A29-A444-E3295267909E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{57B2BBDC-C618-4A29-A444-E3295267909E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{57B2BBDC-C618-4A29-A444-E3295267909E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{57B2BBDC-C618-4A29-A444-E3295267909E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E99BBDB8-638E-4212-B4AD-B53ACD1132BE} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
@@ -76,5 +82,6 @@ Global
 		{A4F9C3CB-5F78-4082-AE1F-C0000702EB6C} = {6D788117-615D-402D-845B-2C93729654A6}
 		{B924D3D5-D1AB-4053-A2D0-1401F66244C3} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
 		{83AFA877-B61D-4471-98D4-D6C04C9C6AA1} = {D54536D5-B62E-4964-938E-3937B4DB9749}
+		{57B2BBDC-C618-4A29-A444-E3295267909E} = {D54536D5-B62E-4964-938E-3937B4DB9749}
 	EndGlobalSection
 EndGlobal

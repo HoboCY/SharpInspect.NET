@@ -50,6 +50,19 @@ public sealed partial class StationRuntime
             }
             return;
         }
+        if (!IsAlgorithmHungAlarmMappingValid(policy))
+        {
+            lock (_sync)
+            {
+                if (!_disposed) PublishLocked(_snapshot);
+            }
+            return;
+        }
+        if (policy.TryGetRule(AlgorithmHungAlarmCode, out var algorithmHungRule) &&
+            algorithmHungRule is not null && algorithmHungRule.Source == AlgorithmHungAlarmSource)
+        {
+            lock (_sync) _registeredAlarmSources.Add(AlgorithmHungAlarmSource);
+        }
         if (_frameBufferPool is not null && IsFrameBufferAlarmMappingValid(policy))
         {
             lock (_sync) _registeredAlarmSources.Add(FrameBufferAlarmSource);
@@ -184,6 +197,14 @@ public sealed partial class StationRuntime
     private async Task RefreshAlarmsAsync(CancellationToken cancellationToken)
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null) return;
+        if (!IsAlgorithmHungAlarmMappingValid(ConfiguredAlarmPolicy))
+        {
+            lock (_sync)
+            {
+                if (!_disposed) PublishLocked(_snapshot);
+            }
+            return;
+        }
         Guid epoch;
         lock (_sync) epoch = _snapshot.RuntimeEpoch;
         try

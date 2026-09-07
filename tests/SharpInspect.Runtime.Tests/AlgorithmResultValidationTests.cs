@@ -544,8 +544,12 @@ public sealed class AlgorithmResultValidationTests
         Assert.True(copied.Succeeded, copied.ReasonCode);
         var lease = Assert.IsType<FrameBufferLease>(copied.Lease);
         await using var execution = new AlgorithmExecutionService(
-            new AlgorithmExecutionOptions(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2)));
-        var attempt = await execution.ExecuteAsync(prepared, lease, TimeSpan.FromSeconds(1));
+            new AlgorithmExecutionOptions(new AlgorithmExecutionPolicy("Test.ResultValidation", "v1",
+                TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5)),
+                TimeSpan.FromSeconds(2)));
+        var attempt = await execution.ExecuteAsync(prepared, lease,
+            new AlgorithmExecutionRequest(new RecipeReference("result-validation-recipe", "1",
+                new string('a', 64)), TimeSpan.FromSeconds(1)));
         var outcome = Assert.IsType<AlgorithmExecutionOutcome>(attempt.Outcome);
         await prepared.DisposeAsync();
         return outcome;

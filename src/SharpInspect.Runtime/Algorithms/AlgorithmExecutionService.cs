@@ -4,19 +4,18 @@ using SharpInspect.Runtime.Frames;
 
 namespace SharpInspect.Runtime.Algorithms;
 
-/// <summary>Explicit development engine bounds; not a released Recipe/deployment timing policy.</summary>
+/// <summary>Explicit deployment timing policy and bounded host shutdown wait.</summary>
 public sealed class AlgorithmExecutionOptions
 {
-    public AlgorithmExecutionOptions(TimeSpan maximumExecutionTimeout, TimeSpan shutdownWaitTimeout)
+    public AlgorithmExecutionOptions(AlgorithmExecutionPolicy policy, TimeSpan shutdownWaitTimeout)
     {
-        if (maximumExecutionTimeout <= TimeSpan.Zero || maximumExecutionTimeout > TimeSpan.FromMinutes(5))
-            throw new ArgumentOutOfRangeException(nameof(maximumExecutionTimeout));
+        Policy = policy ?? throw new ArgumentNullException(nameof(policy));
         if (shutdownWaitTimeout <= TimeSpan.Zero || shutdownWaitTimeout > TimeSpan.FromSeconds(30))
             throw new ArgumentOutOfRangeException(nameof(shutdownWaitTimeout));
-        MaximumExecutionTimeout = maximumExecutionTimeout;
         ShutdownWaitTimeout = shutdownWaitTimeout;
     }
-    public TimeSpan MaximumExecutionTimeout { get; }
+    public AlgorithmExecutionPolicy Policy { get; }
+    public TimeSpan MaximumExecutionTimeout => Policy.MaximumExecutionTimeout;
     public TimeSpan ShutdownWaitTimeout { get; }
 }
 
@@ -24,7 +23,8 @@ public sealed class AlgorithmExecutionOptions
 public sealed class AlgorithmExecutionOutcome
 {
     internal AlgorithmExecutionOutcome(PreparedAlgorithm prepared, FrameMetadata frame,
-        ExecutionStatus status, string? reasonCode, AlgorithmResult? validatedResult)
+        ExecutionStatus status, string? reasonCode, AlgorithmResult? validatedResult,
+        AlgorithmExecutionTimingSnapshot timing, long admittedMonotonicTimestamp)
     {
         Correlation = frame.Correlation; FrameMetadata = frame; PreparedInstanceId = prepared.InstanceId;
         Algorithm = prepared.Descriptor.Identity; ResultSchema = prepared.Descriptor.ResultSchema;
@@ -32,6 +32,7 @@ public sealed class AlgorithmExecutionOutcome
         ExecutionStatus = status; ReasonCode = reasonCode;
         ValidatedResult = status == ExecutionStatus.Success ? validatedResult : null;
         Decision = ValidatedResult?.Decision ?? InspectionDecision.Unknown;
+        Timing = timing; AdmittedMonotonicTimestamp = admittedMonotonicTimestamp;
     }
     public ExecutionCorrelationId Correlation { get; }
     public FrameMetadata FrameMetadata { get; }
@@ -43,6 +44,9 @@ public sealed class AlgorithmExecutionOutcome
     public InspectionDecision Decision { get; }
     public string? ReasonCode { get; }
     public AlgorithmResult? ValidatedResult { get; }
+    public AlgorithmExecutionTimingSnapshot Timing { get; }
+    public long AdmittedMonotonicTimestamp { get; }
+    public long MonotonicFrequency => Stopwatch.Frequency;
 }
 
 /// <summary>A refused call has no per-frame outcome. The supplied owner token is consumed either way.</summary>
@@ -57,8 +61,10 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 {
     private readonly object _sync = new();
     private readonly AlgorithmExecutionOptions _options;
+    private readonly AlgorithmExecutionGuard _guard = AlgorithmExecutionGuard.CurrentProcess;
     private readonly Action? _beforeResultValidationForTesting;
     private readonly Action? _beforeExecutionStartForTesting;
+    private readonly bool _suppressGraceWatchdogForTesting;
     private Attempt? _running;
     private string? _blockedReason;
     private bool _disposed;
@@ -68,20 +74,21 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
     // Internal deterministic scheduling probe. Public constructors cannot install callbacks.
     internal AlgorithmExecutionService(AlgorithmExecutionOptions options, Action? beforeResultValidationForTesting,
-        Action? beforeExecutionStartForTesting = null)
+        Action? beforeExecutionStartForTesting = null, bool suppressGraceWatchdogForTesting = false)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _beforeResultValidationForTesting = beforeResultValidationForTesting;
         _beforeExecutionStartForTesting = beforeExecutionStartForTesting;
+        _suppressGraceWatchdogForTesting = suppressGraceWatchdogForTesting;
     }
 
     public int ActiveExecutionCount { get { lock (_sync) return _running is null ? 0 : 1; } }
-    public string? BlockedReasonCode { get { lock (_sync) return _blockedReason; } }
+    public string? BlockedReasonCode { get { lock (_sync) return _guard.IsHung ? "AlgorithmHung" : _blockedReason; } }
     public long DroppedDiagnosticCount => Interlocked.Read(ref _droppedDiagnostics);
 
     /// <summary>Consumes a frame owner for computation; the token is the Runtime's abort signal, not a UI wait token.</summary>
     public async ValueTask<AlgorithmExecutionAttempt> ExecuteAsync(PreparedAlgorithm prepared,
-        FrameBufferLease frameLease, TimeSpan executionTimeout, CancellationToken runtimeCancellationToken = default)
+        FrameBufferLease frameLease, AlgorithmExecutionRequest request, CancellationToken runtimeCancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(prepared); ArgumentNullException.ThrowIfNull(frameLease);
         var owner = frameLease.Transfer();
@@ -92,8 +99,9 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         {
             if (owner.Metadata.Correlation.Kind == ExecutionKind.Production)
                 return Rejected("ProductionExecutionAdmissionUnavailable");
-            if (executionTimeout <= TimeSpan.Zero || executionTimeout > _options.MaximumExecutionTimeout)
-                return Rejected("AlgorithmExecutionTimeoutInvalid");
+            if (_guard.IsHung) return Rejected("AlgorithmHung");
+            if (!_options.Policy.TryBind(request, out var timing, out var timingReason))
+                return Rejected(timingReason);
             if (runtimeCancellationToken.IsCancellationRequested) return Rejected("AlgorithmExecutionCancelledBeforeStart");
             lock (_sync)
             {
@@ -104,10 +112,14 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                     return Rejected(prepared.IsRetired ? "AlgorithmInstanceRetired" : "AlgorithmInstanceBusy");
                 try
                 {
-                    attempt = new Attempt(this, prepared, algorithm!, frame, executionTimeout, runtimeCancellationToken);
-                    _running = attempt;
+                    attempt = new Attempt(this, prepared, algorithm!, frame, timing!, runtimeCancellationToken);
                     _beforeExecutionStartForTesting?.Invoke();
-                    attempt.Start();
+                    var admitted = attempt;
+                    if (!_guard.TryRunIfHealthy(() => { _running = admitted; admitted.Start(); }))
+                    {
+                        attempt.CloseUnstarted(); attempt = null; prepared.EndExecution();
+                        return Rejected("AlgorithmHung");
+                    }
                 }
                 catch (Exception exception) when (exception is not OutOfMemoryException)
                 {
@@ -155,6 +167,8 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         private readonly CancellationTokenSource _algorithmCancellation = new();
         private readonly CancellationToken _caller;
         private readonly TimeSpan _timeout;
+        private readonly AlgorithmExecutionTimingSnapshot _timing;
+        private readonly Guid _frameLeaseId;
         private readonly long _started = Stopwatch.GetTimestamp();
         private CancellationTokenRegistration _callerRegistration;
         private Task? _cancellationCallbacks;
@@ -162,12 +176,17 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         private bool _closed;
         private bool _cancelRequested;
         private bool _diagnosticsSealed;
+        private bool _invocationQuiesced;
+        private long? _fixedAt;
+        private AlgorithmExecutionGuard.GraceRegistration? _grace;
+        private CancellationTokenSource? _graceWatchdogCancellation;
 
         public Attempt(AlgorithmExecutionService service, PreparedAlgorithm prepared, IVisionAlgorithm algorithm,
-            FrameBufferLease frame, TimeSpan timeout, CancellationToken caller)
+            FrameBufferLease frame, AlgorithmExecutionTimingSnapshot timing, CancellationToken caller)
         {
             _service = service; _prepared = prepared; _algorithm = algorithm; _frame = frame;
-            _metadata = frame.Frame.Metadata; _timeout = timeout; _caller = caller;
+            _metadata = frame.Frame.Metadata; _timeout = timing.AlgorithmExecutionTimeout; _caller = caller;
+            _timing = timing; _frameLeaseId = frame.LeaseId;
         }
         public TaskCompletionSource<AlgorithmExecutionOutcome> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -178,7 +197,6 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
         public void Start()
         {
-            _callerRegistration = _caller.Register(static state => ((Attempt)state!).FixCancellation(), this);
             _ = Task.Run(RunObservedAsync);
         }
 
@@ -222,13 +240,60 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             {
                 if (_closed || Completion.Task.IsCompleted) return;
                 _diagnosticsSealed = true;
-                Completion.TrySetResult(new(_prepared, _metadata, status, reason, null));
+                _fixedAt = Stopwatch.GetTimestamp();
+                _grace = _service._guard.RegisterGrace(_metadata.Correlation, _prepared.InstanceId,
+                    _frameLeaseId, status, _timing, _fixedAt.Value);
+                Completion.TrySetResult(NewOutcome(status, reason, null));
                 _retirement ??= _prepared.DisposeAsync().AsTask();
                 _cancellationCallbacks ??= Task.Run(() =>
                 {
                     try { _algorithmCancellation.Cancel(); }
                     catch (Exception exception) when (exception is not OutOfMemoryException) { }
                 });
+                if (!_service._suppressGraceWatchdogForTesting)
+                {
+                    _graceWatchdogCancellation = new CancellationTokenSource();
+                    _ = WatchGraceAsync(_graceWatchdogCancellation);
+                }
+            }
+        }
+
+        private AlgorithmExecutionOutcome NewOutcome(ExecutionStatus status, string? reason, AlgorithmResult? result) =>
+            new(_prepared, _metadata, status, reason, result, _timing, _started);
+
+        // Both the watchdog and the physical exit path use this monotonic boundary.
+        // A delayed watchdog cannot turn a late exit into an in-grace recovery.
+        private bool GraceExpiredLocked() => _fixedAt is { } fixedAt &&
+            TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - fixedAt) / (double)Stopwatch.Frequency) >=
+                _timing.CancellationGracePeriod;
+
+        private async Task WatchGraceAsync(CancellationTokenSource cancellation)
+        {
+            var cancellationToken = cancellation.Token;
+            try
+            {
+                while (true)
+                {
+                    TimeSpan remaining;
+                    lock (_sync)
+                    {
+                        if (_invocationQuiesced || _fixedAt is null) return;
+                        if (GraceExpiredLocked()) { _ = _service._guard.IsHung; return; }
+                        remaining = _timing.CancellationGracePeriod - TimeSpan.FromSeconds(
+                            (Stopwatch.GetTimestamp() - _fixedAt.Value) / (double)Stopwatch.Frequency);
+                    }
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(remaining.TotalMilliseconds))),
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            finally
+            {
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_graceWatchdogCancellation, cancellation)) _graceWatchdogCancellation = null;
+                    cancellation.Dispose();
+                }
             }
         }
 
@@ -238,10 +303,24 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             string? failure = null;
             try
             {
+                _callerRegistration = _caller.Register(static state => ((Attempt)state!).FixCancellation(), this);
                 if (!Completion.Task.IsCompleted)
                 {
                     try
                     {
+                        // Claim dispatch under the same latch used by preparation and
+                        // admission. Consumer code always executes outside its lock.
+                        var withinDeadline = false;
+                        if (!_service._guard.TryRunIfHealthy(() => withinDeadline = Remaining > TimeSpan.Zero))
+                        {
+                            FixNonSuccess(ExecutionStatus.Cancelled, "AlgorithmHung");
+                            return;
+                        }
+                        if (!withinDeadline)
+                        {
+                            FixNonSuccess(ExecutionStatus.Timeout, "AlgorithmExecutionTimeout");
+                            return;
+                        }
                         result = await _algorithm.ExecuteAsync(new(_metadata.Correlation, _prepared.Configuration,
                             _frame.Frame, this), _algorithmCancellation.Token).ConfigureAwait(false);
                         _service._beforeResultValidationForTesting?.Invoke();
@@ -269,7 +348,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                     else if (!Completion.Task.IsCompleted)
                     {
                         _diagnosticsSealed = true;
-                        Completion.TrySetResult(new(_prepared, _metadata,
+                        Completion.TrySetResult(NewOutcome(
                             failure is null ? ExecutionStatus.Success : ExecutionStatus.Error,
                             failure ?? result?.ReasonCode, failure is null ? result : null));
                     }
@@ -285,6 +364,15 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                 try
                 {
                     if (callbacks is not null) await callbacks.ConfigureAwait(false);
+                    lock (_sync)
+                    {
+                        if (_grace is not null) _service._guard.CompleteGrace(_grace);
+                        _invocationQuiesced = true;
+                        // This private token has only Task.Delay as a consumer. End
+                        // the monitor promptly instead of retaining a retired attempt
+                        // for a deployment's potentially long grace interval.
+                        _graceWatchdogCancellation?.Cancel();
+                    }
                     // Token callbacks can also be consumer code using the frame. Keep
                     // its owner and the instance until both call and callbacks exit.
                     _frame.Dispose();
@@ -315,7 +403,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                 lock (_sync)
                 {
                     _closed = true; _diagnosticsSealed = true;
-                    Completion.TrySetResult(new(_prepared, _metadata, ExecutionStatus.Error,
+                    Completion.TrySetResult(NewOutcome(ExecutionStatus.Error,
                         "AlgorithmExecutionError", null));
                 }
                 PhysicalCompletion.TrySetResult(true);

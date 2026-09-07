@@ -110,12 +110,20 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _capacity;
     private readonly AlgorithmPreparationOptions _options;
+    private readonly AlgorithmExecutionGuard _executionGuard;
     private int _reservedCreations;
     private bool _disposed;
 
     public AlgorithmPreparationService(IEnumerable<IVisionAlgorithmFactory> factories, AlgorithmPreparationOptions options)
+        : this(factories, options, null)
+    {
+    }
+
+    public AlgorithmPreparationService(IEnumerable<IVisionAlgorithmFactory> factories,
+        AlgorithmPreparationOptions options, AlgorithmExecutionGuard? executionGuard = null)
     {
         ArgumentNullException.ThrowIfNull(factories); ArgumentNullException.ThrowIfNull(options);
+        _executionGuard = executionGuard ?? AlgorithmExecutionGuard.CurrentProcess;
         _options = options; _capacity = new(options.MaximumConcurrentPreparations, options.MaximumConcurrentPreparations);
         var references = new HashSet<IVisionAlgorithmFactory>(ReferenceEqualityComparer.Instance);
         foreach (var factory in factories)
@@ -141,6 +149,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         var startedAt = Stopwatch.GetTimestamp();
+        if (_executionGuard.IsHung) return Failure("AlgorithmHung");
         lock (_sync) if (_disposed) return Failure("AlgorithmPreparationServiceDisposed");
         if (cancellationToken.IsCancellationRequested) return Failure("AlgorithmPreparationCancelled");
         if (request.PreparationTimeout <= TimeSpan.Zero || request.PreparationTimeout > _options.MaximumPreparationTimeout)
@@ -177,6 +186,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         var started = false;
         try
         {
+            if (_executionGuard.IsHung) return Failure("AlgorithmHung");
             // One Factory is never called concurrently, even when it returns the same instance.
             var initialRemaining = attempt.Remaining;
             if (initialRemaining <= TimeSpan.Zero) return Failure("AlgorithmPreparationTimedOut");
@@ -186,6 +196,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             capacityAcquired = remaining > TimeSpan.Zero &&
                 await _capacity.WaitAsync(remaining, attempt.WaitToken).ConfigureAwait(false);
             if (!capacityAcquired) return Failure("AlgorithmPreparationTimedOut");
+            if (_executionGuard.IsHung) return Failure("AlgorithmHung");
             lock (_sync)
             {
                 if (_disposed) return Failure("AlgorithmPreparationServiceDisposed");
@@ -197,15 +208,28 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             remaining = attempt.Remaining;
             if (remaining <= TimeSpan.Zero) throw new TimeoutException();
             var result = await attempt.Completion.Task.WaitAsync(remaining, attempt.WaitToken).ConfigureAwait(false);
-            lock (_sync)
+            if (!result.Succeeded) return result;
+
+            AlgorithmPreparationResult publication = Failure(
+                _disposed ? "AlgorithmPreparationServiceDisposed" : "AlgorithmPreparationTimedOut");
+            var published = _executionGuard.TryRunIfHealthy(() =>
             {
-                if (!result.Succeeded) return result;
-                if (_disposed || cancellationToken.IsCancellationRequested || attempt.Remaining <= TimeSpan.Zero || !attempt.TryDeliver())
-                    return Failure(_disposed ? "AlgorithmPreparationServiceDisposed" :
-                        cancellationToken.IsCancellationRequested ? "AlgorithmPreparationCancelled" : "AlgorithmPreparationTimedOut");
-                _published.Add(result.Prepared!);
-                return result;
-            }
+                lock (_sync)
+                {
+                    if (_disposed || cancellationToken.IsCancellationRequested || attempt.Remaining <= TimeSpan.Zero ||
+                        !attempt.TryDeliver())
+                    {
+                        publication = Failure(_disposed ? "AlgorithmPreparationServiceDisposed" :
+                            cancellationToken.IsCancellationRequested ? "AlgorithmPreparationCancelled" :
+                            "AlgorithmPreparationTimedOut");
+                        return;
+                    }
+
+                    _published.Add(result.Prepared!);
+                    publication = result;
+                }
+            });
+            return published ? publication : Failure("AlgorithmHung");
         }
         catch (TimeoutException) { return Failure("AlgorithmPreparationTimedOut"); }
         catch (OperationCanceledException)
@@ -231,8 +255,10 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         var stage = "AlgorithmSemanticValidationFailed";
         try
         {
+            if (RejectIfHung(attempt)) return;
             attempt.Token.ThrowIfCancellationRequested();
             var issues = await registration.Factory.ValidateConfigurationAsync(configuration, attempt.Token).ConfigureAwait(false);
+            if (RejectIfHung(attempt)) return;
             if (issues is null || issues.Count != 0)
             {
                 attempt.Completion.TrySetResult(Failure(stage));
@@ -240,6 +266,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             }
             attempt.Token.ThrowIfCancellationRequested();
             stage = "AlgorithmCreationFailed";
+            if (RejectIfHung(attempt)) return;
             lock (_sync)
             {
                 if (_owned.Count + _reservedCreations >= _options.MaximumOwnedInstances)
@@ -247,6 +274,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
                 _reservedCreations++;
                 creationReserved = true;
             }
+            if (RejectIfHung(attempt)) return;
             algorithm = await registration.Factory.CreateAsync(configuration, attempt.Token).ConfigureAwait(false);
             if (algorithm is null) throw new InvalidOperationException();
             lock (_sync)
@@ -267,11 +295,14 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
                 _seenInstances.Add(algorithm, new object());
                 _owned.Add(algorithm); owned = true;
             }
-            if (attempt.Completion.Task.IsCompleted) return;
+            if (RejectIfHung(attempt) || attempt.Completion.Task.IsCompleted) return;
             attempt.Token.ThrowIfCancellationRequested();
             stage = "AlgorithmWarmUpFailed";
+            if (RejectIfHung(attempt)) return;
             await algorithm.WarmUpAsync(attempt.Token).ConfigureAwait(false);
+            if (RejectIfHung(attempt)) return;
             attempt.Token.ThrowIfCancellationRequested();
+            if (RejectIfHung(attempt)) return;
             var prepared = new PreparedAlgorithm(registration.Descriptor, configuration, algorithm, RetirePublishedAsync);
             attempt.Completion.TrySetResult(new(true, "AlgorithmPrepared", prepared, Array.Empty<AlgorithmValidationIssue>()));
             delivered = await attempt.Delivery.Task.ConfigureAwait(false);
@@ -288,6 +319,14 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             _capacity.Release();
             registration.Gate.Release();
         }
+    }
+
+    private bool RejectIfHung(Attempt attempt)
+    {
+        if (!_executionGuard.IsHung) return false;
+        attempt.Completion.TrySetResult(Failure("AlgorithmHung"));
+        attempt.AbandonUnlessDelivered();
+        return true;
     }
 
     private async Task RetireUnpublishedAsync(IVisionAlgorithm algorithm)

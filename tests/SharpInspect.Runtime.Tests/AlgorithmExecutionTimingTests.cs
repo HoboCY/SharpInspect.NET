@@ -14,13 +14,16 @@ public sealed class AlgorithmExecutionTimingTests
         var validationEntered = Signal();
         var algorithm = new ProbeAlgorithm();
         await using var fixture = await Fixture.CreateAsync(algorithm);
-        await using var engine = new AlgorithmExecutionService(new(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)),
+        await using var engine = new AlgorithmExecutionService(new(new AlgorithmExecutionPolicy(
+                "Test.AlgorithmTiming", "v1", TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
+                TimeSpan.FromSeconds(5)), TimeSpan.FromMilliseconds(100)),
             () => { validationEntered.TrySetResult(true); releaseValidation.Wait(TimeSpan.FromSeconds(5)); });
         var owner = fixture.Frame();
         var frame = owner.Frame;
         try
         {
-            var pending = engine.ExecuteAsync(fixture.Prepared, owner, TimeSpan.FromMilliseconds(500)).AsTask();
+            var pending = engine.ExecuteAsync(fixture.Prepared, owner,
+                ExecutionRequest(TimeSpan.FromMilliseconds(500))).AsTask();
             await validationEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var terminal = await pending.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.Equal(ExecutionStatus.Timeout, terminal.Outcome!.ExecutionStatus);
@@ -29,7 +32,8 @@ public sealed class AlgorithmExecutionTimingTests
             Assert.True(frame.IsLoanActive);
             Assert.Equal(1, fixture.Pool.GetSnapshot().OutstandingLeases);
             Assert.Equal(0, algorithm.DisposeCount);
-            var repeated = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(), TimeSpan.FromSeconds(1));
+            var repeated = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(),
+                ExecutionRequest(TimeSpan.FromSeconds(1)));
             Assert.False(repeated.Executed);
             Assert.Equal("AlgorithmExecutionBusy", repeated.ReasonCode);
             releaseValidation.Set();
@@ -50,12 +54,15 @@ public sealed class AlgorithmExecutionTimingTests
         using var abort = new CancellationTokenSource();
         var algorithm = new ProbeAlgorithm(releaseCallback);
         await using var fixture = await Fixture.CreateAsync(algorithm);
-        await using var engine = new AlgorithmExecutionService(new(TimeSpan.FromSeconds(4), TimeSpan.FromMilliseconds(100)));
+        await using var engine = new AlgorithmExecutionService(new(new AlgorithmExecutionPolicy(
+            "Test.AlgorithmTiming", "v1", TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(4),
+            TimeSpan.FromSeconds(5)), TimeSpan.FromMilliseconds(100)));
         var owner = fixture.Frame();
         var frame = owner.Frame;
         try
         {
-            var pending = engine.ExecuteAsync(fixture.Prepared, owner, TimeSpan.FromSeconds(3), abort.Token).AsTask();
+            var pending = engine.ExecuteAsync(fixture.Prepared, owner,
+                ExecutionRequest(TimeSpan.FromSeconds(3)), abort.Token).AsTask();
             await algorithm.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var cancelCaller = Task.Run(abort.Cancel);
             await cancelCaller.WaitAsync(TimeSpan.FromSeconds(1));
@@ -82,21 +89,29 @@ public sealed class AlgorithmExecutionTimingTests
     {
         var algorithm = new ProbeAlgorithm();
         await using var fixture = await Fixture.CreateAsync(algorithm);
-        await using var engine = new AlgorithmExecutionService(new(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)));
-        var first = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(), TimeSpan.FromSeconds(1));
+        await using var engine = new AlgorithmExecutionService(new(new AlgorithmExecutionPolicy(
+            "Test.AlgorithmTiming", "v1", TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(5)), TimeSpan.FromMilliseconds(100)));
+        var first = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(),
+            ExecutionRequest(TimeSpan.FromSeconds(1)));
         Assert.Equal(ExecutionStatus.Success, first.Outcome!.ExecutionStatus);
         var oldSink = algorithm.LastSink!;
         Assert.Equal(1, engine.DroppedDiagnosticCount);
         Assert.Equal(AlgorithmDiagnosticEmission.Dropped, oldSink.TryEmit(new("Late", new[]
             { new AlgorithmDiagnosticField("Data", AlgorithmScalarValue.FromString("password=do-not-format")) })));
         Assert.Equal(1, engine.DroppedDiagnosticCount);
-        var second = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(), TimeSpan.FromSeconds(1));
+        var second = await engine.ExecuteAsync(fixture.Prepared, fixture.Frame(),
+            ExecutionRequest(TimeSpan.FromSeconds(1)));
         Assert.Equal(ExecutionStatus.Success, second.Outcome!.ExecutionStatus);
         Assert.NotSame(oldSink, algorithm.LastSink);
         Assert.Equal(2, engine.DroppedDiagnosticCount);
     }
 
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static AlgorithmExecutionRequest ExecutionRequest(TimeSpan timeout) =>
+        new(new RecipeReference("timing-recipe", "1", new string('a', 64)), timeout);
+
     [Fact]
     public async Task V112_T04_RetirementBetweenExecutionBorrowAndTaskStartWaitsForThatBorrow()
     {
@@ -104,12 +119,15 @@ public sealed class AlgorithmExecutionTimingTests
         var borrowed = Signal();
         var algorithm = new ProbeAlgorithm();
         await using var fixture = await Fixture.CreateAsync(algorithm);
-        await using var engine = new AlgorithmExecutionService(new(TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(100)),
+        await using var engine = new AlgorithmExecutionService(new(new AlgorithmExecutionPolicy(
+                "Test.AlgorithmTiming", "v1", TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(3),
+                TimeSpan.FromSeconds(5)), TimeSpan.FromMilliseconds(100)),
             null, () => { borrowed.TrySetResult(true); releaseStart.Wait(TimeSpan.FromSeconds(5)); });
         var owner = fixture.Frame();
         try
         {
-            var execution = Task.Run(async () => await engine.ExecuteAsync(fixture.Prepared, owner, TimeSpan.FromSeconds(2)));
+            var execution = Task.Run(async () => await engine.ExecuteAsync(fixture.Prepared, owner,
+                ExecutionRequest(TimeSpan.FromSeconds(2))));
             await borrowed.Task.WaitAsync(TimeSpan.FromSeconds(1));
             var retirement = fixture.Prepared.DisposeAsync().AsTask();
             Assert.False(retirement.IsCompleted);

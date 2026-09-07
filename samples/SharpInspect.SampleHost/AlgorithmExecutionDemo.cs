@@ -43,7 +43,8 @@ internal static class AlgorithmExecutionDemo
         var pool = provider.GetRequiredService<FrameBufferPool>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
         await using var execution = new AlgorithmExecutionService(new AlgorithmExecutionOptions(
-            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1)));
+            new AlgorithmExecutionPolicy("Sample.AlgorithmExecution", "v1", TimeSpan.FromMilliseconds(1),
+                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1)), TimeSpan.FromSeconds(1)));
 
         var before = await runtime.GetSnapshotAsync();
         Require(!before.Ready);
@@ -90,6 +91,16 @@ internal static class AlgorithmExecutionDemo
         Require(unsafeOverlay.ReasonCode == "AlgorithmResultContractViolation");
         Require(typedException.ReasonCode == "SyntheticTypedFailure");
         Require(genericException.ReasonCode == "AlgorithmExecutionError");
+        foreach (var attempt in new[] { pass, fail, unknown, wrongSchema, unsafeOverlay, typedException, genericException })
+        {
+            Require(attempt.Outcome!.Timing.PolicyId == "Sample.AlgorithmExecution" &&
+                attempt.Outcome.Timing.PolicyVersion == "v1" &&
+                attempt.Outcome.Timing.PolicyContentHash.Length == 64 &&
+                attempt.Outcome.Timing.Recipe.Id == "sample-execution-recipe" &&
+                attempt.Outcome.Timing.AlgorithmExecutionTimeout == TimeSpan.FromSeconds(2) &&
+                attempt.Outcome.Timing.CancellationGracePeriod == TimeSpan.FromSeconds(1) &&
+                attempt.Outcome.AdmittedMonotonicTimestamp > 0 && attempt.Outcome.MonotonicFrequency > 0);
+        }
 
         Require(factory.Created == 1 && factory.Warmed == 1);
         await prepared.DisposeAsync();
@@ -100,6 +111,8 @@ internal static class AlgorithmExecutionDemo
             after.CurrentExecution is null);
         Console.WriteLine("V112-P01 algorithm-execution PASS decisions=3 contractNegatives=true " +
             "exceptionSanitized=true preparedOnce=true productionReady=false");
+        Console.WriteLine("V113-N01 execution-policy-consumer PASS recipeBound=true policyBound=true " +
+            "monotonic=true productionReady=false");
     }
 
     private static async Task<AlgorithmExecutionAttempt> ExecuteMarkerAsync(byte marker,
@@ -113,7 +126,8 @@ internal static class AlgorithmExecutionDemo
         var oldFrame = lease.Frame;
         try
         {
-            var attempt = await execution.ExecuteAsync(prepared, lease, TimeSpan.FromSeconds(2));
+            var attempt = await execution.ExecuteAsync(prepared, lease,
+                ExecutionRequest(TimeSpan.FromSeconds(2)));
             await WaitForReturnedFrameAsync(oldFrame);
             Require(!oldFrame.IsLoanActive);
             var staleRejected = false;
@@ -158,6 +172,9 @@ internal static class AlgorithmExecutionDemo
             descriptor.ResultSchema.ContentHash, descriptor.ResultSchema.OverlayContract.Id,
             descriptor.ResultSchema.OverlayContract.Version, descriptor.ResultSchema.OverlayContract.ContentHash,
             TimeSpan.FromSeconds(3));
+
+    private static AlgorithmExecutionRequest ExecutionRequest(TimeSpan timeout) =>
+        new(new RecipeReference("sample-execution-recipe", "1", new string('a', 64)), timeout);
 
     private static void Require(bool condition)
     {

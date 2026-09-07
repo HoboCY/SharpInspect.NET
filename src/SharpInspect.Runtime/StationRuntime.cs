@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 
@@ -22,6 +23,8 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private readonly IInteractiveSessionService? _sessions;
     private readonly LocalAuthorizationService? _authorization;
     private readonly FrameBufferPool? _frameBufferPool;
+    private readonly AlgorithmExecutionGuard _executionGuard;
+    private readonly bool _algorithmExecutionRegistered;
     private readonly Task _storeInitialization;
     private Task? _completion;
     private Task? _shutdown;
@@ -35,15 +38,18 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private long _sessionProjectionVersion;
     private bool _disposed;
 
-    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval, null, null, null) { }
+    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval, null, null, null, null, null) { }
 
     internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null,
-        LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null)
+        LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null,
+        AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null)
     {
         _audit = audit;
         _sessions = sessions;
         _authorization = authorization;
         _frameBufferPool = frameBufferPool;
+        _executionGuard = executionGuard ?? AlgorithmExecutionGuard.CurrentProcess;
+        _algorithmExecutionRegistered = algorithmExecutionOptions is not null;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
         if (interval < TimeSpan.FromMilliseconds(20) || interval > TimeSpan.FromSeconds(30))
             throw new ArgumentOutOfRangeException(nameof(heartbeatInterval));
@@ -67,6 +73,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 "FrameworkQualificationMissing", "ProviderQualificationMissing", "PerformanceQualificationMissing",
                 "StationAcceptanceMissing", "ProductionCycleUnavailable"
             }));
+        _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);
         if (_sessions is not null)
         {
             lock (_sync)
@@ -89,6 +96,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         cancellationToken.ThrowIfCancellationRequested();
         lock (_sync)
         {
+            ReconcileAlgorithmExecutionLocked();
             ReconcileFrameBufferPoolLocked();
             ReconcileSessionLocked();
             return ValueTask.FromResult(_snapshot);
@@ -134,6 +142,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         {
             if (_subscribers.Count >= MaximumSubscribers)
                 throw new InvalidOperationException("SnapshotSubscriberLimit");
+            ReconcileAlgorithmExecutionLocked();
             ReconcileSessionLocked();
             ReconcileFrameBufferPoolLocked();
             channel.Writer.TryWrite(_snapshot);
@@ -162,6 +171,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         lock (_sync)
         {
             if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
+            ReconcileAlgorithmExecutionLocked();
             ReconcileFrameBufferPoolLocked();
         }
         var localStop = command is GracefulProductionStopCommand &&
@@ -233,6 +243,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 lock (_sync)
                 {
                     if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
+                    ReconcileAlgorithmExecutionLocked();
                     forced = _snapshot.LastCommand?.State == OperationState.Pending ? "OperationInProgress" : null;
                     epoch = _snapshot.RuntimeEpoch;
                 }
@@ -304,6 +315,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
 
     private RuntimeCommandOutcome DecideLocked(RuntimeCommand command)
     {
+        ReconcileAlgorithmExecutionLocked();
         ReconcileFrameBufferPoolLocked();
         RuntimeCommandOutcome Reject(string code) => new(command.CorrelationId, CommandDisposition.Rejected, code);
         if (command.CorrelationId == Guid.Empty || command.Invocation is null ||
@@ -400,6 +412,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 lock (_sync)
                 {
                     if (_shutdownRequested || _disposed) return;
+                    ReconcileAlgorithmExecutionLocked();
                     var integrity = _audit?.Integrity;
                     var integrityBlocked = integrity is { State: AuditIntegrityState.Faulted or AuditIntegrityState.Verifying };
                     var blockers = _snapshot.AdmissionBlockers.Where(x => x != "AuditIntegrityUnavailable");
@@ -447,6 +460,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
 
     private void PublishLocked(StationStateSnapshot next)
     {
+        next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current

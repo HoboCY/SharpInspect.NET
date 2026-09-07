@@ -5,9 +5,23 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+    <ProjectReference Include="../SharpInspect.AlgorithmHangProbe/SharpInspect.AlgorithmHangProbe.csproj"
+                      ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
   </ItemGroup>
+  <PropertyGroup>
+    <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' == 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/x64/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>
+    <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' != 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>
+  </PropertyGroup>
+  <Target Name="CopyAlgorithmHangProbe" AfterTargets="Build">
+    <ItemGroup>
+      <AlgorithmHangProbeFiles Include="$(AlgorithmHangProbeOutputRoot)/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(AlgorithmHangProbeFiles)"
+          DestinationFiles="@(AlgorithmHangProbeFiles->'$(OutDir)AlgorithmHangProbe/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 </Project>
