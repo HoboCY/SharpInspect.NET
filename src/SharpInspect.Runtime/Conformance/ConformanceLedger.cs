@@ -720,7 +720,7 @@ internal sealed class ConformanceLedger : IDisposable
 
             if (deadline is not null) SqliteNative.EnsureDeadline(deadline, CancellationToken.None);
 
-            if (File.Exists(_anchorPath)) File.Replace(temporaryPath, _anchorPath, null, ignoreMetadataErrors: true);
+            if (File.Exists(_anchorPath)) ReplaceAnchor(temporaryPath, _anchorPath, bytes, deadline);
             else File.Move(temporaryPath, _anchorPath);
         }
         finally
@@ -732,6 +732,63 @@ internal sealed class ConformanceLedger : IDisposable
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
         }
+    }
+
+    private static void ReplaceAnchor(string temporaryPath, string anchorPath, byte[] expectedBytes,
+        StoreDeadline? deadline)
+    {
+        while (true)
+        {
+            if (deadline is not null)
+                SqliteNative.EnsureDeadline(deadline, CancellationToken.None);
+            try
+            {
+                // Keep the same prepared, signed temporary file for every attempt. A retry
+                // may wait for a transient reader to release the existing external head,
+                // but it must never re-sign or replay the committed ledger transaction.
+                File.Replace(temporaryPath, anchorPath, null, ignoreMetadataErrors: true);
+                return;
+            }
+            catch (IOException exception) when
+                (IsTransientAnchorReplaceFailure(exception) &&
+                 AnchorFilesStillMatch(temporaryPath, anchorPath, expectedBytes))
+            {
+                if (deadline is null || deadline.Remaining <= TimeSpan.Zero)
+                    throw;
+
+                var delay = TimeSpan.FromMilliseconds(Math.Min(25, deadline.Remaining.TotalMilliseconds));
+                if (delay > TimeSpan.Zero) Thread.Sleep(delay);
+            }
+        }
+    }
+
+    private static bool AnchorFilesStillMatch(string temporaryPath, string anchorPath, byte[] expectedBytes)
+    {
+        if (!File.Exists(temporaryPath) || !File.Exists(anchorPath)) return false;
+        try
+        {
+            if (expectedBytes.Length > MaximumAnchorBytes) return false;
+            using var stream = new FileStream(temporaryPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 4096, FileOptions.SequentialScan);
+            if (stream.Length != expectedBytes.Length) return false;
+            var actual = new byte[expectedBytes.Length];
+            var offset = 0;
+            while (offset < actual.Length)
+            {
+                var read = stream.Read(actual, offset, actual.Length - offset);
+                if (read == 0) return false;
+                offset += read;
+            }
+            return actual.AsSpan().SequenceEqual(expectedBytes);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    private static bool IsTransientAnchorReplaceFailure(IOException exception)
+    {
+        var win32Error = exception.HResult & 0xFFFF;
+        return win32Error is 32 or 33 or 1175; // sharing/lock violation or ERROR_UNABLE_TO_REMOVE_REPLACED
     }
 
     private static byte[] AnchorBytes(string ledgerId, long sequence, string headHash, string keyId) =>

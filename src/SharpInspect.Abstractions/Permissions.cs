@@ -37,7 +37,9 @@ public enum Permission : ushort
     ManualRecovery = 25,
     ManageAuditSigningKeys = 26,
     CorrectHistoricalFact = 27,
-    DeleteEvidence = 28
+    DeleteEvidence = 28,
+    AcknowledgeAlarm = 29,
+    ResetAlarm = 30
 }
 
 /// <summary>

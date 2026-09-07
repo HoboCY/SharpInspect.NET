@@ -16,7 +16,7 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class AuthorizationStorageTests
 {
     [Fact]
-    public async Task V106_S01_Schema6InitializationAndBootstrapAreVerifiable()
+    public async Task V106_S01_Schema7InitializationAndBootstrapAreVerifiable()
     {
         if (!OperatingSystem.IsWindows())
             throw SkipException.ForSkip("Schema6 identity storage uses Windows machine protection.");
@@ -54,7 +54,7 @@ public sealed class AuthorizationStorageTests
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = "PRAGMA user_version;";
-                Assert.Equal(6L, Convert.ToInt64(command.ExecuteScalar()));
+                Assert.Equal(7L, Convert.ToInt64(command.ExecuteScalar()));
                 command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('identity_authority','identity_policy_binding');";
                 Assert.Equal(2L, Convert.ToInt64(command.ExecuteScalar()));
             }
@@ -221,6 +221,80 @@ public sealed class AuthorizationStorageTests
             Assert.Equal(AuditIntegrityState.Faulted, report.State);
             Assert.Equal("IdentityRecoveryGovernedMigrationRequired", report.ReasonCode);
             Assert.Equal(5L, ReadUserVersion(databasePath));
+            Assert.Equal(databaseBefore, FileSha256(databasePath));
+            Assert.Equal(keyBefore, FileSha256(keyPath));
+        }
+        finally
+        {
+            try
+            {
+                var keyPath = WindowsMachineAuditKey.GetKeyPath(policy);
+                if (File.Exists(keyPath)) File.Delete(keyPath);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    [Fact]
+    public async Task V106_S04_Schema6IdentityStoreIsReadOnlyRejectedForAlarmGovernance()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw SkipException.ForSkip("Schema7 identity storage uses Windows machine protection.");
+
+        var directory = Path.Combine(Path.GetTempPath(), "SharpInspect.Runtime.Tests", "V106-S04-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var databasePath = Path.Combine(directory, "identity.sqlite");
+        var policy = new AuditIntegrityPolicy("V106StorageStation", "v1", "SharpInspect.Test.V106." + Guid.NewGuid().ToString("N"))
+        {
+            AllowInitialKeyCreation = true,
+            KeyDirectory = Path.Combine(directory, "keys"),
+            CheckpointEveryEntries = 2,
+            VerificationInterval = TimeSpan.FromSeconds(1)
+        };
+        var identityOptions = new LocalIdentityOptions("V106StorageStation",
+            new LocalPasswordPolicy { Blocklist = PasswordBlocklist.Create("v106-blocklist", "v1", new[] { "known-compromised" }) },
+            new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development);
+        var options = new ProductionStoreOptions(databasePath)
+        {
+            AuditIntegrityPolicy = policy,
+            LocalIdentity = identityOptions,
+            CommitTimeout = TimeSpan.FromSeconds(2),
+            QueryTimeout = TimeSpan.FromSeconds(2),
+            QueueCapacity = 8
+        };
+
+        try
+        {
+            await using (var initial = new SqliteCommandStore(options))
+            {
+                var initialized = await initial.Initialization.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.True(initialized.Committed, initialized.ReasonCode);
+                await WaitForVerifiedAsync(initial);
+            }
+
+            using (var connection = Open(databasePath, readOnly: false))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "PRAGMA user_version=6;";
+                command.ExecuteNonQuery();
+            }
+
+            var databaseBefore = FileSha256(databasePath);
+            var keyPath = WindowsMachineAuditKey.GetKeyPath(policy);
+            var keyBefore = FileSha256(keyPath);
+            await using (var rejected = new SqliteCommandStore(options))
+            {
+                var result = await rejected.Initialization.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(result.Committed);
+                Assert.Equal("GovernedAlarmMigrationRequired", result.ReasonCode);
+            }
+
+            var report = await new SqliteAuditIntegrityQuery(options)
+                .VerifyAsync(new AuditVerificationRequest(0, 200));
+            Assert.Equal(AuditIntegrityState.Faulted, report.State);
+            Assert.Equal("GovernedAlarmMigrationRequired", report.ReasonCode);
+            Assert.Equal(6L, ReadUserVersion(databasePath));
             Assert.Equal(databaseBefore, FileSha256(databasePath));
             Assert.Equal(keyBefore, FileSha256(keyPath));
         }

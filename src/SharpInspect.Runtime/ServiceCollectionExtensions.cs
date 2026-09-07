@@ -28,6 +28,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<SqliteCommandStore>();
         services.TryAddSingleton<ICommandTraceQuery, SqliteCommandTraceQuery>();
         services.TryAddSingleton<IAuditIntegrityQuery, SqliteAuditIntegrityQuery>();
+        services.TryAddSingleton<IAlarmHistoryQuery, SqliteAlarmHistoryQuery>();
         if (options.LocalIdentity is not null)
         {
             services.TryAddSingleton(p => new LocalIdentityService(p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity));

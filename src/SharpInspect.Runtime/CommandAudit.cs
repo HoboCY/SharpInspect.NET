@@ -9,7 +9,8 @@ internal sealed record CommandAuditFact(Guid EventId, Guid AttemptId, Guid Corre
     CommandAuditPhase Phase, CommandDisposition? Disposition, string ReasonCode,
     string? AuthenticatedHumanPrincipalId = null);
 
-internal sealed record StoreWriteResult(bool Committed, string ReasonCode, CommandAuditFact? Fact = null);
+internal sealed record StoreWriteResult(bool Committed, string ReasonCode, CommandAuditFact? Fact = null,
+    bool RetryAfterIntegrityRecheck = false);
 
 /// <summary>The same monotonic deadline covers queue admission, locks and the transaction.</summary>
 internal sealed class StoreDeadline

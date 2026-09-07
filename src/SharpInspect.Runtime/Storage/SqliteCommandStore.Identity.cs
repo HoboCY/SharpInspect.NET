@@ -61,10 +61,16 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
+            AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
-            AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId, _signingKey.PublicKeyBase64,
-                new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
+            var alarmStore = _options.AlarmPolicy is not null;
+            var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
+                _signingKey.PublicKeyBase64,
+                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore, deadline,
+                validateAnchorReceipt: false);
+            if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -85,10 +91,16 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
+            AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
-            AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId, _signingKey.PublicKeyBase64,
-                new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
+            var alarmStore = _options.AlarmPolicy is not null;
+            var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
+                _signingKey.PublicKeyBase64,
+                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore, deadline,
+                validateAnchorReceipt: false);
+            if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -158,29 +170,37 @@ internal sealed partial class SqliteCommandStore
         return EnqueueIdentityAsync(new IdentityWork(correlationId, update), cancellationToken, deadline);
     }
 
+    /// <summary>Runs an authenticated alarm transition against the fresh identity and alarm projections
+    /// while retaining one SQLite transaction for identity events, alarm history and command facts.</summary>
+    internal ValueTask<IdentityWriteResult> UpdateAlarmCommandAsync(Guid correlationId, Guid runtimeEpoch,
+        Func<IdentityAuthorityState, AlarmStateSnapshot, bool, IdentityUpdate> update,
+        CancellationToken cancellationToken, StoreDeadline? deadline = null)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        if (correlationId == Guid.Empty)
+            return ValueTask.FromResult(new IdentityWriteResult(false, "CorrelationIdRequired"));
+        if (runtimeEpoch == Guid.Empty)
+            return ValueTask.FromResult(new IdentityWriteResult(false, "AlarmRuntimeEpochRequired"));
+        return EnqueueIdentityAsync(new IdentityWork(correlationId, runtimeEpoch, update), cancellationToken, deadline);
+    }
+
     private async ValueTask<IdentityWriteResult> EnqueueIdentityAsync(IdentityWork work,
         CancellationToken cancellationToken, StoreDeadline? commandDeadline = null)
     {
         if (_options.LocalIdentity is null || _queue is null || _queueSlots is null || Volatile.Read(ref _disposed) != 0)
             return new(false, "IdentityStoreUnavailable");
         var deadline = commandDeadline ?? new StoreDeadline(CommitTimeout);
-        var remaining = deadline.Remaining;
-        if (remaining <= TimeSpan.Zero || !await _queueSlots.WaitAsync(remaining, cancellationToken).ConfigureAwait(false))
-            return new(false, "IdentityCommitDeadlineExceeded");
-        var request = new WriteRequest(null, deadline, Identity: work);
-        if (!_queue.Writer.TryWrite(request))
-        {
-            _queueSlots.Release();
-            return new(false, "IdentityStoreUnavailable");
-        }
-
-        var result = await request.Completion.Task.ConfigureAwait(false);
+        var result = await EnqueueVerifiedWorkAsync(() => new WriteRequest(null, deadline, Identity: work),
+            deadline, cancellationToken, "IdentityStoreUnavailable", "IdentityCommitDeadlineExceeded").ConfigureAwait(false);
         return new(result.Committed, result.ReasonCode, result.Committed ? work.Result : null);
     }
 
     private StoreWriteResult UpdateIdentityCore(sqlite3 database, IdentityWork work, StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified) return new(false, Integrity?.ReasonCode ?? "IdentityAuditUnavailable");
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "IdentityAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes) return new(false, "TraceStoreWalLimit");
         var committed = false;
         IdentityUpdate? decision = null;
@@ -188,16 +208,29 @@ internal sealed partial class SqliteCommandStore
         SqliteNative.Execute(database, "BEGIN IMMEDIATE;", deadline);
         try
         {
-            AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId, _signingKey.PublicKeyBase64,
-                new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
+            var alarmStore = _options.AlarmPolicy is not null;
+            var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
+                _signingKey.PublicKeyBase64,
+                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore, deadline,
+                validateAnchorReceipt: false);
+            if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
-            var duplicateCorrelation = work.CommandUpdate is not null &&
+            var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
                 ReadRecoveryOperation(database, work.RecoveryOperationId!.Value, deadline);
-            var evaluated = work.Evaluate(state, duplicateCorrelation, existingRecoveryOperation);
+            var persistedAlarmPolicy = work.AlarmCommandUpdate is null
+                ? null
+                : AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
+            if (work.AlarmCommandUpdate is not null)
+                AlarmStorageCodec.RequireConfiguredPolicy(persistedAlarmPolicy, _options.AlarmPolicy);
+            var alarmState = work.AlarmCommandUpdate is null ? null :
+                AlarmStorageCodec.BuildState(persistedAlarmPolicy,
+                    AlarmStorageCodec.ReadEvents(database, deadline), work.RuntimeEpoch);
+            var evaluated = work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation);
             decision = evaluated;
             guard = evaluated.CommitGuard;
             AuditChainDatabase.Require(evaluated.Events.Count is > 0 and <= 8, "IdentityAuditEventRequired");
@@ -228,6 +261,8 @@ internal sealed partial class SqliteCommandStore
                 AppendRecoveryOperation(database, state, completedRecovery, state.Revision,
                     recoveryIdentitySequence, deadline);
             }
+            if (evaluated.AlarmEvents is { Count: > 0 } alarmEvents)
+                AppendAlarmEvents(database, alarmEvents, work.RuntimeEpoch, work.CommandCorrelationId, deadline);
             var identityTail = AuditChainDatabase.LastIdentityEntry(database, deadline);
             if (identityTail is null || identityTail.Value.Sequence != identitySequence)
                 throw new InvalidOperationException("IdentityAuthorityAuditMismatch");
@@ -474,15 +509,26 @@ internal sealed partial class SqliteCommandStore
             RecoveryOperationUpdate = recoveryUpdate;
         }
 
+        internal IdentityWork(Guid commandCorrelationId, Guid runtimeEpoch,
+            Func<IdentityAuthorityState, AlarmStateSnapshot, bool, IdentityUpdate> alarmCommandUpdate)
+        {
+            CommandCorrelationId = commandCorrelationId;
+            RuntimeEpoch = runtimeEpoch;
+            AlarmCommandUpdate = alarmCommandUpdate;
+        }
+
         internal Func<IdentityAuthorityState, IdentityUpdate>? Update { get; }
         internal Guid? CommandCorrelationId { get; }
         internal Func<IdentityAuthorityState, bool, IdentityUpdate>? CommandUpdate { get; }
+        internal Func<IdentityAuthorityState, AlarmStateSnapshot, bool, IdentityUpdate>? AlarmCommandUpdate { get; }
+        internal Guid RuntimeEpoch { get; }
         internal Guid? RecoveryOperationId { get; }
         internal Func<IdentityAuthorityState, RecoveryOperationState?, IdentityUpdate>? RecoveryOperationUpdate { get; }
         internal object? Result { get; set; }
 
-        internal IdentityUpdate Evaluate(IdentityAuthorityState state, bool duplicateCorrelation,
-            RecoveryOperationState? existingRecoveryOperation) =>
+        internal IdentityUpdate Evaluate(IdentityAuthorityState state, AlarmStateSnapshot? alarmState,
+            bool duplicateCorrelation, RecoveryOperationState? existingRecoveryOperation) =>
+            AlarmCommandUpdate is not null ? AlarmCommandUpdate(state, alarmState!, duplicateCorrelation) :
             CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
             RecoveryOperationUpdate is not null ? RecoveryOperationUpdate(state, existingRecoveryOperation) :
             Update!(state);
@@ -499,5 +545,6 @@ internal sealed record IdentityUpdate(
     IReadOnlyList<IdentityAuditEvent> Events,
     IReadOnlyList<CommandAuditFact>? CommandFacts = null,
     IIdentityTransactionGuard? CommitGuard = null,
-    RecoveryOperationState? CompletedRecoveryOperation = null);
+    RecoveryOperationState? CompletedRecoveryOperation = null,
+    IReadOnlyList<AlarmHistoryRecord>? AlarmEvents = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

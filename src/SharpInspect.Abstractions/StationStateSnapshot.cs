@@ -49,7 +49,8 @@ public sealed record StationStateSnapshot(
     InteractiveSession Session,
     CommandProgress? LastCommand,
     AdmissionBlockers AdmissionBlockers,
-    AuditIntegrityReport? AuditIntegrity = null);
+    AuditIntegrityReport? AuditIntegrity = null,
+    AlarmStateSnapshot? AlarmState = null);
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>
 public sealed class AdmissionBlockers : System.Collections.ObjectModel.ReadOnlyCollection<string>

@@ -28,6 +28,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private bool _auditFault;
     private bool _storeReady;
     private int _queuedCommands;
+    private int _pendingLocalStops;
     private StationStateSnapshot _snapshot;
     private long _sessionProjectionVersion;
     private bool _disposed;
@@ -157,7 +158,15 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         {
             if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
         }
-        if (Interlocked.Increment(ref _queuedCommands) > 64)
+        var localStop = command is GracefulProductionStopCommand &&
+            command.Invocation?.Source == CommandSource.PhysicalConsole;
+        if (localStop)
+        {
+            // A dedicated bounded slot cannot be consumed by ordinary commands.
+            if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
+                return Unavailable("LocalStopAlreadyPending");
+        }
+        else if (Interlocked.Increment(ref _queuedCommands) > 64)
         {
             Interlocked.Decrement(ref _queuedCommands);
             MarkAuditFault("CommandQueueFull");
@@ -168,7 +177,9 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         try
         {
             LocalAuthorizationService.PreparedManagement? prepared = null;
-            var governedCommand = _authorization is not null && command is (IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
+            var alarmCommand = command is AcknowledgeAlarmCommand or ResetAlarmCommand;
+            var governedCommand = _authorization is not null && (alarmCommand ||
+                command is IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
             if (governedCommand)
             {
                 await _storeInitialization.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
@@ -184,6 +195,16 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
             while (true)
             {
                 entered = await _commandGate.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+                bool stopAhead;
+                lock (_sync) stopAhead = !localStop && (Volatile.Read(ref _pendingLocalStops) > 0 ||
+                    _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" });
+                if (entered && stopAhead)
+                {
+                    _commandGate.Release();
+                    entered = false;
+                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
                 if (!entered || !governedCommand || _audit?.Integrity?.State != AuditIntegrityState.Verifying) break;
                 // A previous command may have committed since preparation observed Verified.
                 // Yield the gate while its verification settles; local Stop never waits behind this poll.
@@ -209,10 +230,14 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                     forced = _snapshot.LastCommand?.State == OperationState.Pending ? "OperationInProgress" : null;
                     epoch = _snapshot.RuntimeEpoch;
                 }
-                var governed = await _authorization!.HandleCommandAsync(command, epoch, attempt, prepared!, forced, deadline, cancellationToken).ConfigureAwait(false);
+                var governed = alarmCommand
+                    ? await _authorization!.HandleAlarmCommandAsync(command, epoch, attempt, forced,
+                        alarms => EvaluateAlarmCommand(alarms, command), deadline, cancellationToken).ConfigureAwait(false)
+                    : await _authorization!.HandleCommandAsync(command, epoch, attempt, prepared!, forced, deadline, cancellationToken).ConfigureAwait(false);
                 if (governed.Audit == AuditPersistence.Unavailable) MarkAuditFault("TraceAuditUnavailable");
                 if (governed.Disposition == CommandDisposition.Accepted)
                 {
+                    if (alarmCommand) await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
                     lock (_sync)
                         PublishLocked(_snapshot with { LastCommand = new CommandProgress(command.CorrelationId,
                             OperationState.Completed, governed.ReasonCode) });
@@ -266,7 +291,8 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         finally
         {
             if (entered) _commandGate.Release();
-            Interlocked.Decrement(ref _queuedCommands);
+            if (localStop) Interlocked.Exchange(ref _pendingLocalStops, 0);
+            else Interlocked.Decrement(ref _queuedCommands);
         }
     }
 
@@ -279,6 +305,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         if (_snapshot.LastCommand?.CorrelationId == command.CorrelationId) return Reject("DuplicateCorrelationId");
         return command switch
         {
+            AcknowledgeAlarmCommand or ResetAlarmCommand => Reject("AuthorizationUnavailable"),
             GovernedAuditChangeCommand => Reject("AuthorizationUnavailable"),
             ArmProductionCommand => Reject(_snapshot.AdmissionBlockers[0]),
             GracefulProductionStopCommand when command.Invocation.Source != CommandSource.PhysicalConsole => Reject("LocalConsoleRequired"),
@@ -326,17 +353,33 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 new SubsystemHealth(result.Committed ? HealthState.Healthy : HealthState.Faulted, result.ReasonCode),
                 AdmissionBlockers = new AdmissionBlockers(blockers) });
         }
+        if (result.Committed)
+        {
+            try { await InitializeAlarmsAsync().ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            { MarkAuditFault("AlarmInitializationUnavailable", alarmAuthorityUnavailable: true); }
+        }
     }
 
-    private void MarkAuditFault(string reason)
+    private void MarkAuditFault(string reason, bool alarmAuthorityUnavailable = false)
     {
         lock (_sync)
         {
             if (_disposed) return;
             _auditFault = true;
+            var alarmState = _snapshot.AlarmState;
+            var blockers = _snapshot.AdmissionBlockers.Concat(new[] { "TraceAuditUnavailable" });
+            if (alarmAuthorityUnavailable && ConfiguredAlarmPolicy is { } policy)
+            {
+                alarmState = new AlarmStateSnapshot(false, reason, _snapshot.RuntimeEpoch, _snapshot.Revision,
+                    policy, alarmState?.Instances ?? Array.Empty<AlarmInstanceSnapshot>(),
+                    alarmState?.Plc ?? new AlarmPlcProjection(Array.Empty<AlarmPlcEntry>(), 0, 0, false));
+                blockers = blockers.Concat(new[] { "AlarmAuthorityUnavailable" });
+            }
             PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed,
                 Store = new SubsystemHealth(HealthState.Faulted, reason),
-                AdmissionBlockers = new AdmissionBlockers(_snapshot.AdmissionBlockers.Concat(new[] { "TraceAuditUnavailable" }).Distinct()) });
+                AlarmState = alarmState, AdmissionBlockers = new AdmissionBlockers(blockers.Distinct()) });
         }
     }
 
@@ -361,6 +404,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                         if (_completion is null) _completion = Task.Run(CompletePendingStopAsync);
                     }
                     PublishLocked(next);
+                    ScheduleAlarmMaintenanceLocked();
                 }
             }
         }
@@ -396,7 +440,11 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
 
     private void PublishLocked(StationStateSnapshot next)
     {
-        _snapshot = next with { Revision = checked(_snapshot.Revision + 1), ObservedAtUtc = DateTimeOffset.UtcNow };
+        var revision = checked(_snapshot.Revision + 1);
+        var alarms = next.AlarmState is { } current
+            ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
+                current.Policy, current.Instances, current.Plc) : null;
+        _snapshot = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow, AlarmState = alarms };
         foreach (var subscriber in _subscribers) subscriber.Writer.TryWrite(_snapshot);
     }
 
@@ -440,6 +488,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         finally { _commandGate.Release(); }
         if (_completion is not null) await _completion.ConfigureAwait(false);
         await _storeInitialization.ConfigureAwait(false);
+        if (_alarmMaintenance is not null) await _alarmMaintenance.ConfigureAwait(false);
         _lifetime.Dispose();
     }
 }

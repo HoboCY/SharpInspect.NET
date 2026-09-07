@@ -32,7 +32,7 @@ public sealed class AuthorizationPolicy
         .ToArray();
 
     private static readonly Permission[] MandatoryStepUpPermissions = AllPermissions
-        .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe)
+        .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe and not Permission.AcknowledgeAlarm)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -153,7 +153,8 @@ public sealed class AuthorizationPolicy
         var operatorPermissions = new[]
         {
             Permission.ArmProduction,
-            Permission.ActivateRecipe
+            Permission.ActivateRecipe,
+            Permission.AcknowledgeAlarm
         };
         var technicianPermissions = operatorPermissions
             .Concat(new[]
@@ -161,7 +162,8 @@ public sealed class AuthorizationPolicy
                 Permission.ReleaseRecipe,
                 Permission.RunDiagnostics,
                 Permission.PublishCalibration,
-                Permission.ManageCameraBindings
+                Permission.ManageCameraBindings,
+                Permission.ResetAlarm
             })
             .ToArray();
 

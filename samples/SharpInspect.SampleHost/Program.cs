@@ -39,6 +39,7 @@ internal static class Program
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
+            AlarmPolicy = Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -48,6 +49,8 @@ internal static class Program
         };
         if (administratorRecoveryCheck)
             return AdministratorRecoveryDemo.Run(storeOptions);
+        if (args.Contains("--alarm-check", StringComparer.OrdinalIgnoreCase))
+            return AlarmDemo.Run(storeOptions);
         if (Option("--verify-trace") is { } verificationFile)
         {
             try { VerifyRestartAsync(storeOptions, verificationFile).GetAwaiter().GetResult(); return 0; }
@@ -84,6 +87,11 @@ internal static class Program
         services.AddSingleton(p => new AdministratorRecoveryViewModel(
             p.GetService<ILocalAdministratorRecovery>(), p.GetService<IInteractiveSessionService>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new AlarmViewModel(p.GetRequiredService<StationShellViewModel>(),
+            p.GetRequiredService<IStationRuntime>(), p.GetService<IInteractiveSessionService>(),
+            p.GetService<IIdentityAdministrationQuery>(), p.GetService<IStepUpAuthentication>(),
+            p.GetService<IAlarmHistoryQuery>(), new DispatcherUiDispatcher(app.Dispatcher),
+            acknowledgeRequiresStepUp: storeOptions.LocalIdentity?.AuthorizationPolicy.RequiresStepUp(Permission.AcknowledgeAlarm) == true));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -92,7 +100,8 @@ internal static class Program
         var identity = provider.GetRequiredService<IdentityViewModel>();
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
-        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery);
+        var alarms = provider.GetRequiredService<AlarmViewModel>();
+        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms);
         var exitCode = 0;
         if (smoke)
         {
@@ -112,6 +121,9 @@ internal static class Program
                 {
                     if (auditKey is not null)
                         await WaitAsync(() => vm.CurrentSnapshot?.AuditIntegrity?.State == AuditIntegrityState.Verified);
+                    if (storeOptions.AlarmPolicy is not null)
+                        await WaitAsync(() => vm.CurrentSnapshot?.AlarmState is { Available: true, Instances.Count: > 0 } &&
+                            vm.CurrentSnapshot.AuditIntegrity?.State == AuditIntegrityState.Verified);
                     if (identitySmoke)
                     {
                         vm.NavigateTo("Maintenance");
@@ -207,7 +219,7 @@ internal static class Program
                         Console.WriteLine("V105-P01 native paste/Runtime session/window lock/reauthentication/logout/production independence PASS");
                         Console.WriteLine("V104-P01 independent-process WPF password login/immutable identity/privacy PASS");
                     }
-                    else await RunSmokeAsync(window, vm, runtime, trace, integrity, recovery,
+                    else await RunSmokeAsync(window, vm, runtime, trace, integrity, recovery, alarms,
                         screenshot, Option("--trace-manifest"));
                 }
             }
@@ -273,7 +285,7 @@ internal static class Program
 
     private static async Task RunSmokeAsync(ShellWindow window, StationShellViewModel vm,
         IStationRuntime runtime, CommandTraceViewModel trace, AuditIntegrityViewModel integrity,
-        AdministratorRecoveryViewModel recovery, string? screenshot, string? traceManifest)
+        AdministratorRecoveryViewModel recovery, AlarmViewModel alarms, string? screenshot, string? traceManifest)
     {
         var startup = await runtime.GetSnapshotAsync();
         Require(startup.Lifecycle == RuntimeLifecycle.Running && !startup.Ready &&
@@ -334,6 +346,28 @@ internal static class Program
         {
             var manifest = new TraceSmokeManifest(arm.CorrelationId, stop.CorrelationId, trace.Rows.Select(x => x.EventId).ToArray());
             File.WriteAllText(traceManifest, JsonSerializer.Serialize(manifest));
+        }
+        if (startup.AlarmState?.Policy is not null)
+        {
+            vm.NavigateTo("Alarms");
+            await WaitAsync(() => alarms.IsSnapshotFresh && alarms.Instances.Count > 0);
+            await alarms.RefreshHistoryAsync();
+            window.VerifyAlarmLayout();
+            var selectedAlarmId = alarms.Instances[0].InstanceId;
+            var selectionRevision = vm.CurrentSnapshot!.Revision;
+            window.SelectAlarmForSmoke(selectedAlarmId);
+            await WaitAsync(() => vm.CurrentSnapshot!.Revision >= selectionRevision + 2);
+            window.VerifyAlarmSelectionForSmoke(selectedAlarmId);
+            window.VerifyAlarmSummaryForSmoke();
+            Require(alarms.TotalAlarmCount == startup.AlarmState.Instances.Count &&
+                alarms.PlcTotalUncleared == alarms.TotalAlarmCount &&
+                alarms.Instances.Any(instance => instance.Code == "StartupRecoveryRequired" &&
+                    instance.Severity == AlarmSeverity.Warning && instance.ProductionImpact == ProductionImpact.BlockNewTriggers) &&
+                alarms.HistoryRows.Any(record => record.Code == "StartupRecoveryRequired"),
+                "WPF alarm list, bounded history and PLC summary must describe the same startup instance");
+            if (screenshot is not null)
+                RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "consumer-alarms.png"));
+            Console.WriteLine("V109-P02 WPF alarm list/history/PLC projection PASS ready=false physicalDevices=NotRun");
         }
         window.Close();
         await window.WaitForSessionLockAsync();

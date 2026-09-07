@@ -25,17 +25,31 @@ internal static class AuditChainDatabase
     internal static string SchemaSqlFor(int version)
     {
         if (version == 2) return SchemaSql;
-        if (version is not (3 or 4 or 5 or 6)) throw new ArgumentOutOfRangeException(nameof(version));
-        return SchemaSql
-            .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE,", StringComparison.Ordinal)
-            .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
+        if (version is 3 or 4 or 5 or 6)
+            return SchemaSql
+                .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE,", StringComparison.Ordinal)
+                .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
             CHECK((Kind='SigningKeyCreated' AND Sequence=1 AND FactPosition IS NULL AND IdentityPosition IS NULL)
                 OR (Kind='CommandFact' AND Sequence>1 AND FactPosition IS NOT NULL AND FactPosition>0 AND IdentityPosition IS NULL)
                 OR (Kind='IdentityEvent' AND Sequence>1 AND IdentityPosition IS NOT NULL AND IdentityPosition>0 AND FactPosition IS NULL)));", StringComparison.Ordinal)
-            .Replace("PRAGMA user_version=2;", $@"
+                .Replace("PRAGMA user_version=2;", $@"
             CREATE INDEX ix_audit_command_sequence ON audit_entries(Sequence) WHERE FactPosition IS NOT NULL;
             CREATE INDEX ix_audit_identity_sequence ON audit_entries(Sequence) WHERE IdentityPosition IS NOT NULL;
             PRAGMA user_version={version};", StringComparison.Ordinal);
+        if (version == 7)
+            return SchemaSql
+                .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE, AlarmPosition INTEGER UNIQUE,", StringComparison.Ordinal)
+                .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
+            CHECK((Kind='SigningKeyCreated' AND Sequence=1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL)
+                OR (Kind='CommandFact' AND Sequence>1 AND FactPosition IS NOT NULL AND FactPosition>0 AND IdentityPosition IS NULL AND AlarmPosition IS NULL)
+                OR (Kind='IdentityEvent' AND Sequence>1 AND IdentityPosition IS NOT NULL AND IdentityPosition>0 AND FactPosition IS NULL AND AlarmPosition IS NULL)
+                OR (Kind='AlarmEvent' AND Sequence>1 AND AlarmPosition IS NOT NULL AND AlarmPosition>0 AND FactPosition IS NULL AND IdentityPosition IS NULL)));", StringComparison.Ordinal)
+                .Replace("PRAGMA user_version=2;", @"
+            CREATE INDEX ix_audit_command_sequence ON audit_entries(Sequence) WHERE FactPosition IS NOT NULL;
+            CREATE INDEX ix_audit_identity_sequence ON audit_entries(Sequence) WHERE IdentityPosition IS NOT NULL;
+            CREATE INDEX ix_audit_alarm_sequence ON audit_entries(Sequence) WHERE AlarmPosition IS NOT NULL;
+            PRAGMA user_version=7;", StringComparison.Ordinal);
+        throw new ArgumentOutOfRangeException(nameof(version));
     }
 
     internal static void CreateGenesis(sqlite3 db, AuditIntegrityPolicy policy, IAuditSigningKey key, StoreDeadline deadline)
@@ -62,21 +76,37 @@ internal static class AuditChainDatabase
     }
 
     private static void AppendEntry(sqlite3 db, AuditIntegrityPolicy policy, string kind, long? position,
-        byte[] payload, StoreDeadline deadline)
+        byte[] payload, StoreDeadline deadline, long? identityPosition = null, long? alarmPosition = null)
     {
         var previous = Tail(db, deadline);
         var sequence = checked(previous.Sequence + 1);
-        var hash = EntryHash(Scalar(db, "PRAGMA user_version;", deadline) >= 3, policy.StationId,
-            sequence, previous.Hash, kind, position is { } ordinal ? Number(ordinal) : null, null, payload);
-        Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);", deadline, Number(sequence), kind,
-            position is { } p ? Number(p) : null, Convert.ToBase64String(payload), previous.Hash, hash);
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        var hash = EntryHash(schemaVersion, policy.StationId, sequence, previous.Hash, kind,
+            position is { } ordinal ? Number(ordinal) : null,
+            identityPosition is { } identity ? Number(identity) : null,
+            alarmPosition is { } alarm ? Number(alarm) : null, payload);
+        if (schemaVersion >= 7)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p ? Number(p) : null,
+                identityPosition is { } i ? Number(i) : null,
+                alarmPosition is { } a ? Number(a) : null,
+                Convert.ToBase64String(payload), previous.Hash, hash);
+        else if (schemaVersion >= 3)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p ? Number(p) : null,
+                identityPosition is { } i ? Number(i) : null,
+                Convert.ToBase64String(payload), previous.Hash, hash);
+        else
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p ? Number(p) : null,
+                Convert.ToBase64String(payload), previous.Hash, hash);
     }
 
     internal static long AppendIdentity(sqlite3 db, AuditIntegrityPolicy policy, IAuditSigningKey key,
         IdentityAuditEvent fact, StoreDeadline deadline)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5 or 6, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6 or 7, "AuditSchemaInvalid");
         var previous = Tail(db, deadline);
         var sequence = checked(previous.Sequence + 1);
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
@@ -84,7 +114,27 @@ internal static class AuditChainDatabase
         IdentityAuditEvent.VerifyPayload(payload, ordinal, policy.StationId, schemaVersion);
         Execute(db, "INSERT INTO audit_entries(Sequence,Kind,IdentityPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
             deadline, Number(sequence), "IdentityEvent", Number(ordinal), Convert.ToBase64String(payload), previous.Hash,
-            EntryHash(true, policy.StationId, sequence, previous.Hash, "IdentityEvent", null, Number(ordinal), payload));
+            EntryHash(schemaVersion, policy.StationId, sequence, previous.Hash, "IdentityEvent", null, Number(ordinal), null, payload));
+        if (sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return sequence;
+    }
+
+    internal static long AppendAlarm(sqlite3 db, AuditIntegrityPolicy policy, IAuditSigningKey key,
+        long position, StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == 7, "AuditSchemaInvalid");
+        var payloadText = Text(db, "SELECT Payload FROM alarm_events WHERE Position=?;", deadline, Number(position));
+        Require(payloadText is { Length: > 0 and <= AlarmStorageCodec.MaximumEncodedPayloadChars }, "AlarmHistoryMissing");
+        var payload = Convert.FromBase64String(payloadText!);
+        AlarmStorageCodec.ValidatePayload(payload, position);
+        var previous = Tail(db, deadline);
+        var sequence = checked(previous.Sequence + 1);
+        var hash = EntryHash(schemaVersion, policy.StationId, sequence, previous.Hash, "AlarmEvent", null,
+            null, Number(position), payload);
+        Execute(db, "INSERT INTO audit_entries(Sequence,Kind,AlarmPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
+            deadline, Number(sequence), "AlarmEvent", Number(position), Convert.ToBase64String(payload), previous.Hash, hash);
         if (sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
             CreateCheckpoint(db, policy, key, deadline);
         return sequence;
@@ -151,16 +201,18 @@ internal static class AuditChainDatabase
         bool validateAnchorReceipt = true)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5 or 6, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7, "AuditSchemaInvalid");
         var hasIdentity = schemaVersion >= 3;
+        var hasAlarm = schemaVersion >= 7;
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");
-        var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," + (hasIdentity ? "IdentityPosition" : "NULL") + " FROM audit_entries WHERE Sequence=1;", deadline,
-            s => Enumerable.Range(0, 6).Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
-        Require(genesis is not null && genesis[0] == "SigningKeyCreated" && genesis[2] == AuditCanonical.GenesisHash && genesis[4] is null && genesis[5] is null,
+        var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + " FROM audit_entries WHERE Sequence=1;", deadline,
+            s => Enumerable.Range(0, 7).Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
+        Require(genesis is not null && genesis[0] == "SigningKeyCreated" && genesis[2] == AuditCanonical.GenesisHash &&
+            genesis[4] is null && genesis[5] is null && genesis[6] is null,
             "AuditGenesisMissingOrInvalid");
-        Require(genesis![1]?.Length <= 24000 && EntryHash(hasIdentity, policy.StationId, 1, AuditCanonical.GenesisHash,
-            genesis[0]!, genesis[4], genesis[5], Convert.FromBase64String(genesis[1]!)) == genesis[3], "AuditGenesisHashMismatch");
+        Require(genesis![1]?.Length <= 24000 && EntryHash(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
+            genesis[0]!, genesis[4], genesis[5], genesis[6], Convert.FromBase64String(genesis[1]!)) == genesis[3], "AuditGenesisHashMismatch");
         var genesisCheckpoint = ReadCheckpoint(db, "WHERE Sequence=1", deadline);
         Require(genesisCheckpoint is not null && genesisCheckpoint.HeadHash == genesis[3], "AuditGenesisCheckpointMissing");
         VerifyCheckpoint(policy, genesisCheckpoint!, trustedKeyId, trustedPublicKey);
@@ -179,8 +231,10 @@ internal static class AuditChainDatabase
         // for each requested segment; this is not a whole-history proof outside that segment.
         var maxFact = Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM command_facts;", deadline);
         var maxIdentity = hasIdentity ? Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) : 0;
-        Require(checked(maxFact + maxIdentity) == tail.Sequence - 1 && maxFact == Scalar(db,
+        var maxAlarm = hasAlarm ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM alarm_events;", deadline) : 0;
+        Require(checked(maxFact + maxIdentity + maxAlarm) == tail.Sequence - 1 && maxFact == Scalar(db,
             "SELECT COALESCE(MAX(FactPosition),0) FROM audit_entries;", deadline) &&
+            (!hasAlarm || maxAlarm == Scalar(db, "SELECT COALESCE(MAX(AlarmPosition),0) FROM audit_entries;", deadline)) &&
             Scalar(db, "SELECT COALESCE(MIN(Position),1) FROM command_facts;", deadline) == 1, "AuditUnchainedFact");
         long? anchored = null;
         if (policy.RequireExternalAnchor && validateAnchorReceipt)
@@ -205,20 +259,21 @@ internal static class AuditChainDatabase
         Require(previousHash is not null, "AuditChainGap");
         var commandOrdinal = hasIdentity ? Scalar(db, "SELECT FactPosition FROM audit_entries WHERE FactPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : after == 0 ? 0 : after - 1;
         var identityOrdinal = hasIdentity ? Scalar(db, "SELECT IdentityPosition FROM audit_entries WHERE IdentityPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
-        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
+        var alarmOrdinal = hasAlarm ? Scalar(db, "SELECT AlarmPosition FROM audit_entries WHERE AlarmPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
+        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
             deadline, s => new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
                 SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
-                SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6)), Number(after), Number(count));
+                SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6), SqliteNative.ColumnText(s, 7)), Number(after), Number(count));
         var next = after + 1;
         foreach (var row in rows)
         {
             Require(row.Sequence == next++, "AuditChainGap");
             Require(row.PreviousHash == previousHash, "AuditChainLinkMismatch");
-            Require(row.Payload.Length <= 24000, "AuditPayloadOversize");
+            Require(row.Payload.Length <= (hasAlarm ? AlarmStorageCodec.MaximumEncodedPayloadChars : 24000), "AuditPayloadOversize");
             var payload = Convert.FromBase64String(row.Payload);
-            Require(payload.Length <= 16384, "AuditPayloadOversize");
-            Require(EntryHash(hasIdentity, policy.StationId, row.Sequence, previousHash!, row.Kind,
-                row.FactPosition, row.IdentityPosition, payload) == row.Hash, "AuditPayloadHashMismatch");
+            Require(payload.Length <= (hasAlarm ? AlarmStorageCodec.MaximumPayloadBytes : 16384), "AuditPayloadOversize");
+            Require(EntryHash(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
+                row.FactPosition, row.IdentityPosition, row.AlarmPosition, payload) == row.Hash, "AuditPayloadHashMismatch");
             if (row.Kind == "CommandFact")
             {
                 Require(long.TryParse(row.FactPosition, NumberStyles.None, CultureInfo.InvariantCulture, out var position), "AuditFactLinkMissing");
@@ -231,6 +286,19 @@ internal static class AuditChainDatabase
                     out _), "AuditIdentityPositionGap");
                 Require(row.IdentityPosition == Number(++identityOrdinal), "AuditIdentityPositionGap");
                 IdentityAuditEvent.VerifyPayload(payload, identityOrdinal, policy.StationId, (int)schemaVersion);
+            }
+            else if (hasAlarm && row.Kind == "AlarmEvent")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null,
+                    "AuditAlarmPositionGap");
+                if (!long.TryParse(row.AlarmPosition, NumberStyles.None, CultureInfo.InvariantCulture, out var position))
+                    throw new InvalidOperationException("AuditAlarmPositionGap");
+                Require(position == ++alarmOrdinal, "AuditAlarmPositionGap");
+                // Validate every persisted alarm index column against the signed envelope,
+                // even when a higher-level query filters that row out of its page.
+                _ = AlarmStorageCodec.ReadEventAtPosition(db, position, deadline);
+                Require(AlarmPayload(db, position, deadline).SequenceEqual(payload), "AuditAlarmMismatch");
+                AlarmStorageCodec.ValidatePayload(payload, position);
             }
             else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null,
                 "AuditEntryKindUnsupported");
@@ -248,10 +316,19 @@ internal static class AuditChainDatabase
         }
         var verifiedThrough = next - 1;
         if (startup) Require(verifiedThrough == tail.Sequence, "AuditVerificationBudgetExceeded");
+        if (hasAlarm)
+            _ = AlarmStorageCodec.ReadPersistedPolicy(db, deadline);
         return new AuditIntegrityReport(AuditIntegrityState.Verified,
             startup ? "AuditStartupTailVerified" : after == 0 && verifiedThrough == tail.Sequence ? "AuditRetainedChainVerified" : "AuditSegmentVerified",
             policy.StationId, policy.Version, tail.Sequence, after + 1, verifiedThrough,
             checkpoint.Sequence, anchored, DateTimeOffset.UtcNow);
+    }
+
+    internal static void RequireFullAlarmVerification(sqlite3 db, AuditIntegrityReport report,
+        StoreDeadline deadline)
+    {
+        Require(report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
+            "AlarmVerificationBudgetExceeded");
     }
 
     internal static void VerifyCheckpoint(AuditIntegrityPolicy policy, AuditCheckpoint cp, string keyId, string publicKey)
@@ -328,14 +405,24 @@ internal static class AuditChainDatabase
         for (var i = 0; i < args.Length; i++) SqliteNative.BindText(db, s, i + 1, args[i]);
     }
     private static string Number(long value) => value.ToString(CultureInfo.InvariantCulture);
-    private static string EntryHash(bool schema3, string stationId, long sequence, string previousHash,
-        string kind, string? factPosition, string? identityPosition, byte[] payload) =>
-        AuditCanonical.Hash(stationId, sequence, previousHash, schema3
-            ? AuditCanonical.Encode("AuditEntryEnvelopeV3", kind, factPosition, identityPosition, Convert.ToBase64String(payload))
-            : payload);
+    private static string EntryHash(long schemaVersion, string stationId, long sequence, string previousHash,
+        string kind, string? factPosition, string? identityPosition, string? alarmPosition, byte[] payload) =>
+        AuditCanonical.Hash(stationId, sequence, previousHash, schemaVersion >= 7
+            ? AuditCanonical.Encode("AuditEntryEnvelopeV4", kind, factPosition, identityPosition, alarmPosition, Convert.ToBase64String(payload))
+            : schemaVersion >= 3
+                ? AuditCanonical.Encode("AuditEntryEnvelopeV3", kind, factPosition, identityPosition, Convert.ToBase64String(payload))
+                : payload);
     internal static void Require(bool condition, string reason)
     {
         if (!condition) throw new InvalidOperationException(reason);
     }
-    private sealed record ChainRow(long Sequence, string Kind, string? FactPosition, string Payload, string PreviousHash, string Hash, string? IdentityPosition);
+    private static byte[] AlarmPayload(sqlite3 db, long position, StoreDeadline deadline)
+    {
+        var encoded = Text(db, "SELECT Payload FROM alarm_events WHERE Position=?;", deadline, Number(position));
+        Require(encoded is { Length: > 0 and <= AlarmStorageCodec.MaximumEncodedPayloadChars }, "AlarmHistoryMissing");
+        return Convert.FromBase64String(encoded!);
+    }
+
+    private sealed record ChainRow(long Sequence, string Kind, string? FactPosition, string Payload, string PreviousHash,
+        string Hash, string? IdentityPosition, string? AlarmPosition);
 }

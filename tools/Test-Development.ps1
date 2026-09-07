@@ -36,8 +36,8 @@ function Write-TaskIdentityPolicy([string]$Path) {
         AuthenticationPolicy=[ordered]@{ Id='development'; Version='development-2026-09'; AccountFailureLimit=10; StationFailureLimit=50;
             InitialDelay='00:00:01'; MaximumDelay='00:15:00'; SessionIdleTimeout='00:15:00'; StepUpFreshness='00:05:00' };
         AuthorizationPolicy=[ordered]@{Id='development'; Version='development-2026-09';
-            RoleBundles=[ordered]@{Operator=@(5,6); Technician=@(5,6,7,11,13,23); Administrator=@(1..28)};
-            StepUpPermissions=@(1..28 | Where-Object { $_ -notin 5,6 }) } } |
+            RoleBundles=[ordered]@{Operator=@(5,6,29); Technician=@(5,6,7,11,13,23,29,30); Administrator=@(1..30)};
+            StepUpPermissions=@(1..30 | Where-Object { $_ -notin 5,6,29 }) } } |
         ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Path -Encoding utf8
 }
 
@@ -155,8 +155,24 @@ try {
         Write-TaskIdentityPolicy $taskIdentityPolicy
         $taskAuditArguments += @('--identity-policy',$taskIdentityPolicy)
     }
+    if ($Ticket -ge 9) {
+        $taskAlarmPolicy = Join-Path $taskRun 'development-alarm-policy.json'
+        [ordered]@{ Id='development-alarms'; Version='development-2026-09';
+            SourceObservationFreshness='00:01:00'; MaximumActiveInstances=32; MaximumPlcEntries=1;
+            Rules=@([ordered]@{Code='StartupRecoveryRequired';Source='Runtime.StartupRecovery';Severity=1;
+                ProductionImpact=1;IsLatched=$true;Notification=2;PlcCode=101;PlcPriority=100;ResetPrerequisites=15}) } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $taskAlarmPolicy -Encoding utf8
+        $taskAuditArguments += @('--alarm-policy',$taskAlarmPolicy)
+    }
     Invoke-TaskDotnet 'consumer-smoke.log' (@($taskConsumerDll,'--smoke','--screenshot',(Join-Path $taskRun 'consumer-window.png'),
         '--trace-db',$taskDatabase,'--trace-manifest',$taskTraceManifest) + $taskAuditArguments)
+    if ($Ticket -ge 9) {
+        $taskAlarmUiOutput = Get-Content -LiteralPath (Join-Path $taskRun 'consumer-smoke.log') -Raw
+        if ($taskAlarmUiOutput -notmatch 'V109-P02 WPF alarm list/history/PLC projection PASS' -or
+            -not (Test-Path -LiteralPath (Join-Path $taskRun 'consumer-alarms.png') -PathType Leaf)) {
+            throw 'The actual WPF consumer did not prove its alarm page and stable selection.'
+        }
+    }
     Invoke-TaskDotnet 'consumer-restart.log' (@($taskConsumerDll,'--trace-db',$taskDatabase,'--verify-trace',$taskTraceManifest) + $taskAuditArguments)
     Test-TaskCloudRootRejection $taskConsumerDll $taskDatabase $taskTraceManifest
     if ($Ticket -ge 7) {
@@ -200,6 +216,15 @@ try {
             throw 'The independent consumer administrator-recovery check did not prove the closed path.'
         }
         Write-Output 'V108-P02 independent-process consumer administrator-recovery closed path PASS'
+    }
+    if ($Ticket -ge 9) {
+        Invoke-TaskDotnet 'alarm-consumer.log' (@($taskConsumerDll,'--alarm-check','--trace-db',$taskDatabase) + $taskAuditArguments)
+        $taskAlarmOutput = Get-Content -LiteralPath (Join-Path $taskRun 'alarm-consumer.log') -Raw
+        if ($taskAlarmOutput -notmatch 'V109-P01 alarm-consumer PASS' -or
+            $taskAlarmOutput -notmatch 'ready=false acknowledged=false' -or
+            $taskAlarmOutput -notmatch 'physicalDevices=NotRun') {
+            throw 'The independent alarm consumer did not prove the configured closed path.'
+        }
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

@@ -82,6 +82,7 @@
                             <TextBlock x:Name="BlockersLabel" Text="尚未收到完整快照" Foreground="#75531A" TextWrapping="Wrap" Margin="0,8,0,0" />
                         </StackPanel>
                     </Border>
+                    <local:AlarmPanel x:Name="AlarmPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <Border x:Name="TracePanel" Visibility="Collapsed" Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18" Margin="0,16,0,0">
                         <Grid>
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>

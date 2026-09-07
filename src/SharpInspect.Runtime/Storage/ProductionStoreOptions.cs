@@ -25,5 +25,6 @@ public sealed class ProductionStoreOptions
 
     public Integrity.AuditIntegrityPolicy? AuditIntegrityPolicy { get; init; }
     public Identity.LocalIdentityOptions? LocalIdentity { get; init; }
+    public SharpInspect.Abstractions.AlarmPolicy? AlarmPolicy { get; init; }
     public SharpInspect.Abstractions.IExternalAuditAnchor? ExternalAuditAnchor { get; init; }
 }

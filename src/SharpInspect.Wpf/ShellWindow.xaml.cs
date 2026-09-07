@@ -39,12 +39,14 @@ public partial class ShellWindow : Window
     private readonly IdentityViewModel? _identityViewModel;
     private readonly IdentityAdministrationViewModel? _identityAdministrationViewModel;
     private readonly AdministratorRecoveryViewModel? _administratorRecoveryViewModel;
+    private readonly AlarmViewModel? _alarmViewModel;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
     private bool _identitySelectionLoaded;
     private bool _identityAdministrationSelectionLoaded;
     private bool _administratorRecoverySelectionLoaded;
+    private bool _alarmSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
@@ -52,7 +54,8 @@ public partial class ShellWindow : Window
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
         AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
         IdentityAdministrationViewModel? identityAdministrationViewModel = null,
-        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null)
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
+        AlarmViewModel? alarmViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -61,6 +64,7 @@ public partial class ShellWindow : Window
         _identityViewModel = identityViewModel;
         _identityAdministrationViewModel = identityAdministrationViewModel;
         _administratorRecoveryViewModel = administratorRecoveryViewModel;
+        _alarmViewModel = alarmViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -68,6 +72,7 @@ public partial class ShellWindow : Window
         IdentityAdministrationPanel.DataContext = identityAdministrationViewModel;
         AdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
         PrivacyAdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
+        AlarmPanel.DataContext = alarmViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -77,6 +82,7 @@ public partial class ShellWindow : Window
             identityAdministrationViewModel.PropertyChanged += IdentityAdministrationChanged;
         if (administratorRecoveryViewModel is not null)
             administratorRecoveryViewModel.PropertyChanged += AdministratorRecoveryChanged;
+        if (alarmViewModel is not null) alarmViewModel.PropertyChanged += AlarmChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -110,6 +116,26 @@ public partial class ShellWindow : Window
             AdministratorRecoveryPanel.Visibility != Visibility.Visible)
             throw new InvalidOperationException("Maintenance identity panels are not reachable.");
     }
+    internal void VerifyAlarmLayout()
+    {
+        if (_viewModel.SelectedSection != "Alarms" || AlarmPanel.Visibility != Visibility.Visible)
+            throw new InvalidOperationException("Alarm panel is not reachable.");
+    }
+    internal void SelectAlarmForSmoke(Guid instanceId) =>
+        AlarmPanel.AlarmGrid.SelectedItem = AlarmPanel.ViewModel!.VisibleInstances.Single(item => item.InstanceId == instanceId);
+    internal void VerifyAlarmSelectionForSmoke(Guid instanceId)
+    {
+        if (AlarmPanel.AlarmGrid.SelectedItem is not AlarmInstanceSnapshot selected || selected.InstanceId != instanceId ||
+            AlarmPanel.ViewModel?.SelectedAlarm?.InstanceId != instanceId)
+            throw new InvalidOperationException("Alarm selection did not survive a fresh snapshot.");
+    }
+    internal void VerifyAlarmSummaryForSmoke()
+    {
+        if (AlarmPanel.ViewModel is not { IsSnapshotFresh: true } model ||
+            AlarmPanel.AlarmSummaryText.Text != model.SummaryText ||
+            !AlarmPanel.AlarmSummaryText.Text.Contains($"原始实例 {model.TotalAlarmCount}", StringComparison.Ordinal))
+            throw new InvalidOperationException("The displayed alarm summary does not match the current snapshot.");
+    }
     internal void BringIdentityAdministrationIntoViewForSmoke()
     {
         VerifyMaintenanceLayout();
@@ -140,6 +166,7 @@ public partial class ShellWindow : Window
         IdentityAdministrationPanel.ClearSensitiveInputs();
         AdministratorRecoveryPanel.ClearSensitiveInputs();
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
+        AlarmPanel.ClearSensitiveInputs();
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
         LockedSignInStatus.Text = "";
@@ -271,11 +298,13 @@ public partial class ShellWindow : Window
             _identityAdministrationViewModel.PropertyChanged -= IdentityAdministrationChanged;
         if (_administratorRecoveryViewModel is not null)
             _administratorRecoveryViewModel.PropertyChanged -= AdministratorRecoveryChanged;
+        if (_alarmViewModel is not null) _alarmViewModel.PropertyChanged -= AlarmChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
         AdministratorRecoveryPanel.ClearSensitiveInputs();
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
+        AlarmPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
@@ -285,6 +314,7 @@ public partial class ShellWindow : Window
     private void IdentityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IdentityAdministrationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void AdministratorRecoveryChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void AlarmChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -302,10 +332,12 @@ public partial class ShellWindow : Window
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
+        var alarmSelected = _viewModel.SelectedSection == "Alarms";
         if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导、账号授权与恢复";
-        SnapshotPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
-        BlockersPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
+        SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
+        BlockersPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
+        AlarmPanel.Visibility = alarmSelected ? Visibility.Visible : Visibility.Collapsed;
         if (_traceViewModel is null)
         {
             TraceUnavailablePanel.Visibility = Visibility.Visible;
@@ -341,6 +373,19 @@ public partial class ShellWindow : Window
         IdentityPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         IdentityAdministrationPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         AdministratorRecoveryPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
+        if (!alarmSelected)
+        {
+            if (_alarmSelectionLoaded)
+            {
+                _alarmSelectionLoaded = false;
+                AlarmPanel.ClearSensitiveInputs();
+            }
+        }
+        else if (_alarmViewModel is not null && !_alarmSelectionLoaded)
+        {
+            _alarmSelectionLoaded = true;
+            _ = _alarmViewModel.RefreshAsync();
+        }
         if (!maintenanceSelected)
         {
             if (_identitySelectionLoaded)

@@ -1,0 +1,95 @@
+<UserControl x:Class="SharpInspect.Wpf.AlarmPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <StackPanel>
+            <TextBlock Text="报警 · 当前完整实例与 PLC 投影" Foreground="#172B42" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="Severity 与 ProductionImpact 分开显示。确认只表示已查看；Reset 由 Runtime 重新验证来源恢复和全部前置条件。"
+                       Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
+            <StackPanel x:Name="UnavailablePanel" Visibility="Visible">
+                <TextBlock Text="报警状态不可用：请等待完整的新鲜 StationStateSnapshot。"
+                           Foreground="#75531A" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                <WrapPanel Margin="0,0,0,8">
+                    <TextBlock Text="代码筛选" Foreground="#556679" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBox Width="180" Text="{Binding CodeFilterText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,10,0" />
+                    <Button Content="刷新权限" Command="{Binding RefreshCommand}" Margin="0,0,6,0" />
+                    <TextBlock x:Name="AlarmSummaryText" Text="{Binding SummaryText}" Foreground="#334E68" VerticalAlignment="Center" TextWrapping="Wrap" />
+                </WrapPanel>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,4" />
+                <TextBlock Text="{Binding ErrorCode}" Foreground="#9B3430" TextWrapping="Wrap" Margin="0,0,0,8" />
+                <WrapPanel Margin="0,0,0,8">
+                    <TextBlock Text="可见实例：" Foreground="#556679" />
+                    <TextBlock Text="{Binding VisibleAlarmCount}" Foreground="#172B42" Margin="0,0,14,0" />
+                    <TextBlock Text="原始实例：" Foreground="#556679" />
+                    <TextBlock Text="{Binding TotalAlarmCount}" Foreground="#172B42" Margin="0,0,14,0" />
+                    <TextBlock Text="PLC 显示：" Foreground="#556679" />
+                    <TextBlock Text="{Binding PlcShownCount}" Foreground="#172B42" Margin="0,0,14,0" />
+                    <TextBlock Text="PLC 隐藏：" Foreground="#556679" />
+                    <TextBlock Text="{Binding PlcHiddenCount}" Foreground="#172B42" />
+                </WrapPanel>
+                <DataGrid x:Name="AlarmGrid" ItemsSource="{Binding VisibleInstances}"
+                          SelectedItem="{Binding SelectedAlarm, Mode=TwoWay}"
+                          IsReadOnly="True" AutoGenerateColumns="False" Height="250" MinHeight="160"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling" HeadersVisibility="Column"
+                          GridLinesVisibility="Horizontal">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="110" />
+                        <DataGridTextColumn Header="实例" Binding="{Binding InstanceId}" Width="230" />
+                        <DataGridTextColumn Header="来源" Binding="{Binding Source}" Width="120" />
+                        <DataGridTextColumn Header="Severity" Binding="{Binding Severity}" Width="80" />
+                        <DataGridTextColumn Header="ProductionImpact" Binding="{Binding ProductionImpact}" Width="130" />
+                        <DataGridTextColumn Header="锁存" Binding="{Binding IsLatched}" Width="55" />
+                        <DataGridTextColumn Header="生命周期" Binding="{Binding Lifecycle}" Width="110" />
+                        <DataGridTextColumn Header="来源健康" Binding="{Binding SourceHealthy}" Width="80" />
+                        <DataGridTextColumn Header="已确认" Binding="{Binding Acknowledged}" Width="70" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <WrapPanel Margin="0,10,0,6">
+                    <Button x:Name="AcknowledgeButton" Content="确认已查看" Click="AcknowledgeClick" Margin="0,0,8,0" />
+                    <TextBlock Text="操作密码（按授权政策）" Foreground="#556679" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <PasswordBox x:Name="ResetStepUpPasswordBox" Width="180" Margin="0,0,8,0" />
+                    <Button x:Name="ResetButton" Content="重置锁存" Click="ResetClick" />
+                </WrapPanel>
+                <TextBlock Text="{Binding LastCommandOutcome.ReasonCode, TargetNullValue=尚无命令结果}"
+                           Foreground="#556679" FontSize="11" TextWrapping="Wrap" />
+
+                <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,14,0,0">
+                    <StackPanel>
+                        <TextBlock Text="报警历史 · 只读分页" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                        <TextBlock Text="历史查询不会改变当前报警汇总或 Runtime 权威状态。"
+                                   Foreground="#6B7888" FontSize="11" Margin="0,5,0,8" TextWrapping="Wrap" />
+                        <WrapPanel Margin="0,0,0,6">
+                            <TextBlock Text="历史代码" Foreground="#556679" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <TextBox Width="160" Text="{Binding HistoryCodeText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                            <Button Content="刷新历史" Command="{Binding RefreshHistoryCommand}" Margin="0,0,6,0" />
+                            <Button Content="下一页" Command="{Binding NextHistoryPageCommand}" />
+                        </WrapPanel>
+                        <TextBlock Text="{Binding HistoryStatusMessage}" Foreground="#334E68" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding HistoryErrorCode}" Foreground="#9B3430" Margin="0,3,0,6" TextWrapping="Wrap" />
+                        <DataGrid ItemsSource="{Binding HistoryRows}" IsReadOnly="True" AutoGenerateColumns="False"
+                                  Height="220" MinHeight="140" CanUserAddRows="False" CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling" HeadersVisibility="Column"
+                                  GridLinesVisibility="Horizontal">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="位置" Binding="{Binding Position}" Width="60" />
+                                <DataGridTextColumn Header="时间 UTC" Binding="{Binding ObservedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss.fff}}" Width="160" />
+                                <DataGridTextColumn Header="转换" Binding="{Binding Transition}" Width="120" />
+                                <DataGridTextColumn Header="代码" Binding="{Binding Code}" Width="110" />
+                                <DataGridTextColumn Header="实例" Binding="{Binding InstanceId}" Width="220" />
+                                <DataGridTextColumn Header="原因码" Binding="{Binding ReasonCode}" Width="180" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

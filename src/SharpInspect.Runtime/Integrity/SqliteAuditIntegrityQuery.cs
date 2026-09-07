@@ -49,13 +49,14 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 using var key = _openKey(policy);
                 using var connection = SqliteNative.Open(path, readOnly: true);
                 var db = connection.Handle!;
-                SQLitePCL.raw.sqlite3_limit(db, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, 65536);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
-                if (_options.LocalIdentity is not null && schema < 6)
+                if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
+                if (_options.LocalIdentity is not null && schema < 7)
                 {
                     var migrationReason = schema switch
                     {
+                        6 => "GovernedAlarmMigrationRequired",
                         5 => "IdentityRecoveryGovernedMigrationRequired",
                         4 => "IdentityAuthorizationGovernedMigrationRequired",
                         3 => "IdentityAuthenticationGovernedMigrationRequired",
@@ -63,8 +64,14 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     };
                     throw new InvalidOperationException(migrationReason);
                 }
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6, "AuditGovernedMigrationRequired");
-                var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64, request, startup, deadline);
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7, "AuditGovernedMigrationRequired");
+                var alarmStartup = schema == 7 && startup && _options.AlarmPolicy is not null;
+                var verificationRequest = alarmStartup
+                    ? new AuditVerificationRequest(0, request.MaximumEntries)
+                    : request;
+                var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64,
+                    verificationRequest, alarmStartup ? false : startup, deadline);
+                if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -99,10 +106,14 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
             return "IdentityAuthorizationGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "IdentityRecoveryGovernedMigrationRequired" })
             return "IdentityRecoveryGovernedMigrationRequired";
+        if (exception is InvalidOperationException { Message: "GovernedAlarmMigrationRequired" })
+            return "GovernedAlarmMigrationRequired";
         if (exception is InvalidOperationException { Message: var message } &&
             (message.StartsWith("RecoveryOperation", StringComparison.Ordinal)))
             return message;
-        if (exception is InvalidOperationException && exception.Message.StartsWith("Audit", StringComparison.Ordinal)) return exception.Message;
+        if (exception is InvalidOperationException { Message: var reason } &&
+            (reason.StartsWith("Audit", StringComparison.Ordinal) || reason.StartsWith("Alarm", StringComparison.Ordinal)))
+            return reason;
         var sqliteCode = exception is SqliteNativeException native ? native.SqliteErrorCode & 255 :
             exception is Microsoft.Data.Sqlite.SqliteException managed ? managed.SqliteErrorCode : 0;
         return sqliteCode switch

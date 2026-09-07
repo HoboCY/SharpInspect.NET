@@ -169,6 +169,22 @@ Windows 管理员或 UI 提供的身份、状态不能代替恢复授权。现�
 即使本地 Stop 已完成也保持 `SafetyStopUnverified`；受控正向恢复场景仅属于内部开发测试。
 真实产线恢复能力须等待后续停线/恢复核实实现及其验收。
 
+## 报警政策、确认与复位
+
+`ProductionStoreOptions.AlarmPolicy` 显式配置版本化报警政策。每个 Code 绑定受信 Source、严重度、独立的
+生产影响、锁存与通知行为、Reset 前置以及 PLC 摘要映射。同一次发生保留 InstanceId，清除后复发使用新实例。
+完整未清除集合出现在同一 Runtime 快照中；PLC 摘要只截取配置数量，同时报告总数、隐藏数和全部实例的生产影响。
+未知 Code 或来源不匹配会留下持久边界事件并关闭报警准入，已有实例仍保留。
+
+报警页通过当前个人会话提交强类型 `AcknowledgeAlarmCommand` 或 `ResetAlarmCommand`。ACK 只记录看见；
+Reset 在写事务中检查同一实例的健康证据、Runtime Epoch、单调接收年龄和专属前置，默认还需精确绑定实例的
+Step-Up。两者均不会 Arm、确认 PLC 结果或完成站点恢复。权限、实际人员、报警转换与命令事实在同一签名事务落盘。
+`IAlarmHistoryQuery` 提供固定上界分页；UI 的选中项和筛选不会改变完整实例集或生产影响。
+
+当前实际来源是 Runtime 自身的启动恢复状态，样例通过 `--alarm-policy <absolute-json-path>` 显式加载政策。
+设备健康正向测试使用内部夹具；真实 Provider、活跃周期中断和 PLC 写入留在后续工单。报警观测独立限流，
+排队观测让本机 Stop 先完成。新身份存储使用 schema 7，旧 schema 6 需要受治理迁移。
+
 ## 验证记录开发入口
 
 `ConformanceDocuments` 冻结版本化 Profile、逐不变量双向映射、Release Candidate 与 Qualification Context。
@@ -203,7 +219,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-03](docs/verification/v1-03.md)、[V1-04 验证映射](docs/verification/v1-04.md) 与
 [V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)、
 [V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)、
-[V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)。
+[V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)、
+[V1-09 报警政策与生命周期验证映射](docs/verification/v1-09.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

@@ -142,6 +142,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RebindHumanCredentialCommand => Permission.RebindCredential,
         SetHumanPermissionsCommand => Permission.ManagePermissions,
         ArmProductionCommand => Permission.ArmProduction,
+        AcknowledgeAlarmCommand => Permission.AcknowledgeAlarm,
+        ResetAlarmCommand => Permission.ResetAlarm,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -153,7 +155,13 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
     };
 
     private StepUpBinding Binding(RuntimeCommand command) => new(RequiredPermission(command), command.CorrelationId,
-        command is IdentityManagementCommand management ? management.TargetPrincipalId.ToString("D") : _options.StationId,
+        command switch
+        {
+            IdentityManagementCommand management => management.TargetPrincipalId.ToString("D"),
+            AcknowledgeAlarmCommand acknowledge => acknowledge.AlarmInstanceId.ToString("D"),
+            ResetAlarmCommand reset => reset.AlarmInstanceId.ToString("D"),
+            _ => _options.StationId
+        },
         CommandKind(command));
 
     private static bool ValidBinding(StepUpBinding? binding) => binding is not null &&
@@ -168,6 +176,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.RebindHumanCredential => Permission.RebindCredential,
         AuditedCommandKind.SetHumanPermissions => Permission.ManagePermissions,
         AuditedCommandKind.ArmProduction => Permission.ArmProduction,
+        AuditedCommandKind.AcknowledgeAlarm => Permission.AcknowledgeAlarm,
+        AuditedCommandKind.ResetAlarm => Permission.ResetAlarm,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,
@@ -182,6 +192,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RebindHumanCredentialCommand => AuditedCommandKind.RebindHumanCredential,
         SetHumanPermissionsCommand => AuditedCommandKind.SetHumanPermissions,
         ArmProductionCommand => AuditedCommandKind.ArmProduction,
+        AcknowledgeAlarmCommand => AuditedCommandKind.AcknowledgeAlarm,
+        ResetAlarmCommand => AuditedCommandKind.ResetAlarm,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

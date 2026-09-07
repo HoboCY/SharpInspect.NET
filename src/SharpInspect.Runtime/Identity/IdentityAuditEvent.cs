@@ -37,7 +37,8 @@ internal enum IdentityEventKind
     RecoveryKitRotated,
     RecoveryKitRotationRejected,
     RecoveryKitCustodyConfirmed,
-    RecoveryKitCustodyRejected
+    RecoveryKitCustodyRejected,
+    AlarmActionAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -105,14 +106,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > 6)
+        if (schemaVersion is < 3 or > 7)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > 6)
+        if (schemaVersion is < 3 or > 7)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -137,7 +138,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 => 46, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 => 46, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -151,10 +152,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     DateTimeStyles.None, out var occurred) && occurred != default &&
                 fields[9] is { Length: > 0 and <= 128 }, "AuditIdentityPayloadInvalid");
             if (Enum.TryParse<IdentityEventKind>(fields[2], out var legacyKind))
+            {
                 AuditChainDatabase.Require(schemaVersion >= 5
                     ? schemaVersion >= 6 || (int)legacyKind < (int)IdentityEventKind.AdministratorRecovered
                     : (int)legacyKind <= (int)IdentityEventKind.SessionSignInCancelled,
                     "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= 7 || legacyKind != IdentityEventKind.AlarmActionAuthorized,
+                    "AuditIdentityPayloadInvalid");
+            }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
                     Guid.TryParseExact(fields[index], "D", out _), "AuditIdentityPayloadInvalid");
@@ -216,7 +221,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      Enum.IsDefined(actionKind) && actionKind is not AuditedCommandKind.Unsupported and
                      not AuditedCommandKind.GracefulProductionStop && fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
-                AuditChainDatabase.Require(IsPermissionSet(fields[40]) && IsPermissionSet(fields[41]),
+                AuditChainDatabase.Require(IsPermissionSet(fields[40], schemaVersion >= 7 ? 30 : 28) &&
+                    IsPermissionSet(fields[41], schemaVersion >= 7 ? 30 : 28),
                     "AuditAuthorizationPayloadInvalid");
             }
 
@@ -243,14 +249,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     private static bool IsSafeIdentifier(string? value) => value is { Length: > 0 and <= 128 } &&
         value.Trim() == value && !value.Any(char.IsControl);
 
-    private static bool IsPermissionSet(string? value)
+    private static bool IsPermissionSet(string? value, int maximumPermissions)
     {
         if (value is null or { Length: 0 }) return true;
         if (value.Length > 1024 || value.Any(char.IsWhiteSpace) || value.Any(char.IsControl)) return false;
         var previous = 0;
         var seen = new HashSet<Permission>();
         var names = value.Split(',', StringSplitOptions.None);
-        if (names.Length is < 1 or > 28) return false;
+        if (names.Length is < 1 || names.Length > maximumPermissions) return false;
         foreach (var name in names)
         {
             if (!Enum.TryParse<Permission>(name, out var permission) || !Enum.IsDefined(permission) ||

@@ -16,7 +16,9 @@ public enum AuditedCommandKind
     DisableHumanCredential = 8,
     UnlockHumanCredential = 9,
     RebindHumanCredential = 10,
-    SetHumanPermissions = 11
+    SetHumanPermissions = 11,
+    AcknowledgeAlarm = 12,
+    ResetAlarm = 13
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 
