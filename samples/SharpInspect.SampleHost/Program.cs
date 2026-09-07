@@ -4,9 +4,11 @@ using System.Threading.Channels;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime;
+using SharpInspect.Runtime.Storage;
 using SharpInspect.Wpf;
 
 namespace SharpInspect.SampleHost;
@@ -16,19 +18,35 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        string? Option(string name)
+        {
+            var index = Array.IndexOf(args, name);
+            return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+        }
         var smoke = args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
+        var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
+        if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+        var storeOptions = new ProductionStoreOptions(databasePath);
+        if (Option("--verify-trace") is { } verificationFile)
+        {
+            try { VerifyRestartAsync(storeOptions, verificationFile).GetAwaiter().GetResult(); return 0; }
+            catch (Exception exception) { Console.Error.WriteLine($"V102 RESTART FAIL {exception.GetType().Name}: {exception.Message}"); return 1; }
+        }
         var screenshotIndex = Array.IndexOf(args, "--screenshot");
         var screenshot = screenshotIndex >= 0 && screenshotIndex + 1 < args.Length
             ? Path.GetFullPath(args[screenshotIndex + 1]) : null;
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var services = new ServiceCollection();
-        services.AddSharpInspectRuntime(TimeSpan.FromMilliseconds(500));
+        services.AddSharpInspectSqliteRuntime(storeOptions, TimeSpan.FromMilliseconds(500));
         services.AddSingleton<StationShellViewModel>(p => new StationShellViewModel(
             p.GetRequiredService<IStationRuntime>(), new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton<CommandTraceViewModel>();
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
-        var window = new ShellWindow(vm);
+        var trace = provider.GetRequiredService<CommandTraceViewModel>();
+        var window = new ShellWindow(vm, trace);
         var exitCode = 0;
         if (smoke)
         {
@@ -40,11 +58,11 @@ internal static class Program
         }
         app.Startup += async (_, _) =>
         {
-            window.Show();
             try
             {
+                window.Show();
                 await vm.StartAsync();
-                if (smoke) await RunSmokeAsync(window, vm, runtime, screenshot);
+                if (smoke) await RunSmokeAsync(window, vm, runtime, trace, screenshot, Option("--trace-manifest"));
             }
             catch (Exception exception)
             {
@@ -67,7 +85,7 @@ internal static class Program
     }
 
     private static async Task RunSmokeAsync(ShellWindow window, StationShellViewModel vm,
-        IStationRuntime runtime, string? screenshot)
+        IStationRuntime runtime, CommandTraceViewModel trace, string? screenshot, string? traceManifest)
     {
         var startup = await runtime.GetSnapshotAsync();
         Require(startup.Lifecycle == RuntimeLifecycle.Running && !startup.Ready &&
@@ -75,9 +93,11 @@ internal static class Program
         Console.WriteLine($"V101-P01 startup PASS epoch={startup.RuntimeEpoch} revision={startup.Revision}");
         var arm = await vm.ArmProductionAsync();
         Require(arm.Disposition == CommandDisposition.Rejected && arm.ReasonCode == "DeploymentPoliciesMissing", "unconfigured Arm rejection");
+        Require(arm.Audit == AuditPersistence.Persisted, "rejected Arm must be durable");
         Console.WriteLine($"V101-R02 consumer Arm PASS correlation={arm.CorrelationId} reason={arm.ReasonCode}");
         var stop = await vm.GracefulStopAsync();
         Require(stop.Disposition == CommandDisposition.Accepted && stop.ReasonCode == "StopAdmitted", "Stop admission");
+        Require(stop.Audit == AuditPersistence.Persisted, "accepted Stop must be durable");
         await WaitAsync(() => vm.State.LastCommand is { State: OperationState.Completed } p && p.CorrelationId == stop.CorrelationId);
         Console.WriteLine($"V101-U05 consumer Stop PASS admitted={stop.ReasonCode} final={vm.State.LastCommand!.ReasonCode}");
         await VerifyFeedAsync(startup);
@@ -97,7 +117,39 @@ internal static class Program
         window.RevealPage();
         Require(!window.IsPrivacyLocked, "page reveal changes presentation only");
         Console.WriteLine("V101-U04 Close/navigation/privacy PASS runtime=Running");
+        vm.NavigateTo("Trace");
+        trace.CorrelationIdText = stop.CorrelationId.ToString();
+        await trace.RefreshAsync();
+        Require(trace.Rows.Count == 2 && trace.Rows.Any(x => x.Phase == CommandAuditPhase.Completed), "trace page rebuilds stop facts");
+        Require(trace.Rows.All(x => x.AuthenticatedHumanPrincipalId is null && x.SystemPrincipalId == "SharpInspect.Runtime"), "system actor must not impersonate a person");
+        if (screenshot is not null) RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "consumer-trace.png"));
+        if (traceManifest is not null)
+        {
+            var manifest = new TraceSmokeManifest(arm.CorrelationId, stop.CorrelationId, trace.Rows.Select(x => x.EventId).ToArray());
+            File.WriteAllText(traceManifest, JsonSerializer.Serialize(manifest));
+        }
+        Console.WriteLine($"V102-P01 durable outcome/lifecycle/trace page PASS correlation={stop.CorrelationId}");
         Console.WriteLine($"V101 CONSUMER SMOKE PASS runtime={Environment.Version} os={Environment.OSVersion.Version}");
+    }
+
+    private sealed record TraceSmokeManifest(Guid RejectedCorrelation, Guid AcceptedCorrelation, Guid[] AcceptedEventIds);
+
+    private static async Task VerifyRestartAsync(ProductionStoreOptions options, string manifestFile)
+    {
+        var manifest = JsonSerializer.Deserialize<TraceSmokeManifest>(File.ReadAllText(manifestFile))!;
+        var query = new SqliteCommandTraceQuery(options);
+        var rejected = await query.QueryAsync(new CommandTraceFilter(CorrelationId: manifest.RejectedCorrelation));
+        Require(rejected.Records.Count == 1 && rejected.Records[0].Disposition == CommandDisposition.Rejected, "rejected outcome survives restart");
+        var first = await query.QueryAsync(new CommandTraceFilter(CorrelationId: manifest.AcceptedCorrelation, PageSize: 1));
+        Require(first.Records.Count == 1 && first.NextAfterPosition is not null, "bounded first page");
+        var second = await query.QueryAsync(new CommandTraceFilter(CorrelationId: manifest.AcceptedCorrelation,
+            AfterPosition: first.NextAfterPosition!.Value, ThroughPosition: first.ThroughPosition, PageSize: 1));
+        Require(second.Records.Count == 1 && second.NextAfterPosition is null, "bounded second page");
+        var events = first.Records.Concat(second.Records).ToArray();
+        Require(events.Select(x => x.EventId).SequenceEqual(manifest.AcceptedEventIds), "same immutable identities after process restart");
+        Require(events[0].Disposition == CommandDisposition.Accepted && events[1].Phase == CommandAuditPhase.Completed,
+            "projection rebuilt from accepted and completed facts");
+        Console.WriteLine($"V102-P02 independent-process read-only restart PASS accepted={manifest.AcceptedCorrelation} events={events.Length}");
     }
 
     private static async Task VerifyFeedAsync(StationStateSnapshot template)

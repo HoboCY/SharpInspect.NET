@@ -9,16 +9,21 @@ internal sealed record StateRow(string Label, string Value);
 public partial class ShellWindow : Window
 {
     private readonly StationShellViewModel _viewModel;
+    private readonly CommandTraceViewModel? _traceViewModel;
     private bool _allowSmokeShutdown;
+    private bool _traceSelectionLoaded;
     public bool IsPrivacyLocked { get; private set; }
 
-    public ShellWindow(StationShellViewModel viewModel)
+    public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
+        _traceViewModel = traceViewModel;
         DataContext = viewModel;
+        TracePanel.DataContext = traceViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
+        if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
         RenderState();
     }
 
@@ -48,10 +53,12 @@ public partial class ShellWindow : Window
     {
         _viewModel.PropertyChanged -= Refresh;
         _viewModel.State.PropertyChanged -= Refresh;
+        if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
         base.OnClosed(e);
     }
 
     private void Refresh(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void TraceChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -62,10 +69,30 @@ public partial class ShellWindow : Window
         SectionLabel.Text = _viewModel.SelectedSection switch
         {
             "Alarms" => "报警 · 当前快照摘要", "Recipes" => "配方 · 当前快照摘要",
-            "Trace" => "追溯 · 当前快照摘要", "Maintenance" => "维护 · 当前快照摘要",
+            "Trace" => "追溯 · 命令事实查询", "Maintenance" => "维护 · 当前快照摘要",
             "Engineering" => "手动 / 预览 / 标定 · 当前快照摘要", "Qualification" => "资格 · 当前快照摘要",
             _ => "生产 · 当前完整状态"
         };
+        var traceSelected = _viewModel.SelectedSection == "Trace";
+        SnapshotPanel.Visibility = traceSelected ? Visibility.Collapsed : Visibility.Visible;
+        BlockersPanel.Visibility = traceSelected ? Visibility.Collapsed : Visibility.Visible;
+        TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
+        if (_traceViewModel is null)
+        {
+            TraceUnavailablePanel.Visibility = Visibility.Visible;
+            TraceAvailablePanel.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            TraceUnavailablePanel.Visibility = Visibility.Collapsed;
+            TraceAvailablePanel.Visibility = Visibility.Visible;
+            if (!traceSelected) _traceSelectionLoaded = false;
+            else if (!_traceSelectionLoaded)
+            {
+                _traceSelectionLoaded = true;
+                _ = _traceViewModel.RefreshAsync();
+            }
+        }
         string Value(object? value) => s is null ? "未知" : value?.ToString() ?? "无";
         RuntimeRows.ItemsSource = new[]
         {
@@ -99,7 +126,7 @@ public partial class ShellWindow : Window
         OutcomeLabel.Text = _viewModel.CommandFailureCode is not null
             ? $"本次命令状态不可确认：{_viewModel.CommandFailureCode}，等待 Runtime 确认。"
             : outcome is null ? "命令：尚未提交" :
-            $"最近命令受理记录：{outcome.Disposition} / {outcome.ReasonCode} · {outcome.CorrelationId}";
+            $"最近命令结果：{outcome.Disposition} / 审计={outcome.Audit} / {outcome.ReasonCode} · {outcome.CorrelationId}";
         var progress = s?.LastCommand;
         ProgressLabel.Text = progress is null ? "最终状态：等待新的关联快照" :
             $"关联操作状态：{progress.State} / {progress.ReasonCode} · {progress.CorrelationId}";

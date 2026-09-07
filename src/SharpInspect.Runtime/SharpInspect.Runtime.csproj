@@ -6,5 +6,6 @@
   <ItemGroup>
     <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.30" />
   </ItemGroup>
 </Project>

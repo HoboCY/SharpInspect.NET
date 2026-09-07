@@ -14,7 +14,8 @@ public sealed record GracefulProductionStopCommand(Guid CorrelationId, CommandIn
     : RuntimeCommand(CorrelationId, Invocation);
 
 /// <summary>Acceptance is admission of responsibility, not completion; query subsequent snapshots.</summary>
-public sealed record RuntimeCommandOutcome(Guid CorrelationId, CommandDisposition Disposition, string ReasonCode);
+public sealed record RuntimeCommandOutcome(Guid CorrelationId, CommandDisposition Disposition, string ReasonCode,
+    AuditPersistence Audit = AuditPersistence.NotAttempted, Guid? AttemptId = null);
 
 public interface IStationRuntime
 {

@@ -59,7 +59,7 @@
                         <Button Content="维护 / 管理" Command="{Binding NavigateCommand}" CommandParameter="Maintenance" />
                     </WrapPanel>
                     <TextBlock x:Name="SectionLabel" Text="生产 · 当前完整状态" Foreground="#172B42" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,12" />
-                    <Grid>
+                    <Grid x:Name="SnapshotPanel">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
                             <StackPanel>
@@ -74,11 +74,65 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                    <Border Background="#FFF7E7" BorderBrush="#E4CE9F" BorderThickness="1" Padding="18" Margin="0,16,0,0">
+                    <Border x:Name="BlockersPanel" Background="#FFF7E7" BorderBrush="#E4CE9F" BorderThickness="1" Padding="18" Margin="0,16,0,0">
                         <StackPanel>
                             <TextBlock Text="当前生产阻塞原因" Foreground="#75531A" FontWeight="SemiBold" />
                             <TextBlock x:Name="BlockersLabel" Text="尚未收到完整快照" Foreground="#75531A" TextWrapping="Wrap" Margin="0,8,0,0" />
                         </StackPanel>
+                    </Border>
+                    <Border x:Name="TracePanel" Visibility="Collapsed" Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18" Margin="0,16,0,0">
+                        <Grid>
+                            <StackPanel x:Name="TraceUnavailablePanel">
+                                <TextBlock Text="命令追溯" Foreground="#172B42" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Text="追溯不可用：未配置只读查询服务。" Foreground="#75531A" Margin="0,10,0,0" TextWrapping="Wrap" />
+                                <TextBlock Text="配置追溯数据源后可在这里查看命令记录。" Foreground="#6B7888" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                            <StackPanel x:Name="TraceAvailablePanel" Visibility="Collapsed">
+                                <TextBlock Text="命令追溯 · 只读事实" Foreground="#172B42" FontSize="15" FontWeight="SemiBold" />
+                                <TextBlock Text="声称主体仅是输入归因，未经认证；Accepted 只表示 Runtime 受理，不表示操作完成。"
+                                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
+                                <WrapPanel Margin="0,0,0,8">
+                                    <TextBlock Text="相关 CorrelationId" VerticalAlignment="Center" Foreground="#556679" Margin="0,0,8,0" />
+                                    <TextBox Width="250" Margin="0,0,14,0" Text="{Binding CorrelationIdText, UpdateSourceTrigger=PropertyChanged}" ToolTip="可选 GUID；留空表示全部" />
+                                    <TextBlock Text="声称主体" VerticalAlignment="Center" Foreground="#556679" Margin="0,0,8,0" />
+                                    <TextBox Width="190" Margin="0,0,14,0" Text="{Binding ClaimedPrincipalIdText, UpdateSourceTrigger=PropertyChanged}" ToolTip="未经认证的输入归因" />
+                                    <Button Content="刷新" Command="{Binding RefreshCommand}" />
+                                    <Button Content="上一页" Command="{Binding PreviousPageCommand}" />
+                                    <Button Content="下一页" Command="{Binding NextPageCommand}" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding StatusMessage}" Foreground="#334E68" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding ErrorMessage}" Foreground="#9B3430" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                <TextBlock Foreground="#556679" Margin="0,4,0,10" TextWrapping="Wrap">
+                                    <Run Text="当前页：" />
+                                    <Run Text="{Binding CurrentPage, Mode=OneWay}" />
+                                    <Run Text=" · 快照上界：" />
+                                    <Run Text="{Binding ThroughPosition, Mode=OneWay, TargetNullValue=未建立}" />
+                                    <Run Text=" · 正在读取：" />
+                                    <Run Text="{Binding IsBusy, Mode=OneWay}" />
+                                </TextBlock>
+                                <DataGrid x:Name="TraceGrid" ItemsSource="{Binding Rows}" IsReadOnly="True" AutoGenerateColumns="False"
+                                          Height="380" MinHeight="220" CanUserAddRows="False" CanUserDeleteRows="False"
+                                          EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                          VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                          ScrollViewer.CanContentScroll="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="序号" Binding="{Binding Position}" Width="50" />
+                                        <DataGridTextColumn Header="发生时间 UTC" Binding="{Binding OccurredAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss.fff}}" Width="155" />
+                                        <DataGridTextColumn Header="命令" Binding="{Binding CommandKind}" Width="145" />
+                                        <DataGridTextColumn Header="阶段" Binding="{Binding Phase}" Width="90" />
+                                        <DataGridTextColumn Header="受理结果" Binding="{Binding Disposition}" Width="90" />
+                                        <DataGridTextColumn Header="原因码" Binding="{Binding ReasonCode}" Width="180" />
+                                        <DataGridTextColumn Header="来源" Binding="{Binding Source}" Width="115" />
+                                        <DataGridTextColumn Header="声称主体（未认证）" Binding="{Binding ClaimedPrincipalId}" Width="170" />
+                                        <DataGridTextColumn Header="系统记录者" Binding="{Binding SystemPrincipalId}" Width="170" />
+                                        <DataGridTextColumn Header="认证人员" Binding="{Binding AuthenticatedHumanPrincipalId}" Width="100" />
+                                        <DataGridTextColumn Header="CorrelationId" Binding="{Binding CorrelationId}" Width="230" />
+                                        <DataGridTextColumn Header="AttemptId" Binding="{Binding AttemptId}" Width="230" />
+                                        <DataGridTextColumn Header="EventId" Binding="{Binding EventId}" Width="230" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </Grid>
                     </Border>
                 </StackPanel>
             </ScrollViewer>

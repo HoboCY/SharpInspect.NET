@@ -7,6 +7,8 @@ namespace SharpInspect.Runtime.Tests;
 
 public sealed class RuntimeBoundaryTests
 {
+    private static StationRuntime CreateRuntime(TimeSpan? interval = null) => new(new ProbeAuditWriter(), interval);
+
     private static readonly CommandInvocation Console = new(CommandSource.PhysicalConsole);
 
     [Fact]
@@ -29,7 +31,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R02_UnconfiguredStartupAndClaimedAdminCannotArm()
     {
-        await using var runtime = new StationRuntime();
+        await using var runtime = CreateRuntime();
         var before = await runtime.GetSnapshotAsync();
         Assert.False(before.Ready);
         Assert.Equal(ProductionArmState.Disarmed, before.ArmState);
@@ -49,7 +51,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R03_StopAcceptanceIsSeparateFromCorrelatedCompletion()
     {
-        await using var runtime = new StationRuntime(TimeSpan.FromMilliseconds(100));
+        await using var runtime = CreateRuntime(TimeSpan.FromMilliseconds(100));
         var id = Guid.NewGuid();
         var outcome = await runtime.SubmitAsync(new GracefulProductionStopCommand(id, Console));
         Assert.Equal(CommandDisposition.Accepted, outcome.Disposition);
@@ -74,7 +76,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R04_RevisionAdvancesAndSlowReadersReceiveCompleteLatestState()
     {
-        await using var runtime = new StationRuntime(TimeSpan.FromMilliseconds(20));
+        await using var runtime = CreateRuntime(TimeSpan.FromMilliseconds(20));
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await using var feed = runtime.WatchSnapshotsAsync(deadline.Token).GetAsyncEnumerator();
         Assert.True(await feed.MoveNextAsync());
@@ -94,8 +96,8 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R05_EpochChangesAndViewUnsubscriptionDoesNotStopRuntime()
     {
-        await using var runtime = new StationRuntime(TimeSpan.FromMilliseconds(20));
-        await using var replacement = new StationRuntime();
+        await using var runtime = CreateRuntime(TimeSpan.FromMilliseconds(20));
+        await using var replacement = CreateRuntime();
         var before = await runtime.GetSnapshotAsync();
         Assert.NotEqual(before.RuntimeEpoch, (await replacement.GetSnapshotAsync()).RuntimeEpoch);
         await using (var view = runtime.WatchSnapshotsAsync().GetAsyncEnumerator())
@@ -120,7 +122,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R07_InvalidRemoteCancelledAndStoppedCommandsDoNotTransition()
     {
-        await using var runtime = new StationRuntime();
+        await using var runtime = CreateRuntime();
         Assert.Equal("InvalidCommandContext", (await runtime.SubmitAsync(new ArmProductionCommand(Guid.Empty, Console))).ReasonCode);
         Assert.Equal("LocalConsoleRequired", (await runtime.SubmitAsync(new GracefulProductionStopCommand(Guid.NewGuid(),
             new CommandInvocation(CommandSource.Integration)))).ReasonCode);
@@ -136,7 +138,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R08_ShutdownResolvesAnAcceptedPendingStop()
     {
-        await using var runtime = new StationRuntime(TimeSpan.FromSeconds(30));
+        await using var runtime = CreateRuntime(TimeSpan.FromSeconds(30));
         var id = Guid.NewGuid();
         Assert.Equal(CommandDisposition.Accepted,
             (await runtime.SubmitAsync(new GracefulProductionStopCommand(id, Console))).Disposition);
@@ -151,7 +153,7 @@ public sealed class RuntimeBoundaryTests
     [Fact]
     public async Task V101_R09_RejectedRequestsCannotDisableLocalStopOrReexecuteIt()
     {
-        await using var runtime = new StationRuntime(TimeSpan.FromMilliseconds(20));
+        await using var runtime = CreateRuntime(TimeSpan.FromMilliseconds(20));
         for (var i = 0; i < 4096; i++)
             await runtime.SubmitAsync(new ArmProductionCommand(Guid.NewGuid(), Console));
         Assert.Equal("DeploymentPoliciesMissing",

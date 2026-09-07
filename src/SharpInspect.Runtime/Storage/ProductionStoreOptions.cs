@@ -1,0 +1,25 @@
+namespace SharpInspect.Runtime.Storage;
+
+/// <summary>
+/// Bounded local-store settings. The database path is validated again by each capability
+/// before it opens a file; these options never bypass the production volume checks.
+/// </summary>
+public sealed class ProductionStoreOptions
+{
+    public ProductionStoreOptions()
+    {
+    }
+
+    public ProductionStoreOptions(string databasePath)
+    {
+        DatabasePath = databasePath;
+    }
+
+    public string DatabasePath { get; init; } = string.Empty;
+
+    public TimeSpan CommitTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
+    public TimeSpan QueryTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
+    public int QueueCapacity { get; init; } = 64;
+}
