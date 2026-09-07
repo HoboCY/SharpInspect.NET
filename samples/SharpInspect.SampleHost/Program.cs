@@ -30,6 +30,7 @@ internal static class Program
         if (Option("--conformance-query") is { } conformanceQueryDirectory)
             return ConformanceDemo.RunQuery(conformanceQueryDirectory);
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
+        var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
         var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
@@ -45,6 +46,8 @@ internal static class Program
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
             }
         };
+        if (administratorRecoveryCheck)
+            return AdministratorRecoveryDemo.Run(storeOptions);
         if (Option("--verify-trace") is { } verificationFile)
         {
             try { VerifyRestartAsync(storeOptions, verificationFile).GetAwaiter().GetResult(); return 0; }
@@ -78,6 +81,9 @@ internal static class Program
             p.GetRequiredService<IStationRuntime>(), p.GetService<IInteractiveSessionService>(),
             p.GetService<IStepUpAuthentication>(), p.GetService<IIdentityAdministrationQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new AdministratorRecoveryViewModel(
+            p.GetService<ILocalAdministratorRecovery>(), p.GetService<IInteractiveSessionService>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -85,7 +91,8 @@ internal static class Program
         var integrity = provider.GetRequiredService<AuditIntegrityViewModel>();
         var identity = provider.GetRequiredService<IdentityViewModel>();
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
-        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration);
+        var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
+        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery);
         var exitCode = 0;
         if (smoke)
         {
@@ -200,7 +207,8 @@ internal static class Program
                         Console.WriteLine("V105-P01 native paste/Runtime session/window lock/reauthentication/logout/production independence PASS");
                         Console.WriteLine("V104-P01 independent-process WPF password login/immutable identity/privacy PASS");
                     }
-                    else await RunSmokeAsync(window, vm, runtime, trace, integrity, screenshot, Option("--trace-manifest"));
+                    else await RunSmokeAsync(window, vm, runtime, trace, integrity, recovery,
+                        screenshot, Option("--trace-manifest"));
                 }
             }
             catch (Exception exception)
@@ -264,11 +272,19 @@ internal static class Program
     }
 
     private static async Task RunSmokeAsync(ShellWindow window, StationShellViewModel vm,
-        IStationRuntime runtime, CommandTraceViewModel trace, AuditIntegrityViewModel integrity, string? screenshot, string? traceManifest)
+        IStationRuntime runtime, CommandTraceViewModel trace, AuditIntegrityViewModel integrity,
+        AdministratorRecoveryViewModel recovery, string? screenshot, string? traceManifest)
     {
         var startup = await runtime.GetSnapshotAsync();
         Require(startup.Lifecycle == RuntimeLifecycle.Running && !startup.Ready &&
             startup.ArmState == ProductionArmState.Disarmed, "startup must remain disarmed");
+        if (recovery.IsConfigured)
+        {
+            await recovery.RefreshAsync();
+            Require(recovery.CurrentStatus is { RecoveryAvailable: false, ReasonCode: "SafetyStopUnverified" },
+                "administrator recovery must remain fail-closed without physical stop proof");
+            Console.WriteLine("V108-P03 WPF recovery status fail-closed PASS reason=SafetyStopUnverified");
+        }
         Console.WriteLine($"V101-P01 startup PASS epoch={startup.RuntimeEpoch} revision={startup.Revision}");
         vm.NavigateTo("Maintenance");
         window.VerifyMaintenanceLayout();
@@ -330,6 +346,18 @@ internal static class Program
         window.RevealPage();
         Require(window.IsPrivacyLocked == (after.Session.State == InteractiveSessionState.Locked), "page reveal cannot restore an authoritative locked session");
         Console.WriteLine("V101-U04 Close/navigation/privacy PASS runtime=Running");
+        if (recovery.IsConfigured)
+        {
+            await window.OpenAdministratorRecoverySmokeAsync();
+            var recoverySnapshot = await runtime.GetSnapshotAsync();
+            Require(window.IsAdministratorRecoveryPrivacyVisible && window.IsPrivacyLocked &&
+                recoverySnapshot.Session.State == InteractiveSessionState.Unauthenticated && !recoverySnapshot.Ready &&
+                recovery.CurrentStatus is { RecoveryAvailable: false, ReasonCode: "SafetyStopUnverified" },
+                "privacy recovery entry must stay covered, end the session and reject unverified physical stop");
+            if (screenshot is not null)
+                RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "consumer-recovery.png"));
+            Console.WriteLine("V108-P04 WPF privacy recovery entry PASS covered=true session=Unauthenticated ready=false recoveryAvailable=false");
+        }
         Console.WriteLine($"V102-P01 durable outcome/lifecycle/trace page PASS correlation={stop.CorrelationId}");
         Console.WriteLine($"V101 CONSUMER SMOKE PASS runtime={Environment.Version} os={Environment.OSVersion.Version}");
     }

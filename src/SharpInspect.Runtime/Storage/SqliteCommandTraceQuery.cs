@@ -77,7 +77,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 SqliteNative.Step(database, statement, deadline, cancellationToken);
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
             }, cancellationToken);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6)) throw new InvalidOperationException("StoreSchemaUnavailable");
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>

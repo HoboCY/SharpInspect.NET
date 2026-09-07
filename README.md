@@ -158,6 +158,17 @@ Runtime 在 SQLite 写事务内重新核对全部条件，持有短期会话授�
 验证另启动独立 WPF 进程，通过私有标准输入传递测试密码，实际走 PasswordBox 登录，并核对重启前后
 PrincipalId 和审计链。密码不会作为进程参数、环境变量或报告内容写出。
 
+## 本机管理员恢复
+
+`ILocalAdministratorRecovery` 提供恢复状态、一次性恢复码重绑、Recovery Kit 轮换和保管确认。
+恢复不会自动登录。恢复后的个人管理员须使用新密码登录，再为本次轮换重新认证；新包仅交付一次，
+还需提交其中一枚码确认保管。确认码被消费，余下有效码才计入生产身份准入。页面关闭或锁定会清除秘密显示。
+
+物理控制台、Runtime 排他状态、实际 Session 与密封身份状态均由服务重新校验。
+Windows 管理员或 UI 提供的身份、状态不能代替恢复授权。现有 Runtime 尚无真实 PLC 安全停线证据，
+即使本地 Stop 已完成也保持 `SafetyStopUnverified`；受控正向恢复场景仅属于内部开发测试。
+真实产线恢复能力须等待后续停线/恢复核实实现及其验收。
+
 ## 验证记录开发入口
 
 `ConformanceDocuments` 冻结版本化 Profile、逐不变量双向映射、Release Candidate 与 Qualification Context。
@@ -191,7 +202,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)、
 [V1-03](docs/verification/v1-03.md)、[V1-04 验证映射](docs/verification/v1-04.md) 与
 [V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)、
-[V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)。
+[V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)、
+[V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

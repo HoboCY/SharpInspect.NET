@@ -31,7 +31,13 @@ internal enum IdentityEventKind
     StepUpRejected,
     StepUpCancelled,
     StepUpConsumed,
-    ManagementRejected
+    ManagementRejected,
+    AdministratorRecovered,
+    RecoveryRejected,
+    RecoveryKitRotated,
+    RecoveryKitRotationRejected,
+    RecoveryKitCustodyConfirmed,
+    RecoveryKitCustodyRejected
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -49,9 +55,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     string? RequiredPermission = null, Guid? TargetPrincipalId = null,
     long AuthorizationRevision = 0, string? ManagementReason = null, string? ActionTargetId = null,
     Guid? BoundCommandCorrelationId = null, string? ActionCommandKind = null,
-    string? PreviousPermissions = null, string? ResultingPermissions = null)
+    string? PreviousPermissions = null, string? ResultingPermissions = null,
+    Guid? OperationId = null, Guid? RecoveryCodeId = null, Guid? PreviousRecoveryKitId = null,
+    string? RecoverySafetyEvidence = null)
 {
-    internal byte[] Encode(long ordinal, int schemaVersion = 5)
+    internal byte[] Encode(long ordinal, int schemaVersion = 6)
     {
         var fields = new List<string?>
         {
@@ -88,14 +96,23 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > 5)
+        if (schemaVersion >= 6)
+        {
+            fields.AddRange(new string?[]
+            {
+                OperationId?.ToString("D"), RecoveryCodeId?.ToString("D"),
+                PreviousRecoveryKitId?.ToString("D"), RecoverySafetyEvidence
+            });
+        }
+
+        if (schemaVersion is < 3 or > 6)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
-    internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 5)
+    internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > 5)
+        if (schemaVersion is < 3 or > 6)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -120,7 +137,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 => 46, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -133,8 +150,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 DateTimeOffset.TryParseExact(fields[3], "O", CultureInfo.InvariantCulture,
                     DateTimeStyles.None, out var occurred) && occurred != default &&
                 fields[9] is { Length: > 0 and <= 128 }, "AuditIdentityPayloadInvalid");
-            if (schemaVersion < 5 && Enum.TryParse<IdentityEventKind>(fields[2], out var legacyKind))
-                AuditChainDatabase.Require((int)legacyKind <= (int)IdentityEventKind.SessionSignInCancelled,
+            if (Enum.TryParse<IdentityEventKind>(fields[2], out var legacyKind))
+                AuditChainDatabase.Require(schemaVersion >= 5
+                    ? schemaVersion >= 6 || (int)legacyKind < (int)IdentityEventKind.AdministratorRecovered
+                    : (int)legacyKind <= (int)IdentityEventKind.SessionSignInCancelled,
                     "AuditIdentityPayloadInvalid");
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -199,6 +218,15 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     "AuditAuthorizationPayloadInvalid");
                 AuditChainDatabase.Require(IsPermissionSet(fields[40]) && IsPermissionSet(fields[41]),
                     "AuditAuthorizationPayloadInvalid");
+            }
+
+            if (schemaVersion >= 6)
+            {
+                foreach (var index in new[] { 42, 43, 44 })
+                    AuditChainDatabase.Require(fields[index] is null ||
+                        Guid.TryParseExact(fields[index], "D", out _), "AuditRecoveryPayloadInvalid");
+                AuditChainDatabase.Require(fields[45] is null || IsSafeIdentifier(fields[45]),
+                    "AuditRecoveryPayloadInvalid");
             }
 
             return revision;

@@ -25,7 +25,7 @@ internal static class AuditChainDatabase
     internal static string SchemaSqlFor(int version)
     {
         if (version == 2) return SchemaSql;
-        if (version is not (3 or 4 or 5)) throw new ArgumentOutOfRangeException(nameof(version));
+        if (version is not (3 or 4 or 5 or 6)) throw new ArgumentOutOfRangeException(nameof(version));
         return SchemaSql
             .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE,", StringComparison.Ordinal)
             .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
@@ -76,7 +76,7 @@ internal static class AuditChainDatabase
         IdentityAuditEvent fact, StoreDeadline deadline)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6, "AuditSchemaInvalid");
         var previous = Tail(db, deadline);
         var sequence = checked(previous.Sequence + 1);
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
@@ -151,7 +151,7 @@ internal static class AuditChainDatabase
         bool validateAnchorReceipt = true)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6, "AuditSchemaInvalid");
         var hasIdentity = schemaVersion >= 3;
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");

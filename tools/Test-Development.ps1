@@ -185,6 +185,22 @@ try {
         if ($taskConformanceKeys.Count -ne 1) { throw 'Conformance evidence signing key is missing or not bounded to one file.' }
         Write-Output "V107-P03 independent-process consumer conformance PASS: $taskConformanceRoot"
     }
+    if ($Ticket -ge 8) {
+        # This process reuses the isolated trace store and policy from the preceding consumer
+        # smoke.  It exercises only the public, fail-closed recovery boundary; physical stop and
+        # successful recovery remain Runtime fixture responsibilities.
+        Invoke-TaskDotnet 'administrator-recovery-consumer.log' (@($taskConsumerDll,
+                '--administrator-recovery-check','--trace-db',$taskDatabase) + $taskAuditArguments)
+        $taskRecoveryOutput = Get-Content -LiteralPath (Join-Path $taskRun 'administrator-recovery-consumer.log') -Raw
+        if ($taskRecoveryOutput -notmatch 'V108-P01 administrator-recovery-consumer PASS' -or
+            $taskRecoveryOutput -notmatch 'ready=false' -or
+            $taskRecoveryOutput -notmatch 'recoveryAvailable=false' -or
+            $taskRecoveryOutput -notmatch 'kitDelivered=false' -or
+            $taskRecoveryOutput -notmatch 'physicalStop=NotRun') {
+            throw 'The independent consumer administrator-recovery check did not prove the closed path.'
+        }
+        Write-Output 'V108-P02 independent-process consumer administrator-recovery closed path PASS'
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

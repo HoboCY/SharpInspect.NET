@@ -97,6 +97,11 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
                     Password = PasswordVerifierState.From(hash) };
                 bootstrap!.State = "Consumed";
                 state.RecoveryKitId = kitId;
+                state.RecoveryKitIssuedAtUtc = now;
+                state.RecoveryKitVersion = 1;
+                state.KitState = RecoveryKitState.Available;
+                state.RecoveredPrincipalId = null;
+                state.RecoveryOwnerPrincipalId = null;
                 state.RecoveryCodes = codes.Select(code => new RecoveryCodeState { CodeId = code.Id,
                     Verifier = IdentityStateProtection.SecretVerifier("Recovery", state.StationId, state.InstallationKeyId, code.Id, code.Secret) }).ToList();
                 return new IdentityUpdate(new BootstrapAdministratorResult(true, "AdministratorCreated", state.Administrator.ToIdentity(), kitId),
@@ -117,9 +122,20 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
         {
             var state = await _store.ReadIdentityAsync(token).ConfigureAwait(false);
             var administrators = state.EnumerateAccounts().Count(IdentityAuthorityState.IsUsableAdministrator);
-            var recovery = state.RecoveryCodes.Count(code => !code.Consumed && !code.Revoked);
+            // A kit produced by recovery/rotation is not a usable identity
+            // prerequisite until custody confirmation commits.  Bootstrap's
+            // original kit remains Available for compatibility with T4.
+            var recovery = state.KitState == RecoveryKitState.Available
+                ? state.RecoveryCodes.Count(code => !code.Consumed && !code.Revoked) : 0;
+            var reason = state.KitState switch
+            {
+                RecoveryKitState.RotationRequired => "RecoveryKitRotationRequired",
+                RecoveryKitState.CustodyConfirmationRequired => "RecoveryKitCustodyConfirmationRequired",
+                _ when administrators > 0 && recovery > 0 => "IdentityPrerequisitesPresent",
+                _ => "IdentityBootstrapRequired"
+            };
             return new StationIdentityStatus(state.StationId, state.Administrator is null, administrators, recovery,
-                administrators > 0 && recovery > 0 ? "IdentityPrerequisitesPresent" : "IdentityBootstrapRequired");
+                reason);
         }, reason => new StationIdentityStatus(_options.StationId, false, 0, 0, reason), cancellationToken);
 
     private async ValueTask<T> BoundedAsync<T>(Func<CancellationToken, Task<T>> operation, Func<string, T> failure, CancellationToken caller)
@@ -159,9 +175,9 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
 
     private static IdentityUpdate Update(object result, IdentityAuditEvent fact) => new(result, new[] { fact });
     private static T? Committed<T>(IdentityWriteResult result) where T : class => result.Committed ? result.Result as T : null;
-    private static string NewSecret() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    internal static string NewSecret() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static (Guid Id, string Secret)? ParseCode(string? value)
+    internal static (Guid Id, string Secret)? ParseCode(string? value)
     {
         if (value is null || value.Length != 76 || value[32] != '.' || !Guid.TryParseExact(value[..32], "N", out var id)) return null;
         var secret = value[33..];

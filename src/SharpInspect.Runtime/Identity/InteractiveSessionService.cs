@@ -532,6 +532,52 @@ internal sealed class InteractiveSessionService : IInteractiveSessionService
         lock (_sync) return !_disposed && generation == _generation;
     }
 
+    /// <summary>Acquired only inside the durable identity transaction. No asynchronous work
+    /// is allowed while this short lease holds the session monitor.</summary>
+    internal bool TryAcquireRecoveryLease(Guid? principalId, Guid? sessionId,
+        out IDisposable? lease, out string reason)
+    {
+        lease = null;
+        reason = "RecoverySessionConflict";
+        if (Monitor.IsEntered(_sync) || !Monitor.TryEnter(_sync, TimeSpan.FromMilliseconds(50))) return false;
+        var transferred = false;
+        try
+        {
+            if (_disposed || Volatile.Read(ref _disposeRequested) != 0)
+            { reason = "SessionServiceDisposed"; return false; }
+            if (_activeOperations != 0 || _activeProviderOperations != 0 || _activePersistenceOperations != 0 ||
+                _pendingRevocation is not null) return false;
+            if (principalId is null && sessionId is null)
+            {
+                if (_current.State != InteractiveSessionState.Unauthenticated || _identity is not null) return false;
+            }
+            else if (principalId is null || principalId == Guid.Empty || sessionId is null || sessionId == Guid.Empty ||
+                _current.State != InteractiveSessionState.Authenticated || _current.SessionId != sessionId ||
+                _current.PrincipalId != principalId.Value.ToString("D") || _identity?.PrincipalId != principalId ||
+                IsExpired(SafeTimestamp(), _lastActivityTimestamp)) return false;
+            lease = new RecoverySessionLease(_sync);
+            transferred = true;
+            reason = "RecoverySessionLeaseAcquired";
+            return true;
+        }
+        finally { if (!transferred) Monitor.Exit(_sync); }
+    }
+
+    private sealed class RecoverySessionLease : IDisposable
+    {
+        private object? _monitor;
+        internal RecoverySessionLease(object monitor) => _monitor = monitor;
+        public void Dispose()
+        {
+            var monitor = Volatile.Read(ref _monitor);
+            if (monitor is null) return;
+            if (!Monitor.IsEntered(monitor))
+                throw new InvalidOperationException("RecoverySessionLeaseThreadMismatch");
+            if (Interlocked.CompareExchange(ref _monitor, null, monitor) == monitor)
+                Monitor.Exit(monitor);
+        }
+    }
+
     private bool IsDisposed()
     {
         lock (_sync) return _disposed;

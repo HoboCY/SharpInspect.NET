@@ -9,7 +9,7 @@ namespace SharpInspect.Runtime;
 /// The initial, deliberately unconfigured station authority. Later tickets supply governed
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
-public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
+public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();

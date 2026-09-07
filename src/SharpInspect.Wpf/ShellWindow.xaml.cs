@@ -17,6 +17,13 @@ public partial class ShellWindow : Window
         string userName, string displayName, string password, string stepUpPassword) =>
         IdentityAdministrationPanel.SubmitCreateSmokeAsync(userName, displayName, password, stepUpPassword);
     internal Task WaitForSessionLockAsync() => _sessionLock;
+    internal bool IsAdministratorRecoveryPrivacyVisible =>
+        IsPrivacyLocked && PrivacyAdministratorRecoveryPanel.Visibility == Visibility.Visible;
+    internal Task OpenAdministratorRecoverySmokeAsync()
+    {
+        if (!IsPrivacyLocked) ShowPrivacyCover();
+        return OpenAdministratorRecoveryAsync();
+    }
     internal async Task SubmitLockedLoginSmokeAsync(string userName, string password)
     {
         if (!IsPrivacyLocked) throw new InvalidOperationException("SessionLockPageRequired");
@@ -31,18 +38,21 @@ public partial class ShellWindow : Window
     private readonly AuditIntegrityViewModel? _integrityViewModel;
     private readonly IdentityViewModel? _identityViewModel;
     private readonly IdentityAdministrationViewModel? _identityAdministrationViewModel;
+    private readonly AdministratorRecoveryViewModel? _administratorRecoveryViewModel;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
     private bool _identitySelectionLoaded;
     private bool _identityAdministrationSelectionLoaded;
+    private bool _administratorRecoverySelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
 
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
         AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
-        IdentityAdministrationViewModel? identityAdministrationViewModel = null)
+        IdentityAdministrationViewModel? identityAdministrationViewModel = null,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -50,11 +60,14 @@ public partial class ShellWindow : Window
         _integrityViewModel = integrityViewModel;
         _identityViewModel = identityViewModel;
         _identityAdministrationViewModel = identityAdministrationViewModel;
+        _administratorRecoveryViewModel = administratorRecoveryViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
         IdentityPanel.DataContext = identityViewModel;
         IdentityAdministrationPanel.DataContext = identityAdministrationViewModel;
+        AdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
+        PrivacyAdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -62,6 +75,8 @@ public partial class ShellWindow : Window
         if (identityViewModel is not null) identityViewModel.PropertyChanged += IdentityChanged;
         if (identityAdministrationViewModel is not null)
             identityAdministrationViewModel.PropertyChanged += IdentityAdministrationChanged;
+        if (administratorRecoveryViewModel is not null)
+            administratorRecoveryViewModel.PropertyChanged += AdministratorRecoveryChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -91,7 +106,8 @@ public partial class ShellWindow : Window
     internal void VerifyMaintenanceLayout()
     {
         if (IdentityPanel.Visibility != Visibility.Visible ||
-            IdentityAdministrationPanel.Visibility != Visibility.Visible)
+            IdentityAdministrationPanel.Visibility != Visibility.Visible ||
+            AdministratorRecoveryPanel.Visibility != Visibility.Visible)
             throw new InvalidOperationException("Maintenance identity panels are not reachable.");
     }
     internal void BringIdentityAdministrationIntoViewForSmoke()
@@ -122,12 +138,71 @@ public partial class ShellWindow : Window
         IsPrivacyLocked = true;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
+        AdministratorRecoveryPanel.ClearSensitiveInputs();
+        PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
         LockedSignInStatus.Text = "";
+        PrivacyRecoveryStatus.Text = "";
         PrivacyCover.Visibility = Visibility.Visible;
         LockedLoginPanel.Visibility = _identityViewModel?.HasSessionService == true ? Visibility.Visible : Visibility.Collapsed;
+        ReturnToLockedLoginButton.Visibility = Visibility.Collapsed;
+        OpenAdministratorRecoveryButton.Visibility = _administratorRecoveryViewModel is null
+            ? Visibility.Collapsed : Visibility.Visible;
+        PrivacyAdministratorRecoveryPanel.Visibility = Visibility.Collapsed;
         PrivacyInstruction.Text = _identityViewModel?.HasSessionService == true ? "会话已锁定，请重新登录。" : "点击下方“显示页面”恢复查看。";
+    }
+
+    private async void OpenAdministratorRecoveryClick(object sender, RoutedEventArgs e)
+        => await OpenAdministratorRecoveryAsync();
+
+    private async Task OpenAdministratorRecoveryAsync()
+    {
+        if (_administratorRecoveryViewModel is null) return;
+        OpenAdministratorRecoveryButton.IsEnabled = false;
+        PrivacyRecoveryStatus.Text = "正在等待当前会话退出审计…";
+        try
+        {
+            if (_identityViewModel?.HasSessionService == true)
+            {
+                await _identityViewModel.LogoutSessionAsync();
+                if (_identityViewModel.CurrentSession.State != InteractiveSessionState.Unauthenticated)
+                {
+                    PrivacyRecoveryStatus.Text = "当前会话尚未退出，管理员恢复入口保持关闭。";
+                    return;
+                }
+            }
+
+            PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
+            PrivacyAdministratorRecoveryPanel.Visibility = Visibility.Visible;
+            LockedLoginPanel.Visibility = Visibility.Collapsed;
+            ReturnToLockedLoginButton.Visibility = Visibility.Visible;
+            OpenAdministratorRecoveryButton.Visibility = Visibility.Collapsed;
+            PrivacyInstruction.Text = "管理员恢复已打开；页面仍处于遮蔽状态，不会自动解锁或登录。";
+            await _administratorRecoveryViewModel.RefreshAsync();
+            PrivacyRecoveryStatus.Text = "恢复完成后请返回登录；恢复流程不会解除页面遮蔽。";
+        }
+        catch
+        {
+            PrivacyRecoveryStatus.Text = "管理员恢复入口暂不可用，请返回登录或保持生产禁用。";
+        }
+        finally
+        {
+            OpenAdministratorRecoveryButton.IsEnabled = true;
+        }
+    }
+
+    private void ReturnToLockedLoginClick(object sender, RoutedEventArgs e)
+    {
+        PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
+        PrivacyAdministratorRecoveryPanel.Visibility = Visibility.Collapsed;
+        ReturnToLockedLoginButton.Visibility = Visibility.Collapsed;
+        OpenAdministratorRecoveryButton.Visibility = _administratorRecoveryViewModel is null
+            ? Visibility.Collapsed : Visibility.Visible;
+        LockedLoginPanel.Visibility = _identityViewModel?.HasSessionService == true
+            ? Visibility.Visible : Visibility.Collapsed;
+        PrivacyInstruction.Text = _identityViewModel?.HasSessionService == true
+            ? "会话已锁定，请重新登录。" : "点击下方“显示页面”恢复查看。";
     }
 
     private async void LockedSignInClick(object sender, RoutedEventArgs e)
@@ -194,9 +269,13 @@ public partial class ShellWindow : Window
         if (_identityViewModel is not null) _identityViewModel.PropertyChanged -= IdentityChanged;
         if (_identityAdministrationViewModel is not null)
             _identityAdministrationViewModel.PropertyChanged -= IdentityAdministrationChanged;
+        if (_administratorRecoveryViewModel is not null)
+            _administratorRecoveryViewModel.PropertyChanged -= AdministratorRecoveryChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
+        AdministratorRecoveryPanel.ClearSensitiveInputs();
+        PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
@@ -205,6 +284,7 @@ public partial class ShellWindow : Window
     private void IntegrityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IdentityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IdentityAdministrationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void AdministratorRecoveryChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -222,7 +302,7 @@ public partial class ShellWindow : Window
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
-        if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导与账号授权";
+        if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导、账号授权与恢复";
         SnapshotPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
         BlockersPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
@@ -260,6 +340,7 @@ public partial class ShellWindow : Window
         }
         IdentityPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         IdentityAdministrationPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
+        AdministratorRecoveryPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         if (!maintenanceSelected)
         {
             if (_identitySelectionLoaded)
@@ -272,6 +353,11 @@ public partial class ShellWindow : Window
                 _identityAdministrationSelectionLoaded = false;
                 IdentityAdministrationPanel.ClearSensitiveInputs();
             }
+            if (_administratorRecoverySelectionLoaded)
+            {
+                _administratorRecoverySelectionLoaded = false;
+                AdministratorRecoveryPanel.ClearSensitiveInputs();
+            }
         }
         else if (_identityViewModel is not null && !_identitySelectionLoaded)
         {
@@ -283,6 +369,12 @@ public partial class ShellWindow : Window
         {
             _identityAdministrationSelectionLoaded = true;
             _ = _identityAdministrationViewModel.RefreshAsync();
+        }
+        if (maintenanceSelected && _administratorRecoveryViewModel is not null &&
+            !_administratorRecoverySelectionLoaded)
+        {
+            _administratorRecoverySelectionLoaded = true;
+            _ = _administratorRecoveryViewModel.RefreshAsync();
         }
         string Value(object? value) => s is null ? "未知" : value?.ToString() ?? "无";
         RuntimeRows.ItemsSource = new[]

@@ -40,6 +40,11 @@ public static class ServiceCollectionExtensions
                 options.LocalIdentity, p.GetRequiredService<IIdentityProvider>(), p.GetRequiredService<IInteractiveSessionService>()));
             services.TryAddSingleton<IStepUpAuthentication>(p => p.GetRequiredService<LocalAuthorizationService>());
             services.TryAddSingleton<IIdentityAdministrationQuery>(p => p.GetRequiredService<LocalAuthorizationService>());
+            services.TryAddSingleton<ILocalAdministratorRecovery>(p => new LocalAdministratorRecoveryService(
+                p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity,
+                p.GetRequiredService<LocalIdentityService>(), p.GetService<IInteractiveSessionService>(),
+                p.GetService<IStationRuntime>() as IAdministratorRecoveryRuntimeGate ??
+                    new UnavailableAdministratorRecoveryRuntimeGate()));
         }
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>()));

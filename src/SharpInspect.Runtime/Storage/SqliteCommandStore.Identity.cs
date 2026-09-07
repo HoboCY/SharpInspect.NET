@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Security.Cryptography;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
@@ -12,9 +14,23 @@ internal sealed partial class SqliteCommandStore
             InstallationKeyId TEXT NOT NULL, PolicyContentHash TEXT NOT NULL);
         CREATE TABLE identity_authority(Id INTEGER PRIMARY KEY CHECK(Id=1), Revision INTEGER NOT NULL CHECK(Revision>=0),
             ProtectedState TEXT NOT NULL, LastAuditSequence INTEGER NOT NULL, StateSignature TEXT NOT NULL);
+        CREATE TABLE recovery_operations(
+            OperationId TEXT NOT NULL PRIMARY KEY CHECK(length(OperationId)=36),
+            Kind TEXT NOT NULL CHECK(length(Kind)>0 AND length(Kind)<=64),
+            Succeeded INTEGER NOT NULL CHECK(Succeeded=1),
+            ReasonCode TEXT NOT NULL CHECK(length(ReasonCode)>0 AND length(ReasonCode)<=128),
+            KitId TEXT NULL CHECK(KitId IS NULL OR length(KitId)=36),
+            PrincipalId TEXT NULL CHECK(PrincipalId IS NULL OR length(PrincipalId)=36),
+            DeliveryCommitted INTEGER NOT NULL CHECK(DeliveryCommitted IN (0,1)),
+            StateRevision INTEGER NOT NULL CHECK(StateRevision>=0),
+            IdentitySequence INTEGER NOT NULL CHECK(IdentitySequence>0),
+            AuditHash TEXT NOT NULL CHECK(length(AuditHash)=64),
+            RecordHash TEXT NOT NULL CHECK(length(RecordHash)=64));
         CREATE TRIGGER identity_policy_immutable_update BEFORE UPDATE ON identity_policy_binding BEGIN SELECT RAISE(ABORT,'ImmutableIdentityPolicy'); END;
         CREATE TRIGGER identity_policy_immutable_delete BEFORE DELETE ON identity_policy_binding BEGIN SELECT RAISE(ABORT,'ImmutableIdentityPolicy'); END;
-        CREATE TRIGGER identity_authority_no_delete BEFORE DELETE ON identity_authority BEGIN SELECT RAISE(ABORT,'IdentityAuthorityRequired'); END;";
+        CREATE TRIGGER identity_authority_no_delete BEFORE DELETE ON identity_authority BEGIN SELECT RAISE(ABORT,'IdentityAuthorityRequired'); END;
+        CREATE TRIGGER recovery_operations_immutable_update BEFORE UPDATE ON recovery_operations BEGIN SELECT RAISE(ABORT,'ImmutableRecoveryOperation'); END;
+        CREATE TRIGGER recovery_operations_immutable_delete BEFORE DELETE ON recovery_operations BEGIN SELECT RAISE(ABORT,'ImmutableRecoveryOperation'); END;";
 
     private void InitializeIdentitySchema(sqlite3 database, StoreDeadline deadline)
     {
@@ -55,6 +71,31 @@ internal sealed partial class SqliteCommandStore
         }, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Reads one durable recovery operation only after the signed state and audit chain
+    /// have been verified on the same read snapshot.  The index contains successful operations;
+    /// rejected attempts intentionally have no durable idempotency slot.</summary>
+    internal async ValueTask<RecoveryOperationState?> ReadRecoveryOperationAsync(Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        if (operationId == Guid.Empty) throw new ArgumentException("OperationIdRequired", nameof(operationId));
+        var initialized = await Initialization.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (!initialized.Committed || _options.LocalIdentity is null || _signingKey is null)
+            throw new InvalidOperationException("IdentityStoreUnavailable");
+        return await Task.Run(() =>
+        {
+            using var connection = SqliteNative.Open(_databasePath!, true);
+            var database = connection.Handle!;
+            var deadline = new StoreDeadline(_options.QueryTimeout);
+            SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
+            AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId, _signingKey.PublicKeyBase64,
+                new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
+            _ = ReadIdentityState(database, deadline);
+            var operation = ReadRecoveryOperation(database, operationId, deadline);
+            SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
+            return operation;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     private IdentityAuthorityState ReadIdentityState(sqlite3 database, StoreDeadline deadline)
     {
         var options = _options.LocalIdentity!;
@@ -77,6 +118,7 @@ internal sealed partial class SqliteCommandStore
                 Hash: SqliteNative.ColumnText(s, 3)!)).SingleOrDefault();
         AuditChainDatabase.Require(latest.Sequence == row.Sequence && state.LastIdentityAuditHash == latest.Hash && IdentityAuditEvent.VerifyPayload(
             Convert.FromBase64String(latest.Payload), latest.Ordinal, options.StationId, schemaVersion) == state.Revision, "IdentityAuthorityAuditMismatch");
+        ValidateRecoveryOperationIndex(database, state, deadline);
         return state;
     }
 
@@ -85,6 +127,19 @@ internal sealed partial class SqliteCommandStore
     {
         ArgumentNullException.ThrowIfNull(update);
         return EnqueueIdentityAsync(new IdentityWork(update), cancellationToken);
+    }
+
+    /// <summary>Runs a recovery mutation on the authoritative writer.  The callback receives
+    /// the permanently indexed successful operation, if one exists, so retries cannot depend
+    /// on a bounded encrypted-state journal.</summary>
+    internal ValueTask<IdentityWriteResult> UpdateRecoveryIdentityAsync(Guid operationId,
+        Func<IdentityAuthorityState, RecoveryOperationState?, IdentityUpdate> update,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        if (operationId == Guid.Empty)
+            return ValueTask.FromResult(new IdentityWriteResult(false, "OperationIdRequired"));
+        return EnqueueIdentityAsync(new IdentityWork(operationId, update), cancellationToken);
     }
 
     /// <summary>
@@ -140,14 +195,39 @@ internal sealed partial class SqliteCommandStore
             var duplicateCorrelation = work.CommandUpdate is not null &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
-            var evaluated = work.Evaluate(state, duplicateCorrelation);
+            var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
+                ReadRecoveryOperation(database, work.RecoveryOperationId!.Value, deadline);
+            var evaluated = work.Evaluate(state, duplicateCorrelation, existingRecoveryOperation);
             decision = evaluated;
             guard = evaluated.CommitGuard;
             AuditChainDatabase.Require(evaluated.Events.Count is > 0 and <= 8, "IdentityAuditEventRequired");
             long identitySequence = 0;
+            long recoveryIdentitySequence = 0;
+            var recoveryEventCount = 0;
+            IdentityAuditEvent? recoveryAuditEvent = null;
             foreach (var fact in evaluated.Events)
+            {
                 identitySequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey,
                     BindAuthenticationPolicy(fact with { StateRevision = state.Revision }), deadline);
+                if (evaluated.CompletedRecoveryOperation is { } operation &&
+                    fact.OperationId == operation.OperationId)
+                {
+                    recoveryIdentitySequence = identitySequence;
+                    recoveryAuditEvent = fact;
+                    recoveryEventCount++;
+                }
+            }
+            if (evaluated.CompletedRecoveryOperation is { } completedRecovery)
+            {
+                AuditChainDatabase.Require(work.RecoveryOperationId == completedRecovery.OperationId &&
+                    completedRecovery.Succeeded && recoveryIdentitySequence > 0 && recoveryEventCount == 1 &&
+                    recoveryAuditEvent is not null && recoveryAuditEvent.ReasonCode == completedRecovery.ReasonCode &&
+                    recoveryAuditEvent.RecoveryKitId == completedRecovery.KitId &&
+                    recoveryAuditEvent.PrincipalId == completedRecovery.PrincipalId,
+                    "RecoveryOperationAuditBindingInvalid");
+                AppendRecoveryOperation(database, state, completedRecovery, state.Revision,
+                    recoveryIdentitySequence, deadline);
+            }
             var identityTail = AuditChainDatabase.LastIdentityEntry(database, deadline);
             if (identityTail is null || identityTail.Value.Sequence != identitySequence)
                 throw new InvalidOperationException("IdentityAuthorityAuditMismatch");
@@ -179,7 +259,8 @@ internal sealed partial class SqliteCommandStore
                 ? ex.Message : SqliteAuditIntegrityQuery.FaultReason(ex, "IdentityCommitFailed");
             if (reason.StartsWith("Audit", StringComparison.Ordinal)) SetIntegrityFault(reason, IsStructuralFault(reason));
             if (reason is "IdentityStateInvalid" or "IdentityPolicyBindingMismatch" or "IdentityAuthorityAuditMismatch" or
-                "IdentityAuthorityMissing" or "IdentityStateBindingMismatch" or "IdentityStateSignatureInvalid") SetIntegrityFault(reason, true);
+                "IdentityAuthorityMissing" or "IdentityStateBindingMismatch" or "IdentityStateSignatureInvalid" or
+                "RecoveryOperationIndexInvalid" or "RecoveryOperationAuditBindingInvalid") SetIntegrityFault(reason, true);
             return new(false, reason);
         }
         finally
@@ -200,6 +281,128 @@ internal sealed partial class SqliteCommandStore
         AuthorizationPolicyId = _options.LocalIdentity.AuthorizationPolicy.Id,
         AuthorizationPolicyVersion = _options.LocalIdentity.AuthorizationPolicy.Version,
         AuthorizationPolicyHash = _options.LocalIdentity.AuthorizationPolicy.ContentHash };
+
+    private RecoveryOperationState? ReadRecoveryOperation(sqlite3 database, Guid operationId,
+        StoreDeadline deadline)
+    {
+        var row = AuditChainDatabase.Read(database, @"SELECT OperationId,Kind,Succeeded,ReasonCode,KitId,
+            PrincipalId,DeliveryCommitted,StateRevision,IdentitySequence,AuditHash,RecordHash
+            FROM recovery_operations WHERE OperationId=?;", deadline,
+            statement => ReadRecoveryOperationRow(statement), operationId.ToString("D")).SingleOrDefault();
+        return row is null ? null : ValidateRecoveryOperationRow(database, row, operationId, deadline);
+    }
+
+    private void ValidateRecoveryOperationIndex(sqlite3 database, IdentityAuthorityState state,
+        StoreDeadline deadline)
+    {
+        AuditChainDatabase.Require(state.RecoveryOperationCount >= 0 &&
+            AuditCanonical.IsHash(state.RecoveryOperationRootHash), "RecoveryOperationIndexInvalid");
+        var rows = AuditChainDatabase.Read(database, @"SELECT OperationId,Kind,Succeeded,ReasonCode,KitId,
+            PrincipalId,DeliveryCommitted,StateRevision,IdentitySequence,AuditHash,RecordHash
+            FROM recovery_operations ORDER BY IdentitySequence,OperationId;", deadline,
+            statement => ReadRecoveryOperationRow(statement)).ToArray();
+        var previousSequence = 0L;
+        var count = 0L;
+        var root = AuditCanonical.GenesisHash;
+        foreach (var row in rows)
+        {
+            var operation = ValidateRecoveryOperationRow(database, row, expectedOperationId: null, deadline);
+            AuditChainDatabase.Require(row.IdentitySequence > previousSequence, "RecoveryOperationIndexInvalid");
+            previousSequence = row.IdentitySequence;
+            root = RecoveryOperationRootHash(root, operation, row.StateRevision, row.IdentitySequence,
+                row.AuditHash!, row.RecordHash!);
+            count = checked(count + 1);
+        }
+        AuditChainDatabase.Require(count == state.RecoveryOperationCount &&
+            string.Equals(root, state.RecoveryOperationRootHash, StringComparison.Ordinal),
+            "RecoveryOperationIndexInvalid");
+    }
+
+    private static RecoveryOperationIndexRow ReadRecoveryOperationRow(sqlite3_stmt statement) =>
+        new(SqliteNative.ColumnText(statement, 0), SqliteNative.ColumnText(statement, 1),
+            SqliteNative.ColumnInt64(statement, 2), SqliteNative.ColumnText(statement, 3),
+            SqliteNative.ColumnText(statement, 4), SqliteNative.ColumnText(statement, 5),
+            SqliteNative.ColumnInt64(statement, 6), SqliteNative.ColumnInt64(statement, 7),
+            SqliteNative.ColumnInt64(statement, 8), SqliteNative.ColumnText(statement, 9),
+            SqliteNative.ColumnText(statement, 10));
+
+    private RecoveryOperationState ValidateRecoveryOperationRow(sqlite3 database,
+        RecoveryOperationIndexRow row, Guid? expectedOperationId, StoreDeadline deadline)
+    {
+        AuditChainDatabase.Require(Guid.TryParseExact(row.OperationId, "D", out var parsedOperation) &&
+            parsedOperation != Guid.Empty && (expectedOperationId is null || parsedOperation == expectedOperationId) &&
+            row.Succeeded == 1 && (row.DeliveryCommitted == 0 || row.DeliveryCommitted == 1) &&
+            row.StateRevision >= 0 && row.IdentitySequence > 0 && row.AuditHash is { Length: 64 } &&
+            row.RecordHash is { Length: 64 }, "RecoveryOperationIndexInvalid");
+        Guid? kitId = ParseNullableGuid(row.KitId, "RecoveryOperationIndexInvalid");
+        Guid? principalId = ParseNullableGuid(row.PrincipalId, "RecoveryOperationIndexInvalid");
+        var operation = new RecoveryOperationState
+        {
+            OperationId = parsedOperation, Kind = row.Kind ?? string.Empty, Succeeded = true,
+            ReasonCode = row.ReasonCode ?? string.Empty, KitId = kitId, PrincipalId = principalId,
+            DeliveryCommitted = row.DeliveryCommitted == 1
+        };
+        AuditChainDatabase.Require(operation.Kind.Length is > 0 and <= 64 &&
+            operation.ReasonCode.Length is > 0 and <= 128, "RecoveryOperationIndexInvalid");
+        var auditHash = AuditChainDatabase.Text(database,
+            "SELECT Hash FROM audit_entries WHERE Sequence=? AND Kind='IdentityEvent';", deadline,
+            row.IdentitySequence.ToString(CultureInfo.InvariantCulture));
+        AuditChainDatabase.Require(auditHash == row.AuditHash &&
+            RecoveryOperationRecordHash(operation, row.StateRevision, row.IdentitySequence, row.AuditHash!) == row.RecordHash,
+            "RecoveryOperationIndexInvalid");
+        return operation;
+    }
+
+    private void AppendRecoveryOperation(sqlite3 database, IdentityAuthorityState state,
+        RecoveryOperationState operation, long stateRevision, long identitySequence,
+        StoreDeadline deadline)
+    {
+        AuditChainDatabase.Require(operation.OperationId != Guid.Empty && operation.Succeeded &&
+            operation.Kind is { Length: > 0 and <= 64 } && operation.ReasonCode is { Length: > 0 and <= 128 },
+            "RecoveryOperationInvalid");
+        var auditHash = AuditChainDatabase.Text(database,
+            "SELECT Hash FROM audit_entries WHERE Sequence=? AND Kind='IdentityEvent';", deadline,
+            identitySequence.ToString(CultureInfo.InvariantCulture));
+        AuditChainDatabase.Require(auditHash is { Length: 64 }, "RecoveryOperationAuditBindingInvalid");
+        var recordHash = RecoveryOperationRecordHash(operation, stateRevision, identitySequence, auditHash!);
+        AuditChainDatabase.Execute(database, @"INSERT INTO recovery_operations(OperationId,Kind,Succeeded,
+            ReasonCode,KitId,PrincipalId,DeliveryCommitted,StateRevision,IdentitySequence,AuditHash,RecordHash)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?);", deadline, operation.OperationId.ToString("D"), operation.Kind,
+            operation.Succeeded ? "1" : "0", operation.ReasonCode, operation.KitId?.ToString("D"),
+            operation.PrincipalId?.ToString("D"), operation.DeliveryCommitted ? "1" : "0",
+            stateRevision.ToString(CultureInfo.InvariantCulture), identitySequence.ToString(CultureInfo.InvariantCulture),
+            auditHash, recordHash);
+        state.RecoveryOperationRootHash = RecoveryOperationRootHash(state.RecoveryOperationRootHash,
+            operation, stateRevision, identitySequence, auditHash!, recordHash);
+        state.RecoveryOperationCount = checked(state.RecoveryOperationCount + 1);
+    }
+
+    private static string RecoveryOperationRecordHash(RecoveryOperationState operation, long stateRevision,
+        long identitySequence, string auditHash) => Convert.ToHexString(SHA256.HashData(AuditCanonical.Encode(
+            "RecoveryOperationIndex", operation.OperationId.ToString("D"), operation.Kind,
+            operation.Succeeded ? "1" : "0", operation.ReasonCode, operation.KitId?.ToString("D"),
+            operation.PrincipalId?.ToString("D"), operation.DeliveryCommitted ? "1" : "0",
+            stateRevision.ToString(CultureInfo.InvariantCulture), identitySequence.ToString(CultureInfo.InvariantCulture),
+            auditHash)));
+
+    private static string RecoveryOperationRootHash(string previousRoot, RecoveryOperationState operation,
+        long stateRevision, long identitySequence, string auditHash, string recordHash) =>
+        Convert.ToHexString(SHA256.HashData(AuditCanonical.Encode("RecoveryOperationRoot", previousRoot,
+            operation.OperationId.ToString("D"), operation.Kind, operation.Succeeded ? "1" : "0",
+            operation.ReasonCode, operation.KitId?.ToString("D"), operation.PrincipalId?.ToString("D"),
+            operation.DeliveryCommitted ? "1" : "0", stateRevision.ToString(CultureInfo.InvariantCulture),
+            identitySequence.ToString(CultureInfo.InvariantCulture), auditHash, recordHash)));
+
+    private static Guid? ParseNullableGuid(string? value, string reason)
+    {
+        if (value is null) return null;
+        AuditChainDatabase.Require(Guid.TryParseExact(value, "D", out var parsed) && parsed != Guid.Empty, reason);
+        return parsed;
+    }
+
+    private sealed record RecoveryOperationIndexRow(string? OperationId, string? Kind, long Succeeded,
+        string? ReasonCode, string? KitId, string? PrincipalId, long DeliveryCommitted,
+        long StateRevision, long IdentitySequence, string? AuditHash, string? RecordHash);
 
     private void AppendIdentityCommandFacts(sqlite3 database, IReadOnlyList<CommandAuditFact>? facts,
         Guid? expectedCorrelationId, StoreDeadline deadline)
@@ -264,13 +467,25 @@ internal sealed partial class SqliteCommandStore
             CommandUpdate = commandUpdate;
         }
 
+        internal IdentityWork(Guid recoveryOperationId,
+            Func<IdentityAuthorityState, RecoveryOperationState?, IdentityUpdate> recoveryUpdate)
+        {
+            RecoveryOperationId = recoveryOperationId;
+            RecoveryOperationUpdate = recoveryUpdate;
+        }
+
         internal Func<IdentityAuthorityState, IdentityUpdate>? Update { get; }
         internal Guid? CommandCorrelationId { get; }
         internal Func<IdentityAuthorityState, bool, IdentityUpdate>? CommandUpdate { get; }
+        internal Guid? RecoveryOperationId { get; }
+        internal Func<IdentityAuthorityState, RecoveryOperationState?, IdentityUpdate>? RecoveryOperationUpdate { get; }
         internal object? Result { get; set; }
 
-        internal IdentityUpdate Evaluate(IdentityAuthorityState state, bool duplicateCorrelation) =>
-            CommandUpdate is null ? Update!(state) : CommandUpdate(state, duplicateCorrelation);
+        internal IdentityUpdate Evaluate(IdentityAuthorityState state, bool duplicateCorrelation,
+            RecoveryOperationState? existingRecoveryOperation) =>
+            CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
+            RecoveryOperationUpdate is not null ? RecoveryOperationUpdate(state, existingRecoveryOperation) :
+            Update!(state);
     }
 }
 
@@ -283,5 +498,6 @@ internal sealed record IdentityUpdate(
     object Result,
     IReadOnlyList<IdentityAuditEvent> Events,
     IReadOnlyList<CommandAuditFact>? CommandFacts = null,
-    IIdentityTransactionGuard? CommitGuard = null);
+    IIdentityTransactionGuard? CommitGuard = null,
+    RecoveryOperationState? CompletedRecoveryOperation = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

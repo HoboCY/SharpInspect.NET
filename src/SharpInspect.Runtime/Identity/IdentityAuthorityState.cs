@@ -11,7 +11,11 @@ namespace SharpInspect.Runtime.Identity;
 // The first administrator keeps its bootstrap identity; additional humans have independent credentials.
 internal sealed class IdentityAuthorityState
 {
-    public int FormatVersion { get; set; } = 3;
+    // Format 4 adds the sealed recovery workflow state.  Operation idempotency
+    // lives in the append-only SQLite recovery_operations index.  It is
+    // deliberately not deserialized as an older state: an old binary must not
+    // silently skip a pending custody or rotation blocker.
+    public int FormatVersion { get; set; } = 4;
     public long Revision { get; set; }
     public string StationId { get; set; } = "";
     public string InstallationKeyId { get; set; } = "";
@@ -28,6 +32,28 @@ internal sealed class IdentityAuthorityState
     public BootstrapSecretState? Bootstrap { get; set; }
     public Guid? RecoveryKitId { get; set; }
     public List<RecoveryCodeState> RecoveryCodes { get; set; } = new();
+    private RecoveryKitState? _kitState;
+    public RecoveryKitState KitState
+    {
+        get => _kitState ?? (RecoveryKitId is not null ? RecoveryKitState.Available : RecoveryKitState.Unavailable);
+        set => _kitState = value;
+    }
+    internal bool HasExplicitKitState => _kitState is not null;
+    private DateTimeOffset? _recoveryKitIssuedAtUtc;
+    public DateTimeOffset? RecoveryKitIssuedAtUtc
+    {
+        get => _recoveryKitIssuedAtUtc;
+        set => _recoveryKitIssuedAtUtc = value;
+    }
+    internal bool HasExplicitRecoveryKitIssuedAt => _recoveryKitIssuedAtUtc is not null;
+    public int RecoveryKitVersion { get; set; } = 1;
+    public Guid? RecoveredPrincipalId { get; set; }
+    public Guid? RecoveryOwnerPrincipalId { get; set; }
+    // This signed count/root commits the durable recovery operation index.  The
+    // SQLite row hash is useful for local diagnostics; only this sealed value
+    // makes deletion/replacement/reordering fail closed after reopening.
+    public long RecoveryOperationCount { get; set; }
+    public string RecoveryOperationRootHash { get; set; } = AuditCanonical.GenesisHash;
     public AuthenticationThrottleState StationThrottle { get; set; } = new();
     public AuthenticationThrottleState UnknownAccountThrottle { get; set; } = new();
     public string AttemptIdentifierKey { get; set; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -82,9 +108,21 @@ internal sealed class RecoveryCodeState
 {
     public Guid CodeId { get; set; }
     public string Verifier { get; set; } = "";
+    public string Purpose { get; set; } = "Recovery";
     public bool Consumed { get; set; }
     public bool Revoked { get; set; }
     public override string ToString() => "[confidential recovery state]";
+}
+
+internal sealed class RecoveryOperationState
+{
+    public Guid OperationId { get; set; }
+    public string Kind { get; set; } = "";
+    public bool Succeeded { get; set; }
+    public string ReasonCode { get; set; } = "";
+    public Guid? KitId { get; set; }
+    public Guid? PrincipalId { get; set; }
+    public bool DeliveryCommitted { get; set; }
 }
 
 internal sealed class AuthenticationThrottleState
@@ -148,10 +186,22 @@ internal static class IdentityStateProtection
             clear = ProtectedData.Unprotect(Convert.FromBase64String(encoded), Entropy(station, keyId, revision), DataProtectionScope.LocalMachine);
             if (clear.Length > 32768) throw new InvalidOperationException("IdentityStateCapacityExceeded");
             var state = JsonSerializer.Deserialize<IdentityAuthorityState>(clear) ?? throw new InvalidOperationException("IdentityStateInvalid");
-            if (state.FormatVersion != 3 || state.Revision != revision || state.StationId != station ||
+            if (state.FormatVersion != 4 || state.Revision != revision || state.StationId != station ||
                 state.InstallationKeyId != keyId || state.RecoveryCodes is null || state.RecoveryCodes.Count > 32 ||
                 state.StationThrottle is null || state.UnknownAccountThrottle is null || state.AttemptIdentifierKey.Length != 44 ||
                 state.AdditionalAccounts is null || state.EnumerateAccounts().Count() > 16 ||
+                !Enum.IsDefined(state.KitState) ||
+                state.RecoveryKitVersion < 1 ||
+                state.RecoveryOperationCount < 0 ||
+                !AuditCanonical.IsHash(state.RecoveryOperationRootHash) ||
+                (state.RecoveryKitId is not null && (!state.HasExplicitKitState || !state.HasExplicitRecoveryKitIssuedAt ||
+                    state.RecoveryKitIssuedAtUtc == default)) ||
+                state.RecoveredPrincipalId == Guid.Empty || state.RecoveryOwnerPrincipalId == Guid.Empty ||
+                state.RecoveryKitId == Guid.Empty ||
+                state.RecoveryCodes.Any(code => code is null || code.CodeId == Guid.Empty ||
+                    code.Verifier is null or { Length: < 32 or > 128 } ||
+                    code.Purpose is null or { Length: < 1 or > 64 }) ||
+                state.RecoveryCodes.Select(code => code.CodeId).Distinct().Count() != state.RecoveryCodes.Count ||
                 state.EnumerateAccounts().Any(account => account is null || account.Throttle is null ||
                     account.Permissions is null || account.Permissions.Count > 64 || account.AuthorizationRevision < 1 ||
                     account.PrincipalId == Guid.Empty || account.CredentialId == Guid.Empty || account.CredentialRevision < 1 ||

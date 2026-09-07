@@ -1,0 +1,82 @@
+<UserControl x:Class="SharpInspect.Wpf.AdministratorRecoveryPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="620">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <ScrollViewer x:Name="RecoveryScrollViewer" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="管理员恢复 · 恢复包托管" Foreground="#172B42" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="恢复不会自动登录。恢复后的管理员需在现有会话中重新登录，再次输入密码轮换恢复包并确认托管。生产准入仍由 Runtime 独立决定。"
+                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
+
+                <StackPanel x:Name="UnavailablePanel" Background="#FFF7E7" Margin="0,0,0,12">
+                    <TextBlock Text="管理员恢复当前不可用：请刷新状态并确认本机已配置受控恢复服务。"
+                               Foreground="#75531A" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="当前状态：" Foreground="#556679" />
+                        <TextBlock x:Name="StatusLabel" Foreground="#334E68" />
+                        <Button Content="刷新恢复状态" Click="RefreshClick" Margin="18,0,0,0" />
+                    </WrapPanel>
+                    <TextBlock x:Name="ReasonLabel" Foreground="#556679" TextWrapping="Wrap" />
+                    <TextBlock x:Name="StatusMessageLabel" Foreground="#334E68" TextWrapping="Wrap" Margin="0,4,0,0" />
+                    <TextBlock x:Name="ErrorLabel" Foreground="#9B3430" TextWrapping="Wrap" Margin="0,4,0,10" />
+                    <TextBlock Text="生产准入：未完成。RecoveryKit 的 RotationRequired / CustodyConfirmationRequired 状态永远不表示 Ready。"
+                               Foreground="#75531A" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap" />
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="无可用管理员时恢复个人账号" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="恢复码只提交给 Runtime 一次；成功后页面不会替新管理员登录。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,6,0,8" TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="100" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="一次性恢复码" Foreground="#556679" Margin="0,0,8,7" />
+                                <PasswordBox x:Name="RecoveryCodeBox" Grid.Column="1" Margin="0,0,0,7" />
+                                <TextBlock Text="个人用户名" Grid.Row="1" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="RecoveryUserNameBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,7" />
+                                <TextBlock Text="显示名" Grid.Row="2" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="RecoveryDisplayNameBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,7" />
+                                <TextBlock Text="新密码" Grid.Row="3" Foreground="#556679" Margin="0,0,8,7" />
+                                <PasswordBox x:Name="RecoveryPasswordBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,7" />
+                                <TextBlock Text="操作" Grid.Row="4" Foreground="#556679" Margin="0,0,8,7" />
+                                <Button x:Name="RecoverButton" Content="恢复管理员" Grid.Row="4" Grid.Column="1" HorizontalAlignment="Left"
+                                        Click="RecoverClick" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="恢复包轮换与托管确认" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="恢复后的管理员先通过现有会话登录，再输入本次密码进行轮换。新恢复码只显示一次；输入其中一枚确认码后才完成托管。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,6,0,8" TextWrapping="Wrap" />
+                            <TextBlock Text="当前会话密码" Foreground="#556679" Margin="0,0,0,3" />
+                            <PasswordBox x:Name="RotatePasswordBox" />
+                            <Button x:Name="RotateButton" Content="轮换恢复包" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                    Click="RotateClick" />
+                            <TextBlock Text="新恢复码（仅本页显示或复制一次）" Foreground="#556679" Margin="0,14,0,3" />
+                            <TextBlock x:Name="KitDisplayLabel" Text="尚未显示新恢复码。" Foreground="#172B42" TextWrapping="Wrap" />
+                            <WrapPanel Margin="0,8,0,0">
+                                <Button x:Name="RevealKitButton" Content="显示一次" Click="RevealKitClick" />
+                                <Button x:Name="CopyKitButton" Content="复制一次" Click="CopyKitClick" />
+                                <Button x:Name="ClearKitButton" Content="清除显示" Click="ClearKitClick" />
+                            </WrapPanel>
+                            <TextBlock x:Name="KitCopyStatusLabel" Foreground="#556679" FontSize="11" Margin="0,4,0,8" TextWrapping="Wrap" />
+                            <TextBlock Text="托管确认码" Foreground="#556679" Margin="0,4,0,3" />
+                            <PasswordBox x:Name="CustodyConfirmationBox" />
+                            <Button x:Name="ConfirmCustodyButton" Content="确认托管并完成轮换" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                    Click="ConfirmCustodyClick" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Border>
+</UserControl>
