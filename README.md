@@ -158,11 +158,40 @@ Runtime 在 SQLite 写事务内重新核对全部条件，持有短期会话授�
 验证另启动独立 WPF 进程，通过私有标准输入传递测试密码，实际走 PasswordBox 登录，并核对重启前后
 PrincipalId 和审计链。密码不会作为进程参数、环境变量或报告内容写出。
 
+## 验证记录开发入口
+
+`ConformanceDocuments` 冻结版本化 Profile、逐不变量双向映射、Release Candidate 与 Qualification Context。
+产品文件和测试设施、数据、阈值、计算规则及实际运行环境分别绑定 SHA-256；空分组必须显式声明，
+规范 JSON 包含 schema/canonicalization 版本。同一 Profile ID/版本不能替换内容。
+候选目录的完整文件清单纳入指纹，新增未列出的文件也会失配；源版本由调用宿主声明，正式源历史核验仍未交付。
+
+`ConformanceFacility` 是显式注册可信 `IConformanceScenario` 的开发执行设施，使用独立的本地 NTFS SQLite
+账本及 DPAPI/ACL 保护签名根。它先持久化 Test Execution ID、输入、环境、预期和前序关系，再运行场景。
+场景只返回观测；当前执行规则 `exact-text-v1` 按冻结预期作 ordinal 比较，裁决 Pass/Fail。
+未支持的方法或环境保持 Blocked；场景普通异常不自动认定为 InvalidHarness。实际夹具或上下文指纹失配
+才产生附带预期/实际 hash 证据的 InvalidHarness。所有 Outcome 来自封闭的六值集合。
+
+输入和原始输出采用显式 `PublicTestData` 封套，每项最多 32 KiB，拒绝敏感分类；不自动捕获环境变量、
+进程输出或凭据。原始证据和终态同事务提交，唯一 ID 与只追加接口防止覆盖。外置签名 head 核验完整链，
+可检测单独修改或回滚数据库；提交后 head 写入失败保留记录并阻止继续聚合。整套目录及密钥同时回滚的
+外部不可回滚保护尚未交付，不声称 WORM 存储。当前账本最多 10000 条、128 MiB 载荷。
+
+`ConformanceQuery` 只读核验、分页查询执行谱系及原始证据。聚合会保留同一候选的所有历史 Product Fail，
+更换测试上下文或后续跑绿不能清除该失败；产品修复必须形成新的候选指纹。未完成的预约显示 NotRun，
+取消后的迟到观测不能覆盖已保存的 Blocked。执行设施保留实际占用槽，未退出的场景不能被第二个场景替换。
+
+SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source <source-revision>`，以及另一进程的
+`--conformance-query <same-directory>`。`tools/Test-Ticket07.ps1` 从本次三个 NuGet 开发包构建独立消费者后执行
+这两个入口。演示明确记录受控的 Pass、Product Fail 和后续尝试，证明失败聚合拒绝，不签发资格。
+所有本票记录固定为 `DevelopmentOnly`；摘要的 `CanIssueQualification` 始终为 false。可信场景仍在进程内运行，
+此契约不构成沙箱或正式检查授权；完整 Profile、正式测试设施和各层资格留在后续工单。
+
 ## 验证边界
 
 逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)、
 [V1-03](docs/verification/v1-03.md)、[V1-04 验证映射](docs/verification/v1-04.md) 与
-[V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)。
+[V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)、
+[V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

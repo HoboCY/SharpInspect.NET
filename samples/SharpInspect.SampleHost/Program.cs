@@ -25,6 +25,10 @@ internal static class Program
             var index = Array.IndexOf(args, name);
             return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
         }
+        if (Option("--conformance-demo") is { } conformanceDemoDirectory)
+            return ConformanceDemo.RunDemo(conformanceDemoDirectory, Option("--conformance-source"));
+        if (Option("--conformance-query") is { } conformanceQueryDirectory)
+            return ConformanceDemo.RunQuery(conformanceQueryDirectory);
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
         var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(

@@ -159,6 +159,32 @@ try {
         '--trace-db',$taskDatabase,'--trace-manifest',$taskTraceManifest) + $taskAuditArguments)
     Invoke-TaskDotnet 'consumer-restart.log' (@($taskConsumerDll,'--trace-db',$taskDatabase,'--verify-trace',$taskTraceManifest) + $taskAuditArguments)
     Test-TaskCloudRootRejection $taskConsumerDll $taskDatabase $taskTraceManifest
+    if ($Ticket -ge 7) {
+        $taskConformanceRoot = Join-Path $taskRun 'conformance-demo'
+        [void][IO.Directory]::CreateDirectory($taskConformanceRoot)
+        $taskConformanceSource = (& git rev-parse HEAD).Trim()
+        Invoke-TaskDotnet 'conformance-demo.log' @($taskConsumerDll,'--conformance-demo',
+            $taskConformanceRoot,'--conformance-source',$taskConformanceSource)
+        Invoke-TaskDotnet 'conformance-query.log' @($taskConsumerDll,'--conformance-query',$taskConformanceRoot)
+        $taskConformanceDemoOutput = Get-Content -LiteralPath (Join-Path $taskRun 'conformance-demo.log') -Raw
+        $taskConformanceQueryOutput = Get-Content -LiteralPath (Join-Path $taskRun 'conformance-query.log') -Raw
+        if ($taskConformanceDemoOutput -notmatch 'V107-P01 conformance-demo PASS' -or
+            $taskConformanceDemoOutput -notmatch 'preflightNotRun=true' -or
+            $taskConformanceQueryOutput -notmatch 'V107-P02 conformance-query PASS' -or
+            $taskConformanceQueryOutput -notmatch 'historicalFail=true' -or
+            $taskConformanceQueryOutput -notmatch 'databaseUnchanged=true') {
+            throw 'The independent consumer conformance demo/query did not prove the required markers.'
+        }
+        foreach ($taskConformanceFile in @('conformance.sqlite','conformance.sqlite.anchor',
+                'candidate-manifest.json','conformance-manifest.json','conformance-summary.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $taskConformanceRoot $taskConformanceFile))) {
+                throw "Conformance evidence file is missing: $taskConformanceFile"
+            }
+        }
+        $taskConformanceKeys = @(Get-ChildItem -LiteralPath (Join-Path $taskConformanceRoot 'private-key') -Filter '*.key' -File)
+        if ($taskConformanceKeys.Count -ne 1) { throw 'Conformance evidence signing key is missing or not bounded to one file.' }
+        Write-Output "V107-P03 independent-process consumer conformance PASS: $taskConformanceRoot"
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {
