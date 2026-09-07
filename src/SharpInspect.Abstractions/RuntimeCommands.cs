@@ -13,6 +13,11 @@ public sealed record ArmProductionCommand(Guid CorrelationId, CommandInvocation 
 public sealed record GracefulProductionStopCommand(Guid CorrelationId, CommandInvocation Invocation)
     : RuntimeCommand(CorrelationId, Invocation);
 
+public enum GovernedAuditChangeKind { RotateSigningKey, RetireSigningKey, CorrectHistoricalFact, DeleteEvidence }
+/// <summary>The authorization boundary remains closed until governed identity and maintenance are available.</summary>
+public sealed record GovernedAuditChangeCommand(Guid CorrelationId, CommandInvocation Invocation,
+    GovernedAuditChangeKind Change) : RuntimeCommand(CorrelationId, Invocation);
+
 /// <summary>Acceptance is admission of responsibility, not completion; query subsequent snapshots.</summary>
 public sealed record RuntimeCommandOutcome(Guid CorrelationId, CommandDisposition Disposition, string ReasonCode,
     AuditPersistence Audit = AuditPersistence.NotAttempted, Guid? AttemptId = null);

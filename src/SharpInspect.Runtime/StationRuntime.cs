@@ -179,6 +179,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
         if (_snapshot.LastCommand?.CorrelationId == command.CorrelationId) return Reject("DuplicateCorrelationId");
         return command switch
         {
+            GovernedAuditChangeCommand => Reject("AuthorizationUnavailable"),
             ArmProductionCommand => Reject(_snapshot.AdmissionBlockers[0]),
             GracefulProductionStopCommand when command.Invocation.Source != CommandSource.PhysicalConsole => Reject("LocalConsoleRequired"),
             GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Pending => Reject("OperationInProgress"),
@@ -191,7 +192,15 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
     private CommandAuditFact CreateFact(RuntimeCommand command, Guid attempt, RuntimeCommandOutcome outcome) =>
         new(Guid.NewGuid(), attempt, command.CorrelationId, _snapshot.RuntimeEpoch, DateTimeOffset.UtcNow,
             command switch { ArmProductionCommand => AuditedCommandKind.ArmProduction,
-                GracefulProductionStopCommand => AuditedCommandKind.GracefulProductionStop, _ => AuditedCommandKind.Unsupported },
+                GracefulProductionStopCommand => AuditedCommandKind.GracefulProductionStop,
+                GovernedAuditChangeCommand change when _audit?.Integrity is { State: not AuditIntegrityState.NotConfigured } => change.Change switch
+                {
+                    GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,
+                    GovernedAuditChangeKind.RetireSigningKey => AuditedCommandKind.RetireSigningKey,
+                    GovernedAuditChangeKind.CorrectHistoricalFact => AuditedCommandKind.CorrectHistoricalFact,
+                    GovernedAuditChangeKind.DeleteEvidence => AuditedCommandKind.DeleteEvidence,
+                    _ => AuditedCommandKind.Unsupported
+                }, _ => AuditedCommandKind.Unsupported },
             command.Invocation is { } invocation && Enum.IsDefined(typeof(CommandSource), invocation.Source) ? invocation.Source : null,
             command.Invocation?.PrincipalId is { Length: <= 256 } principal ? principal : null,
             command.Invocation?.SessionId, command.Invocation?.StepUpGrantId,
@@ -213,7 +222,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
             if (_disposed) return;
             var blockers = _snapshot.AdmissionBlockers.Where(x => x != "TraceStoreMissing").ToList();
             if (!result.Committed) blockers.Add(result.ReasonCode);
-            PublishLocked(_snapshot with { Store = _auditFault ? _snapshot.Store :
+            PublishLocked(_snapshot with { AuditIntegrity = _audit.Integrity, Store = _auditFault ? _snapshot.Store :
                 new SubsystemHealth(result.Committed ? HealthState.Healthy : HealthState.Faulted, result.ReasonCode),
                 AdmissionBlockers = new AdmissionBlockers(blockers) });
         }
@@ -241,7 +250,12 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
                 lock (_sync)
                 {
                     if (_shutdownRequested || _disposed) return;
-                    var next = _snapshot;
+                    var integrity = _audit?.Integrity;
+                    var integrityBlocked = integrity is { State: AuditIntegrityState.Faulted or AuditIntegrityState.Verifying };
+                    var blockers = _snapshot.AdmissionBlockers.Where(x => x != "AuditIntegrityUnavailable");
+                    if (integrityBlocked) blockers = blockers.Append("AuditIntegrityUnavailable");
+                    var next = _snapshot with { AuditIntegrity = integrity,
+                        AdmissionBlockers = new AdmissionBlockers(blockers) };
                     if (next.LastCommand is { State: OperationState.Pending })
                     {
                         if (_completion is null) _completion = Task.Run(CompletePendingStopAsync);

@@ -10,20 +10,26 @@ public partial class ShellWindow : Window
 {
     private readonly StationShellViewModel _viewModel;
     private readonly CommandTraceViewModel? _traceViewModel;
+    private readonly AuditIntegrityViewModel? _integrityViewModel;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
+    private bool _integritySelectionLoaded;
     public bool IsPrivacyLocked { get; private set; }
 
-    public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null)
+    public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
+        AuditIntegrityViewModel? integrityViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _traceViewModel = traceViewModel;
+        _integrityViewModel = integrityViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
+        IntegrityPanel.DataContext = integrityViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
+        if (integrityViewModel is not null) integrityViewModel.PropertyChanged += IntegrityChanged;
         RenderState();
     }
 
@@ -34,6 +40,13 @@ public partial class ShellWindow : Window
     }
 
     internal void AllowSmokeShutdown() => _allowSmokeShutdown = true;
+    internal void VerifyAuditLayout()
+    {
+        UpdateLayout();
+        var bottom = IntegrityPanel.TranslatePoint(new Point(0, IntegrityPanel.ActualHeight), TracePanel).Y;
+        var top = TraceAvailablePanel.TranslatePoint(new Point(0, 0), TracePanel).Y;
+        if (bottom > top + 0.5) throw new InvalidOperationException("Audit panel overlaps command trace controls.");
+    }
     internal void ShowUnavailable() => FreshnessLabel.Text = "状态不可用，请保持生产禁用";
     private void RevealPageClick(object sender, RoutedEventArgs e) => RevealPage();
     private void LockPage(object sender, RoutedEventArgs e) => LockPage();
@@ -54,11 +67,13 @@ public partial class ShellWindow : Window
         _viewModel.PropertyChanged -= Refresh;
         _viewModel.State.PropertyChanged -= Refresh;
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
+        if (_integrityViewModel is not null) _integrityViewModel.PropertyChanged -= IntegrityChanged;
         base.OnClosed(e);
     }
 
     private void Refresh(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void TraceChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void IntegrityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -91,6 +106,22 @@ public partial class ShellWindow : Window
             {
                 _traceSelectionLoaded = true;
                 _ = _traceViewModel.RefreshAsync();
+            }
+        }
+        if (_integrityViewModel is null)
+        {
+            IntegrityUnavailablePanel.Visibility = Visibility.Visible;
+            IntegrityAvailablePanel.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            IntegrityUnavailablePanel.Visibility = Visibility.Collapsed;
+            IntegrityAvailablePanel.Visibility = Visibility.Visible;
+            if (!traceSelected) _integritySelectionLoaded = false;
+            else if (!_integritySelectionLoaded)
+            {
+                _integritySelectionLoaded = true;
+                _ = _integrityViewModel.RefreshAsync();
             }
         }
         string Value(object? value) => s is null ? "未知" : value?.ToString() ?? "无";

@@ -23,6 +23,7 @@ internal sealed class StoreDeadline
 
 internal interface ICommandAuditWriter
 {
+    AuditIntegrityReport? Integrity => null;
     Task<StoreWriteResult> Initialization { get; }
     TimeSpan CommitTimeout { get; }
     ValueTask<StoreWriteResult> AppendAsync(CommandAuditFact fact, StoreDeadline deadline,

@@ -32,6 +32,8 @@ internal static class SqliteNative
         try
         {
             connection.Open();
+            // Bound individual SQLite values before any path reads schema, facts, or checkpoint JSON.
+            SQLitePCL.raw.sqlite3_limit(connection.Handle!, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, 65536);
             return connection;
         }
         catch

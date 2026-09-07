@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.Integrity;
 
 namespace SharpInspect.Runtime;
 
@@ -25,6 +26,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(options);
         services.TryAddSingleton<SqliteCommandStore>();
         services.TryAddSingleton<ICommandTraceQuery, SqliteCommandTraceQuery>();
+        services.TryAddSingleton<IAuditIntegrityQuery, SqliteAuditIntegrityQuery>();
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval));
         return services;
     }

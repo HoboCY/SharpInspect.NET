@@ -101,9 +101,16 @@ try {
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'
-    Invoke-TaskDotnet 'consumer-smoke.log' @($taskConsumerDll,'--smoke','--screenshot',(Join-Path $taskRun 'consumer-window.png'),
-        '--trace-db',$taskDatabase,'--trace-manifest',$taskTraceManifest)
-    Invoke-TaskDotnet 'consumer-restart.log' @($taskConsumerDll,'--trace-db',$taskDatabase,'--verify-trace',$taskTraceManifest)
+    $taskAuditArguments = @()
+    if ($Ticket -ge 3) {
+        $taskAuditKeyName = 'SharpInspect.DevelopmentValidation.' + [Guid]::NewGuid().ToString('N')
+        $taskAuditKeyDirectory = Join-Path $taskRun 'private-keys'
+        $taskAuditArguments = @('--audit-key',$taskAuditKeyName,'--audit-key-directory',$taskAuditKeyDirectory)
+        $taskAuditKeyName | Set-Content -LiteralPath (Join-Path $taskRun 'development-key-identity.txt') -Encoding utf8
+    }
+    Invoke-TaskDotnet 'consumer-smoke.log' (@($taskConsumerDll,'--smoke','--screenshot',(Join-Path $taskRun 'consumer-window.png'),
+        '--trace-db',$taskDatabase,'--trace-manifest',$taskTraceManifest) + $taskAuditArguments)
+    Invoke-TaskDotnet 'consumer-restart.log' (@($taskConsumerDll,'--trace-db',$taskDatabase,'--verify-trace',$taskTraceManifest) + $taskAuditArguments)
     Test-TaskCloudRootRejection $taskConsumerDll $taskDatabase $taskTraceManifest
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
@@ -122,4 +129,15 @@ catch {
     }
     throw
 }
-finally { Pop-Location }
+finally {
+    if ($taskAuditKeyName) {
+        $taskKeyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($taskAuditKeyName)))
+        $taskOwnedKeyPath = [IO.Path]::GetFullPath((Join-Path $taskAuditKeyDirectory ($taskKeyHash + '.key')))
+        if (-not $taskOwnedKeyPath.StartsWith(([IO.Path]::GetFullPath($taskRun) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Disposable key path escaped the validation directory.'
+        }
+        # Remove only this run's disposable protected test key; public evidence remains.
+        if (Test-Path -LiteralPath $taskOwnedKeyPath) { Remove-Item -LiteralPath $taskOwnedKeyPath }
+    }
+    Pop-Location
+}

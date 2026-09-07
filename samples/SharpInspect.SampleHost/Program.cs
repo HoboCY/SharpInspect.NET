@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.Integrity;
 using SharpInspect.Wpf;
 
 namespace SharpInspect.SampleHost;
@@ -27,7 +28,16 @@ internal static class Program
         var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
         if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
-        var storeOptions = new ProductionStoreOptions(databasePath);
+        var auditKey = Option("--audit-key");
+        var storeOptions = new ProductionStoreOptions(databasePath)
+        {
+            AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
+            {
+                AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
+                KeyDirectory = Option("--audit-key-directory") ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
+            }
+        };
         if (Option("--verify-trace") is { } verificationFile)
         {
             try { VerifyRestartAsync(storeOptions, verificationFile).GetAwaiter().GetResult(); return 0; }
@@ -42,11 +52,13 @@ internal static class Program
         services.AddSingleton<StationShellViewModel>(p => new StationShellViewModel(
             p.GetRequiredService<IStationRuntime>(), new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton<CommandTraceViewModel>();
+        services.AddSingleton<AuditIntegrityViewModel>();
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
         var trace = provider.GetRequiredService<CommandTraceViewModel>();
-        var window = new ShellWindow(vm, trace);
+        var integrity = provider.GetRequiredService<AuditIntegrityViewModel>();
+        var window = new ShellWindow(vm, trace, integrity);
         var exitCode = 0;
         if (smoke)
         {
@@ -62,7 +74,12 @@ internal static class Program
             {
                 window.Show();
                 await vm.StartAsync();
-                if (smoke) await RunSmokeAsync(window, vm, runtime, trace, screenshot, Option("--trace-manifest"));
+                if (smoke)
+                {
+                    if (auditKey is not null)
+                        await WaitAsync(() => vm.CurrentSnapshot?.AuditIntegrity?.State == AuditIntegrityState.Verified);
+                    await RunSmokeAsync(window, vm, runtime, trace, integrity, screenshot, Option("--trace-manifest"));
+                }
             }
             catch (Exception exception)
             {
@@ -85,7 +102,7 @@ internal static class Program
     }
 
     private static async Task RunSmokeAsync(ShellWindow window, StationShellViewModel vm,
-        IStationRuntime runtime, CommandTraceViewModel trace, string? screenshot, string? traceManifest)
+        IStationRuntime runtime, CommandTraceViewModel trace, AuditIntegrityViewModel integrity, string? screenshot, string? traceManifest)
     {
         var startup = await runtime.GetSnapshotAsync();
         Require(startup.Lifecycle == RuntimeLifecycle.Running && !startup.Ready &&
@@ -95,6 +112,9 @@ internal static class Program
         Require(arm.Disposition == CommandDisposition.Rejected && arm.ReasonCode == "DeploymentPoliciesMissing", "unconfigured Arm rejection");
         Require(arm.Audit == AuditPersistence.Persisted, "rejected Arm must be durable");
         Console.WriteLine($"V101-R02 consumer Arm PASS correlation={arm.CorrelationId} reason={arm.ReasonCode}");
+        if (startup.AuditIntegrity is { State: AuditIntegrityState.Verified } initialIntegrity)
+            await WaitAsync(() => vm.CurrentSnapshot?.AuditIntegrity is { State: AuditIntegrityState.Verified } current &&
+                current.VerifiedThroughSequence > initialIntegrity.ThroughSequence);
         var stop = await vm.GracefulStopAsync();
         Require(stop.Disposition == CommandDisposition.Accepted && stop.ReasonCode == "StopAdmitted", "Stop admission");
         Require(stop.Audit == AuditPersistence.Persisted, "accepted Stop must be durable");
@@ -120,6 +140,15 @@ internal static class Program
         vm.NavigateTo("Trace");
         trace.CorrelationIdText = stop.CorrelationId.ToString();
         await trace.RefreshAsync();
+        await integrity.RefreshAsync();
+        window.VerifyAuditLayout();
+        if (startup.AuditIntegrity?.State == AuditIntegrityState.Verified)
+        {
+            Require(integrity.CurrentReport?.State == AuditIntegrityState.Verified,
+                "signed audit chain is verified by independent read-only capability");
+            Require(!vm.State.Ready, "integrity verification cannot substitute for missing production qualification");
+            Console.WriteLine($"V103-P01 signed chain/visible read-only status PASS through={integrity.ThroughSequence}");
+        }
         Require(trace.Rows.Count == 2 && trace.Rows.Any(x => x.Phase == CommandAuditPhase.Completed), "trace page rebuilds stop facts");
         Require(trace.Rows.All(x => x.AuthenticatedHumanPrincipalId is null && x.SystemPrincipalId == "SharpInspect.Runtime"), "system actor must not impersonate a person");
         if (screenshot is not null) RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "consumer-trace.png"));
@@ -150,6 +179,12 @@ internal static class Program
         Require(events[0].Disposition == CommandDisposition.Accepted && events[1].Phase == CommandAuditPhase.Completed,
             "projection rebuilt from accepted and completed facts");
         Console.WriteLine($"V102-P02 independent-process read-only restart PASS accepted={manifest.AcceptedCorrelation} events={events.Length}");
+        if (options.AuditIntegrityPolicy is not null)
+        {
+            var report = await new SqliteAuditIntegrityQuery(options).VerifyAsync(new AuditVerificationRequest());
+            Require(report.State == AuditIntegrityState.Verified, "signed chain and machine key survive independent process restart: " + report.ReasonCode);
+            Console.WriteLine($"V103-P02 independent signed chain restart PASS through={report.ThroughSequence} checkpoint={report.CheckpointSequence}");
+        }
     }
 
     private static async Task VerifyFeedAsync(StationStateSnapshot template)

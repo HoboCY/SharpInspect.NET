@@ -22,4 +22,7 @@ public sealed class ProductionStoreOptions
     public TimeSpan QueryTimeout { get; init; } = TimeSpan.FromSeconds(2);
 
     public int QueueCapacity { get; init; } = 64;
+
+    public Integrity.AuditIntegrityPolicy? AuditIntegrityPolicy { get; init; }
+    public SharpInspect.Abstractions.IExternalAuditAnchor? ExternalAuditAnchor { get; init; }
 }
