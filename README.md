@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket13.ps1
+pwsh -File tools/Test-Ticket14.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket13/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket14/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -62,10 +62,10 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 
 数据库必须位于固定本地 NTFS，路径验证会拒绝共享、已知云同步根、可移动盘和 reparse 路径。
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
-新空库显式启用审计政策时为 2，同时启用本地身份时为 5；带本地身份的 Schema5 只允许从新空库创建。
-已有 schema4 在启用本地身份时只读 preflight 拒绝 `IdentityAuthorizationGovernedMigrationRequired`，
-schema3 拒绝 `IdentityAuthenticationGovernedMigrationRequired`；schema1/2
-及未知版本也拒绝治理写入。迁移随专票提供，不自动补链或升级。
+新空库显式启用审计政策时为 2，同时启用本地身份时为 7；再启用开发结果归档时为 8。
+启用归档时旧库统一只读 preflight 拒绝 `AlgorithmResultArchiveGovernedMigrationRequired`。
+未启用归档的身份路径对 schema6/5/4/3 分别要求报警、恢复、授权、认证治理迁移；
+schema1/2 及未知版本也不开放身份治理写入。迁移随专票提供，不自动补链或升级。
 只读查询每页 1–200 条，以记录位置和固定上界分页。更新、删除历史事实不属于公开 API。
 SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 
@@ -209,7 +209,7 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-p
 ```
 
 该入口覆盖两套不同 Factory、错误 Schema/hash、缺必填值、语义失败和依赖准备失败。
-单帧计算、版本化执行政策与 Hung 恢复见下文；Overlay 持久化由后续工单交付。
+单帧计算、版本化执行政策与 Hung 恢复见下文；Overlay 开发历史可显式启用。
 
 ## 单帧计算与完整结果校验
 
@@ -225,7 +225,7 @@ Runtime 在精确测量 Schema 与 Overlay Contract 全部校验通过后赋予 
 原始异常不进入结果、日志或 UI；本阶段不保存异常详情，也不提供受保护诊断存储的旁路。
 
 结果携带不可变配置指纹、精确结果 Schema、Frame Metadata 和相关 ID。Overlay 保留 Frame Pixel 坐标及 painter 顺序；
-有限的越界几何不改写，渲染裁剪和持久化另行实现。填充只能用于支持填充的封闭图元，文本采用保守的纯标签安全规则。
+有限的越界几何不改写，渲染裁剪仅影响显示。填充只能用于支持填充的封闭图元，文本采用保守的纯标签安全规则。
 
 每次调用通过 `AlgorithmExecutionRequest` 显式给出 Recipe 身份、版本、hash 和有限期限，并在完整校验后再次检查单调时间。
 `AlgorithmExecutionOptions` 必须提供版本化 `AlgorithmExecutionPolicy`，包含部署最小/最大时限与取消宽限期，没有隐式生产数值。
@@ -239,11 +239,39 @@ Runtime 中止令牌用于取消计算，不能用 UI 放弃等待令牌代替�
 诊断政策尚未配置时，独立的每次执行 sink 丢弃全部事件，终态后封闭；不对任意对象做格式化或扇出。
 
 这是 Manual/Qualification 类型的计算开发入口，不提交权威 Inspection Record，也不签发资格。
-Production 类型被明确拒绝。版本化 Recipe/部署时限、Cancellation Grace、Hung 报警与受控重启由 T13 继续交付；当前 Ready 仍为 false。
+Production 类型被明确拒绝。版本化时限、Cancellation Grace 与进程 Hung 边界已由 T13 交付；当前 Ready 仍为 false。
 
 ```powershell
 dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-execution-check
 ```
+
+## 开发结果归档与 Frame Pixel 查看器
+
+新空库显式设置 `ProductionStoreOptions.AlgorithmResultArchive = new AlgorithmResultArchiveOptions()`，
+同时配置本地身份与审计政策，启用 schema 8 开发归档。现有库须经后续受治理迁移，不自动升级。
+`AlgorithmResultArchive.AppendAsync(recordId, outcome)` 仅保存完整验证成功的开发计算；
+原结果 schema、Overlay contract、FrameMetadata、painter 顺序和执行时限证据共同进入规范载荷与签名绑定。
+同 ID 同内容幂等，冲突或容量超限整体拒绝。缺失结果与有效空 Overlay 不混淆。
+
+`IAlgorithmResultQuery` 提供固定上界的有界只读分页，读取时验证原合同和签名绑定。
+`AlgorithmResultHistoryViewModel` / `AlgorithmResultPanel` 已接入追溯页，未配置时明确显示不可用。
+`FrameOverlayPresenter` 按像素中心坐标、顺时针角度与 painter 顺序显示十类闭集图元，
+缩放、平移、DPI 及裁剪不会回写几何。Text 使用自身 AnchorKind，Marker 使用自身 Size。
+无法安全绘制时整幅显示不可用，原图未留存时仍可读取结构化标注。
+
+`FramePreviewImage.CopyFromFrame` 复制冻结的未标注开发预览，绑定原帧元数据与像素摘要；
+`RenderPreview()` 产生独立的 `RenderedOverlayPreview`，保留源、结果与渲染身份。
+该预览摘要不替代正式图像 EvidenceHash；派生预览不能传入原图入口。
+默认上限为单记录 1 MiB、单页 4 MiB、总归档 256 MiB 和 10000 条，可显式配置更低容量。
+这些限制与共享审计核验预算共同生效；归档另保留 64 条控制事件空间，所有追加在超过预算前拒绝并回滚。
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --overlay-check <new-local-directory>
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --overlay-query <same-directory>
+```
+
+两个入口分别执行隔离开发归档与独立进程重启查询。正常宿主可使用 `--algorithm-result-archive`
+并配合 `--identity-policy` / `--audit-key` 开关启用相同能力。此开发归档不构成正式 Inspection Record 或生产资格。
 
 ## 帧池与 OpenCvSharp 借用
 
@@ -317,7 +345,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-10 算法契约与准备验证映射](docs/verification/v1-10.md)、
 [V1-11 帧池与 OpenCvSharp 借用验证映射](docs/verification/v1-11.md)、
 [V1-12 单帧执行与完整结果校验映射](docs/verification/v1-12.md)、
-[V1-13 时限、取消与 Hung 恢复映射](docs/verification/v1-13.md)。
+[V1-13 时限、取消与 Hung 恢复映射](docs/verification/v1-13.md)、
+[V1-14 Frame Pixel 归档与查看器映射](docs/verification/v1-14.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

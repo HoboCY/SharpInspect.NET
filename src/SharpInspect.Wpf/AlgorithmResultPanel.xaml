@@ -1,0 +1,44 @@
+<UserControl x:Class="SharpInspect.Wpf.AlgorithmResultPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:SharpInspect.Wpf">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <StackPanel>
+            <TextBlock Text="检测标注与结果历史" Foreground="#172B42" FontSize="16" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ScopeLabel}" Foreground="#75531A" TextWrapping="Wrap" Margin="0,6,0,12" />
+            <WrapPanel>
+                <TextBlock Text="执行关联 ID" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBox Text="{Binding CorrelationText, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Width="290" Margin="0,0,8,0" />
+                <ComboBox ItemsSource="{Binding CorrelationKinds}" SelectedItem="{Binding CorrelationKind}" Width="120" Margin="0,0,8,0" />
+                <Button Content="刷新结果" Command="{Binding RefreshCommand}" Margin="0,0,8,0" Padding="12,6" />
+                <Button Content="下一页" Command="{Binding NextPageCommand}" Padding="12,6" />
+            </WrapPanel>
+            <TextBlock Text="{Binding StatusMessage}" Foreground="#556679" TextWrapping="Wrap" Margin="0,10,0,10" />
+            <DataGrid x:Name="ResultGrid" ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRecord, Mode=TwoWay}"
+                      IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                      SelectionMode="Single" MaxHeight="210" MinHeight="80" EnableRowVirtualization="True">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="序号" Binding="{Binding Position}" Width="65" />
+                    <DataGridTextColumn Header="记录时间" Binding="{Binding RecordedAtUtc}" Width="*" />
+                    <DataGridTextColumn Header="执行类型" Binding="{Binding Correlation.Kind}" Width="110" />
+                    <DataGridTextColumn Header="算法" Binding="{Binding Algorithm.Id}" Width="*" />
+                    <DataGridTextColumn Header="判定" Binding="{Binding Decision}" Width="85" />
+                    <DataGridTextColumn Header="图元数" Binding="{Binding Result.OverlaySet.Primitives.Count}" Width="75" />
+                </DataGrid.Columns>
+            </DataGrid>
+            <TextBlock Text="{Binding SelectionSummary}" Foreground="#334E68" TextWrapping="Wrap" Margin="0,12,0,8" />
+            <WrapPanel Margin="0,0,0,8">
+                <TextBlock Text="缩放" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <Slider Minimum="0.1" Maximum="8" Value="{Binding Zoom, ElementName=Viewer, Mode=TwoWay}" Width="180" VerticalAlignment="Center" />
+                <Button Content="适合视图" Click="FitView" Padding="12,6" Margin="12,0,0,0" />
+                <TextBlock Text="拖动可平移；几何记录保持不变。" VerticalAlignment="Center" Foreground="#6B7888" Margin="12,0,0,0" />
+            </WrapPanel>
+            <Border Background="#171E28" BorderBrush="#CAD3DD" BorderThickness="1" Height="360" ClipToBounds="True"
+                    MouseLeftButtonDown="StartPan" MouseMove="MovePan" MouseLeftButtonUp="EndPan">
+                <local:FrameOverlayPresenter x:Name="Viewer" Snapshot="{Binding SelectedOverlay}" />
+            </Border>
+            <TextBlock Text="{Binding StatusMessage, ElementName=Viewer}" Foreground="#75531A" Margin="0,8,0,0" />
+            <TextBlock Text="图像可缺省；有效空标注与无法读取的结果分别显示。" Foreground="#6B7888" FontSize="11" Margin="0,6,0,0" />
+        </StackPanel>
+    </Border>
+</UserControl>

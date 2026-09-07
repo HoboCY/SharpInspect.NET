@@ -76,6 +76,11 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICommandTraceQuery, SqliteCommandTraceQuery>();
         services.TryAddSingleton<IAuditIntegrityQuery, SqliteAuditIntegrityQuery>();
         services.TryAddSingleton<IAlarmHistoryQuery, SqliteAlarmHistoryQuery>();
+        if (options.AlgorithmResultArchive is not null)
+        {
+            services.TryAddSingleton<IAlgorithmResultQuery, SqliteAlgorithmResultQuery>();
+            services.TryAddSingleton(p => new AlgorithmResultArchive(p.GetRequiredService<SqliteCommandStore>()));
+        }
         if (options.LocalIdentity is not null)
         {
             services.TryAddSingleton(p => new LocalIdentityService(p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity));

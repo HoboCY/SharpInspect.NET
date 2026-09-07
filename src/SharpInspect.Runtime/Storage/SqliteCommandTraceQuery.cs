@@ -45,7 +45,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                     // Filesystem and registry inspection must not block the WPF Dispatcher.
                     if (!StoragePathValidator.TryValidate(_options, out var currentPath, out var pathReason))
                         throw new InvalidOperationException(pathReason);
-                    return QueryCore(currentPath, filter, deadline, cancellationToken);
+                    return QueryCore(currentPath, filter, deadline, cancellationToken,
+                        _options.AlgorithmResultArchive is not null);
                 }, CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -65,7 +66,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
     }
 
     private static CommandTracePage QueryCore(string databasePath, CommandTraceFilter filter, StoreDeadline deadline,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool archiveConfigured)
     {
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         var database = connection.Handle!;
@@ -77,7 +78,11 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 SqliteNative.Step(database, statement, deadline, cancellationToken);
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
             }, cancellationToken);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion && !archiveConfigured)
+            throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
+        if (schemaVersion < AlgorithmResultArchiveOptions.SchemaVersion && archiveConfigured)
+            throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>

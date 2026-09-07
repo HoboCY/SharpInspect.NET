@@ -61,16 +61,20 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            AlarmStorageCodec.ConfigureSqliteLimit(database);
+            if (_options.AlgorithmResultArchive is not null) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
+            else AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
+            var archiveStore = _options.AlgorithmResultArchive is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore, deadline,
-                validateAnchorReceipt: false);
+                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
+            if (_options.AlgorithmResultArchive is not null)
+                AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -91,16 +95,20 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            AlarmStorageCodec.ConfigureSqliteLimit(database);
+            if (_options.AlgorithmResultArchive is not null) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
+            else AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
+            var archiveStore = _options.AlgorithmResultArchive is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore, deadline,
-                validateAnchorReceipt: false);
+                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
+            if (_options.AlgorithmResultArchive is not null)
+                AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -209,12 +217,15 @@ internal sealed partial class SqliteCommandStore
         try
         {
             var alarmStore = _options.AlarmPolicy is not null;
+            var archiveStore = _options.AlgorithmResultArchive is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore, deadline,
-                validateAnchorReceipt: false);
+                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
+            if (_options.AlgorithmResultArchive is not null)
+                AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&
@@ -292,7 +303,9 @@ internal sealed partial class SqliteCommandStore
         {
             var reason = ex is InvalidOperationException && ex.Message.StartsWith("Identity", StringComparison.Ordinal)
                 ? ex.Message : SqliteAuditIntegrityQuery.FaultReason(ex, "IdentityCommitFailed");
-            if (reason.StartsWith("Audit", StringComparison.Ordinal)) SetIntegrityFault(reason, IsStructuralFault(reason));
+            if (reason.StartsWith("Audit", StringComparison.Ordinal) &&
+                !AuditChainDatabase.IsCapacityReason(reason))
+                SetIntegrityFault(reason, IsStructuralFault(reason));
             if (reason is "IdentityStateInvalid" or "IdentityPolicyBindingMismatch" or "IdentityAuthorityAuditMismatch" or
                 "IdentityAuthorityMissing" or "IdentityStateBindingMismatch" or "IdentityStateSignatureInvalid" or
                 "RecoveryOperationIndexInvalid" or "RecoveryOperationAuditBindingInvalid") SetIntegrityFault(reason, true);

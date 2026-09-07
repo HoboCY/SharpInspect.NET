@@ -27,4 +27,6 @@ public sealed class ProductionStoreOptions
     public Identity.LocalIdentityOptions? LocalIdentity { get; init; }
     public SharpInspect.Abstractions.AlarmPolicy? AlarmPolicy { get; init; }
     public SharpInspect.Abstractions.IExternalAuditAnchor? ExternalAuditAnchor { get; init; }
+    /// <summary>Explicit opt-in for the schema 8 DevelopmentComputation archive.</summary>
+    public AlgorithmResultArchiveOptions? AlgorithmResultArchive { get; init; }
 }

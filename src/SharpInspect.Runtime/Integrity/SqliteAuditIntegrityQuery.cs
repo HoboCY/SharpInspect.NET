@@ -49,9 +49,11 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 using var key = _openKey(policy);
                 using var connection = SqliteNative.Open(path, readOnly: true);
                 var db = connection.Handle!;
+                if (schemaSupportsArchive(_options)) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
-                if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
+                if (schema >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
+                else if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
                 if (_options.LocalIdentity is not null && schema < 7)
                 {
                     var migrationReason = schema switch
@@ -64,14 +66,23 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     };
                     throw new InvalidOperationException(migrationReason);
                 }
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7, "AuditGovernedMigrationRequired");
-                var alarmStartup = schema == 7 && startup && _options.AlarmPolicy is not null;
-                var verificationRequest = alarmStartup
-                    ? new AuditVerificationRequest(0, request.MaximumEntries)
+                if (_options.AlgorithmResultArchive is null && schema == AlgorithmResultArchiveOptions.SchemaVersion)
+                    throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
+                if (_options.AlgorithmResultArchive is not null && schema < AlgorithmResultArchiveOptions.SchemaVersion)
+                    throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8, "AuditGovernedMigrationRequired");
+                var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion;
+                var archiveVerification = archiveSchema;
+                var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
+                var fullVerification = archiveVerification || alarmStartup;
+                var verificationRequest = fullVerification
+                    ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
                 var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64,
-                    verificationRequest, alarmStartup ? false : startup, deadline);
+                    verificationRequest, fullVerification ? false : startup, deadline,
+                    archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
+                if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -108,6 +119,13 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
             return "IdentityRecoveryGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "GovernedAlarmMigrationRequired" })
             return "GovernedAlarmMigrationRequired";
+        if (exception is InvalidOperationException { Message: "AlgorithmResultArchiveConfigurationRequired" })
+            return "AlgorithmResultArchiveConfigurationRequired";
+        if (exception is InvalidOperationException { Message: "AlgorithmResultArchiveGovernedMigrationRequired" })
+            return "AlgorithmResultArchiveGovernedMigrationRequired";
+        if (exception is InvalidOperationException { Message: var archiveReason } &&
+            archiveReason.StartsWith("AlgorithmResult", StringComparison.Ordinal))
+            return archiveReason;
         if (exception is InvalidOperationException { Message: var message } &&
             (message.StartsWith("RecoveryOperation", StringComparison.Ordinal)))
             return message;
@@ -129,4 +147,7 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
             }
         };
     }
+
+    private static bool schemaSupportsArchive(ProductionStoreOptions options) =>
+        options.AlgorithmResultArchive is not null;
 }

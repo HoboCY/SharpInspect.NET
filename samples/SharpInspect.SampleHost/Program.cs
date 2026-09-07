@@ -35,6 +35,10 @@ internal static class Program
             return FrameConsumerDemo.Run();
         if (args.Contains("--algorithm-execution-check", StringComparer.OrdinalIgnoreCase))
             return AlgorithmExecutionDemo.Run();
+        if (Option("--overlay-check") is { } overlayDirectory)
+            return AlgorithmOverlayDemo.Run(overlayDirectory);
+        if (Option("--overlay-query") is { } overlayQueryDirectory)
+            return AlgorithmOverlayDemo.Query(overlayQueryDirectory);
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
@@ -46,6 +50,8 @@ internal static class Program
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
             AlarmPolicy = Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
+            AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
+                ? new AlgorithmResultArchiveOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -83,6 +89,8 @@ internal static class Program
         });
         services.AddSingleton<CommandTraceViewModel>();
         services.AddSingleton<AuditIntegrityViewModel>();
+        services.AddSingleton(p => new AlgorithmResultHistoryViewModel(p.GetService<IAlgorithmResultQuery>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
             p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
@@ -107,7 +115,8 @@ internal static class Program
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
         var alarms = provider.GetRequiredService<AlarmViewModel>();
-        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms);
+        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms,
+            provider.GetRequiredService<AlgorithmResultHistoryViewModel>());
         var exitCode = 0;
         if (smoke)
         {

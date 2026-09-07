@@ -29,6 +29,9 @@ public sealed class AlgorithmExecutionOutcome
         Correlation = frame.Correlation; FrameMetadata = frame; PreparedInstanceId = prepared.InstanceId;
         Algorithm = prepared.Descriptor.Identity; ResultSchema = prepared.Descriptor.ResultSchema;
         ConfigurationContentHash = prepared.Configuration.ContentHash;
+        ConfigurationSchemaId = prepared.Descriptor.ConfigurationSchema.Id;
+        ConfigurationSchemaVersion = prepared.Descriptor.ConfigurationSchema.Version;
+        ConfigurationSchemaContentHash = prepared.Descriptor.ConfigurationSchema.ContentHash;
         ExecutionStatus = status; ReasonCode = reasonCode;
         ValidatedResult = status == ExecutionStatus.Success ? validatedResult : null;
         Decision = ValidatedResult?.Decision ?? InspectionDecision.Unknown;
@@ -40,6 +43,9 @@ public sealed class AlgorithmExecutionOutcome
     public AlgorithmIdentity Algorithm { get; }
     public AlgorithmResultSchema ResultSchema { get; }
     public string ConfigurationContentHash { get; }
+    public string ConfigurationSchemaId { get; }
+    public string ConfigurationSchemaVersion { get; }
+    public string ConfigurationSchemaContentHash { get; }
     public ExecutionStatus ExecutionStatus { get; }
     public InspectionDecision Decision { get; }
     public string? ReasonCode { get; }

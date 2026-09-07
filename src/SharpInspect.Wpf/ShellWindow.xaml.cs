@@ -40,6 +40,8 @@ public partial class ShellWindow : Window
     private readonly IdentityAdministrationViewModel? _identityAdministrationViewModel;
     private readonly AdministratorRecoveryViewModel? _administratorRecoveryViewModel;
     private readonly AlarmViewModel? _alarmViewModel;
+    private readonly AlgorithmResultHistoryViewModel? _algorithmResultViewModel;
+    private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
@@ -55,7 +57,7 @@ public partial class ShellWindow : Window
         AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
         IdentityAdministrationViewModel? identityAdministrationViewModel = null,
         AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
-        AlarmViewModel? alarmViewModel = null)
+        AlarmViewModel? alarmViewModel = null, AlgorithmResultHistoryViewModel? algorithmResultViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -65,6 +67,7 @@ public partial class ShellWindow : Window
         _identityAdministrationViewModel = identityAdministrationViewModel;
         _administratorRecoveryViewModel = administratorRecoveryViewModel;
         _alarmViewModel = alarmViewModel;
+        _algorithmResultViewModel = algorithmResultViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -73,6 +76,7 @@ public partial class ShellWindow : Window
         AdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
         PrivacyAdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
         AlarmPanel.DataContext = alarmViewModel;
+        AlgorithmResultsPanel.DataContext = algorithmResultViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -337,6 +341,14 @@ public partial class ShellWindow : Window
         SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
         BlockersPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
+        AlgorithmResultsPanel.Visibility = traceSelected && _algorithmResultViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!traceSelected) _algorithmResultSelectionLoaded = false;
+        else if (!_algorithmResultSelectionLoaded && _algorithmResultViewModel is not null)
+        {
+            _algorithmResultSelectionLoaded = true;
+            _ = _algorithmResultViewModel.RefreshAsync();
+        }
         AlarmPanel.Visibility = alarmSelected ? Visibility.Visible : Visibility.Collapsed;
         if (_traceViewModel is null)
         {

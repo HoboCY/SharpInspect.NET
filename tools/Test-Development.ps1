@@ -2,6 +2,7 @@ param([ValidateRange(1,76)][int]$Ticket = 1)
 $ErrorActionPreference = 'Stop'
 $taskRepo = Split-Path -Parent $PSScriptRoot
 $taskRun = Join-Path $taskRepo (('artifacts\ticket{0:D2}\' -f $Ticket) + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$taskOverlayDirectory = $null
 [void][IO.Directory]::CreateDirectory($taskRun)
 
 function Invoke-TaskDotnet([string]$LogName, [string[]]$Arguments) {
@@ -256,6 +257,28 @@ try {
             throw 'The independent execution consumer did not prove its frozen timing evidence.'
         }
     }
+    if ($Ticket -ge 14) {
+        $taskOverlayDirectory = Join-Path $taskRun 'overlay-demo'
+        Invoke-TaskDotnet 'overlay-consumer.log' @($taskConsumerDll,'--overlay-check',$taskOverlayDirectory)
+        $taskOverlayOutput = Get-Content -LiteralPath (Join-Path $taskRun 'overlay-consumer.log') -Raw
+        if ($taskOverlayOutput -notmatch 'V114-N01 overlay-consumer PASS primitives=10 empty=true' -or
+            $taskOverlayOutput -notmatch 'maliciousRejected=true geometryUnchanged=true sourceSeparated=true productionReady=false') {
+            throw 'The independent overlay consumer did not prove validated archive and display semantics.'
+        }
+        Invoke-TaskDotnet 'overlay-restart.log' @($taskConsumerDll,'--overlay-query',$taskOverlayDirectory)
+        $taskOverlayRestart = Get-Content -LiteralPath (Join-Path $taskRun 'overlay-restart.log') -Raw
+        if ($taskOverlayRestart -notmatch 'V114-N02 overlay-restart PASS records=2 originalSchema=true sourceImageRequired=false') {
+            throw 'The independent overlay process did not prove original-contract history without an image source.'
+        }
+        foreach ($taskOverlayFile in @('overlay-evidence.json','overlay-restart.json','source-frame.png',
+            'overlay-preview.png','overlay-viewer.png')) {
+            $taskOverlayArtifact = Join-Path $taskOverlayDirectory $taskOverlayFile
+            if (-not (Test-Path -LiteralPath $taskOverlayArtifact -PathType Leaf) -or
+                (Get-Item -LiteralPath $taskOverlayArtifact).Length -eq 0) {
+                throw "Overlay verification artifact is missing or empty: $taskOverlayFile"
+            }
+        }
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {
@@ -274,6 +297,14 @@ catch {
     throw
 }
 finally {
+    if ($taskOverlayDirectory) {
+        $taskOverlayKeyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes('SharpInspect.SampleOverlay')))
+        $taskOverlayKey = [IO.Path]::GetFullPath((Join-Path $taskOverlayDirectory ('audit-keys\' + $taskOverlayKeyHash + '.key')))
+        if (-not $taskOverlayKey.StartsWith(([IO.Path]::GetFullPath($taskRun) + [IO.Path]::DirectorySeparatorChar),
+            [StringComparison]::OrdinalIgnoreCase)) { throw 'Overlay test key escaped the validation directory.' }
+        if (Test-Path -LiteralPath $taskOverlayKey) { Remove-Item -LiteralPath $taskOverlayKey }
+    }
     if ($taskAuditKeyName) {
         $taskKeyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($taskAuditKeyName)))
         $taskOwnedKeyPath = [IO.Path]::GetFullPath((Join-Path $taskAuditKeyDirectory ($taskKeyHash + '.key')))
