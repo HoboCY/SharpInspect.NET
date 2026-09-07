@@ -33,6 +33,8 @@ internal static class Program
             return AlgorithmPreparationDemo.Run();
         if (args.Contains("--frame-consumer-check", StringComparer.OrdinalIgnoreCase))
             return FrameConsumerDemo.Run();
+        if (args.Contains("--algorithm-execution-check", StringComparer.OrdinalIgnoreCase))
+            return AlgorithmExecutionDemo.Run();
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);

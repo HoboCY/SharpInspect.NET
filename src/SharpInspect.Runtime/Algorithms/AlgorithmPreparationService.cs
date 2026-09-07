@@ -44,6 +44,7 @@ public sealed class PreparedAlgorithm : IAsyncDisposable
     private readonly IVisionAlgorithm _algorithm;
     private readonly Func<IVisionAlgorithm, PreparedAlgorithm, Task> _retire;
     private Task? _disposal;
+    private TaskCompletionSource<bool>? _execution;
     internal PreparedAlgorithm(AlgorithmDescriptor descriptor, AlgorithmConfigurationSnapshot configuration,
         IVisionAlgorithm algorithm, Func<IVisionAlgorithm, PreparedAlgorithm, Task> retire)
     {
@@ -54,13 +55,43 @@ public sealed class PreparedAlgorithm : IAsyncDisposable
     public AlgorithmDescriptor Descriptor { get; }
     public AlgorithmConfigurationSnapshot Configuration { get; }
     public bool IsRetired { get { lock (_sync) return _disposal is not null; } }
-    internal IVisionAlgorithm Algorithm
-    {
-        get { lock (_sync) return _disposal is null ? _algorithm : throw new InvalidOperationException("AlgorithmInstanceRetired"); }
-    }
     public ValueTask DisposeAsync()
     {
-        lock (_sync) return new ValueTask(_disposal ??= Task.Run(() => _retire(_algorithm, this)));
+        lock (_sync)
+        {
+            if (_disposal is null)
+            {
+                var pending = _execution?.Task ?? Task.CompletedTask;
+                _disposal = Task.Run(async () =>
+                {
+                    await pending.ConfigureAwait(false);
+                    await _retire(_algorithm, this).ConfigureAwait(false);
+                });
+            }
+            return new ValueTask(_disposal);
+        }
+    }
+
+    internal bool TryBeginExecution(out IVisionAlgorithm? algorithm)
+    {
+        lock (_sync)
+        {
+            algorithm = null;
+            if (_disposal is not null || _execution is not null) return false;
+            _execution = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            algorithm = _algorithm;
+            return true;
+        }
+    }
+
+    internal void EndExecution()
+    {
+        lock (_sync)
+        {
+            var completion = _execution;
+            _execution = null;
+            completion?.TrySetResult(true);
+        }
     }
 }
 

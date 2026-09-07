@@ -244,6 +244,14 @@ try {
             throw 'The independent frame consumer did not prove the normalized pixel and native loan contracts.'
         }
     }
+    if ($Ticket -ge 12) {
+        Invoke-TaskDotnet 'algorithm-execution.log' @($taskConsumerDll,'--algorithm-execution-check')
+        $taskExecutionOutput = Get-Content -LiteralPath (Join-Path $taskRun 'algorithm-execution.log') -Raw
+        if ($taskExecutionOutput -notmatch 'V112-P01 algorithm-execution PASS decisions=3 contractNegatives=true' -or
+            $taskExecutionOutput -notmatch 'exceptionSanitized=true preparedOnce=true productionReady=false') {
+            throw 'The independent execution consumer did not validate whole-result semantics and instance reuse.'
+        }
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

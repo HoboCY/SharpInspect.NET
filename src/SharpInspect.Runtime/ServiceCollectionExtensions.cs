@@ -11,6 +11,19 @@ namespace SharpInspect.Runtime;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>Registers the bounded computation engine without opening production admission.</summary>
+    public static IServiceCollection AddSharpInspectAlgorithmExecution(this IServiceCollection services,
+        AlgorithmExecutionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(options);
+        if (services.Any(item => item.ServiceType == typeof(AlgorithmExecutionOptions) ||
+            item.ServiceType == typeof(AlgorithmExecutionService)))
+            throw new ArgumentException("AlgorithmExecutionAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        services.AddSingleton<AlgorithmExecutionService>();
+        return services;
+    }
+
     /// <summary>Uses only explicitly registered IVisionAlgorithmFactory services; it does not scan or load assemblies.</summary>
     public static IServiceCollection AddSharpInspectAlgorithmPreparation(this IServiceCollection services,
         AlgorithmPreparationOptions options)

@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket11.ps1
+pwsh -File tools/Test-Ticket12.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket11/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket12/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -209,7 +209,34 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-p
 ```
 
 该入口覆盖两套不同 Factory、错误 Schema/hash、缺必填值、语义失败和依赖准备失败。
-单帧执行与整包结果校验、执行期超时隔离和 Overlay 持久化仍由后续工单交付。
+单帧计算与整包校验见下一节；版本化执行政策、Hung 恢复与 Overlay 持久化由后续工单交付。
+
+## 单帧计算与完整结果校验
+
+`AddSharpInspectAlgorithmExecution(options)` 显式注册计算引擎。`ExecuteAsync(prepared, frameLease, timeout, runtimeCancellationToken)`
+消费帧令牌；成功、拒绝、取消和异常都不会把原令牌留给调用方再次释放新 owner。
+同一引擎只持有一个执行占位，同一 prepared 跨引擎也不能并发执行；Busy 请求直接拒绝。
+正常帧复用已准备实例，完成清理后才返回正常结果，不重新创建或预热模型。
+
+Runtime 在精确测量 Schema 与 Overlay Contract 全部校验通过后赋予 Success。
+正常 Pass、Fail、带允许原因码的 Unknown 都可以是 Success；任何返回违约整体成为
+`Error + Unknown + AlgorithmResultContractViolation`，`ValidatedResult=null`，不保留部分测量或图形。
+允许的类型化 `AlgorithmExecutionException` 原因码经绑定 Schema 核对后保留；其他异常只返回 `AlgorithmExecutionError`。
+原始异常不进入结果、日志或 UI；本阶段不保存异常详情，也不提供受保护诊断存储的旁路。
+
+结果携带不可变配置指纹、精确结果 Schema、Frame Metadata 和相关 ID。Overlay 保留 Frame Pixel 坐标及 painter 顺序；
+有限的越界几何不改写，渲染裁剪和持久化另行实现。填充只能用于支持填充的封闭图元，文本采用保守的纯标签安全规则。
+
+每次调用显式给出有限期限，并在完整校验后再次检查单调时间。Runtime 中止令牌用于取消计算，不能用 UI 放弃等待令牌代替。
+超时或取消固定非成功终态，迟到数据不能覆盖；帧和实例仍保留到真实执行及其取消回调退出后才安全归还/退休。
+诊断政策尚未配置时，独立的每次执行 sink 丢弃全部事件，终态后封闭；不对任意对象做格式化或扇出。
+
+这是 Manual/Qualification 类型的计算开发入口，不提交权威 Inspection Record，也不签发资格。
+Production 类型被明确拒绝。版本化 Recipe/部署时限、Cancellation Grace、Hung 报警与受控重启由 T13 继续交付；当前 Ready 仍为 false。
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-execution-check
+```
 
 ## 帧池与 OpenCvSharp 借用
 
@@ -281,7 +308,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)、
 [V1-09 报警政策与生命周期验证映射](docs/verification/v1-09.md)、
 [V1-10 算法契约与准备验证映射](docs/verification/v1-10.md)、
-[V1-11 帧池与 OpenCvSharp 借用验证映射](docs/verification/v1-11.md)。
+[V1-11 帧池与 OpenCvSharp 借用验证映射](docs/verification/v1-11.md)、
+[V1-12 单帧执行与完整结果校验映射](docs/verification/v1-12.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

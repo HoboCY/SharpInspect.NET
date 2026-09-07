@@ -470,7 +470,7 @@ public sealed class OverlayText : OverlayPrimitive
     {
         if (!Enum.IsDefined(typeof(OverlayTextAnchor), anchorKind))
             throw new ArgumentOutOfRangeException(nameof(anchorKind));
-        Text = AlgorithmContractValidation.BoundedText(text, nameof(text), 4096);
+        Text = AlgorithmContractValidation.BoundedText(text, nameof(text), 65_536);
         Anchor = anchor;
         AnchorKind = anchorKind;
     }
