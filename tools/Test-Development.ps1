@@ -226,6 +226,15 @@ try {
             throw 'The independent alarm consumer did not prove the configured closed path.'
         }
     }
+    if ($Ticket -ge 10) {
+        Invoke-TaskDotnet 'algorithm-preparation-consumer.log' @($taskConsumerDll,'--algorithm-prepare-check')
+        $taskAlgorithmOutput = Get-Content -LiteralPath (Join-Path $taskRun 'algorithm-preparation-consumer.log') -Raw
+        if ($taskAlgorithmOutput -notmatch 'V110-P01 algorithm-preparation PASS factories=2' -or
+            $taskAlgorithmOutput -notmatch 'configurationNegatives=true preparationFailure=true ready=false' -or
+            $taskAlgorithmOutput -notmatch 'frameExecution=NotRun productionAlgorithm=UserSupplied') {
+            throw 'The independent algorithm consumer did not prove explicit Factory registration and preparation.'
+        }
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

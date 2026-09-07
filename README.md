@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket06.ps1
+pwsh -File tools/Test-Ticket10.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket06/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket10/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -185,6 +185,31 @@ Step-Up。两者均不会 Arm、确认 PLC 结果或完成站点恢复。权限�
 设备健康正向测试使用内部夹具；真实 Provider、活跃周期中断和 PLC 写入留在后续工单。报警观测独立限流，
 排队观测让本机 Stop 先完成。新身份存储使用 schema 7，旧 schema 6 需要受治理迁移。
 
+## 托管算法注册与准备
+
+宿主显式注册自己的 `IVisionAlgorithmFactory`，再调用
+`AddSharpInspectAlgorithmPreparation(new AlgorithmPreparationOptions(maximumPreparationTimeout))`。
+Factory 公开不可变的算法身份、配置 Schema、结果 Schema 和 Overlay Contract；准备请求精确绑定这些版本及内容 hash。
+`AlgorithmConfigurationSnapshot.Create` 验证全部字段并生成版本化 canonical SHA-256，保留 Int64 精度和类型，
+拒绝未知键、重复键、缺必填值、错误单位、越界及隐式转换。authoring defaults 只供后续草稿工具使用。
+
+`AlgorithmPreparationService.PrepareAsync` 依次执行结构验证、Factory 语义验证、Create 和 WarmUp，全部成功后
+交付 `PreparedAlgorithm`。句柄不公开原始实例；配置、相关身份、借用帧和有界诊断组成最小执行上下文。
+模型、许可证和计算资源由消费方 Factory 在准备阶段加载；两个演示算法只做托管计算。
+准备成功不激活 Recipe，也不会改变站点 Ready 或启动恢复要求。
+
+准备期限包含等待和实际准备工作，与后续 Recipe 的执行期限分别配置。相同 Factory 串行调用，
+超时或取消后仍运行的创建、预热、取消回调和释放过程继续占用实际工作槽，直到真正退出。
+实例只能被一个句柄拥有；正在被拥有或已释放的对象均不能再次被 Factory 交付。异步释放有幂等入口，
+关闭等待到期只限制宿主等待，不会宣称仍在运行的工作已退出。
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-prepare-check
+```
+
+该入口覆盖两套不同 Factory、错误 Schema/hash、缺必填值、语义失败和依赖准备失败。
+帧池、OpenCV 借用、单帧执行与整包结果校验、执行期超时隔离和 Overlay 持久化仍由后续工单交付。
+
 ## 验证记录开发入口
 
 `ConformanceDocuments` 冻结版本化 Profile、逐不变量双向映射、Release Candidate 与 Qualification Context。
@@ -220,7 +245,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)、
 [V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)、
 [V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)、
-[V1-09 报警政策与生命周期验证映射](docs/verification/v1-09.md)。
+[V1-09 报警政策与生命周期验证映射](docs/verification/v1-09.md)、
+[V1-10 算法契约与准备验证映射](docs/verification/v1-10.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

@@ -4,11 +4,26 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Storage;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Identity;
+using SharpInspect.Runtime.Algorithms;
 
 namespace SharpInspect.Runtime;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>Uses only explicitly registered IVisionAlgorithmFactory services; it does not scan or load assemblies.</summary>
+    public static IServiceCollection AddSharpInspectAlgorithmPreparation(this IServiceCollection services,
+        AlgorithmPreparationOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        if (services.Any(item => item.ServiceType == typeof(AlgorithmPreparationService) ||
+            item.ServiceType == typeof(AlgorithmPreparationOptions)))
+            throw new ArgumentException("AlgorithmPreparationAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        services.AddSingleton<AlgorithmPreparationService>();
+        return services;
+    }
+
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
