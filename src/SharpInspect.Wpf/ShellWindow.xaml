@@ -49,7 +49,7 @@
             </StackPanel>
         </Border>
         <Grid Margin="24,18">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ScrollViewer x:Name="MainScrollViewer" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                     <WrapPanel Margin="0,0,0,14">
                         <Button Content="生产" Command="{Binding NavigateCommand}" CommandParameter="Production" />
@@ -157,6 +157,7 @@
                         </Grid>
                     </Border>
                     <local:IdentityPanel x:Name="IdentityPanel" Visibility="Collapsed" Margin="0,16,0,0" />
+                    <local:IdentityAdministrationPanel x:Name="IdentityAdministrationPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                 </StackPanel>
             </ScrollViewer>
             <Border x:Name="PrivacyCover" Visibility="Collapsed" Background="#F3F5F7">

@@ -747,7 +747,7 @@ public sealed class AuthenticationThrottleTests
                 Blocklist = PasswordBlocklist.Create(
                     "v105-test-blocklist", "v1", new[] { "known-compromised-value" })
             },
-            hasher ?? new Pbkdf2PasswordHasher(), AuthenticationPolicy);
+            hasher ?? new Pbkdf2PasswordHasher(), AuthenticationPolicy, AuthorizationPolicy.Development);
 
         public ProductionStoreOptions StoreOptions(LocalIdentityOptions? identity = null) => new(DatabasePath)
         {

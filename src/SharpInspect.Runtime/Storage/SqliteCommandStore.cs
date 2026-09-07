@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Storage;
 internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDisposable
 {
     internal const string SystemPrincipal = "SharpInspect.Runtime";
-    private int SchemaVersion => _options.LocalIdentity is not null ? 4 : _policy is null ? 1 : 2;
+    private int SchemaVersion => _options.LocalIdentity is not null ? 5 : _policy is null ? 1 : 2;
     private const int EventVersion = 1;
     private const int MaximumReasonLength = 256;
     private const int MaximumPrincipalLength = 256;
@@ -272,6 +272,15 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
+    private string MigrationReason(int existingVersion) => SchemaVersion == 5
+        ? existingVersion switch
+        {
+            4 => "IdentityAuthorizationGovernedMigrationRequired",
+            3 => "IdentityAuthenticationGovernedMigrationRequired",
+            _ => "AuditGovernedMigrationRequired"
+        }
+        : "AuditGovernedMigrationRequired";
+
     private StoreWriteResult InitializeDatabase(SqliteConnection connection)
     {
         var deadline = new StoreDeadline(CommitTimeout);
@@ -280,7 +289,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         var objects = ReadSchemaObjects(database, deadline, includeInternalObjects: version == 0);
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion) return new StoreWriteResult(false, "StoreSchemaTooNew");
-        if (version > 0 && version < SchemaVersion) return new StoreWriteResult(false, "AuditGovernedMigrationRequired");
+        if (version > 0 && version < SchemaVersion)
+            return new StoreWriteResult(false, MigrationReason(version));
         if (version == 0 && objects.Count != 0) return new StoreWriteResult(false, "StoreForeignSchema");
         if (version == SchemaVersion && !ValidateSchemaShape(database, deadline))
             return new StoreWriteResult(false, "StoreSchemaMismatch");
@@ -291,7 +301,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (version >= 2)
                 AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId, _signingKey.PublicKeyBase64,
                     new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
-            if (version == 4) _ = ReadIdentityState(database, deadline);
+            if (version == 5) _ = ReadIdentityState(database, deadline);
         }
 
         if (!ConfigureProductionProfile(database, deadline))
@@ -411,7 +421,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         existing.CommandKind == input.CommandKind && existing.Source == input.Source &&
                         existing.ClaimedPrincipalId == input.ClaimedPrincipalId &&
                         existing.ClaimedSessionId == input.ClaimedSessionId &&
-                        existing.ClaimedStepUpGrantId == input.ClaimedStepUpGrantId)
+                        existing.ClaimedStepUpGrantId == input.ClaimedStepUpGrantId &&
+                        existing.AuthenticatedHumanPrincipalId == input.AuthenticatedHumanPrincipalId)
                         return new StoreWriteResult(true, "DuplicateTerminal", existing);
                     return new StoreWriteResult(false, "DuplicateTerminalConflict");
                 }
@@ -487,6 +498,10 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (string.IsNullOrWhiteSpace(fact.ReasonCode) || fact.ReasonCode.Length > MaximumReasonLength)
             throw new InvalidOperationException("ReasonCodeInvalid");
         if (fact.ClaimedPrincipalId?.Length > MaximumPrincipalLength) throw new InvalidOperationException("PrincipalInvalid");
+        if (fact.AuthenticatedHumanPrincipalId is not null &&
+            (!Guid.TryParseExact(fact.AuthenticatedHumanPrincipalId, "D", out var authenticatedPrincipal) ||
+             authenticatedPrincipal == Guid.Empty))
+            throw new InvalidOperationException("AuthenticatedPrincipalInvalid");
         if (fact.Source is not null && !Enum.IsDefined(typeof(CommandSource), fact.Source.Value))
             throw new InvalidOperationException("CommandSourceInvalid");
         if (!Enum.IsDefined(typeof(AuditedCommandKind), fact.CommandKind)) throw new InvalidOperationException("CommandKindInvalid");
@@ -504,7 +519,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 AttemptId, CorrelationId, RuntimeEpoch, CommandKind, Source, ClaimedPrincipalId,
                 ClaimedSessionId, ClaimedStepUpGrantId, OutcomeDisposition, OutcomeReasonCode,
                 OutcomeEventId, OutcomeOccurredAtUtc, SystemPrincipalId, AuthenticatedHumanPrincipalId)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SharpInspect.Runtime', NULL);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SharpInspect.Runtime', ?);
             ";
         SqliteNative.WithStatement(database, sql, deadline, statement =>
         {
@@ -520,6 +535,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             SqliteNative.BindText(database, statement, 10, fact.ReasonCode);
             SqliteNative.BindGuid(database, statement, 11, fact.EventId);
             SqliteNative.BindText(database, statement, 12, FormatTime(fact.OccurredAtUtc));
+            SqliteNative.BindText(database, statement, 13, fact.AuthenticatedHumanPrincipalId);
             SqliteNative.Step(database, statement, deadline);
             return 0;
         });
@@ -533,7 +549,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 EventId, AttemptId, CorrelationId, RuntimeEpoch, EventVersion, AggregateSequence,
                 OccurredAtUtc, SystemPrincipalId, AuthenticatedHumanPrincipalId, CommandKind, Source,
                 ClaimedPrincipalId, ClaimedSessionId, ClaimedStepUpGrantId, Phase, Disposition, ReasonCode)
-            VALUES (?, ?, ?, ?, 1, ?, ?, 'SharpInspect.Runtime', NULL, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, 1, ?, ?, 'SharpInspect.Runtime', ?, ?, ?, ?, ?, ?, ?, ?, ?);
             ";
         SqliteNative.WithStatement(database, sql, deadline, statement =>
         {
@@ -543,14 +559,15 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             SqliteNative.BindGuid(database, statement, 4, fact.RuntimeEpoch);
             SqliteNative.BindInt(database, statement, 5, aggregateSequence);
             SqliteNative.BindText(database, statement, 6, FormatTime(fact.OccurredAtUtc));
-            SqliteNative.BindInt(database, statement, 7, (int)fact.CommandKind);
-            BindEnum(database, statement, 8, fact.Source);
-            SqliteNative.BindText(database, statement, 9, fact.ClaimedPrincipalId);
-            BindGuid(database, statement, 10, fact.ClaimedSessionId);
-            BindGuid(database, statement, 11, fact.ClaimedStepUpGrantId);
-            SqliteNative.BindInt(database, statement, 12, (int)fact.Phase);
-            BindEnum(database, statement, 13, fact.Disposition);
-            SqliteNative.BindText(database, statement, 14, fact.ReasonCode);
+            SqliteNative.BindText(database, statement, 7, fact.AuthenticatedHumanPrincipalId);
+            SqliteNative.BindInt(database, statement, 8, (int)fact.CommandKind);
+            BindEnum(database, statement, 9, fact.Source);
+            SqliteNative.BindText(database, statement, 10, fact.ClaimedPrincipalId);
+            BindGuid(database, statement, 11, fact.ClaimedSessionId);
+            BindGuid(database, statement, 12, fact.ClaimedStepUpGrantId);
+            SqliteNative.BindInt(database, statement, 13, (int)fact.Phase);
+            BindEnum(database, statement, 14, fact.Disposition);
+            SqliteNative.BindText(database, statement, 15, fact.ReasonCode);
             SqliteNative.Step(database, statement, deadline);
             return 0;
         });
@@ -565,7 +582,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
 
     private static AttemptContext? ReadAttempt(SQLitePCL.sqlite3 database, Guid attemptId, StoreDeadline deadline) =>
         SqliteNative.WithStatement<AttemptContext?>(database, @"SELECT CorrelationId, RuntimeEpoch, CommandKind, Source,
-            ClaimedPrincipalId, ClaimedSessionId, ClaimedStepUpGrantId, OutcomeDisposition
+            ClaimedPrincipalId, ClaimedSessionId, ClaimedStepUpGrantId, OutcomeDisposition,
+            AuthenticatedHumanPrincipalId
             FROM command_attempts WHERE AttemptId=? LIMIT 1;", deadline, statement =>
         {
             SqliteNative.BindGuid(database, statement, 1, attemptId);
@@ -576,26 +594,29 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 ParseNullableEnum<CommandSource>(SqliteNative.ColumnText(statement, 3)),
                 SqliteNative.ColumnText(statement, 4), ParseNullableGuid(SqliteNative.ColumnText(statement, 5)),
                 ParseNullableGuid(SqliteNative.ColumnText(statement, 6)),
-                (CommandDisposition)SqliteNative.ColumnInt64(statement, 7));
+                (CommandDisposition)SqliteNative.ColumnInt64(statement, 7), SqliteNative.ColumnText(statement, 8));
         });
 
     private static CommandAuditFact? ReadFact(SQLitePCL.sqlite3 database, Guid attemptId, int aggregateSequence,
         StoreDeadline deadline) =>
         SqliteNative.WithStatement(database, @"SELECT EventId, AttemptId, CorrelationId, RuntimeEpoch,
-            OccurredAtUtc, CommandKind, Source, ClaimedPrincipalId, ClaimedSessionId, ClaimedStepUpGrantId,
+            OccurredAtUtc, AuthenticatedHumanPrincipalId, CommandKind, Source, ClaimedPrincipalId, ClaimedSessionId, ClaimedStepUpGrantId,
             Phase, Disposition, ReasonCode FROM command_facts WHERE AttemptId=? AND AggregateSequence=? LIMIT 1;",
             deadline, statement =>
         {
             SqliteNative.BindGuid(database, statement, 1, attemptId);
             SqliteNative.BindInt(database, statement, 2, aggregateSequence);
             if (SqliteNative.Step(database, statement, deadline) != SQLitePCL.raw.SQLITE_ROW) return null;
+            var authenticatedPrincipal = SqliteNative.ColumnText(statement, 5);
             return new CommandAuditFact(ParseGuid(SqliteNative.ColumnText(statement, 0)),
                 ParseGuid(SqliteNative.ColumnText(statement, 1)), ParseGuid(SqliteNative.ColumnText(statement, 2)),
                 ParseGuid(SqliteNative.ColumnText(statement, 3)), ParseTime(SqliteNative.ColumnText(statement, 4)),
-                (AuditedCommandKind)SqliteNative.ColumnInt64(statement, 5), ParseNullableEnum<CommandSource>(SqliteNative.ColumnText(statement, 6)),
-                SqliteNative.ColumnText(statement, 7), ParseNullableGuid(SqliteNative.ColumnText(statement, 8)),
-                ParseNullableGuid(SqliteNative.ColumnText(statement, 9)), (CommandAuditPhase)SqliteNative.ColumnInt64(statement, 10),
-                ParseNullableEnum<CommandDisposition>(SqliteNative.ColumnText(statement, 11)), SqliteNative.ColumnText(statement, 12)!);
+                (AuditedCommandKind)SqliteNative.ColumnInt64(statement, 6),
+                ParseNullableEnum<CommandSource>(SqliteNative.ColumnText(statement, 7)), SqliteNative.ColumnText(statement, 8),
+                ParseNullableGuid(SqliteNative.ColumnText(statement, 9)), ParseNullableGuid(SqliteNative.ColumnText(statement, 10)),
+                (CommandAuditPhase)SqliteNative.ColumnInt64(statement, 11),
+                ParseNullableEnum<CommandDisposition>(SqliteNative.ColumnText(statement, 12)),
+                SqliteNative.ColumnText(statement, 13)!, authenticatedPrincipal);
         });
 
     private static HashSet<string> ReadSchemaObjects(SQLitePCL.sqlite3 database, StoreDeadline deadline,
@@ -693,11 +714,12 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
 
     private readonly record struct AttemptContext(Guid CorrelationId, Guid RuntimeEpoch, AuditedCommandKind CommandKind,
         CommandSource? Source, string? ClaimedPrincipalId, Guid? ClaimedSessionId, Guid? ClaimedStepUpGrantId,
-        CommandDisposition OutcomeDisposition)
+        CommandDisposition OutcomeDisposition, string? AuthenticatedHumanPrincipalId)
     {
         public bool Matches(CommandAuditFact fact) => CorrelationId == fact.CorrelationId && RuntimeEpoch == fact.RuntimeEpoch &&
             CommandKind == fact.CommandKind && Source == fact.Source && ClaimedPrincipalId == fact.ClaimedPrincipalId &&
-            ClaimedSessionId == fact.ClaimedSessionId && ClaimedStepUpGrantId == fact.ClaimedStepUpGrantId;
+            ClaimedSessionId == fact.ClaimedSessionId && ClaimedStepUpGrantId == fact.ClaimedStepUpGrantId &&
+            AuthenticatedHumanPrincipalId == fact.AuthenticatedHumanPrincipalId;
     }
 
     private sealed record WriteRequest(CommandAuditFact? Fact, StoreDeadline Deadline, AuditAnchorReceipt? Receipt = null, IdentityWork? Identity = null)
@@ -709,8 +731,26 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal sealed record VerifiedSqliteProfile(string JournalMode, long Synchronous,
         long ForeignKeys, long WalAutoCheckpoint);
 
-    private string SchemaSql => _policy is null ? LegacySchemaSql :
-        LegacySchemaSql.Replace("CHECK(CommandKind IN (0,1,2))", "CHECK(CommandKind IN (0,1,2,3,4,5,6))", StringComparison.Ordinal);
+    private string SchemaSql
+    {
+        get
+        {
+            var sql = _policy is null
+                ? LegacySchemaSql
+                : LegacySchemaSql.Replace("CHECK(CommandKind IN (0,1,2))",
+                    "CHECK(CommandKind IN (0,1,2,3,4,5,6))", StringComparison.Ordinal);
+            if (SchemaVersion == 5)
+            {
+                sql = sql.Replace("CHECK(CommandKind IN (0,1,2,3,4,5,6))",
+                    "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11))", StringComparison.Ordinal)
+                    .Replace("AuthenticatedHumanPrincipalId TEXT NULL CHECK(AuthenticatedHumanPrincipalId IS NULL)",
+                        "AuthenticatedHumanPrincipalId TEXT NULL CHECK(AuthenticatedHumanPrincipalId IS NULL OR length(AuthenticatedHumanPrincipalId)=36)",
+                        StringComparison.Ordinal);
+            }
+
+            return sql;
+        }
+    }
 
     private const string LegacySchemaSql = @"
         CREATE TABLE command_attempts(

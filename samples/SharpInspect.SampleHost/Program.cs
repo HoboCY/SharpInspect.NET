@@ -52,12 +52,27 @@ internal static class Program
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var services = new ServiceCollection();
         services.AddSharpInspectSqliteRuntime(storeOptions, TimeSpan.FromMilliseconds(500));
-        services.AddSingleton<StationShellViewModel>(p => new StationShellViewModel(
-            p.GetRequiredService<IStationRuntime>(), new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton<StationShellViewModel>(p =>
+        {
+            var sessions = p.GetService<IInteractiveSessionService>();
+            return new StationShellViewModel(p.GetRequiredService<IStationRuntime>(),
+                new DispatcherUiDispatcher(app.Dispatcher), invocationFactory: () =>
+                {
+                    var current = sessions?.Current;
+                    return current is
+                        { State: InteractiveSessionState.Authenticated, PrincipalId: not null, SessionId: not null }
+                        ? new CommandInvocation(CommandSource.PhysicalConsole, current.PrincipalId, current.SessionId)
+                        : new CommandInvocation(CommandSource.PhysicalConsole);
+                });
+        });
         services.AddSingleton<CommandTraceViewModel>();
         services.AddSingleton<AuditIntegrityViewModel>();
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
             p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new IdentityAdministrationViewModel(
+            p.GetRequiredService<IStationRuntime>(), p.GetService<IInteractiveSessionService>(),
+            p.GetService<IStepUpAuthentication>(), p.GetService<IIdentityAdministrationQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
@@ -65,7 +80,8 @@ internal static class Program
         var trace = provider.GetRequiredService<CommandTraceViewModel>();
         var integrity = provider.GetRequiredService<AuditIntegrityViewModel>();
         var identity = provider.GetRequiredService<IdentityViewModel>();
-        var window = new ShellWindow(vm, trace, integrity, identity);
+        var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
+        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration);
         var exitCode = 0;
         if (smoke)
         {
@@ -88,6 +104,7 @@ internal static class Program
                     if (identitySmoke)
                     {
                         vm.NavigateTo("Maintenance");
+                        window.VerifyMaintenanceLayout();
                         await WaitAsync(() => !identity.IsBusy && identity.CanAuthenticate);
                         var password = ReadSmokePassword();
                         await window.SubmitIdentityLoginSmokeAsync(Option("--user-name") ?? "", password);
@@ -96,6 +113,57 @@ internal static class Program
                         Require(signedIn.Session.State == InteractiveSessionState.Authenticated && signedIn.Session.SessionId is not null &&
                             signedIn.Session.PrincipalId == identity.CurrentIdentity!.PrincipalId.ToString("D"), "Runtime session projection");
                         Require(!vm.State.Ready, "identity login must not bypass production admission");
+                        await WaitAsync(() => vm.CurrentSnapshot?.Session.State == InteractiveSessionState.Authenticated &&
+                            vm.Freshness == SnapshotFreshness.Fresh);
+                        var authenticatedArm = await vm.ArmProductionAsync();
+                        Require(authenticatedArm.Disposition == CommandDisposition.Rejected &&
+                            authenticatedArm.ReasonCode == "DeploymentPoliciesMissing",
+                            "authenticated Arm must reach production qualification and remain rejected");
+                        Require(identityAdministration.IsConfigured, "identity administration services must be configured");
+                        await window.RefreshIdentityAdministrationSmokeAsync();
+                        Require(identityAdministration.CanCreateAccount, "authenticated administrator can create an account");
+                        var createdUserName = "rui.li." + Guid.NewGuid().ToString("N")[..8];
+                        var createOutcome = await window.SubmitIdentityAdministrationCreateSmokeAsync(
+                            createdUserName, "开发验收个人", password, password);
+                        var createdCommand = createOutcome ?? throw new SmokeAssertionException(
+                            "governed account creation returned no Runtime outcome");
+                        Require(createdCommand.Disposition == CommandDisposition.Accepted,
+                            "governed account creation must be accepted: " + createdCommand.ReasonCode);
+                        var stepUpBinding = identityAdministration.LastStepUpBinding;
+                        Require(stepUpBinding is not null &&
+                            stepUpBinding.Permission == Permission.ManageAccounts &&
+                            stepUpBinding.CommandKind == AuditedCommandKind.CreateHumanAccount &&
+                            stepUpBinding.CommandCorrelationId == createdCommand.CorrelationId,
+                            "create action Step-Up binding must match the submitted command");
+                        await window.RefreshIdentityAdministrationSmokeAsync();
+                        var createdAccount = identityAdministration.Accounts.SingleOrDefault(
+                            account => account.UserName == createdUserName);
+                        Require(createdAccount is not null && createdAccount.DisplayName == "开发验收个人" &&
+                            createdAccount.RoleBundle == HumanRoleBundle.Operator && createdAccount.CredentialEnabled,
+                            "created Operator account must appear after authoritative directory refresh");
+                        await WaitAsync(() => vm.State.LastCommand is
+                            { CorrelationId: var correlationId, State: OperationState.Completed } &&
+                            correlationId == createdCommand.CorrelationId);
+                        Require(!vm.State.Ready, "governed account creation must not make production Ready");
+                        var commandFacts = await WaitForCommandTraceAsync(
+                            provider.GetRequiredService<ICommandTraceQuery>(), createdCommand.CorrelationId);
+                        Require(commandFacts.Length == 2 &&
+                            commandFacts[0].CommandKind == AuditedCommandKind.CreateHumanAccount &&
+                            commandFacts[0].Phase == CommandAuditPhase.Outcome &&
+                            commandFacts[0].Disposition == CommandDisposition.Accepted &&
+                            commandFacts[1].CommandKind == AuditedCommandKind.CreateHumanAccount &&
+                            commandFacts[1].Phase == CommandAuditPhase.Completed &&
+                            commandFacts.All(fact => fact.AuthenticatedHumanPrincipalId == signedIn.Session.PrincipalId &&
+                                fact.SystemPrincipalId == SystemPrincipalId.Runtime),
+                            "governed account trace must contain accepted and completed facts");
+                        Require(createdAccount is not null && stepUpBinding is not null &&
+                            stepUpBinding.TargetId == createdAccount.PrincipalId.ToString("D"),
+                            "create action Step-Up target must bind to the created account");
+                        window.BringIdentityAdministrationIntoViewForSmoke();
+                        if (screenshot is not null)
+                            RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "identity-administration.png"));
+                        window.VerifyIdentityAdministrationBottomReachableForSmoke();
+                        Console.WriteLine("V106-P01 independent-process WPF governed account creation PASS");
                         if (screenshot is not null) RenderScreenshot(window, screenshot);
                         window.Close();
                         await window.WaitForSessionLockAsync();
@@ -155,7 +223,10 @@ internal static class Program
 
     private sealed record IdentityDevelopmentConfiguration(string PasswordPolicyVersion, string BlocklistId, string BlocklistVersion,
         string BlocklistContentHash, string[] BlocklistValues, string HashBaselineVersion, int WorkFactor,
-        AuthenticationPolicy AuthenticationPolicy);
+        AuthenticationPolicy AuthenticationPolicy, AuthorizationDevelopmentConfiguration AuthorizationPolicy);
+
+    private sealed record AuthorizationDevelopmentConfiguration(string Id, string Version,
+        Dictionary<HumanRoleBundle, Permission[]> RoleBundles, Permission[]? StepUpPermissions);
 
     private static LocalIdentityOptions ReadIdentityOptions(string path)
     {
@@ -165,9 +236,13 @@ internal static class Program
         var policy = new LocalPasswordPolicy { Version = configuration.PasswordPolicyVersion,
             Blocklist = new PasswordBlocklist(configuration.BlocklistId, configuration.BlocklistVersion,
                 configuration.BlocklistContentHash, configuration.BlocklistValues) };
+        var authorization = configuration.AuthorizationPolicy ?? throw new InvalidOperationException("AuthorizationPolicyRequired");
+        var authorizationPolicy = new AuthorizationPolicy(authorization.Id, authorization.Version,
+            authorization.RoleBundles.ToDictionary(pair => pair.Key, pair => (IEnumerable<Permission>)pair.Value),
+            authorization.StepUpPermissions);
         return new LocalIdentityOptions("SampleDevelopmentStation", policy,
             new Pbkdf2PasswordHasher(new PasswordHashBaseline(configuration.HashBaselineVersion, configuration.WorkFactor)),
-            configuration.AuthenticationPolicy ?? throw new InvalidOperationException("AuthenticationPolicyRequired"));
+            configuration.AuthenticationPolicy ?? throw new InvalidOperationException("AuthenticationPolicyRequired"), authorizationPolicy);
     }
 
     private static string ReadSmokePassword()
@@ -191,8 +266,18 @@ internal static class Program
         Require(startup.Lifecycle == RuntimeLifecycle.Running && !startup.Ready &&
             startup.ArmState == ProductionArmState.Disarmed, "startup must remain disarmed");
         Console.WriteLine($"V101-P01 startup PASS epoch={startup.RuntimeEpoch} revision={startup.Revision}");
+        vm.NavigateTo("Maintenance");
+        window.VerifyMaintenanceLayout();
+        vm.NavigateTo("Production");
         var arm = await vm.ArmProductionAsync();
-        Require(arm.Disposition == CommandDisposition.Rejected && arm.ReasonCode == "DeploymentPoliciesMissing", "unconfigured Arm rejection");
+        var authorizationConfigured = startup.AdmissionBlockers.Contains(
+            "AuthorizationQualificationMissing", StringComparer.Ordinal);
+        var expectedArmReason = authorizationConfigured
+            ? startup.Session.State == InteractiveSessionState.Authenticated
+                ? "SessionMismatch" : "AuthenticationRequired"
+            : "DeploymentPoliciesMissing";
+        Require(arm.Disposition == CommandDisposition.Rejected && arm.ReasonCode == expectedArmReason,
+            "Arm rejection must reflect the configured authorization path: " + expectedArmReason);
         Require(arm.Audit == AuditPersistence.Persisted, "rejected Arm must be durable");
         Console.WriteLine($"V101-R02 consumer Arm PASS correlation={arm.CorrelationId} reason={arm.ReasonCode}");
         if (startup.AuditIntegrity is { State: AuditIntegrityState.Verified } initialIntegrity)
@@ -310,6 +395,19 @@ internal static class Program
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
         while (!predicate()) await Task.Delay(10, timeout.Token);
+    }
+
+    private static async Task<CommandTraceRecord[]> WaitForCommandTraceAsync(
+        ICommandTraceQuery query, Guid correlationId)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        while (true)
+        {
+            var page = await query.QueryAsync(
+                new CommandTraceFilter(CorrelationId: correlationId, PageSize: 10), timeout.Token);
+            if (page.Records.Count >= 2) return page.Records.ToArray();
+            await Task.Delay(20, timeout.Token);
+        }
     }
 
     private static void RenderScreenshot(ShellWindow window, string path)

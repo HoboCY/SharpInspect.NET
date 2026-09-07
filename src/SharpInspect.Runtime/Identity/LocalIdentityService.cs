@@ -14,7 +14,6 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
     private readonly IPhysicalConsoleAuthority _console;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly Action<PasswordVerificationWork>? _verificationObserver;
-    private readonly Lazy<Task<PasswordHashRecord>> _dummy;
 
     internal LocalIdentityService(SqliteCommandStore store, LocalIdentityOptions options,
         IPhysicalConsoleAuthority? console = null, Func<DateTimeOffset>? utcNow = null,
@@ -23,7 +22,6 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
         _store = store; _options = options; _console = console ?? new PhysicalConsoleAuthority();
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _verificationObserver = verificationObserver;
-        _dummy = new(() => Task.Run(() => _options.PasswordHasher.Hash(NewSecret())));
     }
 
     public ValueTask<BootstrapTokenResult> ProvisionBootstrapTokenAsync(CancellationToken cancellationToken = default) =>
@@ -94,7 +92,9 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
                 if (hash is null) throw new InvalidOperationException("IdentityVerifierMissing");
                 state.Administrator = new LocalAdministratorState { PrincipalId = principalId, UserName = userName,
                     UserNameKey = userNameKey, DisplayName = displayName, CredentialId = credentialId,
-                    CredentialRevision = 1, Password = PasswordVerifierState.From(hash) };
+                    CredentialRevision = 1, AuthorizationRevision = 1, RoleBundle = HumanRoleBundle.Administrator,
+                    Permissions = _options.AuthorizationPolicy.GetPermissions(HumanRoleBundle.Administrator).ToList(),
+                    Password = PasswordVerifierState.From(hash) };
                 bootstrap!.State = "Consumed";
                 state.RecoveryKitId = kitId;
                 state.RecoveryCodes = codes.Select(code => new RecoveryCodeState { CodeId = code.Id,
@@ -116,7 +116,7 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
         BoundedAsync(async token =>
         {
             var state = await _store.ReadIdentityAsync(token).ConfigureAwait(false);
-            var administrators = state.Administrator is { Enabled: true } ? 1 : 0;
+            var administrators = state.EnumerateAccounts().Count(IdentityAuthorityState.IsUsableAdministrator);
             var recovery = state.RecoveryCodes.Count(code => !code.Consumed && !code.Revoked);
             return new StationIdentityStatus(state.StationId, state.Administrator is null, administrators, recovery,
                 administrators > 0 && recovery > 0 ? "IdentityPrerequisitesPresent" : "IdentityBootstrapRequired");
@@ -145,11 +145,12 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
     { var now = _utcNow(); if (now > state.LastObservedUtc) state.LastObservedUtc = now; return state.LastObservedUtc; }
 
     private IdentityAuditEvent Event(IdentityAuthorityState state, IdentityEventKind kind, string reason, Guid? principalId = null,
-        Guid? credentialId = null, Guid? tokenId = null, Guid? recoveryKitId = null, string? windowsSid = null) =>
+        Guid? credentialId = null, Guid? tokenId = null, Guid? recoveryKitId = null, string? windowsSid = null,
+        LocalAdministratorState? account = null) =>
         new(Guid.NewGuid(), kind, state.LastObservedUtc, state.StationId, principalId, credentialId, tokenId, recoveryKitId, reason,
             windowsSid, _options.PasswordPolicy.Version, _options.PasswordPolicy.Blocklist!.Id,
             _options.PasswordPolicy.Blocklist.Version, _options.HashBaselineVersion, HashTargetCost: _options.Baseline.TargetIterations,
-            RecordCost: state.Administrator?.Password.Cost ?? 0);
+            RecordCost: account?.Password.Cost ?? state.Administrator?.Password.Cost ?? 0);
 
     private PasswordHashRecord UpgradeVerifier(string password, PasswordHashRecord previous) => new Pbkdf2PasswordHasher(
         _options.Baseline with { TargetIterations = Math.Max(previous.Cost, _options.Baseline.TargetIterations),
@@ -168,7 +169,7 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
         return (id, secret);
     }
 
-    private static (string Name, string Key) ValidateUserName(string value, bool creation)
+    internal static (string Name, string Key) ValidateUserName(string value, bool creation)
     {
         if (value is null || value.Length is < 3 or > 64 || value.Any(c => !(char.IsLetterOrDigit(c) || c is '.' or '-' or '_')))
             throw new ArgumentException("IndividualUserNameRequired");
@@ -179,13 +180,13 @@ internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAd
         return (name, key);
     }
 
-    private static string ValidateDisplayName(string value)
+    internal static string ValidateDisplayName(string value)
     {
         if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl)) throw new ArgumentException("IndividualDisplayNameRequired");
         return value.Normalize(NormalizationForm.FormC);
     }
 
-    private static string CreationRejection(Exception exception)
+    internal static string CreationRejection(Exception exception)
     {
         foreach (var code in new[] { "IndividualUserNameRequired", "IndividualDisplayNameRequired", "PasswordBlocklisted",
             "PasswordRawLengthExceeded", "PasswordInvalidUnicode", "PasswordCodePointLengthInvalid" })

@@ -3,8 +3,21 @@ using System.Collections.ObjectModel;
 namespace SharpInspect.Abstractions;
 
 public enum CommandAuditPhase { Outcome, Completed, Failed }
-public enum AuditedCommandKind { ArmProduction, GracefulProductionStop, Unsupported,
-    RotateSigningKey, RetireSigningKey, CorrectHistoricalFact, DeleteEvidence }
+public enum AuditedCommandKind
+{
+    ArmProduction = 0,
+    GracefulProductionStop = 1,
+    Unsupported = 2,
+    RotateSigningKey = 3,
+    RetireSigningKey = 4,
+    CorrectHistoricalFact = 5,
+    DeleteEvidence = 6,
+    CreateHumanAccount = 7,
+    DisableHumanCredential = 8,
+    UnlockHumanCredential = 9,
+    RebindHumanCredential = 10,
+    SetHumanPermissions = 11
+}
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 
 /// <summary>Immutable facts. Claimed identities are input attribution, never authenticated identities.</summary>

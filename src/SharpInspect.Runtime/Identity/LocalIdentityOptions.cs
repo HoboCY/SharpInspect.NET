@@ -7,12 +7,14 @@ namespace SharpInspect.Runtime.Identity;
 public sealed class LocalIdentityOptions
 {
     public LocalIdentityOptions(string stationId, LocalPasswordPolicy passwordPolicy, IPasswordHasher passwordHasher,
-        AuthenticationPolicy authenticationPolicy)
-    { StationId = stationId; PasswordPolicy = passwordPolicy; PasswordHasher = passwordHasher; AuthenticationPolicy = authenticationPolicy; }
+        AuthenticationPolicy authenticationPolicy, AuthorizationPolicy authorizationPolicy)
+    { StationId = stationId; PasswordPolicy = passwordPolicy; PasswordHasher = passwordHasher;
+        AuthenticationPolicy = authenticationPolicy; AuthorizationPolicy = authorizationPolicy; }
     public string StationId { get; }
     public LocalPasswordPolicy PasswordPolicy { get; }
     public IPasswordHasher PasswordHasher { get; }
     public AuthenticationPolicy AuthenticationPolicy { get; }
+    public AuthorizationPolicy AuthorizationPolicy { get; }
     public string HashBaselineVersion => Baseline.Version;
     internal PasswordHashBaseline Baseline => PasswordHasher is Pbkdf2PasswordHasher hasher
         ? hasher.Baseline : throw new ArgumentException("IdentityHasherUnsupported");
@@ -28,6 +30,11 @@ public sealed class LocalIdentityOptions
         Baseline.Validate();
         ArgumentNullException.ThrowIfNull(AuthenticationPolicy);
         AuthenticationPolicy.Validate();
+        ArgumentNullException.ThrowIfNull(AuthorizationPolicy);
+        AuthorizationPolicy.Validate();
+        var initialPermissions = AuthorizationPolicy.GetPermissions(HumanRoleBundle.Administrator);
+        if (!new[] { Permission.ManageAccounts, Permission.ManagePermissions, Permission.UnlockCredential, Permission.RebindCredential }
+                .All(initialPermissions.Contains)) throw new ArgumentException("BootstrapAdministratorPermissionsRequired");
         PasswordPolicy.Validate();
         AuditIntegrityPolicy.ValidateIdentifier(HashBaselineVersion, nameof(HashBaselineVersion), true);
         if (auditPolicy is null || auditPolicy.StationId != StationId)
@@ -48,5 +55,6 @@ public sealed class LocalIdentityOptions
         PasswordHashBaseline.CurrentParameterVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
         PasswordHashBaseline.SecurityFloorIterations.ToString(System.Globalization.CultureInfo.InvariantCulture),
         PasswordHashBaseline.MinimumSaltBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
-        PasswordHashBaseline.MinimumDerivedBytes.ToString(System.Globalization.CultureInfo.InvariantCulture), AuthenticationPolicy.ContentHash)));
+        PasswordHashBaseline.MinimumDerivedBytes.ToString(System.Globalization.CultureInfo.InvariantCulture), AuthenticationPolicy.ContentHash,
+        AuthorizationPolicy.ContentHash)));
 }

@@ -52,9 +52,17 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 SQLitePCL.raw.sqlite3_limit(db, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, 65536);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
-                if (_options.LocalIdentity is not null && schema < 4)
-                    throw new InvalidOperationException(schema == 3 ? "IdentityAuthenticationGovernedMigrationRequired" : "AuditGovernedMigrationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4, "AuditGovernedMigrationRequired");
+                if (_options.LocalIdentity is not null && schema < 5)
+                {
+                    var migrationReason = schema switch
+                    {
+                        4 => "IdentityAuthorizationGovernedMigrationRequired",
+                        3 => "IdentityAuthenticationGovernedMigrationRequired",
+                        _ => "AuditGovernedMigrationRequired"
+                    };
+                    throw new InvalidOperationException(migrationReason);
+                }
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5, "AuditGovernedMigrationRequired");
                 var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64, request, startup, deadline);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
@@ -86,6 +94,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
     {
         if (exception is InvalidOperationException { Message: "IdentityAuthenticationGovernedMigrationRequired" })
             return "IdentityAuthenticationGovernedMigrationRequired";
+        if (exception is InvalidOperationException { Message: "IdentityAuthorizationGovernedMigrationRequired" })
+            return "IdentityAuthorizationGovernedMigrationRequired";
         if (exception is InvalidOperationException && exception.Message.StartsWith("Audit", StringComparison.Ordinal)) return exception.Message;
         var sqliteCode = exception is SqliteNativeException native ? native.SqliteErrorCode & 255 :
             exception is Microsoft.Data.Sqlite.SqliteException managed ? managed.SqliteErrorCode : 0;

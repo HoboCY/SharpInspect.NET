@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Identity;
 
 namespace SharpInspect.Runtime;
 
@@ -18,6 +19,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly ICommandAuditWriter? _audit;
     private readonly IInteractiveSessionService? _sessions;
+    private readonly LocalAuthorizationService? _authorization;
     private readonly Task _storeInitialization;
     private Task? _completion;
     private Task? _shutdown;
@@ -32,10 +34,12 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
 
     public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval) { }
 
-    internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null)
+    internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null,
+        LocalAuthorizationService? authorization = null)
     {
         _audit = audit;
         _sessions = sessions;
+        _authorization = authorization;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
         if (interval < TimeSpan.FromMilliseconds(20) || interval > TimeSpan.FromSeconds(30))
             throw new ArgumentOutOfRangeException(nameof(heartbeatInterval));
@@ -55,7 +59,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
             new AdmissionBlockers(new[]
             {
                 "DeploymentPoliciesMissing", "CameraBindingMissing", "PlcBindingMissing", "TraceStoreMissing",
-                "ActiveRecipeMissing", "AuthorizationUnavailable", "StartupRecoveryNotVerified",
+                "ActiveRecipeMissing", authorization is null ? "AuthorizationUnavailable" : "AuthorizationQualificationMissing", "StartupRecoveryNotVerified",
                 "FrameworkQualificationMissing", "ProviderQualificationMissing", "PerformanceQualificationMissing",
                 "StationAcceptanceMissing", "ProductionCycleUnavailable"
             }));
@@ -163,13 +167,58 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
         var entered = false;
         try
         {
-            entered = await _commandGate.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+            LocalAuthorizationService.PreparedManagement? prepared = null;
+            var governedCommand = _authorization is not null && command is (IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
+            if (governedCommand)
+            {
+                await _storeInitialization.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+                var preparation = _authorization!.PrepareCommandAsync(command, cancellationToken);
+                // Preparation may finish after the caller deadline, but cannot mutate authority.
+                // It retains its own actual capacity until completion and never blocks local Stop's gate.
+                _ = preparation.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                prepared = await preparation.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+                if (prepared.Reason is "ManagementPreparationCapacityExceeded" or "ManagementPreparationDeadlineExceeded" or "ManagementPreparationUnavailable")
+                    return Unavailable(prepared.Reason);
+            }
+            while (true)
+            {
+                entered = await _commandGate.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+                if (!entered || !governedCommand || _audit?.Integrity?.State != AuditIntegrityState.Verifying) break;
+                // A previous command may have committed since preparation observed Verified.
+                // Yield the gate while its verification settles; local Stop never waits behind this poll.
+                _commandGate.Release();
+                entered = false;
+                using var recheck = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                recheck.CancelAfter(PositiveRemaining(deadline));
+                await _authorization!.WaitForAuditAsync(recheck.Token).ConfigureAwait(false);
+            }
             if (!entered)
             {
                 MarkAuditFault("CommandDeadlineExceeded");
                 return Unavailable("CommandDeadlineExceeded");
             }
             await _storeInitialization.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+            if (governedCommand)
+            {
+                string? forced;
+                Guid epoch;
+                lock (_sync)
+                {
+                    if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
+                    forced = _snapshot.LastCommand?.State == OperationState.Pending ? "OperationInProgress" : null;
+                    epoch = _snapshot.RuntimeEpoch;
+                }
+                var governed = await _authorization!.HandleCommandAsync(command, epoch, attempt, prepared!, forced, deadline, cancellationToken).ConfigureAwait(false);
+                if (governed.Audit == AuditPersistence.Unavailable) MarkAuditFault("TraceAuditUnavailable");
+                if (governed.Disposition == CommandDisposition.Accepted)
+                {
+                    lock (_sync)
+                        PublishLocked(_snapshot with { LastCommand = new CommandProgress(command.CorrelationId,
+                            OperationState.Completed, governed.ReasonCode) });
+                }
+                return governed;
+            }
             RuntimeCommandOutcome decision;
             lock (_sync)
             {
@@ -209,6 +258,11 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
             MarkAuditFault("TraceCommitDeadlineExceeded");
             return Unavailable("CommandDeadlineExceeded");
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            MarkAuditFault("TraceCommitDeadlineExceeded");
+            return Unavailable("CommandDeadlineExceeded");
+        }
         finally
         {
             if (entered) _commandGate.Release();
@@ -229,7 +283,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
             ArmProductionCommand => Reject(_snapshot.AdmissionBlockers[0]),
             GracefulProductionStopCommand when command.Invocation.Source != CommandSource.PhysicalConsole => Reject("LocalConsoleRequired"),
             GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Pending => Reject("OperationInProgress"),
-            GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Completed => Reject("AlreadyLocallyDisarmed"),
+            GracefulProductionStopCommand when _snapshot.LastCommand is { State: OperationState.Completed, ReasonCode: "LocallyDisarmed" } => Reject("AlreadyLocallyDisarmed"),
             GracefulProductionStopCommand => new(command.CorrelationId, CommandDisposition.Accepted, "StopAdmitted"),
             _ => Reject("UnsupportedCommand")
         };

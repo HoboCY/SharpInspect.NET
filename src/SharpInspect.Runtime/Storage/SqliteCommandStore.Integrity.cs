@@ -24,8 +24,8 @@ internal sealed partial class SqliteCommandStore
         if (_policy is null || !File.Exists(_databasePath) || new FileInfo(_databasePath!).Length == 0) return;
         using var read = SqliteNative.Open(_databasePath!, readOnly: true);
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
-        if (version == 3 && SchemaVersion == 4) throw new InvalidOperationException("IdentityAuthenticationGovernedMigrationRequired");
-        if (version > 0 && version < SchemaVersion) throw new InvalidOperationException("AuditGovernedMigrationRequired");
+        if (version > 0 && version < SchemaVersion)
+            throw new InvalidOperationException(MigrationReason((int)version));
         if (version > SchemaVersion) throw new InvalidOperationException("StoreSchemaTooNew");
     }
 

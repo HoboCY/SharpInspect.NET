@@ -479,7 +479,7 @@ public sealed class LocalIdentityAcceptanceTests
         var original = context.IdentityOptions();
         var changed = new LocalIdentityOptions(context.StationId, original.PasswordPolicy with
         { Blocklist = PasswordBlocklist.Create(original.PasswordPolicy.Blocklist!.Id,
-            original.PasswordPolicy.Blocklist.Version, new[] { "different-compromised-value" }) }, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development);
+            original.PasswordPolicy.Blocklist.Version, new[] { "different-compromised-value" }) }, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development);
         using (var connection = Open(context.DatabasePath))
         {
             using var command = connection.CreateCommand();
@@ -710,7 +710,7 @@ public sealed class LocalIdentityAcceptanceTests
                 Blocklist = PasswordBlocklist.Create(
                     "v104-test-blocklist", "v1", new[] { "known-compromised-value" })
             },
-            new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development);
+            new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development);
 
         public ProductionStoreOptions Options(bool identityEnabled = true) => new(DatabasePath)
         {

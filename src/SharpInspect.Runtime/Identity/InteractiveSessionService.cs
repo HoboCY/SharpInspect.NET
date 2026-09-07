@@ -537,6 +537,91 @@ internal sealed class InteractiveSessionService : IInteractiveSessionService
         lock (_sync) return _disposed;
     }
 
+    /// <summary>
+    /// Takes the session monitor for a short, synchronous authorization critical section.
+    /// Callers must already own any durable store transaction before acquiring this lease;
+    /// the lease intentionally contains no asynchronous or external work.
+    /// </summary>
+    internal bool TryAcquireAuthorizationLease(
+        Guid principalId,
+        Guid sessionId,
+        out SessionAuthorizationLease? lease,
+        out string reasonCode)
+    {
+        lease = null;
+        reasonCode = "AuthorizationLeaseUnavailable";
+        if (principalId == Guid.Empty)
+        {
+            reasonCode = "PrincipalIdRequired";
+            return false;
+        }
+
+        if (sessionId == Guid.Empty)
+        {
+            reasonCode = "SessionIdRequired";
+            return false;
+        }
+
+        // Monitor is re-entrant. Rejecting this path explicitly prevents a same-thread
+        // nested lease from pretending to provide a second independent authorization scope.
+        if (Monitor.IsEntered(_sync))
+        {
+            reasonCode = "AuthorizationLeaseReentrant";
+            return false;
+        }
+
+        var entered = false;
+        try
+        {
+            entered = Monitor.TryEnter(_sync, TimeSpan.FromMilliseconds(50));
+            if (!entered)
+            {
+                reasonCode = "AuthorizationLeaseBusy";
+                return false;
+            }
+
+            if (_disposed)
+            {
+                reasonCode = "SessionServiceDisposed";
+                return false;
+            }
+
+            if (_current.State != InteractiveSessionState.Authenticated ||
+                _current.SessionId != sessionId ||
+                !string.Equals(_current.PrincipalId, principalId.ToString("D"),
+                    StringComparison.Ordinal) ||
+                _identity is null || _identity.PrincipalId != principalId)
+            {
+                reasonCode = "SessionMismatch";
+                return false;
+            }
+
+            // An expired session is rejected here; the existing 250 ms idle monitor remains
+            // responsible for the real Locked transition and its audit fact.
+            if (IsExpired(SafeTimestamp(), _lastActivityTimestamp))
+            {
+                reasonCode = "SessionIdleExpired";
+                return false;
+            }
+
+            if (_pendingRevocation is not null)
+            {
+                reasonCode = "SessionRevocationPending";
+                return false;
+            }
+
+            lease = new SessionAuthorizationLease(_sync, _identity, sessionId);
+            reasonCode = "AuthorizationLeaseAcquired";
+            entered = false;
+            return true;
+        }
+        finally
+        {
+            if (entered)
+                Monitor.Exit(_sync);
+        }
+    }
+
     private bool TryTransition(Guid? expectedSessionId, InteractiveSessionState state,
         string kind, string reason, out Transition transition)
     {
@@ -877,5 +962,40 @@ internal sealed class InteractiveSessionService : IInteractiveSessionService
             new(record, revocation, new SessionActionResult(true, "SessionTransitioned", false));
 
         public static Transition Failure(SessionActionResult result) => new(null, null, result);
+    }
+
+}
+
+/// <summary>
+/// Internal synchronous authorization lease. The owning thread must dispose it before
+/// yielding; disposing from another thread is rejected so the session monitor cannot be
+/// released by an unrelated continuation.
+/// </summary>
+internal sealed class SessionAuthorizationLease : IDisposable
+{
+    private readonly object _sync;
+    private int _disposed;
+
+    internal SessionAuthorizationLease(object sync, HumanIdentity identity, Guid sessionId)
+    {
+        _sync = sync ?? throw new ArgumentNullException(nameof(sync));
+        Identity = identity ?? throw new ArgumentNullException(nameof(identity));
+        SessionId = sessionId;
+    }
+
+    internal HumanIdentity Identity { get; }
+    internal Guid SessionId { get; }
+
+    public void Dispose()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        if (!Monitor.IsEntered(_sync))
+            throw new SynchronizationLockException(
+                "The authorization lease must be disposed by its acquiring thread.");
+
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            Monitor.Exit(_sync);
     }
 }

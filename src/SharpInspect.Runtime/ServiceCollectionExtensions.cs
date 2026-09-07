@@ -36,9 +36,13 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IInteractiveSessionService>(p => new InteractiveSessionService(
                 p.GetRequiredService<IIdentityProvider>(), options.LocalIdentity.AuthenticationPolicy,
                 p.GetRequiredService<LocalIdentityService>().PersistSessionEventAsync));
+            services.TryAddSingleton(p => new LocalAuthorizationService(p.GetRequiredService<SqliteCommandStore>(),
+                options.LocalIdentity, p.GetRequiredService<IIdentityProvider>(), p.GetRequiredService<IInteractiveSessionService>()));
+            services.TryAddSingleton<IStepUpAuthentication>(p => p.GetRequiredService<LocalAuthorizationService>());
+            services.TryAddSingleton<IIdentityAdministrationQuery>(p => p.GetRequiredService<LocalAuthorizationService>());
         }
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
-            p.GetService<IInteractiveSessionService>()));
+            p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>()));
         return services;
     }
 }

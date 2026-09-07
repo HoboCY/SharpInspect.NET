@@ -21,16 +21,16 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 普通关窗会遮蔽页面内容并保留后台 Runtime，本机停止按钮仍可到达；
 重新显示页面只恢复显示，不授予身份或权限。显式配置本地身份后可建立首位个人管理员并登录，
-会话保护由 Runtime-owned `IInteractiveSessionService` 管理；操作授权、Permission 与 Step-Up 实体仍由后续工单交付。
+会话保护由 Runtime-owned `IInteractiveSessionService` 管理；个人账号管理通过 Permission 与动作绑定的 Step-Up 执行。
 此开发宿主不提供生产启用或宿主退出旁路，调试结束可由调试器终止进程；
 进程终止不代表完成了 PLC 停产握手。生产部署的受控关闭另有工单。
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket05.ps1
+pwsh -File tools/Test-Ticket06.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket05/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket06/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -56,12 +56,14 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 命令正常返回的 `Audit=Persisted` 表示相应 Outcome 已提交；`Audit=Unavailable` 明确表示
 本次返回没有持久记录的保证，并保持非 Ready。Accepted 与 Completed/Failed 是分别追加的事实，
 事务失败不能伪造完成。调用方的 Principal/Session/StepUp 值只是声称的归因输入，
-当前系统记录者固定为非交互的 `SharpInspect.Runtime`，认证人员字段为空。
+当前系统记录者固定为非交互的 `SharpInspect.Runtime`；人员管理命令另记录 Runtime 实际验证的人员 ID。
+本机 Stop 的系统记录不会借用界面上的当前人员身份。
 
 数据库必须位于固定本地 NTFS，路径验证会拒绝共享、已知云同步根、可移动盘和 reparse 路径。
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
-新空库显式启用审计政策时为 2，同时启用本地身份时为 4；带本地身份的 Schema4 只允许从新空库创建。
-已有 schema3 在启用本地身份时只读 preflight 拒绝 `IdentityAuthenticationGovernedMigrationRequired`；schema1/2
+新空库显式启用审计政策时为 2，同时启用本地身份时为 5；带本地身份的 Schema5 只允许从新空库创建。
+已有 schema4 在启用本地身份时只读 preflight 拒绝 `IdentityAuthorizationGovernedMigrationRequired`，
+schema3 拒绝 `IdentityAuthenticationGovernedMigrationRequired`；schema1/2
 及未知版本也拒绝治理写入。迁移随专票提供，不自动补链或升级。
 只读查询每页 1–200 条，以记录位置和固定上界分页。更新、删除历史事实不属于公开 API。
 SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
@@ -88,7 +90,8 @@ SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 外部调用超时或回执提交失败会阻止后续受控受理；已提交的 Accepted 保留其原事实。
 本仓库的路由验收使用隔离适配器，未连接生产锚定服务。
 
-更正、证据删除、密钥旋转和退休请求当前拒绝为 AuthorizationUnavailable，并保留拒绝事实。
+更正、证据删除、密钥旋转和退休请求检查专用权限及 Step-Up；尚未交付实际治理能力时仍拒绝
+为 `GovernedCapabilityUnavailable` 并保留拒绝事实。未配置本地身份的入口保持 `AuthorizationUnavailable`。
 它们不能改写历史；后续获授权的更正与处置须通过追加事件交付。
 本机、数据库和私钥同时失陷时，攻击者可能重写未锚定历史；纯本地历史回滚也不保证被检测。
 哈希链是篡改可检测机制，不是不可篡改存储或合规认证。
@@ -120,7 +123,7 @@ PBKDF2 路径、固定未知账号桶和受保护的尝试标识；达到限制�
 
 管理员、Token 消费和恢复码验证器与安全身份事件共用 SQLite 单写事务。机密状态使用 DPAPI，
 并由数据库外的受限审计密钥签名，绑定工位、安装、状态版本和审计位置。审计仅包含安全元数据，
-不会写入密码、Token、恢复码、盐、密码派生结果、机密密文或其签名。Schema4 的链 hash 同时覆盖
+不会写入密码、Token、恢复码、盐、密码派生结果、机密密文或其签名。Schema5 的链 hash 同时覆盖
 事件类型、两类序号及规范载荷；有界核验仍只证明报告中的实际覆盖范围。
 
 成功创建后返回 `OneTimeSecret` 恢复包，只能领取一次。界面不会自动显示：切页/隐私遮蔽清除可见
@@ -132,11 +135,26 @@ PBKDF2 路径、固定未知账号桶和受保护的尝试标识；达到限制�
 Runtime-owned `IInteractiveSessionService` 独立管理登录、锁定、注销、活动报告和会话读取：空闲判断使用
 单调时间，成功登录生成新的 SessionId，锁定或注销清除当前身份和 SessionId，旧 SessionId 不能续用。
 会话变化不会停止健康 Runtime、清除 Ready 或 PLC 状态，也不会把后续 System Principal 工作归因给旧人员。
-锁定的 WPF 视图仍可重新登录，并保留只降低生产能力的本机 Stop；Permission、Step-Up 授权实体、解锁/重绑
-禁用凭据及恢复执行仍未交付。
+锁定的 WPF 视图仍可重新登录，并保留只降低生产能力的本机 Stop；站点恢复执行仍由后续工单交付。
+
+`LocalIdentityOptions` 同时要求显式 `AuthorizationPolicy`，包含 ID、版本、角色权限集合与规范内容 hash。
+Operator / Technician / Administrator 只是分配权限的便捷集合，每个账号必须归属具体个人。
+维护页可创建个人账号、禁用凭据、由其他获授权人员解锁或重绑，以及调整具体权限。
+创建带角色的账号需要 `ManageAccounts + ManagePermissions`；禁用需要 `ManageAccounts`，解锁、重绑和权限调整
+分别使用 `UnlockCredential`、`RebindCredential`、`ManagePermissions`，上述管理动作均强制 Step-Up。
+常规管理不能删除最后一个可用管理员；全部凭据已被失败限额禁用时仍需后续 Recovery Kit 流程。
+
+UI 消费只读 `IIdentityAdministrationQuery`，通过 `IStepUpAuthentication` 使用当前人的密码向已配置
+`IIdentityProvider` 重新认证，再向 `IStationRuntime` 提交强类型命令。Grant 只在本进程保留，绑定人员、
+SessionId、权限、具体命令类型、命令相关 ID、目标、凭据 ID、授权修订及政策 hash，使用单调时间判定新鲜度。
+Runtime 在 SQLite 写事务内重新核对全部条件，持有短期会话授权锁直至提交；权限变更、锁定、换人、超期和
+重复消费不能沿用旧凭证。账号状态、权限变更前后、实际人员、Step-Up 消费及命令 Outcome/Completed 在同一事务落盘。
+当前实现最多 16 个个人账号、32 个未过期 Grant，并受 32 KiB 机密身份状态上限约束。
+多账号使用独立失败状态；认证遍历全部已保存的工作参数组合，未知和禁用账号执行等量 dummy 验证。
+非交互服务使用独立的 `SystemPermission` 与固定 System Principal 目录，不能登录或借用人的 Step-Up。
 
 开发样例使用 `--identity-policy <absolute-json-path>` 加载显式政策，格式示例由
-`tools/Test-Ticket05.ps1` 写入本次隔离 artifacts；该小型 blocklist 仅为测试夹具，不是发行名单。
+`tools/Test-Ticket06.ps1` 写入本次隔离 artifacts；该小型 blocklist 仅为测试夹具，不是发行名单。
 验证另启动独立 WPF 进程，通过私有标准输入传递测试密码，实际走 PasswordBox 登录，并核对重启前后
 PrincipalId 和审计链。密码不会作为进程参数、环境变量或报告内容写出。
 
@@ -144,7 +162,7 @@ PrincipalId 和审计链。密码不会作为进程参数、环境变量或报�
 
 逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)、
 [V1-03](docs/verification/v1-03.md)、[V1-04 验证映射](docs/verification/v1-04.md) 与
-[V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)。
+[V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)、[V1-06 权限与 Step-Up 验证映射](docs/verification/v1-06.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

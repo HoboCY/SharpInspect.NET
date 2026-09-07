@@ -7,11 +7,11 @@ using SharpInspect.Runtime.Integrity;
 
 namespace SharpInspect.Runtime.Identity;
 
-// Confidential authoritative state is separate from the non-secret audit payload. V1-04
-// contains one first administrator; future account management must extend this schema explicitly.
+// Confidential authoritative state is separate from the non-secret audit payload.
+// The first administrator keeps its bootstrap identity; additional humans have independent credentials.
 internal sealed class IdentityAuthorityState
 {
-    public int FormatVersion { get; set; } = 2;
+    public int FormatVersion { get; set; } = 3;
     public long Revision { get; set; }
     public string StationId { get; set; } = "";
     public string InstallationKeyId { get; set; } = "";
@@ -19,6 +19,12 @@ internal sealed class IdentityAuthorityState
     public string LastIdentityAuditHash { get; set; } = "";
     public DateTimeOffset LastObservedUtc { get; set; }
     public LocalAdministratorState? Administrator { get; set; }
+    public List<LocalAdministratorState> AdditionalAccounts { get; set; } = new();
+    internal IEnumerable<LocalAdministratorState> EnumerateAccounts() => Administrator is null
+        ? AdditionalAccounts : new[] { Administrator }.Concat(AdditionalAccounts);
+    internal static bool IsUsableAdministrator(LocalAdministratorState account) => account.Enabled &&
+        new[] { Permission.ManageAccounts, Permission.ManagePermissions, Permission.UnlockCredential, Permission.RebindCredential }
+            .All(account.Permissions.Contains);
     public BootstrapSecretState? Bootstrap { get; set; }
     public Guid? RecoveryKitId { get; set; }
     public List<RecoveryCodeState> RecoveryCodes { get; set; } = new();
@@ -38,10 +44,13 @@ internal sealed class LocalAdministratorState
     public AuthenticationThrottleState Throttle { get; set; } = new();
     public DateTimeOffset? DisabledAtUtc { get; set; }
     public long CredentialRevision { get; set; }
+    public long AuthorizationRevision { get; set; } = 1;
+    public List<Permission> Permissions { get; set; } = new();
+    public HumanRoleBundle? RoleBundle { get; set; }
     public bool Enabled { get; set; } = true;
     public PasswordVerifierState Password { get; set; } = new();
     public HumanIdentity ToIdentity() => new(PrincipalId, UserName, DisplayName,
-        new[] { new IdentityDisplayClaim("local-role-display", "Administrator") });
+        new[] { new IdentityDisplayClaim("local-role-display", RoleBundle?.ToString() ?? "Custom") });
     public override string ToString() => "[confidential account state]";
 }
 
@@ -139,10 +148,19 @@ internal static class IdentityStateProtection
             clear = ProtectedData.Unprotect(Convert.FromBase64String(encoded), Entropy(station, keyId, revision), DataProtectionScope.LocalMachine);
             if (clear.Length > 32768) throw new InvalidOperationException("IdentityStateCapacityExceeded");
             var state = JsonSerializer.Deserialize<IdentityAuthorityState>(clear) ?? throw new InvalidOperationException("IdentityStateInvalid");
-            if (state.FormatVersion != 2 || state.Revision != revision || state.StationId != station ||
+            if (state.FormatVersion != 3 || state.Revision != revision || state.StationId != station ||
                 state.InstallationKeyId != keyId || state.RecoveryCodes is null || state.RecoveryCodes.Count > 32 ||
                 state.StationThrottle is null || state.UnknownAccountThrottle is null || state.AttemptIdentifierKey.Length != 44 ||
-                state.Administrator is { Throttle: null })
+                state.AdditionalAccounts is null || state.EnumerateAccounts().Count() > 16 ||
+                state.EnumerateAccounts().Any(account => account is null || account.Throttle is null ||
+                    account.Permissions is null || account.Permissions.Count > 64 || account.AuthorizationRevision < 1 ||
+                    account.PrincipalId == Guid.Empty || account.CredentialId == Guid.Empty || account.CredentialRevision < 1 ||
+                    account.Password is null || string.IsNullOrEmpty(account.UserNameKey) ||
+                    account.RoleBundle.HasValue && !Enum.IsDefined(account.RoleBundle.Value) ||
+                    account.Permissions.Any(permission => permission == Permission.None || !Enum.IsDefined(permission)) ||
+                    account.Permissions.Distinct().Count() != account.Permissions.Count) ||
+                state.EnumerateAccounts().Select(account => account.PrincipalId).Distinct().Count() != state.EnumerateAccounts().Count() ||
+                state.EnumerateAccounts().Select(account => account.UserNameKey).Distinct(StringComparer.Ordinal).Count() != state.EnumerateAccounts().Count())
                 throw new InvalidOperationException("IdentityStateBindingMismatch");
             return state;
         }

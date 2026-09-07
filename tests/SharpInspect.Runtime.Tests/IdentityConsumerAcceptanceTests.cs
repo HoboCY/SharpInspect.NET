@@ -29,7 +29,7 @@ public sealed class IdentityConsumerAcceptanceTests
         { AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
             KeyDirectory = Path.Combine(directory, "private-keys") };
         var options = new ProductionStoreOptions(Path.Combine(directory, "identity.sqlite"))
-        { AuditIntegrityPolicy = audit, LocalIdentity = new LocalIdentityOptions(audit.StationId, policy, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development) };
+        { AuditIntegrityPolicy = audit, LocalIdentity = new LocalIdentityOptions(audit.StationId, policy, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development) };
         var password = "  S4@" + Convert.ToBase64String(RandomNumberGenerator.GetBytes(24)) + " 汉字𝄞  ";
         Guid expectedPrincipal;
         try
@@ -54,7 +54,9 @@ public sealed class IdentityConsumerAcceptanceTests
             { PasswordPolicyVersion = policy.Version, BlocklistId = blocklist.Id, BlocklistVersion = blocklist.Version,
                 BlocklistContentHash = blocklist.ContentHash, BlocklistValues = blocklist.Values,
                 HashBaselineVersion = PasswordHashBaseline.DevelopmentVersion, WorkFactor = PasswordHashBaseline.SecurityFloorIterations,
-                AuthenticationPolicy = AuthenticationPolicy.Development }));
+                AuthenticationPolicy = AuthenticationPolicy.Development,
+                AuthorizationPolicy = new { AuthorizationPolicy.Development.Id, AuthorizationPolicy.Development.Version,
+                    AuthorizationPolicy.Development.RoleBundles, AuthorizationPolicy.Development.StepUpPermissions } }));
             var screenshot = Path.Combine(directory, "identity-window.png");
             var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
@@ -68,7 +70,7 @@ public sealed class IdentityConsumerAcceptanceTests
             var errorTask = child.StandardError.ReadToEndAsync();
             await child.StandardInput.WriteLineAsync(JsonSerializer.Serialize(password));
             child.StandardInput.Close();
-            try { await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30)); }
+            try { await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45)); }
             catch { child.Kill(entireProcessTree: true); throw; }
             var output = await outputTask;
             var error = await errorTask;
@@ -76,12 +78,27 @@ public sealed class IdentityConsumerAcceptanceTests
             await File.WriteAllTextAsync(Path.Combine(directory, "process.log"), output + error);
             Assert.True(child.ExitCode == 0, "The independent WPF identity smoke failed; inspect its non-secret process log.");
             Assert.Contains("V104-P01 independent-process WPF password login/immutable identity/privacy PASS", output);
+            Assert.Contains("V106-P01 independent-process WPF governed account creation PASS", output);
             Assert.True(File.Exists(screenshot));
+            Assert.True(File.Exists(Path.Combine(directory, "identity-administration.png")));
+            var commandPage = await new SqliteCommandTraceQuery(options).QueryAsync(new(PageSize: 200));
+            var managed = commandPage.Records.Where(record => record.CommandKind == AuditedCommandKind.CreateHumanAccount).ToArray();
+            Assert.Equal(2, managed.Length);
+            Assert.Equal(CommandDisposition.Accepted, managed[0].Disposition);
+            Assert.Equal(CommandAuditPhase.Completed, managed[1].Phase);
+            Assert.Equal(managed[0].AttemptId, managed[1].AttemptId);
+            Assert.All(managed, record =>
+            {
+                Assert.Equal(expectedPrincipal.ToString("D"), record.AuthenticatedHumanPrincipalId);
+                Assert.Equal(SystemPrincipalId.Runtime, record.SystemPrincipalId);
+            });
             var verified = await new SqliteAuditIntegrityQuery(options).VerifyAsync(new());
             Assert.Equal(AuditIntegrityState.Verified, verified.State);
             await File.WriteAllTextAsync(Path.Combine(directory, "evidence.json"), JsonSerializer.Serialize(new
             { Result = "Pass", Consumer = consumer, ConsumerSha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(consumer))),
-                PrincipalId = expectedPrincipal, VerifiedThrough = verified.VerifiedThroughSequence, Screenshot = screenshot }));
+                PrincipalId = expectedPrincipal, GovernedCommandCorrelationId = managed[0].CorrelationId,
+                GovernedCommandAttemptId = managed[0].AttemptId,
+                VerifiedThrough = verified.VerifiedThroughSequence, Screenshot = screenshot }));
         }
         finally
         {

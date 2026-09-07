@@ -25,7 +25,7 @@
                         <Run Text="{Binding ValidRecoveryCodeCount, Mode=OneWay}" />
                     </TextBlock>
                     <TextBlock Text="{Binding ErrorMessage, Mode=OneWay}" Foreground="#9B3430" Margin="0,4,0,0" TextWrapping="Wrap" />
-                    <TextBlock Text="{Binding IdentityNotice, Mode=OneWay}" Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
+                    <TextBlock Text="操作权限逐次校验，生产准入尚未完成。" Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
 
                     <Border x:Name="BootstrapPanel" Background="#FFF7E7" BorderBrush="#E4CE9F" BorderThickness="1" Padding="14" Visibility="Collapsed">
                         <StackPanel>

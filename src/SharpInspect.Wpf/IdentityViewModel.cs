@@ -177,7 +177,7 @@ public sealed partial class IdentityViewModel : ObservableObject, IAsyncDisposab
     }
 
     public string IdentityNotice { get; } =
-        "已验证的身份可在此查看；操作权限和生产准入功能尚未交付。";
+        "已验证的身份可在此查看；操作权限逐次校验，生产准入尚未完成。";
 
     public bool HasRecoveryKit
     {

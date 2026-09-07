@@ -12,6 +12,10 @@ internal sealed record StateRow(string Label, string Value);
 public partial class ShellWindow : Window
 {
     internal Task SubmitIdentityLoginSmokeAsync(string userName, string password) => IdentityPanel.SubmitLoginSmokeAsync(userName, password);
+    internal Task RefreshIdentityAdministrationSmokeAsync() => IdentityAdministrationPanel.RefreshSmokeAsync();
+    internal Task<RuntimeCommandOutcome?> SubmitIdentityAdministrationCreateSmokeAsync(
+        string userName, string displayName, string password, string stepUpPassword) =>
+        IdentityAdministrationPanel.SubmitCreateSmokeAsync(userName, displayName, password, stepUpPassword);
     internal Task WaitForSessionLockAsync() => _sessionLock;
     internal async Task SubmitLockedLoginSmokeAsync(string userName, string password)
     {
@@ -26,31 +30,38 @@ public partial class ShellWindow : Window
     private readonly CommandTraceViewModel? _traceViewModel;
     private readonly AuditIntegrityViewModel? _integrityViewModel;
     private readonly IdentityViewModel? _identityViewModel;
+    private readonly IdentityAdministrationViewModel? _identityAdministrationViewModel;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
     private bool _identitySelectionLoaded;
+    private bool _identityAdministrationSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
 
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
-        AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null)
+        AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
+        IdentityAdministrationViewModel? identityAdministrationViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
         _traceViewModel = traceViewModel;
         _integrityViewModel = integrityViewModel;
         _identityViewModel = identityViewModel;
+        _identityAdministrationViewModel = identityAdministrationViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
         IdentityPanel.DataContext = identityViewModel;
+        IdentityAdministrationPanel.DataContext = identityAdministrationViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
         if (integrityViewModel is not null) integrityViewModel.PropertyChanged += IntegrityChanged;
         if (identityViewModel is not null) identityViewModel.PropertyChanged += IdentityChanged;
+        if (identityAdministrationViewModel is not null)
+            identityAdministrationViewModel.PropertyChanged += IdentityAdministrationChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -77,6 +88,26 @@ public partial class ShellWindow : Window
         var top = TraceAvailablePanel.TranslatePoint(new Point(0, 0), TracePanel).Y;
         if (bottom > top + 0.5) throw new InvalidOperationException("Audit panel overlaps command trace controls.");
     }
+    internal void VerifyMaintenanceLayout()
+    {
+        if (IdentityPanel.Visibility != Visibility.Visible ||
+            IdentityAdministrationPanel.Visibility != Visibility.Visible)
+            throw new InvalidOperationException("Maintenance identity panels are not reachable.");
+    }
+    internal void BringIdentityAdministrationIntoViewForSmoke()
+    {
+        VerifyMaintenanceLayout();
+        UpdateLayout();
+        IdentityAdministrationPanel.UpdateLayout();
+        IdentityAdministrationPanel.BringIntoView();
+        MainScrollViewer.UpdateLayout();
+        var panelTop = IdentityAdministrationPanel.TranslatePoint(new Point(0, 0), MainScrollViewer).Y;
+        var targetOffset = MainScrollViewer.VerticalOffset + panelTop;
+        MainScrollViewer.ScrollToVerticalOffset(Math.Clamp(targetOffset, 0, MainScrollViewer.ScrollableHeight));
+        MainScrollViewer.UpdateLayout();
+    }
+    internal void VerifyIdentityAdministrationBottomReachableForSmoke() =>
+        IdentityAdministrationPanel.ScrollToBottomForSmoke();
     internal void ShowUnavailable() => FreshnessLabel.Text = "状态不可用，请保持生产禁用";
     private void RevealPageClick(object sender, RoutedEventArgs e) => RevealPage();
     private void LockPage(object sender, RoutedEventArgs e) => LockPage();
@@ -90,6 +121,7 @@ public partial class ShellWindow : Window
     {
         IsPrivacyLocked = true;
         IdentityPanel.ClearSensitiveInputs();
+        IdentityAdministrationPanel.ClearSensitiveInputs();
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
         LockedSignInStatus.Text = "";
@@ -160,8 +192,11 @@ public partial class ShellWindow : Window
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
         if (_integrityViewModel is not null) _integrityViewModel.PropertyChanged -= IntegrityChanged;
         if (_identityViewModel is not null) _identityViewModel.PropertyChanged -= IdentityChanged;
+        if (_identityAdministrationViewModel is not null)
+            _identityAdministrationViewModel.PropertyChanged -= IdentityAdministrationChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
+        IdentityAdministrationPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
@@ -169,6 +204,7 @@ public partial class ShellWindow : Window
     private void TraceChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IntegrityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void IdentityChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void IdentityAdministrationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -186,7 +222,7 @@ public partial class ShellWindow : Window
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
-        if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导与登录";
+        if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导与账号授权";
         SnapshotPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
         BlockersPanel.Visibility = traceSelected || maintenanceSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
@@ -223,6 +259,7 @@ public partial class ShellWindow : Window
             }
         }
         IdentityPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
+        IdentityAdministrationPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         if (!maintenanceSelected)
         {
             if (_identitySelectionLoaded)
@@ -230,11 +267,22 @@ public partial class ShellWindow : Window
                 _identitySelectionLoaded = false;
                 IdentityPanel.ClearSensitiveInputs();
             }
+            if (_identityAdministrationSelectionLoaded)
+            {
+                _identityAdministrationSelectionLoaded = false;
+                IdentityAdministrationPanel.ClearSensitiveInputs();
+            }
         }
         else if (_identityViewModel is not null && !_identitySelectionLoaded)
         {
             _identitySelectionLoaded = true;
             _ = _identityViewModel.RefreshAsync();
+        }
+        if (maintenanceSelected && _identityAdministrationViewModel is not null &&
+            !_identityAdministrationSelectionLoaded)
+        {
+            _identityAdministrationSelectionLoaded = true;
+            _ = _identityAdministrationViewModel.RefreshAsync();
         }
         string Value(object? value) => s is null ? "未知" : value?.ToString() ?? "无";
         RuntimeRows.ItemsSource = new[]

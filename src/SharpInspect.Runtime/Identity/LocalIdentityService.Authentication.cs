@@ -20,8 +20,8 @@ internal sealed partial class LocalIdentityService
             var result = await _store.UpdateIdentityAsync(state =>
             {
                 ObserveTime(state);
-                if (kind == IdentityEventKind.SessionStarted && (state.Administrator is not { Enabled: true } administrator ||
-                    administrator.PrincipalId != fact.PrincipalId))
+                if (kind == IdentityEventKind.SessionStarted && !state.EnumerateAccounts().Any(account =>
+                    account.Enabled && account.PrincipalId == fact.PrincipalId))
                     return Update("SessionCredentialUnavailable", Event(state, IdentityEventKind.SessionSignInCancelled,
                         "SessionCredentialUnavailable", fact.PrincipalId) with { SessionId = fact.SessionId });
                 return Update("SessionEvidencePersisted", Event(state, kind, fact.ReasonCode,
@@ -49,34 +49,41 @@ internal sealed partial class LocalIdentityService
             }
             catch (ArgumentException) { key = "InvalidInput"; password = "Invalid credential input"; inputValid = false; }
             var before = await _store.ReadIdentityAsync(token).ConfigureAwait(false);
-            var account = before.Administrator is { } candidate && candidate.UserNameKey == key ? candidate : null;
+            var accounts = before.EnumerateAccounts().ToArray();
+            var account = accounts.FirstOrDefault(candidate => candidate.UserNameKey == key);
             var observedBefore = _utcNow();
             var now = observedBefore > before.LastObservedUtc ? observedBefore : before.LastObservedUtc;
             var eligible = now >= before.StationThrottle.NextAllowedAtUtc &&
                 now >= (account?.Throttle ?? before.UnknownAccountThrottle).NextAllowedAtUtc;
             var verifier = account?.Password.ToRecord();
             var fullVerification = inputValid && eligible && account is { Enabled: true };
+            var profiles = BuildVerificationProfiles(accounts, _options.Baseline);
+            VerificationProfile? targetProfile = null;
+            if (fullVerification && verifier is not null && TryGetVerificationProfile(account!.Password, out var observedProfile))
+                targetProfile = observedProfile;
             var verified = await Task.Run(() =>
             {
-                // The station's sole credential defines a common work profile. Unknown,
-                // disabled and cooling attempts do the same old-cost and padding passes.
-                var work = fullVerification ? verifier! : DummyVerifier(before.Administrator?.Password);
-                var result = VerifyPasswordWork(password, work);
-                if (work.Cost < _options.Baseline.TargetIterations)
-                    _ = VerifyPasswordWork(password, DummyVerifier(null));
-                return fullVerification && result;
+                var result = false;
+                foreach (var profile in profiles)
+                {
+                    var isTarget = targetProfile is { } target && target == profile;
+                    var work = isTarget ? verifier! : DummyVerifier(profile);
+                    var candidate = VerifyPasswordWork(password, work);
+                    if (isTarget) result |= candidate;
+                }
+                return targetProfile is not null && result;
             }, token).ConfigureAwait(false);
             var replacement = verified && _options.PasswordHasher.NeedsRehash(verifier!)
                 ? await Task.Run(() => UpgradeVerifier(password, verifier!), token).ConfigureAwait(false) : null;
             var committed = await _store.UpdateIdentityAsync(state =>
             {
                 var observed = ObserveTime(state);
-                var current = state.Administrator is { } administrator && administrator.UserNameKey == key ? administrator : null;
+                var current = state.EnumerateAccounts().FirstOrDefault(candidate => candidate.UserNameKey == key);
                 var throttle = current?.Throttle ?? state.UnknownAccountThrottle;
                 var identifier = ProtectAttemptIdentifier(state, key);
                 if (!eligible || observed < state.StationThrottle.NextAllowedAtUtc || observed < throttle.NextAllowedAtUtc)
                     return Rejected(state, current, throttle, identifier, IdentityEventKind.AuthenticationThrottled);
-                if (verified && current is { Enabled: true } && (current.CredentialId != account!.CredentialId ||
+                if (verified && current is { Enabled: true } && (account is null || current.CredentialId != account.CredentialId ||
                     current.CredentialRevision != account.CredentialRevision))
                     // A concurrent successful upgrade invalidates the earlier proof, but
                     // it is not a wrong-password failure and cannot disable the credential.
@@ -104,7 +111,7 @@ internal sealed partial class LocalIdentityService
                     current.Password = PasswordVerifierState.From(replacement);
                     current.CredentialRevision = checked(current.CredentialRevision + 1);
                     successEvents.Add(Event(state, IdentityEventKind.PasswordVerifierUpgraded, "PasswordVerifierUpgraded",
-                        current.PrincipalId, current.CredentialId));
+                        current.PrincipalId, current.CredentialId, account: current));
                 }
                 successEvents.Add(AuthenticationEvent(state, current, throttle, identifier, IdentityEventKind.AuthenticationSucceeded));
                 return new IdentityUpdate(new AuthenticationResult(true, "Authenticated", current.ToIdentity()), successEvents);
@@ -113,13 +120,70 @@ internal sealed partial class LocalIdentityService
         }, reason => new AuthenticationResult(false, reason), cancellationToken);
     }
 
-    private PasswordHashRecord DummyVerifier(PasswordVerifierState? current)
+    private static IReadOnlyList<VerificationProfile> BuildVerificationProfiles(
+        IEnumerable<LocalAdministratorState> accounts, PasswordHashBaseline baseline)
     {
-        var saltLength = current is null ? _options.Baseline.SaltBytes : Convert.FromBase64String(current.Salt).Length;
-        var outputLength = current is null ? _options.Baseline.DerivedBytes : Convert.FromBase64String(current.Derived).Length;
-        return new(Pbkdf2PasswordHasher.Algorithm, Pbkdf2PasswordHasher.FormatVersion, _options.Baseline.ParameterVersion,
-            current?.Cost ?? _options.Baseline.TargetIterations, Convert.ToBase64String(RandomNumberGenerator.GetBytes(saltLength)),
-            Convert.ToBase64String(RandomNumberGenerator.GetBytes(outputLength)));
+        var profiles = new HashSet<VerificationProfile>();
+        var accountCount = 0;
+        var hasHistoricalCost = false;
+        foreach (var account in accounts)
+        {
+            accountCount++;
+            var password = account.Password;
+            if (password is null)
+            {
+                hasHistoricalCost = true;
+                continue;
+            }
+
+            if (password.Cost < baseline.TargetIterations)
+                hasHistoricalCost = true;
+            if (TryGetVerificationProfile(password, out var profile))
+                profiles.Add(profile);
+        }
+
+        if (accountCount == 0 || hasHistoricalCost || profiles.Count == 0)
+            profiles.Add(new VerificationProfile(baseline.TargetIterations, baseline.SaltBytes, baseline.DerivedBytes));
+
+        return profiles
+            .OrderBy(profile => profile.Cost)
+            .ThenBy(profile => profile.SaltBytes)
+            .ThenBy(profile => profile.OutputBytes)
+            .ToArray();
+    }
+
+    private static bool TryGetVerificationProfile(PasswordVerifierState password, out VerificationProfile profile)
+    {
+        profile = default;
+        byte[]? salt = null;
+        byte[]? derived = null;
+        try
+        {
+            salt = Convert.FromBase64String(password.Salt);
+            derived = Convert.FromBase64String(password.Derived);
+            profile = new VerificationProfile(password.Cost, salt.Length, derived.Length);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (salt is not null) CryptographicOperations.ZeroMemory(salt);
+            if (derived is not null) CryptographicOperations.ZeroMemory(derived);
+        }
+    }
+
+    private PasswordHashRecord DummyVerifier(VerificationProfile profile) =>
+        new(Pbkdf2PasswordHasher.Algorithm, Pbkdf2PasswordHasher.FormatVersion, _options.Baseline.ParameterVersion,
+            profile.Cost, RandomBase64(profile.SaltBytes), RandomBase64(profile.OutputBytes));
+
+    private static string RandomBase64(int byteCount)
+    {
+        var bytes = RandomNumberGenerator.GetBytes(byteCount);
+        try { return Convert.ToBase64String(bytes); }
+        finally { CryptographicOperations.ZeroMemory(bytes); }
     }
 
     private bool VerifyPasswordWork(string password, PasswordHashRecord record)
@@ -149,7 +213,7 @@ internal sealed partial class LocalIdentityService
         AuthenticationThrottleState throttle, string identifier, IdentityEventKind kind) =>
         Event(state, kind, kind == IdentityEventKind.AuthenticationSucceeded ? "Authenticated" :
             kind == IdentityEventKind.CredentialDisabled ? "CredentialFailureLimitReached" : "AuthenticationRejected",
-            account?.PrincipalId, account?.CredentialId) with
+            account?.PrincipalId, account?.CredentialId, account: account) with
         { ProtectedAttemptIdentifier = identifier, AccountFailures = throttle.ConsecutiveFailures,
             StationFailures = state.StationThrottle.ConsecutiveFailures, DelayTicks = Math.Max(throttle.DelayTicks, state.StationThrottle.DelayTicks),
             NextAllowedAtUtc = throttle.NextAllowedAtUtc > state.StationThrottle.NextAllowedAtUtc ? throttle.NextAllowedAtUtc : state.StationThrottle.NextAllowedAtUtc };
@@ -162,5 +226,7 @@ internal sealed partial class LocalIdentityService
         finally { CryptographicOperations.ZeroMemory(key); CryptographicOperations.ZeroMemory(bytes); }
     }
 }
+
+internal readonly record struct VerificationProfile(int Cost, int SaltBytes, int OutputBytes);
 
 internal sealed record PasswordVerificationWork(int Cost, int SaltBytes, int OutputBytes);

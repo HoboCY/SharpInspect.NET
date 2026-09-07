@@ -75,7 +75,7 @@ public sealed class IdentityTamperAcceptanceTests
             var identity = new LocalIdentityOptions(
                 fixture.StationId,
                 fixture.PasswordPolicy(),
-                weak, AuthenticationPolicy.Development);
+                weak, AuthenticationPolicy.Development, AuthorizationPolicy.Development);
             _ = new SqliteCommandStore(new ProductionStoreOptions(fixture.DatabasePath)
             {
                 AuditIntegrityPolicy = fixture.Policy,
@@ -206,7 +206,7 @@ public sealed class IdentityTamperAcceptanceTests
 
         public LocalPasswordPolicy PasswordPolicy() => new() { Blocklist = Blocklist() };
 
-        public LocalIdentityOptions IdentityOptions() => new(StationId, PasswordPolicy(), new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development);
+        public LocalIdentityOptions IdentityOptions() => new(StationId, PasswordPolicy(), new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development);
 
         public ProductionStoreOptions Options() => new(DatabasePath)
         {
