@@ -27,7 +27,33 @@ public sealed partial class StationRuntime
 
     private async Task InitializeAlarmsAsync()
     {
-        if (ConfiguredAlarmPolicy is null) return;
+        if (ConfiguredAlarmPolicy is not { } policy)
+        {
+            if (_frameBufferPool is not null)
+            {
+                lock (_sync)
+                {
+                    if (_disposed) return;
+                    var blockers = _snapshot.AdmissionBlockers
+                        .Where(code => code != "AlarmAuthorityUnavailable")
+                        .Append("AlarmAuthorityUnavailable");
+                    PublishLocked(_snapshot with
+                    {
+                        Ready = false,
+                        AlarmState = new AlarmStateSnapshot(false, "FrameBufferAlarmMappingUnavailable",
+                            _snapshot.RuntimeEpoch, _snapshot.Revision, null,
+                            Array.Empty<AlarmInstanceSnapshot>(),
+                            new AlarmPlcProjection(Array.Empty<AlarmPlcEntry>(), 0, 0, false)),
+                        AdmissionBlockers = new AdmissionBlockers(blockers)
+                    });
+                }
+            }
+            return;
+        }
+        if (_frameBufferPool is not null && IsFrameBufferAlarmMappingValid(policy))
+        {
+            lock (_sync) _registeredAlarmSources.Add(FrameBufferAlarmSource);
+        }
         await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
         // Commands await the complete initialization before handling. Acquiring their gate
         // here would deadlock a local Stop already waiting for initialization while holding it.
@@ -163,6 +189,9 @@ public sealed partial class StationRuntime
         try
         {
             var current = await store.ReadAlarmStateAsync(epoch, cancellationToken).ConfigureAwait(false);
+            if (_frameBufferPool is not null && !IsFrameBufferAlarmMappingValid(ConfiguredAlarmPolicy))
+                current = new AlarmStateSnapshot(false, "FrameBufferAlarmMappingUnavailable", epoch, 0,
+                    ConfiguredAlarmPolicy, current.Instances, current.Plc);
             lock (_sync)
             {
                 if (_disposed) return;
@@ -270,14 +299,55 @@ public sealed partial class StationRuntime
             bool refreshStartup;
             lock (_sync) refreshStartup = !_alarmObservations.TryGetValue(StartupAlarmCode, out var startup) ||
                 !IsFresh(startup, policy) || startup.Healthy != (_snapshot.Recovery == RecoveryState.None);
-            if (refreshStartup) await ObserveStartupAlarmAsync(_lifetime.Token).ConfigureAwait(false);
+            bool refreshFrameBuffer;
+            lock (_sync)
+            {
+                refreshFrameBuffer = _frameBufferPool is not null &&
+                    IsFrameBufferAlarmMappingValid(policy) &&
+                    (!_alarmObservations.TryGetValue(FrameBufferAlarmCode, out var frameBuffer) ||
+                     frameBuffer.Healthy != !_frameBufferPool.ProductionFaultLatched ||
+                     !IsFresh(frameBuffer, policy));
+            }
             AlarmObservation[] expired;
             lock (_sync)
             {
-                expired = _alarmObservations.Where(pair => pair.Key != StartupAlarmCode && pair.Value.Healthy &&
+                expired = _alarmObservations.Where(pair => pair.Key != StartupAlarmCode &&
+                    !(pair.Key == FrameBufferAlarmCode && _frameBufferPool is not null &&
+                      IsFrameBufferAlarmMappingValid(policy)) && pair.Value.Healthy &&
                     !IsFresh(pair.Value, policy)).Select(pair => new AlarmObservation(_snapshot.RuntimeEpoch,
                         NextAlarmObservationSequenceLocked(pair.Key), pair.Key,
                         policy.Rules.Single(rule => rule.Code == pair.Key).Source, false, DateTimeOffset.UtcNow)).ToArray();
+            }
+            if (refreshStartup) await ObserveStartupAlarmAsync(_lifetime.Token).ConfigureAwait(false);
+            if (refreshFrameBuffer)
+            {
+                AlarmObservation? frameObservation = null;
+                lock (_sync)
+                {
+                    if (_frameBufferPool is not null && IsFrameBufferAlarmMappingValid(policy))
+                    {
+                        var sequence = NextAlarmObservationSequenceLocked(FrameBufferAlarmCode);
+                        var healthy = !_frameBufferPool.ProductionFaultLatched;
+                        var hasActiveInstance = _snapshot.AlarmState?.Instances.Any(instance =>
+                            instance.Code == FrameBufferAlarmCode && instance.Lifecycle != AlarmLifecycle.Cleared) == true;
+                        if (healthy && !hasActiveInstance)
+                        {
+                            // A healthy source without an alarm instance has no durable
+                            // lifecycle event. Keep the trusted monotonic observation local
+                            // so freshness is renewed without manufacturing an audit row that
+                            // has no instance to bind to.
+                            _alarmObservations[FrameBufferAlarmCode] = new(_snapshot.RuntimeEpoch,
+                                sequence, Stopwatch.GetTimestamp(), true);
+                        }
+                        else
+                        {
+                            frameObservation = new AlarmObservation(_snapshot.RuntimeEpoch, sequence,
+                                FrameBufferAlarmCode, FrameBufferAlarmSource, healthy, DateTimeOffset.UtcNow);
+                        }
+                    }
+                }
+                if (frameObservation is not null)
+                    await ObserveAlarmCoreAsync(frameObservation, _lifetime.Token).ConfigureAwait(false);
             }
             foreach (var observation in expired)
                 await ObserveAlarmCoreAsync(observation, _lifetime.Token).ConfigureAwait(false);

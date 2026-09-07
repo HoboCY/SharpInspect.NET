@@ -272,13 +272,19 @@ public sealed class AlgorithmContractTests
             AlgorithmDiagnosticEmission.Accepted;
     }
 
+    private static FrameMetadata FrameDetails(ExecutionCorrelationId correlation, int width, int height,
+        int stride, VisionPixelFormat format, int? bits, DateTimeOffset captured) =>
+        new(correlation, "camera.primary", width, height, stride, format, bits, captured,
+            new EffectiveCameraConfiguration(ProductionAcquisitionMode.SoftwareTrigger, 1000, 0,
+                new RegionOfInterest(0, 0, width, height), format, bits, 1000, 0, null));
+
     private sealed class TestFrame : VisionFrame
     {
         private readonly byte[] _bytes = { 1, 2, 3, 4 };
 
         public TestFrame(ExecutionCorrelationId correlation)
-            : base(correlation, "camera.primary", 2, 2, 2, VisionPixelFormat.Mono8, null,
-                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero))
+            : base(FrameDetails(correlation, 2, 2, 2, VisionPixelFormat.Mono8, null,
+                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero)))
         { }
 
         public override bool IsLoanActive => true;
@@ -293,8 +299,8 @@ public sealed class AlgorithmContractTests
     private sealed class InvalidFrame : VisionFrame
     {
         public InvalidFrame(ExecutionCorrelationId correlation)
-            : base(correlation, "camera.primary", 1, 1, 2, VisionPixelFormat.Mono16, 8,
-                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero))
+            : base(FrameDetails(correlation, 1, 1, 2, VisionPixelFormat.Mono16, 8,
+                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero)))
         { }
 
         public override bool IsLoanActive => false;
@@ -304,8 +310,8 @@ public sealed class AlgorithmContractTests
     private sealed class Mono16Frame : VisionFrame
     {
         public Mono16Frame(ExecutionCorrelationId correlation, int validBits)
-            : base(correlation, "camera.primary", 1, 1, 2, VisionPixelFormat.Mono16, validBits,
-                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero))
+            : base(FrameDetails(correlation, 1, 1, 2, VisionPixelFormat.Mono16, validBits,
+                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero)))
         { }
 
         public override bool IsLoanActive => true;
@@ -315,8 +321,8 @@ public sealed class AlgorithmContractTests
     private sealed class Mono8WithBitsFrame : VisionFrame
     {
         public Mono8WithBitsFrame(ExecutionCorrelationId correlation)
-            : base(correlation, "camera.primary", 1, 1, 1, VisionPixelFormat.Mono8, 8,
-                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero))
+            : base(FrameDetails(correlation, 1, 1, 1, VisionPixelFormat.Mono8, 8,
+                new DateTimeOffset(2026, 9, 8, 1, 2, 3, TimeSpan.Zero)))
         { }
 
         public override bool IsLoanActive => true;

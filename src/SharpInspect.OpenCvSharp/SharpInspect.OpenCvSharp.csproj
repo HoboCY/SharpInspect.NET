@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.OpenCvSharp</PackageId>
+    <Description>OpenCvSharp4 frame adapter for SharpInspect.NET vision algorithms.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <PackageReference Include="OpenCvSharp4" Version="4.11.0.20250506" />
+  </ItemGroup>
+</Project>

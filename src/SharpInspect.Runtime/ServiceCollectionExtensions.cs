@@ -5,6 +5,7 @@ using SharpInspect.Runtime.Storage;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Algorithms;
+using SharpInspect.Runtime.Frames;
 
 namespace SharpInspect.Runtime;
 
@@ -24,12 +25,27 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>Registers the explicitly sized, bounded frame buffer pool used by acquisition adapters.</summary>
+    public static IServiceCollection AddSharpInspectFrameBufferPool(this IServiceCollection services,
+        FrameBufferPoolOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        if (services.Any(item => item.ServiceType == typeof(FrameBufferPoolOptions) ||
+            item.ServiceType == typeof(FrameBufferPool)))
+            throw new ArgumentException("FrameBufferPoolAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        services.AddSingleton<FrameBufferPool>();
+        return services;
+    }
+
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
     {
         ArgumentNullException.ThrowIfNull(services);
-        services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetService<SqliteCommandStore>(), heartbeatInterval));
+        services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetService<SqliteCommandStore>(), heartbeatInterval,
+            frameBufferPool: p.GetService<FrameBufferPool>()));
         return services;
     }
 
@@ -63,7 +79,8 @@ public static class ServiceCollectionExtensions
                     new UnavailableAdministratorRecoveryRuntimeGate()));
         }
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
-            p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>()));
+            p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
+            p.GetService<FrameBufferPool>()));
         return services;
     }
 }

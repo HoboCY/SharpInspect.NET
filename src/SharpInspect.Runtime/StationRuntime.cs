@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 
 namespace SharpInspect.Runtime;
@@ -20,6 +21,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private readonly ICommandAuditWriter? _audit;
     private readonly IInteractiveSessionService? _sessions;
     private readonly LocalAuthorizationService? _authorization;
+    private readonly FrameBufferPool? _frameBufferPool;
     private readonly Task _storeInitialization;
     private Task? _completion;
     private Task? _shutdown;
@@ -33,14 +35,15 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private long _sessionProjectionVersion;
     private bool _disposed;
 
-    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval) { }
+    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval, null, null, null) { }
 
     internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null,
-        LocalAuthorizationService? authorization = null)
+        LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null)
     {
         _audit = audit;
         _sessions = sessions;
         _authorization = authorization;
+        _frameBufferPool = frameBufferPool;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
         if (interval < TimeSpan.FromMilliseconds(20) || interval > TimeSpan.FromSeconds(30))
             throw new ArgumentOutOfRangeException(nameof(heartbeatInterval));
@@ -86,6 +89,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         cancellationToken.ThrowIfCancellationRequested();
         lock (_sync)
         {
+            ReconcileFrameBufferPoolLocked();
             ReconcileSessionLocked();
             return ValueTask.FromResult(_snapshot);
         }
@@ -131,6 +135,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
             if (_subscribers.Count >= MaximumSubscribers)
                 throw new InvalidOperationException("SnapshotSubscriberLimit");
             ReconcileSessionLocked();
+            ReconcileFrameBufferPoolLocked();
             channel.Writer.TryWrite(_snapshot);
             if (_disposed) channel.Writer.TryComplete();
             else _subscribers.Add(channel);
@@ -157,6 +162,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         lock (_sync)
         {
             if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
+            ReconcileFrameBufferPoolLocked();
         }
         var localStop = command is GracefulProductionStopCommand &&
             command.Invocation?.Source == CommandSource.PhysicalConsole;
@@ -298,6 +304,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
 
     private RuntimeCommandOutcome DecideLocked(RuntimeCommand command)
     {
+        ReconcileFrameBufferPoolLocked();
         RuntimeCommandOutcome Reject(string code) => new(command.CorrelationId, CommandDisposition.Rejected, code);
         if (command.CorrelationId == Guid.Empty || command.Invocation is null ||
             !Enum.IsDefined(typeof(CommandSource), command.Invocation.Source) || command.Invocation.PrincipalId?.Length > 256)
@@ -440,6 +447,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
 
     private void PublishLocked(StationStateSnapshot next)
     {
+        next = ApplyFrameBufferPoolStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,

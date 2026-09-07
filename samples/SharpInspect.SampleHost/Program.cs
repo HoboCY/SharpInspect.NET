@@ -31,6 +31,8 @@ internal static class Program
             return ConformanceDemo.RunQuery(conformanceQueryDirectory);
         if (args.Contains("--algorithm-prepare-check", StringComparer.OrdinalIgnoreCase))
             return AlgorithmPreparationDemo.Run();
+        if (args.Contains("--frame-consumer-check", StringComparer.OrdinalIgnoreCase))
+            return FrameConsumerDemo.Run();
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);

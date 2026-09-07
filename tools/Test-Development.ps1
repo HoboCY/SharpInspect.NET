@@ -104,7 +104,7 @@ try {
         '--logger','trx','--results-directory',(Join-Path $taskRun 'tests'))
 
     $taskFeed = Join-Path $taskRun 'packages'
-    foreach ($taskName in @('Abstractions','Runtime','Wpf')) {
+    foreach ($taskName in @('Abstractions','Runtime','Wpf','OpenCvSharp')) {
         Invoke-TaskDotnet ('pack-' + $taskName + '.log') @('pack',"src/SharpInspect.$taskName/SharpInspect.$taskName.csproj",
             '-c','Release','--no-build','--no-restore','--output',$taskFeed)
     }
@@ -233,6 +233,15 @@ try {
             $taskAlgorithmOutput -notmatch 'configurationNegatives=true preparationFailure=true ready=false' -or
             $taskAlgorithmOutput -notmatch 'frameExecution=NotRun productionAlgorithm=UserSupplied') {
             throw 'The independent algorithm consumer did not prove explicit Factory registration and preparation.'
+        }
+    }
+    if ($Ticket -ge 11) {
+        Invoke-TaskDotnet 'frame-consumer.log' @($taskConsumerDll,'--frame-consumer-check')
+        $taskFrameOutput = Get-Content -LiteralPath (Join-Path $taskRun 'frame-consumer.log') -Raw
+        if ($taskFrameOutput -notmatch 'V111-P01 frame-consumer PASS formats=5 padding=true strideAlignment=true' -or
+            $taskFrameOutput -notmatch 'cloneRetained=true staleBorrowRejected=true' -or
+            $taskFrameOutput -notmatch 'authoritativeExecution=NotRun productionReady=false') {
+            throw 'The independent frame consumer did not prove the normalized pixel and native loan contracts.'
         }
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)

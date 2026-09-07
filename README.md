@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket10.ps1
+pwsh -File tools/Test-Ticket11.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket10/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket11/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -40,6 +40,7 @@ pwsh -File tools/Test-Ticket10.ps1
 | SharpInspect.Abstractions | SharpInspect.NET.Abstractions | 不可变快照、类型化命令和只读追溯契约 |
 | SharpInspect.Runtime | SharpInspect.NET.Runtime | 无 UI 的工位权威、SQLite 单写协调器及独立只读查询 |
 | SharpInspect.Wpf | SharpInspect.NET.Wpf | Dispatcher、快照时效、MVVM、状态及追溯窗口 |
+| SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，
@@ -208,7 +209,40 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-p
 ```
 
 该入口覆盖两套不同 Factory、错误 Schema/hash、缺必填值、语义失败和依赖准备失败。
-帧池、OpenCV 借用、单帧执行与整包结果校验、执行期超时隔离和 Overlay 持久化仍由后续工单交付。
+单帧执行与整包结果校验、执行期超时隔离和 Overlay 持久化仍由后续工单交付。
+
+## 帧池与 OpenCvSharp 借用
+
+`FrameBufferPool` 在创建时分配固定容量的 pinned 像素缓冲。`TryCopyFrame` 只接受规范 Mono8、
+小端右对齐 Mono16（10/12/16 Valid Bits）或交错 Bgr24，验证正 Stride 和完整缓冲覆盖，
+复制有效像素并清零 padding。耗尽返回 `FrameBufferExhausted` 与 `Error + Unknown`，不临时分配替代像素缓冲。
+源只需覆盖末行有效像素；Mono16 的奇数源 Stride 在池中归一为下一偶数，输出元数据报告真实新 Stride。
+池槽必须覆盖输出 `FrameMetadata.FullBufferLayoutLength`（包括末行 padding）；源 Stride=5 的 2×2 Mono16
+需要 9 字节源和 12 字节槽。结构化 `PoolCopyEvidence` 保留源/输出步长、预分配复制和 padding 清零证据。
+生产帧超过槽容量也返回 `FrameBufferExhausted` 并锁存故障，即使当前槽空闲。
+这些是采集失败数据；权威逐件执行记录仍由后续执行器和生产流程建立。
+
+框架/适配器持有 `FrameBufferLease`，算法只得到 `VisionFrame`。算法侧元数据包含公共有效相机设置；
+Provider、SDK、物理设备、原生格式、规范化过程、设备计数和 UTC/单调里程碑保存在单独的 `FrameProvenance`。
+时间和设备计数不代替类型化相关 ID。保留数据须复制，不能把 borrowed span 留到调用结束后。
+
+`frame.WithMat(mat => ...)` 使用真实 row step，在同步回调结束时释放 Mat header，再释放原生读取占位。
+`CloneToMat()` 产生独立副本，`CloneToDisplayMat()` 显式按 Valid Bits 缩放 Mono16 显示值。
+owner 归还或池关闭与读取并发时，仍在读取的缓冲继续保留，直到真实回调退出才可复用。
+Mat 本身有可写 API；只读、不保留及不派生长寿命 header 是消费方必须遵守并接受审查的契约，不能当作安全沙箱。
+
+`FrameCallbackHandoff` 使用有界队列且不在发布栈执行消费者 continuation。`TryPublish` 无论成功或失败
+均消费原 owner 令牌：失败会释放，成功后由读取者的新令牌持有；关闭会释放未领取项。
+像素池及移交队列都不调用 Runtime、算法、UI 或持久化回调。
+显式注册 `AddSharpInspectFrameBufferPool(options)` 后，Runtime 同步观察耗尽锁存并保持 Ready=false，
+后台再通过受信报警来源持久化版本化 `FrameBufferExhausted`。归还缓冲不自动清锁存；受控恢复和 Arm 仍需后续工单。
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --frame-consumer-check
+```
+
+桥包仅引用 OpenCvSharp4 托管包，消费宿主另行选择本机 native runtime；本仓库 Windows x64 样例和测试
+固定使用 `4.11.0.20250506`。四个框架开发包通过隔离缓存消费，不发布到 NuGet。
 
 ## 验证记录开发入口
 
@@ -246,7 +280,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-07 不可覆盖验证记录映射](docs/verification/v1-07.md)、
 [V1-08 本机管理员恢复验证映射](docs/verification/v1-08.md)、
 [V1-09 报警政策与生命周期验证映射](docs/verification/v1-09.md)、
-[V1-10 算法契约与准备验证映射](docs/verification/v1-10.md)。
+[V1-10 算法契约与准备验证映射](docs/verification/v1-10.md)、
+[V1-11 帧池与 OpenCvSharp 借用验证映射](docs/verification/v1-11.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

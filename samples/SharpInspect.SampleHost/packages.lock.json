@@ -12,6 +12,12 @@
           "System.Runtime.CompilerServices.Unsafe": "6.0.0"
         }
       },
+      "OpenCvSharp4.runtime.win": {
+        "type": "Direct",
+        "requested": "[4.11.0.20250506, )",
+        "resolved": "4.11.0.20250506",
+        "contentHash": "zmYlumOrX7ayeKY0RNMpAylpCfOLGXSlULrf6sOm/fVpbhactDHAJRoRwrrlgcz7yZiREb14llGod5S9zfhJlQ=="
+      },
       "Microsoft.Data.Sqlite": {
         "type": "Transitive",
         "resolved": "8.0.30",
@@ -33,6 +39,15 @@
         "type": "Transitive",
         "resolved": "6.0.0",
         "contentHash": "xlzi2IYREJH3/m6+lUrQlujzX8wDitm4QGnUu6kUXTQAWPuZY8i+ticFJbzfqaetLA6KR/rO6Ew/HuYD+bxifg=="
+      },
+      "OpenCvSharp4": {
+        "type": "Transitive",
+        "resolved": "4.11.0.20250506",
+        "contentHash": "tX0nFCHgfcFSJJcVWoc3mhEGk8z/mps9lIzqf3NWlG1IbhXE6CW7NN+eBdBQ/HfbOPcfcozct3TipUnvtEBE4Q==",
+        "dependencies": {
+          "System.Memory": "4.6.0",
+          "System.Runtime.CompilerServices.Unsafe": "6.0.0"
+        }
       },
       "SQLitePCLRaw.bundle_e_sqlite3": {
         "type": "Transitive",
@@ -66,8 +81,8 @@
       },
       "System.Memory": {
         "type": "Transitive",
-        "resolved": "4.5.3",
-        "contentHash": "3oDzvc/zzetpTKWMShs1AADwZjQ/36HnsufHRPcOjyRAAMLDlu2iD33MBI2opxnezcVUtXyqDXXjoFMOU9c7SA=="
+        "resolved": "4.6.0",
+        "contentHash": "OEkbBQoklHngJ8UD8ez2AERSk2g+/qpAaSWWCBFbpH727HxDq5ydVkuncBaKcKfwRqXGWx64dS6G1SUScMsitg=="
       },
       "System.Runtime.CompilerServices.Unsafe": {
         "type": "Transitive",
@@ -81,6 +96,13 @@
       },
       "SharpInspect.NET.Abstractions": {
         "type": "Project"
+      },
+      "SharpInspect.NET.OpenCvSharp": {
+        "type": "Project",
+        "dependencies": {
+          "OpenCvSharp4": "[4.11.0.20250506, )",
+          "SharpInspect.NET.Abstractions": "[0.1.0-dev.1, )"
+        }
       },
       "SharpInspect.NET.Runtime": {
         "type": "Project",
