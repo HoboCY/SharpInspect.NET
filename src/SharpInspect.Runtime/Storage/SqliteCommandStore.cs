@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Storage;
 internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDisposable
 {
     internal const string SystemPrincipal = "SharpInspect.Runtime";
-    private int SchemaVersion => _options.LocalIdentity is not null ? 3 : _policy is null ? 1 : 2;
+    private int SchemaVersion => _options.LocalIdentity is not null ? 4 : _policy is null ? 1 : 2;
     private const int EventVersion = 1;
     private const int MaximumReasonLength = 256;
     private const int MaximumPrincipalLength = 256;
@@ -171,7 +171,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             }
             catch (Exception ex)
             {
-                var reason = ex is InvalidOperationException && ex.Message.StartsWith("Audit", StringComparison.Ordinal)
+                var reason = ex is InvalidOperationException && (ex.Message.StartsWith("Audit", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("Identity", StringComparison.Ordinal))
                     ? ex.Message : "TraceStoreUnavailable";
                 SetIntegrityFault(reason);
                 initializationResult = new StoreWriteResult(false, reason);
@@ -290,7 +291,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (version >= 2)
                 AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId, _signingKey.PublicKeyBase64,
                     new AuditVerificationRequest(), true, deadline, validateAnchorReceipt: false);
-            if (version == 3) _ = ReadIdentityState(database, deadline);
+            if (version == 4) _ = ReadIdentityState(database, deadline);
         }
 
         if (!ConfigureProductionProfile(database, deadline))

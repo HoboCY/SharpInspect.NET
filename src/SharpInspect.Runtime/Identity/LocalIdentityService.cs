@@ -5,7 +5,7 @@ using SharpInspect.Runtime.Storage;
 
 namespace SharpInspect.Runtime.Identity;
 
-internal sealed class LocalIdentityService : IIdentityProvider, ILocalAdministratorBootstrap
+internal sealed partial class LocalIdentityService : IIdentityProvider, ILocalAdministratorBootstrap
 {
     private static readonly SemaphoreSlim Slots = new(2, 2);
     private static int _requests;
@@ -13,13 +13,16 @@ internal sealed class LocalIdentityService : IIdentityProvider, ILocalAdministra
     private readonly LocalIdentityOptions _options;
     private readonly IPhysicalConsoleAuthority _console;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly Action<PasswordVerificationWork>? _verificationObserver;
     private readonly Lazy<Task<PasswordHashRecord>> _dummy;
 
     internal LocalIdentityService(SqliteCommandStore store, LocalIdentityOptions options,
-        IPhysicalConsoleAuthority? console = null, Func<DateTimeOffset>? utcNow = null)
+        IPhysicalConsoleAuthority? console = null, Func<DateTimeOffset>? utcNow = null,
+        Action<PasswordVerificationWork>? verificationObserver = null)
     {
         _store = store; _options = options; _console = console ?? new PhysicalConsoleAuthority();
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        _verificationObserver = verificationObserver;
         _dummy = new(() => Task.Run(() => _options.PasswordHasher.Hash(NewSecret())));
     }
 
@@ -107,52 +110,6 @@ internal sealed class LocalIdentityService : IIdentityProvider, ILocalAdministra
                 Environment.NewLine + string.Join(Environment.NewLine, codes.Select(code => code.Id.ToString("N") + "." + code.Secret));
             return value with { RecoveryKit = new OneTimeSecret(delivery) };
         }, reason => new BootstrapAdministratorResult(false, reason), cancellationToken);
-    }
-
-    public ValueTask<AuthenticationResult> AuthenticateAsync(PasswordSignInRequest request, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        return BoundedAsync(async token =>
-        {
-            string key;
-            string password;
-            var inputValid = true;
-            try
-            {
-                (_, key) = ValidateUserName(request.UserName, creation: false);
-                if (request.Password is null || request.Password.Length > LocalPasswordPolicy.MaximumRawPasswordCodeUnits)
-                    throw new ArgumentException("PasswordInvalid");
-                password = LocalPasswordPolicy.ValidateNormalizedPassword(request.Password.Normalize(NormalizationForm.FormC));
-            }
-            catch (ArgumentException) { key = ""; password = "Invalid credential input"; inputValid = false; }
-            var before = await _store.ReadIdentityAsync(token).ConfigureAwait(false);
-            var account = before.Administrator is { Enabled: true } candidate && candidate.UserNameKey == key ? candidate : null;
-            var verifier = account?.Password.ToRecord() ?? await _dummy.Value.WaitAsync(token).ConfigureAwait(false);
-            var verified = await Task.Run(() => _options.PasswordHasher.Verify(password, verifier), token).ConfigureAwait(false);
-            verified = verified && inputValid && account is not null;
-            var replacement = verified && _options.PasswordHasher.NeedsRehash(verifier)
-                ? await Task.Run(() => UpgradeVerifier(password, verifier), token).ConfigureAwait(false) : null;
-            var committed = await _store.UpdateIdentityAsync(state =>
-            {
-                ObserveTime(state);
-                var current = state.Administrator;
-                if (!verified || current is null || !current.Enabled || current.UserNameKey != key ||
-                    current.CredentialId != account!.CredentialId || current.CredentialRevision != account.CredentialRevision)
-                    return Update(new AuthenticationResult(false, "AuthenticationRejected"),
-                        Event(state, IdentityEventKind.AuthenticationRejected, "AuthenticationRejected", account?.PrincipalId));
-                var events = new List<IdentityAuditEvent>();
-                if (replacement is not null)
-                {
-                    current.Password = PasswordVerifierState.From(replacement);
-                    current.CredentialRevision = checked(current.CredentialRevision + 1);
-                    events.Add(Event(state, IdentityEventKind.PasswordVerifierUpgraded, "PasswordVerifierUpgraded",
-                        current.PrincipalId, current.CredentialId));
-                }
-                events.Add(Event(state, IdentityEventKind.AuthenticationSucceeded, "Authenticated", current.PrincipalId, current.CredentialId));
-                return new IdentityUpdate(new AuthenticationResult(true, "Authenticated", current.ToIdentity()), events);
-            }, token).ConfigureAwait(false);
-            return Committed<AuthenticationResult>(committed) ?? new(false, committed.ReasonCode);
-        }, reason => new AuthenticationResult(false, reason), cancellationToken);
     }
 
     public ValueTask<StationIdentityStatus> GetStatusAsync(CancellationToken cancellationToken = default) =>

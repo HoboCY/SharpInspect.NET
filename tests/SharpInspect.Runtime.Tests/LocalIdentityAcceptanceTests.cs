@@ -74,6 +74,8 @@ public sealed class LocalIdentityAcceptanceTests
             Assert.Equal(beforeFailure.Administrator.Password.Salt, afterFailure.Administrator.Password.Salt);
             Assert.Equal(beforeFailure.Administrator.Password.Derived, afterFailure.Administrator.Password.Derived);
 
+            // T5 now persists a delay after the intentionally incorrect login above.
+            clock.UtcNow = afterFailure.StationThrottle.NextAllowedAtUtc;
             var authenticated = await identity.AuthenticateAsync(
                 new PasswordSignInRequest("alice-104", context.Password));
             Assert.True(authenticated.Succeeded, authenticated.ReasonCode);
@@ -477,7 +479,7 @@ public sealed class LocalIdentityAcceptanceTests
         var original = context.IdentityOptions();
         var changed = new LocalIdentityOptions(context.StationId, original.PasswordPolicy with
         { Blocklist = PasswordBlocklist.Create(original.PasswordPolicy.Blocklist!.Id,
-            original.PasswordPolicy.Blocklist.Version, new[] { "different-compromised-value" }) }, new Pbkdf2PasswordHasher());
+            original.PasswordPolicy.Blocklist.Version, new[] { "different-compromised-value" }) }, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development);
         using (var connection = Open(context.DatabasePath))
         {
             using var command = connection.CreateCommand();
@@ -708,7 +710,7 @@ public sealed class LocalIdentityAcceptanceTests
                 Blocklist = PasswordBlocklist.Create(
                     "v104-test-blocklist", "v1", new[] { "known-compromised-value" })
             },
-            new Pbkdf2PasswordHasher());
+            new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development);
 
         public ProductionStoreOptions Options(bool identityEnabled = true) => new(DatabasePath)
         {

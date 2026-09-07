@@ -33,8 +33,12 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton(p => new LocalIdentityService(p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity));
             services.TryAddSingleton<IIdentityProvider>(p => p.GetRequiredService<LocalIdentityService>());
             services.TryAddSingleton<ILocalAdministratorBootstrap>(p => p.GetRequiredService<LocalIdentityService>());
+            services.TryAddSingleton<IInteractiveSessionService>(p => new InteractiveSessionService(
+                p.GetRequiredService<IIdentityProvider>(), options.LocalIdentity.AuthenticationPolicy,
+                p.GetRequiredService<LocalIdentityService>().PersistSessionEventAsync));
         }
-        services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval));
+        services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
+            p.GetService<IInteractiveSessionService>()));
         return services;
     }
 }

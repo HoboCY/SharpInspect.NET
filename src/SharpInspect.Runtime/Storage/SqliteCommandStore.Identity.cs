@@ -28,7 +28,7 @@ internal sealed partial class SqliteCommandStore
             state.StationId, null, null, null, null, "IdentityBootstrapRequired", PasswordPolicyVersion: identity.PasswordPolicy.Version,
             BlocklistId: identity.PasswordPolicy.Blocklist!.Id, BlocklistVersion: identity.PasswordPolicy.Blocklist.Version,
             HashBaselineVersion: identity.HashBaselineVersion, HashTargetCost: identity.Baseline.TargetIterations);
-        var sequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey, fact, deadline);
+        var sequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey, BindAuthenticationPolicy(fact), deadline);
         state.LastIdentityAuditHash = AuditChainDatabase.Tail(database, deadline).Hash;
         var protectedState = IdentityStateProtection.Protect(state);
         AuditChainDatabase.Execute(database, "INSERT INTO identity_authority VALUES(1,0,?,?,?);", deadline,
@@ -110,7 +110,7 @@ internal sealed partial class SqliteCommandStore
             long sequence = 0;
             foreach (var fact in decision.Events)
                 sequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey,
-                    fact with { StateRevision = state.Revision }, deadline);
+                    BindAuthenticationPolicy(fact with { StateRevision = state.Revision }), deadline);
             state.LastIdentityAuditHash = AuditChainDatabase.Tail(database, deadline).Hash;
             var protectedState = IdentityStateProtection.Protect(state);
             AuditChainDatabase.Execute(database, "UPDATE identity_authority SET Revision=?,ProtectedState=?,LastAuditSequence=?,StateSignature=? WHERE Id=1;", deadline,
@@ -136,6 +136,11 @@ internal sealed partial class SqliteCommandStore
         }
         finally { if (!committed) Rollback(database); }
     }
+
+    private IdentityAuditEvent BindAuthenticationPolicy(IdentityAuditEvent fact) => fact with
+    { AuthenticationPolicyId = _options.LocalIdentity!.AuthenticationPolicy.Id,
+        AuthenticationPolicyVersion = _options.LocalIdentity.AuthenticationPolicy.Version,
+        AuthenticationPolicyHash = _options.LocalIdentity.AuthenticationPolicy.ContentHash };
 
     private sealed class IdentityWork
     {

@@ -29,7 +29,7 @@ public sealed class IdentityConsumerAcceptanceTests
         { AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
             KeyDirectory = Path.Combine(directory, "private-keys") };
         var options = new ProductionStoreOptions(Path.Combine(directory, "identity.sqlite"))
-        { AuditIntegrityPolicy = audit, LocalIdentity = new LocalIdentityOptions(audit.StationId, policy, new Pbkdf2PasswordHasher()) };
+        { AuditIntegrityPolicy = audit, LocalIdentity = new LocalIdentityOptions(audit.StationId, policy, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development) };
         var password = "  S4@" + Convert.ToBase64String(RandomNumberGenerator.GetBytes(24)) + " 汉字𝄞  ";
         Guid expectedPrincipal;
         try
@@ -53,7 +53,8 @@ public sealed class IdentityConsumerAcceptanceTests
             await File.WriteAllTextAsync(policyPath, JsonSerializer.Serialize(new
             { PasswordPolicyVersion = policy.Version, BlocklistId = blocklist.Id, BlocklistVersion = blocklist.Version,
                 BlocklistContentHash = blocklist.ContentHash, BlocklistValues = blocklist.Values,
-                HashBaselineVersion = PasswordHashBaseline.DevelopmentVersion, WorkFactor = PasswordHashBaseline.SecurityFloorIterations }));
+                HashBaselineVersion = PasswordHashBaseline.DevelopmentVersion, WorkFactor = PasswordHashBaseline.SecurityFloorIterations,
+                AuthenticationPolicy = AuthenticationPolicy.Development }));
             var screenshot = Path.Combine(directory, "identity-window.png");
             var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,

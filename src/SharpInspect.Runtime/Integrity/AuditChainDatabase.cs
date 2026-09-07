@@ -22,7 +22,7 @@ internal static class AuditChainDatabase
                 $"CREATE TRIGGER {table}_immutable_{operation.ToLowerInvariant()} BEFORE {operation} ON {table} BEGIN SELECT RAISE(ABORT, 'ImmutableAuditEvidence'); END;"))) +
         "PRAGMA user_version=2;";
 
-    internal static string SchemaSqlFor(int version) => version == 2 ? SchemaSql : SchemaSql
+    internal static string SchemaSqlFor(int version) => version == 4 ? SchemaSqlFor(3).Replace("PRAGMA user_version=3;", "PRAGMA user_version=4;", StringComparison.Ordinal) : version == 2 ? SchemaSql : SchemaSql
         .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE,", StringComparison.Ordinal)
         .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
             CHECK((Kind='SigningKeyCreated' AND Sequence=1 AND FactPosition IS NULL AND IdentityPosition IS NULL)
@@ -61,7 +61,7 @@ internal static class AuditChainDatabase
     {
         var previous = Tail(db, deadline);
         var sequence = checked(previous.Sequence + 1);
-        var hash = EntryHash(Scalar(db, "PRAGMA user_version;", deadline) == 3, policy.StationId,
+        var hash = EntryHash(Scalar(db, "PRAGMA user_version;", deadline) >= 3, policy.StationId,
             sequence, previous.Hash, kind, position is { } ordinal ? Number(ordinal) : null, null, payload);
         Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);", deadline, Number(sequence), kind,
             position is { } p ? Number(p) : null, Convert.ToBase64String(payload), previous.Hash, hash);
@@ -144,8 +144,8 @@ internal static class AuditChainDatabase
         bool validateAnchorReceipt = true)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3, "AuditSchemaInvalid");
-        var hasIdentity = schemaVersion == 3;
+        Require(schemaVersion is 2 or 3 or 4, "AuditSchemaInvalid");
+        var hasIdentity = schemaVersion >= 3;
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");
         var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," + (hasIdentity ? "IdentityPosition" : "NULL") + " FROM audit_entries WHERE Sequence=1;", deadline,
@@ -223,7 +223,7 @@ internal static class AuditChainDatabase
                 Require(row.FactPosition is null && long.TryParse(row.IdentityPosition, NumberStyles.None, CultureInfo.InvariantCulture,
                     out _), "AuditIdentityPositionGap");
                 Require(row.IdentityPosition == Number(++identityOrdinal), "AuditIdentityPositionGap");
-                IdentityAuditEvent.VerifyPayload(payload, identityOrdinal, policy.StationId);
+                IdentityAuditEvent.VerifyPayload(payload, identityOrdinal, policy.StationId, schemaVersion >= 4);
             }
             else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null,
                 "AuditEntryKindUnsupported");

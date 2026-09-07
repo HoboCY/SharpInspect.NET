@@ -6,7 +6,7 @@ namespace SharpInspect.Wpf;
 /// Identity bootstrap and sign-in presentation. Input secrets are operation arguments;
 /// an unclaimed, committed recovery kit stays private until its single display or explicit disposal.
 /// </summary>
-public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class IdentityViewModel : ObservableObject, IAsyncDisposable
 {
     private enum OperationKind
     {
@@ -36,27 +36,39 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
     private bool _disposed;
 
     public IdentityViewModel(ILocalAdministratorBootstrap? bootstrap,
-        IIdentityProvider? identityProvider, string stationId)
+        IIdentityProvider? identityProvider, string stationId, IInteractiveSessionService? sessions = null,
+        IUiDispatcher? dispatcher = null)
     {
         _bootstrap = bootstrap;
         _identityProvider = identityProvider;
+        _sessions = sessions;
+        _dispatcher = dispatcher ?? new DispatcherUiDispatcher();
+        _session = new(InteractiveSessionState.Unauthenticated, null, null);
         _stationId = stationId?.Trim() ?? string.Empty;
         _statusMessage = !IsConfigured
             ? "身份服务不可用：未配置身份引导或登录服务。"
             : "尚未读取身份状态，请点击“刷新状态”。";
 
         RefreshCommand = new AsyncRelayCommand(() => RefreshAsync(), () => CanRefresh);
+        lock (_sync)
+        {
+            if (_sessions is not null)
+            {
+                _sessions.Changed += SessionChanged;
+                _session = _sessions.Current;
+            }
+        }
     }
 
     public AsyncRelayCommand RefreshCommand { get; }
 
     public string StationId => _stationId;
 
-    public bool IsConfigured => _bootstrap is not null || _identityProvider is not null;
+    public bool IsConfigured => _bootstrap is not null || _identityProvider is not null || _sessions is not null;
 
     public bool IsBootstrapConfigured => _bootstrap is not null;
 
-    public bool IsIdentityProviderConfigured => _identityProvider is not null;
+    public bool IsIdentityProviderConfigured => _identityProvider is not null || _sessions is not null;
 
     public bool IsBusy
     {
@@ -141,12 +153,13 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
 
     public HumanIdentity? CurrentIdentity
     {
-        get { lock (_sync) return _identity; }
+        get { lock (_sync) return _sessions is null || CurrentSession.State == InteractiveSessionState.Authenticated
+            && CurrentSession.PrincipalId == _identity?.PrincipalId.ToString("D") ? _identity : null; }
     }
 
     public bool HasIdentity
     {
-        get { lock (_sync) return _identity is not null; }
+        get => CurrentIdentity is not null;
     }
 
     public string IdentitySummary
@@ -155,9 +168,10 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_sync)
             {
-                return _identity is null
+                var identity = CurrentIdentity;
+                return identity is null
                     ? "当前没有可显示的已认证身份。"
-                    : $"{_identity.DisplayName}（{_identity.UserName}） · PrincipalId={_identity.PrincipalId:D}";
+                    : $"{identity.DisplayName}（{identity.UserName}） · PrincipalId={identity.PrincipalId:D}";
             }
         }
     }
@@ -170,7 +184,8 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
         get { lock (_sync) return _recoveryKit is not null; }
     }
 
-    public bool CanRevealRecoveryKit => HasRecoveryKit && !_disposed;
+    public bool CanRevealRecoveryKit => HasRecoveryKit && !_disposed && (_sessions is null ||
+        CurrentSession.State == InteractiveSessionState.Authenticated && CurrentSession.PrincipalId == _recoveryOwner?.ToString("D"));
 
     public Task StartAsync(CancellationToken cancellationToken = default) => RefreshAsync(cancellationToken);
 
@@ -268,9 +283,13 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
             AuthenticationResult result;
             try
             {
-                result = await _identityProvider!.AuthenticateAsync(
-                    new PasswordSignInRequest(userName.Trim(), password),
-                    start.Value.Cancellation.Token).ConfigureAwait(true);
+                var request = new PasswordSignInRequest(userName.Trim(), password);
+                if (_sessions is not null)
+                {
+                    var signIn = await _sessions.SignInAsync(request, start.Value.Cancellation.Token).ConfigureAwait(true);
+                    result = new AuthenticationResult(signIn.Succeeded, signIn.ReasonCode, signIn.Identity);
+                }
+                else result = await _identityProvider!.AuthenticateAsync(request, start.Value.Cancellation.Token).ConfigureAwait(true);
                 start.Value.Cancellation.Token.ThrowIfCancellationRequested();
             }
             catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested)
@@ -299,7 +318,7 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
         string? value;
         lock (_sync)
         {
-            if (_disposed || _recoveryKit is null) return null;
+            if (!CanRevealRecoveryKit || _recoveryKit is null) return null;
             var secret = _recoveryKit;
             _recoveryKit = null;
             try { value = secret.TakeForDisplay(); }
@@ -378,6 +397,7 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
         }
 
         cancellation?.Cancel();
+        if (_sessions is not null) _sessions.Changed -= SessionChanged;
         NotifyStateChanged();
         await Task.CompletedTask;
     }
@@ -390,7 +410,7 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
             if (_disposed || _isBusy) return null;
             if (operation == OperationKind.Status && _bootstrap is null) return null;
             if (operation == OperationKind.Bootstrap && _bootstrap is null) return null;
-            if (operation == OperationKind.Authenticate && _identityProvider is null) return null;
+            if (operation == OperationKind.Authenticate && !IsIdentityProviderConfigured) return null;
 
             var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _activeCancellation = cancellation;
@@ -446,6 +466,7 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
             {
                 _identity = result.Identity;
                 _recoveryKit = result.RecoveryKit;
+                _recoveryOwner = result.Identity?.PrincipalId;
                 _bootstrapRequiredOverride = false;
                 _errorMessage = null;
                 _statusMessage = _recoveryKit is null
@@ -549,6 +570,8 @@ public sealed class IdentityViewModel : ObservableObject, IAsyncDisposable
     {
         OnPropertyChanged(nameof(HasRecoveryKit));
         OnPropertyChanged(nameof(CanRevealRecoveryKit));
+        OnPropertyChanged(nameof(CurrentSession));
+        OnPropertyChanged(nameof(SessionStatus));
     }
 
     private void NotifyStateChanged()

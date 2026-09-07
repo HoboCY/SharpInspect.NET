@@ -11,7 +11,7 @@ namespace SharpInspect.Runtime.Identity;
 // contains one first administrator; future account management must extend this schema explicitly.
 internal sealed class IdentityAuthorityState
 {
-    public int FormatVersion { get; set; } = 1;
+    public int FormatVersion { get; set; } = 2;
     public long Revision { get; set; }
     public string StationId { get; set; } = "";
     public string InstallationKeyId { get; set; } = "";
@@ -22,6 +22,9 @@ internal sealed class IdentityAuthorityState
     public BootstrapSecretState? Bootstrap { get; set; }
     public Guid? RecoveryKitId { get; set; }
     public List<RecoveryCodeState> RecoveryCodes { get; set; } = new();
+    public AuthenticationThrottleState StationThrottle { get; set; } = new();
+    public AuthenticationThrottleState UnknownAccountThrottle { get; set; } = new();
+    public string AttemptIdentifierKey { get; set; } = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
     public override string ToString() => "[confidential identity state]";
 }
 
@@ -32,6 +35,8 @@ internal sealed class LocalAdministratorState
     public string UserNameKey { get; set; } = "";
     public string DisplayName { get; set; } = "";
     public Guid CredentialId { get; set; }
+    public AuthenticationThrottleState Throttle { get; set; } = new();
+    public DateTimeOffset? DisabledAtUtc { get; set; }
     public long CredentialRevision { get; set; }
     public bool Enabled { get; set; } = true;
     public PasswordVerifierState Password { get; set; } = new();
@@ -71,6 +76,13 @@ internal sealed class RecoveryCodeState
     public bool Consumed { get; set; }
     public bool Revoked { get; set; }
     public override string ToString() => "[confidential recovery state]";
+}
+
+internal sealed class AuthenticationThrottleState
+{
+    public int ConsecutiveFailures { get; set; }
+    public DateTimeOffset NextAllowedAtUtc { get; set; }
+    public long DelayTicks { get; set; }
 }
 
 internal static class IdentityStateProtection
@@ -127,8 +139,10 @@ internal static class IdentityStateProtection
             clear = ProtectedData.Unprotect(Convert.FromBase64String(encoded), Entropy(station, keyId, revision), DataProtectionScope.LocalMachine);
             if (clear.Length > 32768) throw new InvalidOperationException("IdentityStateCapacityExceeded");
             var state = JsonSerializer.Deserialize<IdentityAuthorityState>(clear) ?? throw new InvalidOperationException("IdentityStateInvalid");
-            if (state.FormatVersion != 1 || state.Revision != revision || state.StationId != station ||
-                state.InstallationKeyId != keyId || state.RecoveryCodes is null || state.RecoveryCodes.Count > 32)
+            if (state.FormatVersion != 2 || state.Revision != revision || state.StationId != station ||
+                state.InstallationKeyId != keyId || state.RecoveryCodes is null || state.RecoveryCodes.Count > 32 ||
+                state.StationThrottle is null || state.UnknownAccountThrottle is null || state.AttemptIdentifierKey.Length != 44 ||
+                state.Administrator is { Throttle: null })
                 throw new InvalidOperationException("IdentityStateBindingMismatch");
             return state;
         }

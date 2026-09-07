@@ -57,7 +57,8 @@ internal static class Program
         services.AddSingleton<CommandTraceViewModel>();
         services.AddSingleton<AuditIntegrityViewModel>();
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
-            p.GetService<IIdentityProvider>(), "SampleDevelopmentStation"));
+            p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -91,10 +92,40 @@ internal static class Program
                         var password = ReadSmokePassword();
                         await window.SubmitIdentityLoginSmokeAsync(Option("--user-name") ?? "", password);
                         Require(identity.CurrentIdentity?.PrincipalId == Guid.Parse(Option("--expected-principal") ?? ""), "identity login principal");
+                        var signedIn = await runtime.GetSnapshotAsync();
+                        Require(signedIn.Session.State == InteractiveSessionState.Authenticated && signedIn.Session.SessionId is not null &&
+                            signedIn.Session.PrincipalId == identity.CurrentIdentity!.PrincipalId.ToString("D"), "Runtime session projection");
                         Require(!vm.State.Ready, "identity login must not bypass production admission");
                         if (screenshot is not null) RenderScreenshot(window, screenshot);
                         window.Close();
+                        await window.WaitForSessionLockAsync();
                         Require(window.IsPrivacyLocked, "identity ordinary Close remains privacy lock");
+                        var locked = await runtime.GetSnapshotAsync();
+                        Require(locked.Session is { State: InteractiveSessionState.Locked, SessionId: null, PrincipalId: null } &&
+                            locked.Ready == signedIn.Ready && locked.ArmState == signedIn.ArmState && locked.Plc == signedIn.Plc &&
+                            locked.Lifecycle == RuntimeLifecycle.Running, "session lock preserves independent production axes");
+                        window.RevealPage();
+                        Require(window.IsPrivacyLocked && !vm.CanArmProduction && vm.CanStopProduction, "old session cannot reveal privileged UI");
+                        if (screenshot is not null) RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "identity-locked.png"));
+                        var sessions = provider.GetRequiredService<IInteractiveSessionService>();
+                        var oldActivity = await sessions.ReportActivityAsync(signedIn.Session.SessionId!.Value);
+                        Require(!oldActivity.Succeeded, "locked session rejects old activity proof");
+                        await window.SubmitLockedLoginSmokeAsync(Option("--user-name") ?? "", password);
+                        var reauthenticated = await runtime.GetSnapshotAsync();
+                        Require(reauthenticated.Session.State == InteractiveSessionState.Authenticated,
+                            "locked page authentication: " + identity.ErrorMessage);
+                        Require(!window.IsPrivacyLocked &&
+                            reauthenticated.Session.SessionId != signedIn.Session.SessionId &&
+                            reauthenticated.Session.PrincipalId == signedIn.Session.PrincipalId,
+                            "locked page requires fresh authentication and a new session");
+                        await window.SubmitLogoutSmokeAsync();
+                        var loggedOut = await runtime.GetSnapshotAsync();
+                        Require(window.IsPrivacyLocked && loggedOut.Session is
+                            { State: InteractiveSessionState.Unauthenticated, PrincipalId: null, SessionId: null } &&
+                            loggedOut.Ready == signedIn.Ready && loggedOut.ArmState == signedIn.ArmState &&
+                            loggedOut.Plc == signedIn.Plc && loggedOut.Lifecycle == RuntimeLifecycle.Running,
+                            "logout clears only the interactive session");
+                        Console.WriteLine("V105-P01 native paste/Runtime session/window lock/reauthentication/logout/production independence PASS");
                         Console.WriteLine("V104-P01 independent-process WPF password login/immutable identity/privacy PASS");
                     }
                     else await RunSmokeAsync(window, vm, runtime, trace, integrity, screenshot, Option("--trace-manifest"));
@@ -103,7 +134,8 @@ internal static class Program
             catch (Exception exception)
             {
                 exitCode = 1;
-                if (identitySmoke) Console.Error.WriteLine($"V104 SMOKE FAIL {exception.GetType().Name}");
+                if (identitySmoke) Console.Error.WriteLine(exception is SmokeAssertionException assertion
+                    ? $"V104 SMOKE FAIL {assertion.Message}" : $"V104 SMOKE FAIL {exception.GetType().Name}");
                 else if (smoke) Console.Error.WriteLine($"SMOKE FAIL {exception.GetType().Name}: {exception.Message}");
                 else window.ShowUnavailable();
             }
@@ -122,7 +154,8 @@ internal static class Program
     }
 
     private sealed record IdentityDevelopmentConfiguration(string PasswordPolicyVersion, string BlocklistId, string BlocklistVersion,
-        string BlocklistContentHash, string[] BlocklistValues, string HashBaselineVersion, int WorkFactor);
+        string BlocklistContentHash, string[] BlocklistValues, string HashBaselineVersion, int WorkFactor,
+        AuthenticationPolicy AuthenticationPolicy);
 
     private static LocalIdentityOptions ReadIdentityOptions(string path)
     {
@@ -133,7 +166,8 @@ internal static class Program
             Blocklist = new PasswordBlocklist(configuration.BlocklistId, configuration.BlocklistVersion,
                 configuration.BlocklistContentHash, configuration.BlocklistValues) };
         return new LocalIdentityOptions("SampleDevelopmentStation", policy,
-            new Pbkdf2PasswordHasher(new PasswordHashBaseline(configuration.HashBaselineVersion, configuration.WorkFactor)));
+            new Pbkdf2PasswordHasher(new PasswordHashBaseline(configuration.HashBaselineVersion, configuration.WorkFactor)),
+            configuration.AuthenticationPolicy ?? throw new InvalidOperationException("AuthenticationPolicyRequired"));
     }
 
     private static string ReadSmokePassword()
@@ -176,16 +210,6 @@ internal static class Program
         vm.NavigateTo("Alarms");
         vm.NavigateTo("Production");
         if (screenshot is not null) RenderScreenshot(window, screenshot);
-        window.Close();
-        Require(window.IsPrivacyLocked && window.IsVisible, "ordinary Close must privacy-lock the existing window");
-        var after = await runtime.GetSnapshotAsync();
-        Require(after.Lifecycle == RuntimeLifecycle.Running && after.ArmState == before.ArmState &&
-            after.LastCommand == before.LastCommand && vm.LastCommandOutcome?.CorrelationId == outcome,
-            "navigation/ordinary Close must not submit commands or stop Runtime");
-        Require(vm.CanStopProduction, "local Stop remains reachable while privacy locked");
-        window.RevealPage();
-        Require(!window.IsPrivacyLocked, "page reveal changes presentation only");
-        Console.WriteLine("V101-U04 Close/navigation/privacy PASS runtime=Running");
         vm.NavigateTo("Trace");
         trace.CorrelationIdText = stop.CorrelationId.ToString();
         await trace.RefreshAsync();
@@ -206,6 +230,17 @@ internal static class Program
             var manifest = new TraceSmokeManifest(arm.CorrelationId, stop.CorrelationId, trace.Rows.Select(x => x.EventId).ToArray());
             File.WriteAllText(traceManifest, JsonSerializer.Serialize(manifest));
         }
+        window.Close();
+        await window.WaitForSessionLockAsync();
+        Require(window.IsPrivacyLocked && window.IsVisible, "ordinary Close must privacy-lock the existing window");
+        var after = await runtime.GetSnapshotAsync();
+        Require(after.Lifecycle == RuntimeLifecycle.Running && after.ArmState == before.ArmState &&
+            after.LastCommand == before.LastCommand && vm.LastCommandOutcome?.CorrelationId == outcome,
+            "navigation/ordinary Close must not submit commands or stop Runtime");
+        Require(vm.CanStopProduction, "local Stop remains reachable while privacy locked");
+        window.RevealPage();
+        Require(window.IsPrivacyLocked == (after.Session.State == InteractiveSessionState.Locked), "page reveal cannot restore an authoritative locked session");
+        Console.WriteLine("V101-U04 Close/navigation/privacy PASS runtime=Running");
         Console.WriteLine($"V102-P01 durable outcome/lifecycle/trace page PASS correlation={stop.CorrelationId}");
         Console.WriteLine($"V101 CONSUMER SMOKE PASS runtime={Environment.Version} os={Environment.OSVersion.Version}");
     }
@@ -294,7 +329,12 @@ internal static class Program
 
     private static void Require(bool condition, string message)
     {
-        if (!condition) throw new InvalidOperationException(message);
+        if (!condition) throw new SmokeAssertionException(message);
+    }
+
+    private sealed class SmokeAssertionException : Exception
+    {
+        internal SmokeAssertionException(string safeAssertion) : base(safeAssertion) { }
     }
 
     private sealed class ProbeClock : IMonotonicClock

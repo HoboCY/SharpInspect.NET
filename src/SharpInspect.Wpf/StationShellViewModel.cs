@@ -102,10 +102,11 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
 
     public bool IsUnknownOrStale => Freshness != SnapshotFreshness.Fresh;
     public bool CanArmProduction => Freshness == SnapshotFreshness.Fresh && !State.Busy &&
-        State.ArmState != ProductionArmState.Armed;
+        State.ArmState != ProductionArmState.Armed && CurrentSnapshot?.Session.State == InteractiveSessionState.Authenticated;
     public bool CanStopProduction => true;
-    public string AuthenticationStatus =>
-        "Authentication unavailable in V1 UI; Runtime remains the authorization authority.";
+    public string AuthenticationStatus => CurrentSnapshot?.Session.State switch
+    { InteractiveSessionState.Authenticated => "已登录；操作权限仍由 Runtime 逐次检查。",
+        InteractiveSessionState.Locked => "会话已锁定，请重新登录。", _ => "尚未登录。" };
     public RuntimeCommandOutcome? LastCommandOutcome
     {
         get => _lastCommandOutcome;

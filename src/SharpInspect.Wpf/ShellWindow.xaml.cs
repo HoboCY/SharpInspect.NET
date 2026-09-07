@@ -1,5 +1,8 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Input;
+using Microsoft.Win32;
 using SharpInspect.Abstractions;
 
 namespace SharpInspect.Wpf;
@@ -9,6 +12,16 @@ internal sealed record StateRow(string Label, string Value);
 public partial class ShellWindow : Window
 {
     internal Task SubmitIdentityLoginSmokeAsync(string userName, string password) => IdentityPanel.SubmitLoginSmokeAsync(userName, password);
+    internal Task WaitForSessionLockAsync() => _sessionLock;
+    internal async Task SubmitLockedLoginSmokeAsync(string userName, string password)
+    {
+        if (!IsPrivacyLocked) throw new InvalidOperationException("SessionLockPageRequired");
+        LockedUserNameBox.Text = userName;
+        LockedPasswordBox.Password = password;
+        await AuthenticateLockedInputsAsync();
+        if (LockedPasswordBox.Password.Length != 0) throw new InvalidOperationException("SessionPasswordInputNotCleared");
+    }
+    internal Task SubmitLogoutSmokeAsync() => LogoutFromInputsAsync();
     private readonly StationShellViewModel _viewModel;
     private readonly CommandTraceViewModel? _traceViewModel;
     private readonly AuditIntegrityViewModel? _integrityViewModel;
@@ -17,6 +30,8 @@ public partial class ShellWindow : Window
     private bool _traceSelectionLoaded;
     private bool _integritySelectionLoaded;
     private bool _identitySelectionLoaded;
+    private long _lastInputReport;
+    private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
 
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
@@ -36,11 +51,20 @@ public partial class ShellWindow : Window
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
         if (integrityViewModel is not null) integrityViewModel.PropertyChanged += IntegrityChanged;
         if (identityViewModel is not null) identityViewModel.PropertyChanged += IdentityChanged;
+        PreviewMouseDown += ReportInputActivity;
+        PreviewKeyDown += ReportInputActivity;
+        SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
         RenderState();
     }
 
     public void RevealPage()
     {
+        if (_identityViewModel is { HasSessionService: true } &&
+            _identityViewModel.CurrentSession.State != InteractiveSessionState.Authenticated)
+        {
+            ShowPrivacyCover();
+            return;
+        }
         IsPrivacyLocked = false;
         PrivacyCover.Visibility = Visibility.Collapsed;
     }
@@ -58,9 +82,69 @@ public partial class ShellWindow : Window
     private void LockPage(object sender, RoutedEventArgs e) => LockPage();
     private void LockPage()
     {
+        ShowPrivacyCover();
+        if (_identityViewModel is not null) _sessionLock = _identityViewModel.LockSessionAsync(SessionLockReason.WindowHidden);
+    }
+
+    private void ShowPrivacyCover()
+    {
         IsPrivacyLocked = true;
         IdentityPanel.ClearSensitiveInputs();
+        LockedUserNameBox.Clear();
+        LockedPasswordBox.Clear();
+        LockedSignInStatus.Text = "";
         PrivacyCover.Visibility = Visibility.Visible;
+        LockedLoginPanel.Visibility = _identityViewModel?.HasSessionService == true ? Visibility.Visible : Visibility.Collapsed;
+        PrivacyInstruction.Text = _identityViewModel?.HasSessionService == true ? "会话已锁定，请重新登录。" : "点击下方“显示页面”恢复查看。";
+    }
+
+    private async void LockedSignInClick(object sender, RoutedEventArgs e)
+        => await AuthenticateLockedInputsAsync();
+
+    private async Task AuthenticateLockedInputsAsync()
+    {
+        if (_identityViewModel is null || !LockedSignInButton.IsEnabled) return;
+        var userName = LockedUserNameBox.Text;
+        var password = LockedPasswordBox.Password;
+        LockedUserNameBox.Clear();
+        LockedPasswordBox.Clear();
+        LockedSignInButton.IsEnabled = false;
+        try
+        {
+            await _sessionLock;
+            var result = await _identityViewModel.AuthenticateAsync(userName, password);
+            if (result?.Succeeded == true) RevealPage();
+            else LockedSignInStatus.Text = "登录未完成，请稍后重试。";
+        }
+        finally { LockedSignInButton.IsEnabled = true; }
+    }
+
+    private async void LogoutClick(object sender, RoutedEventArgs e)
+        => await LogoutFromInputsAsync();
+
+    private async Task LogoutFromInputsAsync()
+    {
+        ShowPrivacyCover();
+        if (_identityViewModel is not null) await _identityViewModel.LogoutSessionAsync();
+    }
+
+    private async void ReportInputActivity(object sender, InputEventArgs e)
+    {
+        if (IsPrivacyLocked || _identityViewModel is null) return;
+        var now = Stopwatch.GetTimestamp();
+        if (now - _lastInputReport < Stopwatch.Frequency) return;
+        _lastInputReport = now;
+        await _identityViewModel.ReportSessionActivityAsync();
+    }
+
+    private void OperatingSystemSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason != SessionSwitchReason.SessionLock) return;
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            ShowPrivacyCover();
+            if (_identityViewModel is not null) _sessionLock = _identityViewModel.LockSessionAsync(SessionLockReason.OperatingSystemLock);
+        });
     }
 
     protected override void OnClosing(CancelEventArgs e)
@@ -76,6 +160,7 @@ public partial class ShellWindow : Window
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
         if (_integrityViewModel is not null) _integrityViewModel.PropertyChanged -= IntegrityChanged;
         if (_identityViewModel is not null) _identityViewModel.PropertyChanged -= IdentityChanged;
+        SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
@@ -88,6 +173,7 @@ public partial class ShellWindow : Window
     private void RenderState()
     {
         Dispatcher.VerifyAccess();
+        if (!IsPrivacyLocked && _identityViewModel?.CurrentSession.State == InteractiveSessionState.Locked) ShowPrivacyCover();
         var fresh = _viewModel.Freshness == SnapshotFreshness.Fresh && _viewModel.State.IsFresh;
         var s = fresh ? _viewModel.CurrentSnapshot : null;
         FreshnessLabel.Text = fresh ? (s!.Ready ? "状态新鲜 · Ready" : "状态新鲜 · 生产禁用") : "状态未知 / 已陈旧";

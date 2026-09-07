@@ -94,7 +94,20 @@ public partial class IdentityPanel : UserControl
     internal async Task SubmitLoginSmokeAsync(string userName, string password)
     {
         LoginUserNameBox.Text = userName;
-        LoginPasswordBox.Password = password;
+        // Exercise the native paste command used by clipboard-based password managers.
+        // Only an isolated development fixture calls this; restore the user's clipboard.
+        var previousClipboard = Clipboard.GetDataObject();
+        try
+        {
+            Clipboard.SetText(password);
+            System.Windows.Input.ApplicationCommands.Paste.Execute(null, LoginPasswordBox);
+            if (LoginPasswordBox.Password != password) throw new InvalidOperationException("IdentityPasteInputChanged");
+        }
+        finally
+        {
+            if (previousClipboard is null) Clipboard.Clear();
+            else Clipboard.SetDataObject(previousClipboard, true);
+        }
         await AuthenticateFromInputsAsync();
         if (LoginPasswordBox.Password.Length != 0) throw new InvalidOperationException("IdentityPasswordInputNotCleared");
     }

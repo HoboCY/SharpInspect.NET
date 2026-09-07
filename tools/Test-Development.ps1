@@ -32,8 +32,10 @@ function Write-TaskIdentityPolicy([string]$Path) {
     $taskHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($taskBytes.ToArray()))
     $taskBytes.Dispose()
     [ordered]@{ PasswordPolicyVersion='development-2026-09'; BlocklistId=$taskBlocklistId; BlocklistVersion=$taskBlocklistVersion;
-        BlocklistContentHash=$taskHash; BlocklistValues=$taskValues; HashBaselineVersion='development-2026-09'; WorkFactor=600000 } |
-        ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding utf8
+        BlocklistContentHash=$taskHash; BlocklistValues=$taskValues; HashBaselineVersion='development-2026-09'; WorkFactor=600000;
+        AuthenticationPolicy=[ordered]@{ Id='development'; Version='development-2026-09'; AccountFailureLimit=10; StationFailureLimit=50;
+            InitialDelay='00:00:01'; MaximumDelay='00:15:00'; SessionIdleTimeout='00:15:00'; StepUpFreshness='00:05:00' } } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $Path -Encoding utf8
 }
 
 function Test-TaskCloudRootRejection([string]$ConsumerDll, [string]$Database, [string]$Manifest) {

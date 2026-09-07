@@ -6,11 +6,13 @@ namespace SharpInspect.Runtime.Identity;
 /// <summary>Explicit offline credential configuration. It never grants production qualification.</summary>
 public sealed class LocalIdentityOptions
 {
-    public LocalIdentityOptions(string stationId, LocalPasswordPolicy passwordPolicy, IPasswordHasher passwordHasher)
-    { StationId = stationId; PasswordPolicy = passwordPolicy; PasswordHasher = passwordHasher; }
+    public LocalIdentityOptions(string stationId, LocalPasswordPolicy passwordPolicy, IPasswordHasher passwordHasher,
+        AuthenticationPolicy authenticationPolicy)
+    { StationId = stationId; PasswordPolicy = passwordPolicy; PasswordHasher = passwordHasher; AuthenticationPolicy = authenticationPolicy; }
     public string StationId { get; }
     public LocalPasswordPolicy PasswordPolicy { get; }
     public IPasswordHasher PasswordHasher { get; }
+    public AuthenticationPolicy AuthenticationPolicy { get; }
     public string HashBaselineVersion => Baseline.Version;
     internal PasswordHashBaseline Baseline => PasswordHasher is Pbkdf2PasswordHasher hasher
         ? hasher.Baseline : throw new ArgumentException("IdentityHasherUnsupported");
@@ -24,6 +26,8 @@ public sealed class LocalIdentityOptions
         ArgumentNullException.ThrowIfNull(PasswordPolicy);
         ArgumentNullException.ThrowIfNull(PasswordHasher);
         Baseline.Validate();
+        ArgumentNullException.ThrowIfNull(AuthenticationPolicy);
+        AuthenticationPolicy.Validate();
         PasswordPolicy.Validate();
         AuditIntegrityPolicy.ValidateIdentifier(HashBaselineVersion, nameof(HashBaselineVersion), true);
         if (auditPolicy is null || auditPolicy.StationId != StationId)
@@ -44,5 +48,5 @@ public sealed class LocalIdentityOptions
         PasswordHashBaseline.CurrentParameterVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
         PasswordHashBaseline.SecurityFloorIterations.ToString(System.Globalization.CultureInfo.InvariantCulture),
         PasswordHashBaseline.MinimumSaltBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),
-        PasswordHashBaseline.MinimumDerivedBytes.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        PasswordHashBaseline.MinimumDerivedBytes.ToString(System.Globalization.CultureInfo.InvariantCulture), AuthenticationPolicy.ContentHash)));
 }

@@ -40,10 +40,11 @@
                     <Button Content="本机停止" Command="{Binding StopCommand}" Background="#9B3430" Foreground="White" BorderBrush="#9B3430" />
                     <Button Content="遮蔽页面" Click="LockPage" />
                     <Button Content="显示页面" Click="RevealPageClick" />
+                    <Button Content="退出登录" Click="LogoutClick" />
                 </WrapPanel>
                 <TextBlock x:Name="OutcomeLabel" Text="命令：尚未提交" TextWrapping="Wrap" Foreground="#334E68" />
                 <TextBlock x:Name="ProgressLabel" Text="最终状态：等待关联快照" TextWrapping="Wrap" Foreground="#556679" Margin="0,4,0,0" />
-                <TextBlock Text="登录不会自动武装生产。普通关窗仅遮蔽页面，后台运行继续。"
+                <TextBlock Text="登录不会自动武装生产。退出、空闲锁定和普通关窗保持后台运行。"
                            Foreground="#6B7888" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap" />
             </StackPanel>
         </Border>
@@ -162,7 +163,15 @@
                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                     <TextBlock Text="页面已遮蔽" FontSize="28" Foreground="#172B42" HorizontalAlignment="Center" />
                     <TextBlock Text="后台工位持续运行。本机停止入口仍可使用。" Foreground="#556679" Margin="0,16,0,0" />
-                    <TextBlock Text="点击下方“显示页面”恢复查看。" Foreground="#556679" Margin="0,8,0,0" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="PrivacyInstruction" Text="点击下方“显示页面”恢复查看。" Foreground="#556679" Margin="0,8,0,0" HorizontalAlignment="Center" />
+                    <StackPanel x:Name="LockedLoginPanel" Visibility="Collapsed" Margin="0,24,0,0" Width="380">
+                        <TextBlock Text="用户名" Foreground="#556679" />
+                        <TextBox x:Name="LockedUserNameBox" Margin="0,6,0,14" />
+                        <TextBlock Text="密码" Foreground="#556679" />
+                        <PasswordBox x:Name="LockedPasswordBox" Margin="0,6,0,14" />
+                        <Button x:Name="LockedSignInButton" Content="登录并解锁" Click="LockedSignInClick" />
+                        <TextBlock x:Name="LockedSignInStatus" TextWrapping="Wrap" Foreground="#556679" Margin="0,14,0,0" />
+                    </StackPanel>
                 </StackPanel>
             </Border>
         </Grid>

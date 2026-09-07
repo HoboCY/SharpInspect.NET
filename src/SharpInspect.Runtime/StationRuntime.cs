@@ -17,6 +17,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
     private readonly Task _heartbeat;
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly ICommandAuditWriter? _audit;
+    private readonly IInteractiveSessionService? _sessions;
     private readonly Task _storeInitialization;
     private Task? _completion;
     private Task? _shutdown;
@@ -26,13 +27,15 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
     private bool _storeReady;
     private int _queuedCommands;
     private StationStateSnapshot _snapshot;
+    private long _sessionProjectionVersion;
     private bool _disposed;
 
     public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval) { }
 
-    internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null)
+    internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null)
     {
         _audit = audit;
+        _sessions = sessions;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
         if (interval < TimeSpan.FromMilliseconds(20) || interval > TimeSpan.FromSeconds(30))
             throw new ArgumentOutOfRangeException(nameof(heartbeatInterval));
@@ -56,6 +59,19 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
                 "FrameworkQualificationMissing", "ProviderQualificationMissing", "PerformanceQualificationMissing",
                 "StationAcceptanceMissing", "ProductionCycleUnavailable"
             }));
+        if (_sessions is not null)
+        {
+            lock (_sync)
+            {
+                _sessions.Changed += OnSessionChanged;
+                var observedVersion = _sessionProjectionVersion;
+                var initialSession = _sessions.Current;
+                // A provider can publish while its Current getter is reconciling. Preserve
+                // the handler's newer projection in that re-entrant case.
+                if (_sessionProjectionVersion == observedVersion)
+                    _snapshot = _snapshot with { Session = initialSession };
+            }
+        }
         _storeInitialization = InitializeStoreAsync();
         _heartbeat = PublishHeartbeatAsync(interval);
     }
@@ -63,7 +79,36 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
     public ValueTask<StationStateSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_sync) return ValueTask.FromResult(_snapshot);
+        lock (_sync)
+        {
+            ReconcileSessionLocked();
+            return ValueTask.FromResult(_snapshot);
+        }
+    }
+
+    private void OnSessionChanged(object? sender, InteractiveSessionChangedEventArgs args)
+    {
+        lock (_sync)
+        {
+            if (_disposed || _shutdownRequested) return;
+            _sessionProjectionVersion = checked(_sessionProjectionVersion + 1);
+            var observedVersion = _sessionProjectionVersion;
+            var current = _sessions!.Current;
+            if (_sessionProjectionVersion != observedVersion) return;
+            // Interactive identity is a separate axis. No arm/Ready/PLC/background work is changed.
+            PublishLocked(_snapshot with { Session = current });
+        }
+    }
+
+    private void ReconcileSessionLocked()
+    {
+        if (_sessions is null || _disposed || _shutdownRequested) return;
+        var observedVersion = _sessionProjectionVersion;
+        var current = _sessions.Current;
+        if (_sessionProjectionVersion != observedVersion) return;
+        if (_snapshot.Session == current) return;
+        _sessionProjectionVersion = checked(_sessionProjectionVersion + 1);
+        PublishLocked(_snapshot with { Session = current });
     }
 
     public async IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(
@@ -80,6 +125,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
         {
             if (_subscribers.Count >= MaximumSubscribers)
                 throw new InvalidOperationException("SnapshotSubscriberLimit");
+            ReconcileSessionLocked();
             channel.Writer.TryWrite(_snapshot);
             if (_disposed) channel.Writer.TryComplete();
             else _subscribers.Add(channel);
@@ -311,6 +357,7 @@ public sealed class StationRuntime : IStationRuntime, IAsyncDisposable
         // the command gate settles first; shutdown never rewrites an immutable terminal fact.
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
+        if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
         await _commandGate.WaitAsync().ConfigureAwait(false);

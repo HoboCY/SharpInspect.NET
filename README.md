@@ -21,16 +21,16 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 普通关窗会遮蔽页面内容并保留后台 Runtime，本机停止按钮仍可到达；
 重新显示页面只恢复显示，不授予身份或权限。显式配置本地身份后可建立首位个人管理员并登录，
-会话保护、操作授权与 Step-Up 随后续工单交付。
+会话保护由 Runtime-owned `IInteractiveSessionService` 管理；操作授权、Permission 与 Step-Up 实体仍由后续工单交付。
 此开发宿主不提供生产启用或宿主退出旁路，调试结束可由调试器终止进程；
 进程终止不代表完成了 PLC 停产握手。生产部署的受控关闭另有工单。
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket04.ps1
+pwsh -File tools/Test-Ticket05.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket04/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket05/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -60,8 +60,9 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 
 数据库必须位于固定本地 NTFS，路径验证会拒绝共享、已知云同步根、可移动盘和 reparse 路径。
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
-新空库显式启用审计政策时为 2，同时启用本地身份时为 3；未知版本拒绝写入。
-已有 schema1/2 启用身份会在只读 preflight 拒绝，治理迁移随专票提供，不自动补链或升级。
+新空库显式启用审计政策时为 2，同时启用本地身份时为 4；带本地身份的 Schema4 只允许从新空库创建。
+已有 schema3 在启用本地身份时只读 preflight 拒绝 `IdentityAuthenticationGovernedMigrationRequired`；schema1/2
+及未知版本也拒绝治理写入。迁移随专票提供，不自动补链或升级。
 只读查询每页 1–200 条，以记录位置和固定上界分页。更新、删除历史事实不属于公开 API。
 SQLite `FULL` 与本机测试不构成断电耐久性或审计防篡改资格。
 
@@ -110,9 +111,16 @@ V1 本地库只接受内置的 PBKDF2-HMAC-SHA256 实现，记录包含算法、
 提高目标工作因子后，旧记录只在成功登录时与成功审计一起原子升级，升级不会降低旧参数。
 此开发基线尚未经过正式发行平台的性能资格评估。
 
+`AuthenticationPolicy` 必须带显式的 `Id`、`Version` 和内容 hash。开发默认每个账号最多 10 次、每个工位最多
+50 次连续失败，配置上下限均为 1–100；延迟从 1 秒指数增加，最高 15 分钟。未知用户名使用等效 dummy
+PBKDF2 路径、固定未知账号桶和受保护的尝试标识；达到限制只禁用已知凭据，不删除其 Human Principal。
+100 次是 [NIST SP 800-63B 的禁用上限](https://pages.nist.gov/800-63-4/sp800-63b.html#rate-limiting-throttling)，
+不是本项目的推荐默认值；上述 10/50 与 1 秒、15 分钟是开发政策值。会话管理参考 NIST 的
+[Session Management](https://pages.nist.gov/800-63-4/sp800-63b/session/) 章节。
+
 管理员、Token 消费和恢复码验证器与安全身份事件共用 SQLite 单写事务。机密状态使用 DPAPI，
 并由数据库外的受限审计密钥签名，绑定工位、安装、状态版本和审计位置。审计仅包含安全元数据，
-不会写入密码、Token、恢复码、盐、密码派生结果、机密密文或其签名。Schema3 的链 hash 同时覆盖
+不会写入密码、Token、恢复码、盐、密码派生结果、机密密文或其签名。Schema4 的链 hash 同时覆盖
 事件类型、两类序号及规范载荷；有界核验仍只证明报告中的实际覆盖范围。
 
 成功创建后返回 `OneTimeSecret` 恢复包，只能领取一次。界面不会自动显示：切页/隐私遮蔽清除可见
@@ -121,15 +129,22 @@ V1 本地库只接受内置的 PBKDF2-HMAC-SHA256 实现，记录包含算法、
 `IIdentityProvider` 返回稳定、不可变的个人身份及显示 claims，不授予配方、设备或生产权限。
 具备管理员和有效恢复码只是后续准入前提，当前 Runtime 仍拒绝 Ready。
 
+Runtime-owned `IInteractiveSessionService` 独立管理登录、锁定、注销、活动报告和会话读取：空闲判断使用
+单调时间，成功登录生成新的 SessionId，锁定或注销清除当前身份和 SessionId，旧 SessionId 不能续用。
+会话变化不会停止健康 Runtime、清除 Ready 或 PLC 状态，也不会把后续 System Principal 工作归因给旧人员。
+锁定的 WPF 视图仍可重新登录，并保留只降低生产能力的本机 Stop；Permission、Step-Up 授权实体、解锁/重绑
+禁用凭据及恢复执行仍未交付。
+
 开发样例使用 `--identity-policy <absolute-json-path>` 加载显式政策，格式示例由
-`tools/Test-Ticket04.ps1` 写入本次隔离 artifacts；该小型 blocklist 仅为测试夹具，不是发行名单。
+`tools/Test-Ticket05.ps1` 写入本次隔离 artifacts；该小型 blocklist 仅为测试夹具，不是发行名单。
 验证另启动独立 WPF 进程，通过私有标准输入传递测试密码，实际走 PasswordBox 登录，并核对重启前后
 PrincipalId 和审计链。密码不会作为进程参数、环境变量或报告内容写出。
 
 ## 验证边界
 
 逐项证据见 [V1-01](docs/verification/v1-01.md)、[V1-02](docs/verification/v1-02.md)、
-[V1-03](docs/verification/v1-03.md) 与 [V1-04 验证映射](docs/verification/v1-04.md)。
+[V1-03](docs/verification/v1-03.md)、[V1-04 验证映射](docs/verification/v1-04.md) 与
+[V1-05 认证节流与会话验证映射](docs/verification/v1-05.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。
