@@ -1,3 +1,6 @@
 # Preserve the byte identities frozen before the checkerboard calibration tests.
 /tests/SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticCheckerboardFixture.cs text eol=lf
 /tests/SharpInspect.Calibration.OpenCvSharp.Tests/Fixtures/checkerboard-v1.json text eol=lf
+# Preserve the already-frozen byte identities of the planar fixtures.
+/tests/SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticPlanarFixture.cs text eol=lf
+/tests/SharpInspect.Calibration.OpenCvSharp.Tests/Fixtures/planar-v1.json text eol=lf

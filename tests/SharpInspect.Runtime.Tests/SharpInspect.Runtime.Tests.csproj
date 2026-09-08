@@ -15,6 +15,8 @@
   <ItemGroup>
     <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticCheckerboardFixture.cs"
              Link="Fixtures/SyntheticCheckerboardFixture.cs" />
+    <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticPlanarFixture.cs"
+             Link="Fixtures/SyntheticPlanarFixture.cs" />
   </ItemGroup>
   <PropertyGroup>
     <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' == 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/x64/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>

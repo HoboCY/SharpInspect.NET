@@ -122,6 +122,57 @@ try {
         ready=$false; canPublish=$false; canActivate=$false; physicalHardwareQualification='NotRun'; production='NotRun'
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $checkerboardDirectory 'acceptance.json') -Encoding utf8
     Write-Output 'V125-N01/N02 checkerboard NuGet consumer and independent restart PASS'
+    $planarDirectory = Join-Path $calibrationEvidence 'planar'
+    $planarResult = Get-Content -LiteralPath (Join-Path $planarDirectory 'calibration-session-evidence.json') -Raw | ConvertFrom-Json
+    $planarRestart = Get-Content -LiteralPath (Join-Path $planarDirectory 'calibration-session-restart.json') -Raw | ConvertFrom-Json
+    if ($planarResult.result -cne 'Pass' -or $planarResult.calibrationMode -cne 'planar' -or
+        $planarResult.schema -ne 14 -or $planarResult.planar.imageCount -ne 2 -or
+        $planarResult.planar.frozenManifestHash -cne '17C6A4410AB30C56A524E9995080E3AD29C8ED3B8D3F5020FDB134E6A91B03EC' -or
+        $planarResult.planar.pathsContained -cne $true -or $planarResult.planar.manifestBound -cne $true -or
+        $planarResult.start.accepted -cne $true -or $planarResult.exit.restorationVerified -cne $true -or
+        $planarResult.global.ready -cne $false -or $planarResult.fixture.developmentOnly -cne $true -or
+        $planarResult.fixture.productionOutputsAbsent -cne $true -or
+        $planarResult.store.maximumFramesPerSession -ne 6 -or
+        $planarResult.evidenceAfterExit.FrameCount -ne 2 -or
+        $planarResult.evidenceAfterExit.ObservationCount -ne 2 -or
+        $planarResult.evidenceAfterExit.ExclusionCount -ne 1 -or
+        $planarResult.selection.includedFrameCount -ne 1 -or
+        $planarResult.candidate.canPublish -cne $false -or $planarResult.candidate.canActivate -cne $false -or
+        $planarResult.candidate.immutable -cne $true -or
+        $planarResult.candidate.typedCoefficientsDecoded -cne $true -or
+        $planarResult.candidate.typedEvidenceDecoded -cne $true -or
+        $planarResult.candidate.evidencePayloadBytes -gt 65536 -or
+        $planarResult.candidate.decodedViewCount -ne 1 -or $planarResult.candidate.decodedPointCount -ne 16 -or
+        @($planarResult.candidate.evidence.correspondences).Count -ne 16 -or
+        $planarResult.extractionReceiptCount -ne 2 -or @($planarResult.extractionReceipts).Count -ne 2 -or
+        $planarRestart.result -cne 'Pass' -or $planarRestart.schema -ne 14 -or
+        $planarRestart.calibrationMode -cne 'planar' -or
+        $planarRestart.sessionId -cne $planarResult.sessionId -or
+        $planarRestart.candidateHash -ne $planarResult.candidate.contentHash -or
+        $planarRestart.candidateEvidenceHash -ne $planarResult.candidate.evidenceContentHash -or
+        $planarRestart.validViewCount -ne 1 -or $planarRestart.validPointCount -ne 16 -or
+        $planarRestart.extractionReceiptCount -ne 2 -or
+        $planarRestart.openedDevices -ne 0 -or
+        $planarRestart.readOnlyQueryDatabaseUnchanged -cne $true -or
+        $planarRestart.ready -cne $false -or $planarRestart.productionOutputsAbsent -cne $true) {
+        throw 'Planar homography calibration consumer or read-only restart did not satisfy its retained evidence contract.'
+    }
+    if (@($planarResult.screenshots).Count -lt 3) { throw 'Planar candidate WPF render evidence is missing.' }
+    foreach ($planarScreenshot in $planarResult.screenshots) {
+        $planarImage = [IO.Path]::GetFullPath((Join-Path $planarDirectory $planarScreenshot))
+        if (-not $planarImage.StartsWith($planarDirectory + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $planarImage -PathType Leaf) -or
+            (Get-Item -LiteralPath $planarImage).Length -eq 0) { throw 'Planar WPF render artifact is invalid.' }
+    }
+    [ordered]@{
+        result='Pass'; validationIds=@('V126-N01','V126-N02'); externalNuGetConsumer=$true; independentRestart=$true
+        consumerSha256=(Get-FileHash -LiteralPath $calibrationDll -Algorithm SHA256).Hash
+        sessionId=$planarResult.sessionId; frameCount=2; observationCount=2; exclusionCount=1; selectedViewCount=1
+        correspondenceCount=16; extractionReceiptCount=2
+        candidateHash=$planarRestart.candidateHash; evidenceHash=$planarRestart.candidateEvidenceHash
+        ready=$false; canPublish=$false; canActivate=$false; physicalHardwareQualification='NotRun'; production='NotRun'
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $planarDirectory 'acceptance.json') -Encoding utf8
+    Write-Output 'V126-N01/N02 planar homography NuGet consumer and independent restart PASS'
 }
 finally {
     [Environment]::SetEnvironmentVariable('SHARPINSPECT_CALIBRATION_CONSUMER',$calibrationPriorConsumer,'Process')

@@ -1,0 +1,146 @@
+{
+  "datasetVersion": "planar-v1",
+  "datasetKind": "synthetic-aruco-planar-homography",
+  "geometry": {
+    "imageWidth": 640,
+    "imageHeight": 480,
+    "pixelCenterConvention": "integer coordinate is the pixel centre (OpenCV convention)",
+    "planeUnits": "millimetres",
+    "planeBoundsMillimeters": {
+      "xMin": 0.0,
+      "xMax": 100.0,
+      "yMin": 0.0,
+      "yMax": 80.0
+    },
+    "markerDictionary": "DICT_4X4_50",
+    "markerCount": 4,
+    "markerOuterSideMillimeters": 20.0,
+    "markerGridCells": 6,
+    "markerPayloadCells": 4,
+    "markerCornerOrder": "top-left, top-right, bottom-right, bottom-left",
+    "markers": [
+      {
+        "id": 0,
+        "physicalTopLeftMillimeters": [0.0, 0.0],
+        "rotationZeroBytesHex": "B532",
+        "payloadBitsRowMajorMsbFirst": [1, 0, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]
+      },
+      {
+        "id": 1,
+        "physicalTopLeftMillimeters": [80.0, 0.0],
+        "rotationZeroBytesHex": "0F9A",
+        "payloadBitsRowMajorMsbFirst": [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 0]
+      },
+      {
+        "id": 2,
+        "physicalTopLeftMillimeters": [80.0, 60.0],
+        "rotationZeroBytesHex": "332D",
+        "payloadBitsRowMajorMsbFirst": [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1]
+      },
+      {
+        "id": 3,
+        "physicalTopLeftMillimeters": [0.0, 60.0],
+        "rotationZeroBytesHex": "9946",
+        "payloadBitsRowMajorMsbFirst": [1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0]
+      }
+    ]
+  },
+  "homography": {
+    "mapping": "physical plane millimetres to ideal ROI pixels",
+    "rowMajor": [
+      [4.2, 0.35, 100.0],
+      [0.15, 3.8, 75.0],
+      [0.0012, 0.0008, 1.0]
+    ],
+    "boardCornersIdealPixels": [
+      [100.0, 75.0],
+      [464.28571428571422, 80.35714285714285],
+      [462.83783783783787, 332.77027027027026],
+      [120.30075187969925, 356.203007518797]
+    ]
+  },
+  "camera": {
+    "model": "pinhole",
+    "fx": 800.0,
+    "fy": 820.0,
+    "cx": 319.5,
+    "cy": 239.5
+  },
+  "distortion": {
+    "model": "Brown-Conrady",
+    "k1": -0.12,
+    "k2": 0.035,
+    "p1": 0.001,
+    "p2": -0.0008,
+    "k3": 0.0,
+    "renderRule": "for each distorted output sample, Newton-undistort to an ideal pixel, then apply H inverse"
+  },
+  "renderingRule": {
+    "backgroundValue": 255,
+    "blackValue": 0,
+    "whiteValue": 255,
+    "border": "one black cell around every 4x4 payload",
+    "payloadBitValue": "1 is white and 0 is black",
+    "subpixelOffsets": [
+      [-0.25, -0.25],
+      [0.25, -0.25],
+      [-0.25, 0.25],
+      [0.25, 0.25]
+    ],
+    "output": "row-major Mono8 bytes, width multiplied by height",
+    "backgroundVariantValue": 224,
+    "backgroundVariantContract": "same H, marker IDs, marker bytes, and physical corners; only outside-target background changes"
+  },
+  "referenceCorrespondences": {
+    "cornerOrder": "markers by ID, each top-left, top-right, bottom-right, bottom-left",
+    "physicalCornersMillimeters": [
+      [0.0, 0.0],
+      [20.0, 0.0],
+      [20.0, 20.0],
+      [0.0, 20.0],
+      [80.0, 0.0],
+      [100.0, 0.0],
+      [100.0, 20.0],
+      [80.0, 20.0],
+      [80.0, 60.0],
+      [100.0, 60.0],
+      [100.0, 80.0],
+      [80.0, 80.0],
+      [0.0, 60.0],
+      [20.0, 60.0],
+      [20.0, 80.0],
+      [0.0, 80.0]
+    ],
+    "idealPixels": [
+      [100.0, 75.0],
+      [179.6875, 76.171875],
+      [183.65384615384616, 148.07692307692307],
+      [105.31496062992126, 148.62204724409449],
+      [397.81021897810217, 79.37956204379562],
+      [464.28571428571422, 80.35714285714285],
+      [463.90845070422529, 146.12676056338026],
+      [398.38129496402877, 146.58273381294964],
+      [399.47552447552448, 275.34965034965035],
+      [463.18493150684935, 272.26027397260276],
+      [462.83783783783787, 332.77027027027026],
+      [400.0, 337.06896551724139],
+      [115.45801526717557, 289.12213740458014],
+      [191.23134328358208, 285.44776119402985],
+      [194.85294117647058, 351.10294117647055],
+      [120.30075187969925, 356.203007518797]
+    ]
+  },
+  "preregisteredTests": {
+    "scope": "fixture regression only; not a production acceptance gate",
+    "automaticCornerExtractionMaxErrorPixels": 1.0,
+    "predictedForwardMaxErrorPixels": 1.5,
+    "predictedInverseMaxErrorMillimeters": 0.5,
+    "outsideRoiUse": "must be rejected",
+    "freezeOrder": "freeze fixture files before any T26 homography solve"
+  },
+  "provenance": {
+    "dictionaryBytesSource": "OpenCV 4.11 DICT_4X4_1000_BYTES first four entries, rotation-zero bytes",
+    "dictionarySourceFile": ".scratch/sharpinspect-v1-tickets/opencv411-aruco-dictionaries.hpp",
+    "renderer": "pure C# Math; no OpenCV detection, projection, or homography solve"
+  }
+}

@@ -48,7 +48,7 @@ pwsh -File tools/Test-Ticket23.ps1
 | SharpInspect.Runtime | SharpInspect.NET.Runtime | 无 UI 的工位权威、SQLite 单写协调器及独立只读查询 |
 | SharpInspect.Wpf | SharpInspect.NET.Wpf | Dispatcher、快照时效、MVVM、状态及追溯窗口 |
 | SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
-| SharpInspect.Calibration.OpenCvSharp | SharpInspect.NET.Calibration.OpenCvSharp | 类型化棋盘格内参过程、畸变系数与逐图／逐点计算证据 |
+| SharpInspect.Calibration.OpenCvSharp | SharpInspect.NET.Calibration.OpenCvSharp | 棋盘格内参、平面单应映射、局部尺度与逐点计算证据 |
 | SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
 | SharpInspect.Cameras.Hikrobot | SharpInspect.NET.Cameras.Hikrobot | 独立 MVS 适配、只读依赖诊断与受控单帧开发验证 |
 | SharpInspect.Cameras.Conformance | SharpInspect.NET.Cameras.Conformance | 可复用公共相机契约场景、冻结映射及开发验证证据 |
@@ -84,6 +84,12 @@ Schema 14 显式启用标定证据扩展，依赖签名身份审计、Camera Set
 通过帧 ID、来源哈希和角点 ID 关联原始观测。生产验收仍由独立的项目政策决定。
 原生 OpenCV 运行时由宿主明确选择；核心 Runtime／WPF 无 OpenCV 依赖。
 输入、兼容及合成图片验证边界见 [V1-25 记录](docs/verification/v1-25.md)。
+
+同一可选包的 `PlanarHomographyProcedure` 从一帧中有编号的 ArUco 标记自动取得对应点，
+生成 ROI 局部像素与指定毫米平面坐标之间的双向映射。`PlanarHomographyResultCodec`
+保留完整输入、实际覆盖凸包和逐点双向残差；映射拒绝覆盖外输入，局部尺度使用随位置变化的 Jacobian。
+调用方必须显式声明原始像素域不需要内参校正；需要精确内参依赖的校正模式当前明确拒绝。
+当前候选不能发布或激活，详细范围见 [V1-26 记录](docs/verification/v1-26.md)。
 
 ## Camera Provider 契约验证
 

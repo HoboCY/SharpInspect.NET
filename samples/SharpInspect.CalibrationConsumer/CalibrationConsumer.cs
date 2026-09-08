@@ -44,6 +44,7 @@ internal sealed record CalibrationConsumerArguments(
     string DisplayName,
     string? ExpectedPrincipal,
     string? CheckerboardImagesDirectory,
+    string? PlanarImagesDirectory,
     bool Render)
 {
     internal static bool TryParse(string[] args, out CalibrationConsumerArguments arguments,
@@ -121,6 +122,14 @@ internal sealed record CalibrationConsumerArguments(
                 return false;
             }
 
+            var checkerboardImages = Option("--checkerboard-images");
+            var planarImages = Option("--planar-images");
+            if (checkerboardImages is not null && planarImages is not null)
+            {
+                error = "checkerboard-and-planar-images-are-mutually-exclusive";
+                return false;
+            }
+
             arguments = new CalibrationConsumerArguments(mode, fullDirectory, database, evidence,
                 auditKey, auditKeyDirectory, stationId,
                 Option("--identity-policy") is { } identityPolicy
@@ -129,8 +138,10 @@ internal sealed record CalibrationConsumerArguments(
                     ? Path.GetFullPath(alarmPolicy) : null,
                 userName, displayName,
                 expectedPrincipal,
-                Option("--checkerboard-images") is { } checkerboardImages
-                    ? Path.GetFullPath(checkerboardImages) : null,
+                checkerboardImages is { } checkerboardPath
+                    ? Path.GetFullPath(checkerboardPath) : null,
+                planarImages is { } planarPath
+                    ? Path.GetFullPath(planarPath) : null,
                 !args.Contains("--no-wpf", StringComparer.OrdinalIgnoreCase));
             return true;
         }
@@ -152,6 +163,9 @@ internal static class CalibrationConsumer
     private const int CheckerboardImageCount = 20;
     private const string CheckerboardFrozenManifestHash =
         "1329D4C19AD2F781E47599710A5D200831A33CEB54E30CD97D837CC3EB13CC16";
+    private const int PlanarImageCount = 2;
+    private const string PlanarFrozenManifestHash =
+        "17C6A4410AB30C56A524E9995080E3AD29C8ED3B8D3F5020FDB134E6A91B03EC";
     private const uint ScenarioSeed = 0xC0DE_1240;
     private static readonly DateTimeOffset InitialUtc =
         new(2026, 9, 9, 1, 2, 3, TimeSpan.Zero);
@@ -254,43 +268,59 @@ internal static class CalibrationConsumer
         Directory.CreateDirectory(arguments.Directory);
         Directory.CreateDirectory(arguments.EvidenceRoot);
         var checkerboard = arguments.CheckerboardImagesDirectory is not null;
+        var planar = arguments.PlanarImagesDirectory is not null;
+        Require(!checkerboard || !planar,
+            "checkerboard-and-planar-images-are-mutually-exclusive");
         var stage = "load-images";
         try
         {
             var checkerboardImages = checkerboard
                 ? LoadCheckerboardImages(arguments.CheckerboardImagesDirectory!)
                 : null;
+            var planarImages = planar
+                ? LoadPlanarImages(arguments.PlanarImagesDirectory!)
+                : null;
             stage = "store-options";
-            var options = CreateStoreOptions(arguments);
+            var options = CreateStoreOptions(arguments,
+                planar ? PlanarImageCount + 4 : null);
             stage = "phase-a";
             var phaseA = await RunPhaseAAsync(arguments, options, password, checkerboard,
-                checkerboardImages).ConfigureAwait(true);
+                checkerboardImages, planar, planarImages).ConfigureAwait(true);
             stage = "plan";
             var plan = checkerboard
                 ? CreateCheckerboardPlan(CheckerboardTemporaryEffectiveConfiguration())
-                : CreatePlan();
+                : planar
+                    ? CreatePlanarPlan(PlanarTemporaryEffectiveConfiguration())
+                    : CreatePlan();
             var fixtureId = checkerboard
                 ? "CheckerboardCalibrationFixture-" + checkerboardImages!.ManifestHash
-                : FixtureId;
+                : planar
+                    ? "PlanarCalibrationFixture-" + planarImages!.ManifestHash
+                    : FixtureId;
             var fixture = new DevelopmentCalibrationFixture(fixtureId, phaseA.Binding,
                 ImagingSetupRevisionReference.FromRevision(phaseA.ImagingRevision),
                 phaseA.BaselineRequested, phaseA.BaselineEffective, plan, options);
             stage = "phase-b";
             var phaseB = await RunPhaseBAsync(arguments, options, fixture, phaseA, password,
-                render && arguments.Render, checkerboard, checkerboardImages).ConfigureAwait(true);
+                render && arguments.Render, checkerboard, checkerboardImages, planar,
+                planarImages).ConfigureAwait(true);
             stage = "write-evidence";
             var databaseHash = await DatabaseHashAsync(options.DatabasePath).ConfigureAwait(true);
             if (checkerboard)
                 await WriteCheckerboardRunEvidenceAsync(arguments, options, fixture, phaseA,
                     phaseB, checkerboardImages!, databaseHash).ConfigureAwait(true);
+            else if (planar)
+                await WritePlanarRunEvidenceAsync(arguments, options, fixture, phaseA,
+                    phaseB, planarImages!, databaseHash).ConfigureAwait(true);
             else
                 await WriteRunEvidenceAsync(arguments, options, fixture, phaseA, phaseB,
                     databaseHash).ConfigureAwait(true);
         }
-        catch (ArgumentException exception) when (checkerboard)
+        catch (ArgumentException exception) when (checkerboard || planar)
         {
             throw new CalibrationConsumerCheckException(
-                "checkerboard-argument-" + stage + "-" + SafeExceptionMethod(exception));
+                (planar ? "planar-argument-" : "checkerboard-argument-") + stage + "-" +
+                SafeExceptionMethod(exception));
         }
     }
 
@@ -315,7 +345,10 @@ internal static class CalibrationConsumer
             "run-evidence-frame-count-invalid");
         var checkerboardMode = string.Equals(calibrationMode, "checkerboard",
             StringComparison.Ordinal);
-        var expectedMaximumFrames = checkerboardMode ? CheckerboardImageCount + 4 : 4;
+        var planarMode = string.Equals(calibrationMode, "planar",
+            StringComparison.Ordinal);
+        var expectedMaximumFrames = checkerboardMode ? CheckerboardImageCount + 4 :
+            planarMode ? PlanarImageCount + 4 : 4;
         var hasPersistedMaximumFrames = false;
         var maximumFrames = expectedMaximumFrames;
         if (root.TryGetProperty("store", out var storeValue) &&
@@ -324,7 +357,7 @@ internal static class CalibrationConsumer
             hasPersistedMaximumFrames = true;
             maximumFrames = maximumFramesValue.GetInt32();
         }
-        Require(!checkerboardMode || hasPersistedMaximumFrames,
+        Require((!checkerboardMode && !planarMode) || hasPersistedMaximumFrames,
             "run-evidence-store-capacity-missing");
         Require(maximumFrames == expectedMaximumFrames && maximumFrames >= expectedFrameCount,
             "run-evidence-store-capacity-mismatch");
@@ -425,6 +458,27 @@ internal static class CalibrationConsumer
                 Require(retainedExtractionReceipts[index] == expectedExtractionReceipts[index],
                     "restart-extraction-receipt-mismatch-" + index);
         }
+        else if (planarMode)
+        {
+            Require(evidence.Candidate.Result.Evidence is not null,
+                "restart-planar-evidence-missing");
+            Require(IsSha256(candidateEvidenceHash) &&
+                string.Equals(candidateEvidenceHash, expectedCandidateEvidenceHash,
+                    StringComparison.Ordinal),
+                "restart-planar-evidence-hash-mismatch");
+            var decoded = PlanarHomographyResultCodec.DecodeEvidence(
+                evidence.Candidate.Result.Evidence!);
+            validViewCount = decoded.Residuals.Count > 0 ? 1 : 0;
+            validPointCount = decoded.Residuals.Count;
+            retainedExtractionReceipts = CreatePlanarExtractionReceiptSummaries(evidence);
+            var expectedExtractionReceipts = ReadExtractionReceiptSummaries(root,
+                PlanarHomographyContracts.ExtractionReceipt, PlanarImageCount);
+            Require(expectedExtractionReceipts.Length == retainedExtractionReceipts.Length,
+                "restart-planar-extraction-receipt-count-mismatch");
+            for (var index = 0; index < retainedExtractionReceipts.Length; index++)
+                Require(retainedExtractionReceipts[index] == expectedExtractionReceipts[index],
+                    "restart-planar-extraction-receipt-mismatch-" + index);
+        }
         await File.WriteAllTextAsync(Path.Combine(arguments.Directory,
             "calibration-session-restart.json"), JsonSerializer.Serialize(new
             {
@@ -459,13 +513,14 @@ internal static class CalibrationConsumer
 
     private static async Task<PhaseAResult> RunPhaseAAsync(
         CalibrationConsumerArguments arguments, ProductionStoreOptions options, string password,
-        bool checkerboard, CheckerboardImageSet? checkerboardImages)
+        bool checkerboard, CheckerboardImageSet? checkerboardImages, bool planar,
+        PlanarImageSet? planarImages)
     {
         if (!File.Exists(options.DatabasePath))
             throw new CalibrationConsumerCheckException("identity-store-required-for-phase-a");
 
         using var clock = new VirtualCameraClock(InitialUtc);
-        var scenario = CreateScenario(checkerboard, checkerboardImages);
+        var scenario = CreateScenario(checkerboard, checkerboardImages, planar, planarImages);
         var provider = new VirtualCameraProvider(new[] { scenario }, clock, poolCapacity: 2);
         ServiceProvider? container = null;
         CameraBindingRevision? binding = null;
@@ -474,7 +529,7 @@ internal static class CalibrationConsumer
         CameraSetupOperationResult? apply = null;
         ImagingSetupChangeResult? imaging = null;
         var missingStepUpReason = string.Empty;
-        var baselineRequested = BaselineRequestedConfiguration(checkerboard);
+        var baselineRequested = BaselineRequestedConfiguration(checkerboard || planar);
         try
         {
             var services = new ServiceCollection();
@@ -568,10 +623,11 @@ internal static class CalibrationConsumer
     private static async Task<PhaseBResult> RunPhaseBAsync(
         CalibrationConsumerArguments arguments, ProductionStoreOptions options,
         DevelopmentCalibrationFixture fixture, PhaseAResult phaseA, string password,
-        bool render, bool checkerboard, CheckerboardImageSet? checkerboardImages)
+        bool render, bool checkerboard, CheckerboardImageSet? checkerboardImages,
+        bool planar, PlanarImageSet? planarImages)
     {
         using var clock = new VirtualCameraClock(InitialUtc);
-        var scenario = CreateScenario(checkerboard, checkerboardImages);
+        var scenario = CreateScenario(checkerboard, checkerboardImages, planar, planarImages);
         Require(scenario.ContentHash == phaseA.ScenarioHash,
             "phase-b-scenario-fingerprint-changed");
         var provider = new VirtualCameraProvider(new[] { scenario }, clock, poolCapacity: 2);
@@ -605,12 +661,15 @@ internal static class CalibrationConsumer
             if (checkerboard)
                 services.AddSharpInspectCalibrationProcedure<CheckerboardIntrinsicsInput>(
                     new CheckerboardIntrinsicsProcedure());
+            else if (planar)
+                services.AddSharpInspectCalibrationProcedure<PlanarHomographyInput>(
+                    new PlanarHomographyProcedure());
             else
                 services.AddSharpInspectCalibrationProcedure<CalibrationFixtureInput>(
                     new DeterministicCalibrationProcedure());
             services.AddSharpInspectCalibrationSessions(new CalibrationSessionOptions
             {
-                OperationTimeout = checkerboard ? TimeSpan.FromSeconds(30) :
+                OperationTimeout = checkerboard || planar ? TimeSpan.FromSeconds(30) :
                     TimeSpan.FromSeconds(5),
                 DevelopmentFixture = fixture
             });
@@ -701,7 +760,9 @@ internal static class CalibrationConsumer
                     "phase-b-frame-observation-count-invalid");
                 var excludedFrame = viewModel.Frames[0];
                 viewModel.SelectedFrame = excludedFrame;
-                viewModel.ExcludeReason = "第一帧整帧排除：夹具审阅示范，不删除原始证据";
+                viewModel.ExcludeReason = planar
+                    ? "第一帧空白帧排除：未检测到平面标记，不删除原始证据"
+                    : "第一帧整帧排除：夹具审阅示范，不删除原始证据";
                 var excluded = await viewModel.ExcludeCalibrationFrameAsync(
                     excludedFrame.FrameId, viewModel.ExcludeReason).ConfigureAwait(true);
                 Require(excluded is { Disposition: CommandDisposition.Accepted },
@@ -749,7 +810,8 @@ internal static class CalibrationConsumer
                     "phase-b-candidate-query-failed-" + candidateQuery.ReasonCode);
                 beforeExit = candidateQuery.Evidence!;
                 if (render)
-                    screenshots = await RenderPanelAsync(viewModel, arguments.Directory, checkerboard)
+                    screenshots = await RenderPanelAsync(viewModel, arguments.Directory,
+                        checkerboard || planar)
                         .ConfigureAwait(true);
 
                 viewModel.ExitReason = "退出确定性标定会话并验证原始基线恢复";
@@ -990,6 +1052,50 @@ internal static class CalibrationConsumer
                 "CalibrationConsumerCheckerboardSelection", "1", 3, 54, 0));
     }
 
+    private static CalibrationSessionPlan CreatePlanarPlan(
+        EffectiveCameraConfiguration expectedConfiguration)
+    {
+        var procedure = new PlanarHomographyProcedure();
+        var requirement = new CalibrationRequirement(Role, CalibrationKind.PlanarHomography,
+            "PlanarHomographyFixtureOnly", PlanarHomographyContracts.Coefficients,
+            PlanarAcceptanceContract());
+        var target = new ArucoPlanarTargetDefinition("planar-target-v1",
+            "plane-frame-v1", new[]
+            {
+                new ArucoPlanarMarkerDefinition(0, new[]
+                {
+                    new PlanarPoint(0, 0), new PlanarPoint(20, 0),
+                    new PlanarPoint(20, 20), new PlanarPoint(0, 20)
+                }),
+                new ArucoPlanarMarkerDefinition(1, new[]
+                {
+                    new PlanarPoint(80, 0), new PlanarPoint(100, 0),
+                    new PlanarPoint(100, 20), new PlanarPoint(80, 20)
+                }),
+                new ArucoPlanarMarkerDefinition(2, new[]
+                {
+                    new PlanarPoint(80, 60), new PlanarPoint(100, 60),
+                    new PlanarPoint(100, 80), new PlanarPoint(80, 80)
+                }),
+                new ArucoPlanarMarkerDefinition(3, new[]
+                {
+                    new PlanarPoint(0, 60), new PlanarPoint(20, 60),
+                    new PlanarPoint(20, 80), new PlanarPoint(0, 80)
+                })
+            });
+        var input = new PlanarHomographyInput(Role, expectedConfiguration,
+            PlanarPixelDomain.RawRoiPixelCentersCorrectionDeclaredNotRequired, target);
+        return new CalibrationSessionPlan(requirement, procedure.Descriptor,
+            procedure.InputCodec.EncodePayload(input), TemporaryConfiguration(true),
+            new CalibrationEvidenceSelectionPolicy(
+                "CalibrationConsumerPlanarSelection", "1", 1, 4, 0));
+    }
+
+    private static RecipeContractReference PlanarAcceptanceContract() =>
+        new("SharpInspect.CalibrationConsumer.Planar.FixtureOnly", "1",
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                "T26 fixture-only development acceptance; independent project policy required"))));
+
     private static RecipeContractReference CheckerboardAcceptanceContract() =>
         new("SharpInspect.CalibrationConsumer.Checkerboard.FixtureOnly", "1",
             Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -1082,6 +1188,92 @@ internal static class CalibrationConsumer
             frozenHash, images, relativeFiles, rawHashes);
     }
 
+    private static PlanarImageSet LoadPlanarImages(string directory)
+    {
+        string root;
+        try { root = Path.GetFullPath(directory); }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            throw new CalibrationConsumerCheckException("planar-image-root-invalid");
+        }
+
+        if (!Directory.Exists(root))
+            throw new CalibrationConsumerCheckException("planar-image-root-missing");
+
+        var manifestPath = ContainedPath(root, "planar-images.json",
+            "planar-image-manifest-path-invalid");
+        var manifestBytes = ReadBoundedFile(manifestPath, 128 * 1024,
+            "planar-image-manifest-read-failed");
+        var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
+        PlanarImageManifest manifest;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<PlanarImageManifest>(manifestBytes,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ??
+                throw new CalibrationConsumerCheckException("planar-image-manifest-invalid");
+        }
+        catch (JsonException exception)
+        {
+            throw new CalibrationConsumerCheckException(
+                "planar-image-manifest-invalid-" + exception.GetType().Name);
+        }
+
+        Require(manifest.Schema == 1 && manifest.DatasetVersion == "planar-v1" &&
+            manifest.FrozenManifest == "planar-v1.json" &&
+            string.Equals(manifest.FrozenManifestSha256, PlanarFrozenManifestHash,
+                StringComparison.OrdinalIgnoreCase),
+            "planar-image-manifest-contract-invalid");
+        var frozenPath = ContainedPath(root, manifest.FrozenManifest,
+            "planar-frozen-manifest-path-invalid");
+        var frozenBytes = ReadBoundedFile(frozenPath, 128 * 1024,
+            "planar-frozen-manifest-read-failed");
+        var frozenHash = Convert.ToHexString(SHA256.HashData(frozenBytes));
+        Require(string.Equals(frozenHash, PlanarFrozenManifestHash,
+                StringComparison.Ordinal), "planar-frozen-manifest-hash-mismatch");
+        Require(manifest.Images is { Length: PlanarImageCount } &&
+            manifest.Images.All(item => item is not null),
+            "planar-image-count-invalid");
+
+        var images = new List<VirtualCameraImage>(PlanarImageCount);
+        var relativeFiles = new string[PlanarImageCount];
+        var rawHashes = new string[PlanarImageCount];
+        var orderedEntries = manifest.Images.OrderBy(item => item.Index).ToArray();
+        var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < PlanarImageCount; index++)
+        {
+            var entry = orderedEntries[index];
+            Require(entry.Index == index && !string.IsNullOrWhiteSpace(entry.File) &&
+                !Path.IsPathRooted(entry.File) && entry.Width == 640 &&
+                entry.Height == 480 && entry.StrideBytes == 640 &&
+                entry.PixelFormat == "Mono8" && IsSha256(entry.Sha256),
+                "planar-image-entry-invalid-" + index);
+            var imagePath = ContainedPath(root, entry.File,
+                "planar-image-path-invalid-" + index);
+            Require(seenFiles.Add(imagePath),
+                "planar-image-entry-duplicate-" + index);
+            VirtualCameraImage image;
+            try
+            {
+                image = VirtualCameraImage.LoadRecordedRaw(
+                    "planar-frame-" + index.ToString("D2"), imagePath,
+                    entry.Width, entry.Height, entry.StrideBytes,
+                    VisionPixelFormat.Mono8, null, entry.Sha256);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or
+                ArgumentException or UnauthorizedAccessException)
+            {
+                throw new CalibrationConsumerCheckException(
+                    "planar-image-load-failed-" + index + "-" + exception.GetType().Name);
+            }
+            images.Add(image);
+            relativeFiles[index] = entry.File;
+            rawHashes[index] = entry.Sha256.ToUpperInvariant();
+        }
+
+        return new PlanarImageSet(root, manifest.DatasetVersion, manifestHash,
+            frozenHash, images, relativeFiles, rawHashes);
+    }
+
     private static string ContainedPath(string root, string relative, string reason)
     {
         string full;
@@ -1121,16 +1313,26 @@ internal static class CalibrationConsumer
     private static VirtualCameraProvider CreateProvider(VirtualCameraClock clock) =>
         new(new[] { CreateScenario() }, clock, poolCapacity: 2);
 
-    private static VirtualCameraScenario CreateScenario() => CreateScenario(false, null);
+    private static VirtualCameraScenario CreateScenario() =>
+        CreateScenario(false, null, false, null);
 
     private static VirtualCameraScenario CreateScenario(bool checkerboard,
-        CheckerboardImageSet? checkerboardImages)
+        CheckerboardImageSet? checkerboardImages, bool planar = false,
+        PlanarImageSet? planarImages = null)
     {
+        Require(!checkerboard || !planar,
+            "checkerboard-and-planar-scenarios-are-mutually-exclusive");
         if (checkerboard)
         {
             Require(checkerboardImages is not null,
                 "checkerboard-image-set-required");
-            return CreateScenario(checkerboardImages!.Images, true);
+            return CreateScenario(checkerboardImages!.Images, "Checkerboard");
+        }
+        if (planar)
+        {
+            Require(planarImages is not null,
+                "planar-image-set-required");
+            return CreateScenario(planarImages!.Images, "Planar");
         }
 
         var images = new[]
@@ -1142,11 +1344,11 @@ internal static class CalibrationConsumer
             VirtualCameraImage.CreateSynthetic("calibration-frame-3", 64, 48,
                 VisionPixelFormat.Mono8, null, ScenarioSeed + 3)
         };
-        return CreateScenario(images, false);
+        return CreateScenario(images, null);
     }
 
     private static VirtualCameraScenario CreateScenario(
-        IReadOnlyList<VirtualCameraImage> images, bool checkerboard)
+        IReadOnlyList<VirtualCameraImage> images, string? scenarioKind)
     {
         var acquisitions = images.Select(image => new VirtualCameraAcquisitionPlan(new[]
         {
@@ -1163,8 +1365,9 @@ internal static class CalibrationConsumer
                 TimeSpan.Zero)
         };
         return new VirtualCameraScenario(
-            checkerboard ? "CalibrationConsumer.Checkerboard" : "CalibrationConsumer",
-            "1", ScenarioSeed, Device, Capabilities(checkerboard), images,
+            scenarioKind is null ? "CalibrationConsumer" :
+                "CalibrationConsumer." + scenarioKind,
+            "1", ScenarioSeed, Device, Capabilities(scenarioKind is not null), images,
             acquisitions, configurations);
     }
 
@@ -1197,6 +1400,9 @@ internal static class CalibrationConsumer
         new(ProductionAcquisitionMode.SoftwareTrigger, 800, 0,
             new RegionOfInterest(0, 0, 640, 480), VisionPixelFormat.Mono8, null, 1000, 0, null);
 
+    private static EffectiveCameraConfiguration PlanarTemporaryEffectiveConfiguration() =>
+        CheckerboardTemporaryEffectiveConfiguration();
+
     private static ProductionStoreOptions CreateStoreOptions(
         CalibrationConsumerArguments arguments, int? maximumFrames = null)
     {
@@ -1223,7 +1429,8 @@ internal static class CalibrationConsumer
                 MaximumEvents = 256,
                 MaximumEventPayloadBytes = 256 * 1024,
                 MaximumFramesPerSession = maximumFrames ??
-                    (arguments.CheckerboardImagesDirectory is null ? 4 : 24),
+                    (arguments.CheckerboardImagesDirectory is not null ? CheckerboardImageCount + 4 :
+                        arguments.PlanarImagesDirectory is not null ? PlanarImageCount + 4 : 4),
                 MaximumFrameBytes = 16L * 1024 * 1024,
                 MaximumTotalFrameBytes = 64L * 1024 * 1024
             }
@@ -1829,57 +2036,434 @@ internal static class CalibrationConsumer
             }, JsonOptions())).ConfigureAwait(true);
     }
 
+    private static async Task WritePlanarRunEvidenceAsync(
+        CalibrationConsumerArguments arguments, ProductionStoreOptions options,
+        DevelopmentCalibrationFixture fixture, PhaseAResult phaseA, PhaseBResult phaseB,
+        PlanarImageSet imageSet, string databaseHash)
+    {
+        var before = EvidenceSummary.Create(phaseB.BeforeExit);
+        var after = EvidenceSummary.Create(phaseB.AfterExit);
+        var final = phaseB.FinalState;
+        var candidate = phaseB.AfterExit.Candidate ??
+            throw new CalibrationConsumerCheckException("planar-candidate-missing");
+        var extractionReceipts = CreatePlanarExtractionReceiptSummaries(phaseB.AfterExit);
+        var input = new PlanarHomographyInputCodec().Decode(fixture.Plan.Input.GetBytes());
+        PlanarHomographyCoefficients coefficients;
+        PlanarHomographyEvidence evidence;
+        try
+        {
+            coefficients = PlanarHomographyResultCodec.DecodeCoefficients(
+                candidate.Result.Coefficients);
+            evidence = PlanarHomographyResultCodec.DecodeEvidence(
+                candidate.Result.Evidence ?? throw new CalibrationConsumerCheckException(
+                    "planar-candidate-evidence-missing"));
+        }
+        catch (CalibrationConsumerCheckException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException)
+        {
+            throw new CalibrationConsumerCheckException(
+                "planar-typed-result-decode-failed-" + exception.GetType().Name);
+        }
+
+        Require(evidence.Residuals.Count == 16 && evidence.MissingMarkerIds.Count == 0 &&
+            after.Frames.Length == PlanarImageCount &&
+            after.Observations.Length == PlanarImageCount,
+            "planar-result-shape-invalid");
+        var rawFrameIdentities = after.Frames.Select((frame, index) =>
+        {
+            Require(string.Equals(frame.PixelHash, imageSet.RawHashes[index],
+                    StringComparison.Ordinal),
+                "planar-frame-manifest-binding-invalid-" + index);
+            return new
+            {
+                index,
+                frameId = frame.FrameId,
+                sourceHash = frame.SourceHash,
+                pixelHash = frame.PixelHash,
+                width = frame.Width,
+                height = frame.Height,
+                pixelFormat = frame.PixelFormat.ToString(),
+                sourceFile = imageSet.RelativeFiles[index],
+                sourceFileHash = imageSet.RawHashes[index]
+            };
+        }).ToArray();
+        var observations = after.Observations.Select(observation => new
+        {
+            observationId = observation.ObservationId,
+            frameId = observation.FrameId,
+            sourceHash = observation.SourceHash,
+            featureCount = observation.Features.Length,
+            features = observation.Features
+        }).ToArray();
+        var localScale = coefficients.GetLocalScale(new PlanarPoint(320, 240));
+        var evidencePayload = candidate.Result.Evidence!;
+        var wpfSummary = new
+        {
+            rendered = phaseB.Screenshots.Length > 0,
+            screenshots = phaseB.Screenshots,
+            framesReadOnly = true,
+            observationsReadOnly = true,
+            passwordEmpty = true,
+            coordinateEditingUnavailable = true
+        };
+        await File.WriteAllTextAsync(Path.Combine(arguments.Directory,
+            "calibration-session-evidence.json"), JsonSerializer.Serialize(new
+            {
+                result = "Pass",
+                contractVersion = ContractVersion,
+                schema = SchemaVersion,
+                calibrationMode = "planar",
+                modes = new[] { "run", "restart", "wpf", "all" },
+                startupMethod = "PhaseA setup owner then PhaseB Recovery owner; restart query-only",
+                validationIds = new[] { "V126_U01", "V126_U02", "V126_U03", "V126_U04",
+                    "V126_U05", "V126_U06", "V126_U07", "V126_U08", "V126_U09" },
+                source = new
+                {
+                    datasetVersion = imageSet.DatasetVersion,
+                    frozenManifestFile = "planar-v1.json",
+                    frozenManifestHash = imageSet.FrozenManifestHash,
+                    imageManifestFile = "planar-images.json",
+                    imageManifestHash = imageSet.ManifestHash,
+                    imageCount = imageSet.Images.Count,
+                    pathsContained = true,
+                    manifestBound = true,
+                    rawImageHashes = imageSet.RawHashes
+                },
+                planar = new
+                {
+                    datasetVersion = imageSet.DatasetVersion,
+                    frozenManifestHash = imageSet.FrozenManifestHash,
+                    imageManifestHash = imageSet.ManifestHash,
+                    imageCount = imageSet.Images.Count,
+                    pathsContained = true,
+                    manifestBound = true
+                },
+                extractionReceiptCount = extractionReceipts.Length,
+                extractionReceipts,
+                store = new
+                {
+                    maximumFramesPerSession = options.CalibrationSessions!.MaximumFramesPerSession
+                },
+                contracts = new
+                {
+                    procedure = fixture.Plan.Procedure.Procedure,
+                    input = fixture.Plan.Procedure.InputContract,
+                    coefficients = PlanarHomographyContracts.Coefficients,
+                    evidence = PlanarHomographyContracts.Evidence,
+                    extractionReceipt = PlanarHomographyContracts.ExtractionReceipt,
+                    acceptance = fixture.Plan.Requirement.AcceptancePolicy,
+                    acceptanceIsFixtureOnly = true,
+                    productionAcceptance = "NotRun"
+                },
+                procedure = fixture.Plan.Procedure.Procedure,
+                planarInput = new
+                {
+                    logicalCameraRole = input.LogicalCameraRole,
+                    pixelDomain = input.PixelDomain.ToString(),
+                    targetDefinitionId = input.Target.TargetDefinitionId,
+                    planeCoordinateFrameId = input.Target.PlaneCoordinateFrameId,
+                    physicalUnit = input.Target.PhysicalUnit,
+                    dictionaryName = input.Target.DictionaryName,
+                    borderBits = input.Target.BorderBits,
+                    inputPayloadHash = fixture.Plan.Input.ContentHash,
+                    canonicalBytesHash = fixture.Plan.Input.CanonicalBytesHash,
+                    effectiveConfiguration = new
+                    {
+                        productionAcquisitionMode = input.ExpectedConfiguration.ProductionAcquisitionMode
+                            .ToString(),
+                        exposureTimeUs = input.ExpectedConfiguration.ExposureTimeUs,
+                        gainDb = input.ExpectedConfiguration.GainDb,
+                        regionOfInterest = input.ExpectedConfiguration.RegionOfInterest,
+                        pixelFormat = input.ExpectedConfiguration.PixelFormat.ToString(),
+                        validBits = input.ExpectedConfiguration.ValidBits,
+                        acquisitionTimeoutMs = input.ExpectedConfiguration.AcquisitionTimeoutMs,
+                        triggerDelayUs = input.ExpectedConfiguration.TriggerDelayUs,
+                        whiteBalanceRgb = input.ExpectedConfiguration.WhiteBalanceRgb
+                    },
+                    markers = input.Target.Markers.Select(marker => new
+                    {
+                        markerId = marker.MarkerId,
+                        physicalCornersMillimeters = marker.PhysicalCornersMillimeters
+                    }).ToArray()
+                },
+                fixture = new
+                {
+                    id = fixture.FixtureId,
+                    contentHash = fixture.ContentHash,
+                    scenarioHash = phaseB.ScenarioHash,
+                    developmentOnly = fixture.DevelopmentOnly,
+                    productionAuthority = fixture.ProductionAuthority,
+                    productionOutputsAbsent = true,
+                    schema14Store = options.CalibrationSessions is not null
+                },
+                plan = new
+                {
+                    contentHash = fixture.Plan.ContentHash,
+                    requirement = fixture.Plan.Requirement.ContentHash,
+                    procedure = fixture.Plan.Procedure.ContentHash,
+                    inputCanonicalBytesHash = fixture.Plan.Input.CanonicalBytesHash,
+                    inputContentHash = fixture.Plan.Input.ContentHash,
+                    temporaryConfigurationHash = fixture.Plan.TemporaryConfigurationHash,
+                    selectionPolicy = fixture.Plan.SelectionPolicy.ContentHash
+                },
+                sessionId = phaseB.BeforeExit.Header.SessionId,
+                binding = new
+                {
+                    logicalRole = Role,
+                    device = Device,
+                    provider = phaseA.Provider,
+                    revision = fixture.Binding.Revision,
+                    revisionHash = fixture.Binding.RevisionHash,
+                    targetHash = fixture.Binding.Target.ContentHash
+                },
+                imaging = new
+                {
+                    revision = phaseA.ImagingRevision.Revision,
+                    revisionId = phaseA.ImagingRevision.RevisionId,
+                    revisionHash = phaseA.ImagingRevision.RevisionHash,
+                    reason = phaseA.ImagingRevision.ChangeReason,
+                    referenceHash = fixture.ImagingSetup.RevisionHash,
+                    automaticallyDetectsAllPhysicalChanges =
+                        phaseA.ImagingRevision.AutomaticallyDetectsAllPhysicalChanges
+                },
+                baseline = new
+                {
+                    requestedHash = fixture.BaselineRequestedHash,
+                    effectiveHash = fixture.BaselineEffectiveHash,
+                    requested = phaseA.BaselineRequested,
+                    effective = phaseA.BaselineEffective,
+                    temporary = fixture.Plan.TemporaryConfiguration
+                },
+                start = new
+                {
+                    accepted = phaseB.StartOutcome.Disposition == CommandDisposition.Accepted,
+                    acceptedBeforeTerminal = phaseB.AcceptedBeforeTerminal,
+                    correlationId = phaseB.StartOutcome.CorrelationId,
+                    authorizationTarget = phaseB.BeforeExit.Header.Command.AuthorizationTarget,
+                    stepUpGrantId = phaseB.BeforeExit.Header.Command.Invocation.StepUpGrantId,
+                    auditedCommand = AuditedCommandKind.StartCalibrationSession.ToString(),
+                    sessionId = phaseB.BeforeExit.Header.SessionId
+                },
+                evidenceBeforeExit = before,
+                evidenceAfterExit = after,
+                selection = new
+                {
+                    sufficient = after.Selection.Sufficient,
+                    includedFrameCount = after.Selection.IncludedFrameCount,
+                    sufficientFeatureFrameCount = after.Selection.SufficientFeatureFrameCount,
+                    imageCoverage = after.Selection.ImageCoverage,
+                    selectionHash = after.Selection.SelectionHash
+                },
+                rawFrameIdentities,
+                observations,
+                candidate = new
+                {
+                    contentHash = candidate.ContentHash,
+                    coefficientHash = candidate.Result.Coefficients.ContentHash,
+                    developmentOnly = candidate.DevelopmentOnly,
+                    canPublish = candidate.CanPublish,
+                    canActivate = candidate.CanActivate,
+                    acceptanceReasonCode = candidate.AcceptanceReasonCode,
+                    immutable = true,
+                    publication = "CannotPublish",
+                    typedCoefficientsDecoded = true,
+                    typedEvidenceDecoded = true,
+                    coefficientContract = candidate.Result.Coefficients.Format,
+                    evidenceContract = evidencePayload.Format,
+                    evidencePayloadBytes = evidencePayload.Length,
+                    evidenceCanonicalBytesHash = evidencePayload.CanonicalBytesHash,
+                    evidenceContentHash = evidencePayload.ContentHash,
+                    decodedViewCount = 1,
+                    decodedPointCount = evidence.Residuals.Count,
+                    coefficients = new
+                    {
+                        inputPayloadHash = coefficients.InputPayloadHash,
+                        imageToPlane = coefficients.ImageToPlane,
+                        planeToImage = coefficients.PlaneToImage,
+                        imageHull = coefficients.ImageHull,
+                        physicalHull = coefficients.PhysicalHull,
+                        localScale = new
+                        {
+                            j11 = localScale.J11,
+                            j12 = localScale.J12,
+                            j21 = localScale.J21,
+                            j22 = localScale.J22,
+                            minimumMillimetersPerPixel = localScale.MinimumMillimetersPerPixel,
+                            maximumMillimetersPerPixel = localScale.MaximumMillimetersPerPixel,
+                            areaSquareMillimetersPerSquarePixel =
+                                localScale.AreaSquareMillimetersPerSquarePixel
+                        }
+                    },
+                    evidence = new
+                    {
+                        frameId = evidence.FrameId,
+                        sourceHash = evidence.SourceHash,
+                        inputPayloadHash = evidence.InputPayloadHash,
+                        constraintRankRatio = evidence.ConstraintRankRatio,
+                        inverseClosureError = evidence.InverseClosureError,
+                        rmsMillimeters = evidence.RmsMillimeters,
+                        maxMillimeters = evidence.MaxMillimeters,
+                        rmsPixels = evidence.RmsPixels,
+                        maxPixels = evidence.MaxPixels,
+                        residualCount = evidence.Residuals.Count,
+                        missingMarkerIds = evidence.MissingMarkerIds,
+                         correspondences = evidence.Residuals.Select(residual => new
+                         {
+                             markerId = residual.MarkerId,
+                             cornerIndex = residual.CornerIndex,
+                             observedPixels = residual.ObservedPixels,
+                             physicalMillimeters = residual.PhysicalMillimeters,
+                             imageToPlaneResidualMillimeters =
+                                 residual.ImageToPlaneResidualMillimeters,
+                             planeToImageResidualPixels = residual.PlaneToImageResidualPixels
+                         }).ToArray()
+                    }
+                },
+                wpfSummary,
+                screenshots = phaseB.Screenshots,
+                exit = new
+                {
+                    accepted = phaseB.ExitOutcome.Disposition == CommandDisposition.Accepted,
+                    correlationId = phaseB.ExitOutcome.CorrelationId,
+                    reason = phaseB.AfterExit.State.ReasonCode,
+                    restorationVerified = phaseB.AfterExit.State.RestorationVerified,
+                    outcome = phaseB.AfterExit.State.Outcome
+                },
+                global = new
+                {
+                    ready = final.Ready,
+                    armState = final.ArmState,
+                    mode = final.Mode,
+                    handshake = final.Handshake,
+                    recovery = final.Recovery,
+                    activeRecipe = final.ActiveRecipe,
+                    productionOutputsAbsent = true,
+                    physicalHardwareQualification = "NotRun",
+                    providerQualification = "NotRun",
+                    stationAcceptance = "NotRun",
+                    production = "NotRun"
+                },
+                phaseA = new
+                {
+                    owner = "CameraSetupRuntime",
+                    registeredCameraProvider = true,
+                    registeredRecovery = false,
+                    registeredAcquisition = false,
+                    anonymousDiscoveryRejected = true,
+                    missingStepUpRejected = true,
+                    rebind = new { succeeded = phaseA.Rebind.Succeeded,
+                        reason = phaseA.Rebind.ReasonCode },
+                    applyStopped = new { succeeded = phaseA.Apply.Succeeded,
+                        reason = phaseA.Apply.ReasonCode },
+                    imaging = new { succeeded = phaseA.Imaging.Succeeded,
+                        reason = phaseA.Imaging.ReasonCode },
+                    diagnostics = phaseA.Diagnostics
+                },
+                phaseB = new
+                {
+                    owner = "CameraRecoveryService",
+                    registeredCameraProvider = false,
+                    registeredRecovery = true,
+                    seedStarted = true,
+                    exactScenario = true,
+                    imageCount = imageSet.Images.Count,
+                    validViewCount = 1,
+                    validPointCount = evidence.Residuals.Count,
+                    diagnostics = phaseB.Diagnostics
+                },
+                databaseHash,
+                noAutomaticPhysicalDetection = true,
+                noCoordinateEditing = true,
+                noFakeProfilePublication = true
+            }, JsonOptions())).ConfigureAwait(true);
+    }
+
     private static ExtractionReceiptSummary[] CreateCheckerboardExtractionReceiptSummaries(
         CalibrationSessionEvidence evidence)
     {
-        Require(evidence.Observations.Count == CheckerboardImageCount,
-            "checkerboard-extraction-receipt-observation-count-invalid");
+        return CreateExtractionReceiptSummaries(evidence, CheckerboardImageCount,
+            CheckerboardIntrinsicsContracts.ExtractionReceipt, "checkerboard");
+    }
+
+    private static ExtractionReceiptSummary[] CreatePlanarExtractionReceiptSummaries(
+        CalibrationSessionEvidence evidence)
+    {
+        return CreateExtractionReceiptSummaries(evidence, PlanarImageCount,
+            PlanarHomographyContracts.ExtractionReceipt, "planar");
+    }
+
+    private static ExtractionReceiptSummary[] CreateExtractionReceiptSummaries(
+        CalibrationSessionEvidence evidence, int expectedCount,
+        RecipeContractReference expectedFormat, string mode)
+    {
+        Require(evidence.Observations.Count == expectedCount,
+            mode + "-extraction-receipt-observation-count-invalid");
         var summaries = evidence.Observations.Select(observation =>
         {
             var receipt = observation.Result.Receipt;
             Require(receipt is not null,
-                "checkerboard-extraction-receipt-missing-" + observation.Frame.FrameId.ToString("D"));
-            Require(receipt!.Length == 32,
-                "checkerboard-extraction-receipt-length-invalid-" + observation.Frame.FrameId.ToString("D"));
-            Require(receipt.Format == CheckerboardIntrinsicsContracts.ExtractionReceipt,
-                "checkerboard-extraction-receipt-format-invalid-" + observation.Frame.FrameId.ToString("D"));
-            Require(IsSha256(receipt.ContentHash) && IsSha256(receipt.CanonicalBytesHash),
-                "checkerboard-extraction-receipt-hash-invalid-" + observation.Frame.FrameId.ToString("D"));
+                mode + "-extraction-receipt-missing-" + observation.Frame.FrameId.ToString("D"));
+            var checkedReceipt = receipt!;
+            Require(checkedReceipt.Length == 32,
+                mode + "-extraction-receipt-length-invalid-" + observation.Frame.FrameId.ToString("D"));
+            Require(checkedReceipt.Format == expectedFormat,
+                mode + "-extraction-receipt-format-invalid-" + observation.Frame.FrameId.ToString("D"));
+            Require(IsSha256(checkedReceipt.ContentHash) && IsSha256(checkedReceipt.CanonicalBytesHash),
+                mode + "-extraction-receipt-hash-invalid-" + observation.Frame.FrameId.ToString("D"));
             return new ExtractionReceiptSummary(observation.Frame.FrameId,
-                receipt.ContentHash, receipt.CanonicalBytesHash, receipt.Length, receipt.Format);
+                checkedReceipt.ContentHash, checkedReceipt.CanonicalBytesHash, checkedReceipt.Length,
+                checkedReceipt.Format);
         }).ToArray();
         Require(summaries.Select(item => item.FrameId).Distinct().Count() == summaries.Length,
-            "checkerboard-extraction-receipt-frame-duplicate");
+            mode + "-extraction-receipt-frame-duplicate");
         return summaries.OrderBy(item => item.FrameId.ToString("D"), StringComparer.Ordinal)
             .ToArray();
     }
 
     private static ExtractionReceiptSummary[] ReadExtractionReceiptSummaries(JsonElement root)
     {
+        return ReadExtractionReceiptSummaries(root,
+            CheckerboardIntrinsicsContracts.ExtractionReceipt, CheckerboardImageCount,
+            "checkerboard");
+    }
+
+    private static ExtractionReceiptSummary[] ReadExtractionReceiptSummaries(
+        JsonElement root, RecipeContractReference expectedFormat, int expectedCount)
+    {
+        return ReadExtractionReceiptSummaries(root, expectedFormat, expectedCount, "planar");
+    }
+
+    private static ExtractionReceiptSummary[] ReadExtractionReceiptSummaries(
+        JsonElement root, RecipeContractReference expectedFormat, int expectedCount,
+        string mode)
+    {
         Require(root.TryGetProperty("extractionReceipts", out var values) &&
             values.ValueKind == JsonValueKind.Array,
-            "run-extraction-receipts-missing");
+            mode + "-run-extraction-receipts-missing");
         var summaries = new List<ExtractionReceiptSummary>();
         foreach (var value in values.EnumerateArray())
         {
             Require(value.ValueKind == JsonValueKind.Object,
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             Require(value.TryGetProperty("frameId", out var frameValue),
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             Require(Guid.TryParseExact(frameValue.GetString(), "D", out var frameId) &&
-                frameId != Guid.Empty, "run-extraction-receipt-entry-invalid");
+                frameId != Guid.Empty, mode + "-run-extraction-receipt-entry-invalid");
             Require(value.TryGetProperty("receiptContentHash", out var contentHashValue) &&
                 IsSha256(contentHashValue.GetString()),
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             Require(value.TryGetProperty("receiptCanonicalBytesHash", out var bytesHashValue) &&
                 IsSha256(bytesHashValue.GetString()),
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             Require(value.TryGetProperty("length", out var lengthValue) &&
                 lengthValue.GetInt32() == 32,
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             Require(value.TryGetProperty("format", out var formatValue) &&
                 formatValue.ValueKind == JsonValueKind.Object,
-                "run-extraction-receipt-entry-invalid");
+                mode + "-run-extraction-receipt-entry-invalid");
             var format = formatValue;
             RecipeContractReference contract;
             try
@@ -1892,18 +2476,18 @@ internal static class CalibrationConsumer
             catch (ArgumentException)
             {
                 throw new CalibrationConsumerCheckException(
-                    "run-extraction-receipt-format-invalid");
+                    mode + "-run-extraction-receipt-format-invalid");
             }
-            Require(contract == CheckerboardIntrinsicsContracts.ExtractionReceipt,
-                "run-extraction-receipt-format-invalid");
+            Require(contract == expectedFormat,
+                mode + "-run-extraction-receipt-format-invalid");
             summaries.Add(new ExtractionReceiptSummary(frameId,
                 contentHashValue.GetString()!, bytesHashValue.GetString()!,
                 lengthValue.GetInt32(), contract));
         }
-        Require(summaries.Count == CheckerboardImageCount,
-            "run-extraction-receipt-count-invalid");
+        Require(summaries.Count == expectedCount,
+            mode + "-run-extraction-receipt-count-invalid");
         Require(summaries.Select(item => item.FrameId).Distinct().Count() == summaries.Count,
-            "run-extraction-receipt-frame-duplicate");
+            mode + "-run-extraction-receipt-frame-duplicate");
         return summaries.OrderBy(item => item.FrameId.ToString("D"), StringComparer.Ordinal)
             .ToArray();
     }
@@ -2114,6 +2698,11 @@ internal static class CalibrationConsumer
         IReadOnlyList<VirtualCameraImage> Images, string[] RelativeFiles,
         string[] RawHashes);
 
+    private sealed record PlanarImageSet(string RootDirectory,
+        string DatasetVersion, string ManifestHash, string FrozenManifestHash,
+        IReadOnlyList<VirtualCameraImage> Images, string[] RelativeFiles,
+        string[] RawHashes);
+
     private sealed class CheckerboardImageManifest
     {
         public int Schema { get; set; }
@@ -2125,6 +2714,27 @@ internal static class CalibrationConsumer
     }
 
     private sealed class CheckerboardImageManifestEntry
+    {
+        public int Index { get; set; }
+        public string File { get; set; } = string.Empty;
+        public string Sha256 { get; set; } = string.Empty;
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int StrideBytes { get; set; }
+        public string PixelFormat { get; set; } = string.Empty;
+    }
+
+    private sealed class PlanarImageManifest
+    {
+        public int Schema { get; set; }
+        public string DatasetVersion { get; set; } = string.Empty;
+        public string FrozenManifest { get; set; } = string.Empty;
+        public string FrozenManifestSha256 { get; set; } = string.Empty;
+        public PlanarImageManifestEntry[] Images { get; set; } =
+            Array.Empty<PlanarImageManifestEntry>();
+    }
+
+    private sealed class PlanarImageManifestEntry
     {
         public int Index { get; set; }
         public string File { get; set; } = string.Empty;
