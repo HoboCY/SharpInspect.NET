@@ -48,6 +48,7 @@ pwsh -File tools/Test-Ticket23.ps1
 | SharpInspect.Runtime | SharpInspect.NET.Runtime | 无 UI 的工位权威、SQLite 单写协调器及独立只读查询 |
 | SharpInspect.Wpf | SharpInspect.NET.Wpf | Dispatcher、快照时效、MVVM、状态及追溯窗口 |
 | SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
+| SharpInspect.Calibration.OpenCvSharp | SharpInspect.NET.Calibration.OpenCvSharp | 类型化棋盘格内参过程、畸变系数与逐图／逐点计算证据 |
 | SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
 | SharpInspect.Cameras.Hikrobot | SharpInspect.NET.Cameras.Hikrobot | 独立 MVS 适配、只读依赖诊断与受控单帧开发验证 |
 | SharpInspect.Cameras.Conformance | SharpInspect.NET.Cameras.Conformance | 可复用公共相机契约场景、冻结映射及开发验证证据 |
@@ -75,6 +76,14 @@ Schema 14 显式启用标定证据扩展，依赖签名身份审计、Camera Set
 当前真实安全停线与 Released Recipe 准入仍缺证，普通入口返回 `SafetyStopUnverified`。
 隔离 Virtual 开发夹具可验证流程，始终保持 `Ready=false`，不构成生产或数学过程合格。
 验证范围与异常关闭边界见 [V1-24 记录](docs/verification/v1-24.md)。
+
+可选 `SharpInspect.NET.Calibration.OpenCvSharp` 包提供 `CheckerboardIntrinsicsProcedure`。
+输入明确内角点行列数、毫米方格尺寸、逻辑相机角色和完整实际配置；过程只读借用像素，
+自动提取角点并使用所有选中观测计算相机矩阵、Brown–Conrady 畸变和残差。
+`CheckerboardIntrinsicsResultCodec` 分别解码系数与结构化证据；后者保留逐图姿态、覆盖及逐点残差，
+通过帧 ID、来源哈希和角点 ID 关联原始观测。生产验收仍由独立的项目政策决定。
+原生 OpenCV 运行时由宿主明确选择；核心 Runtime／WPF 无 OpenCV 依赖。
+输入、兼容及合成图片验证边界见 [V1-25 记录](docs/verification/v1-25.md)。
 
 ## Camera Provider 契约验证
 

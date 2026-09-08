@@ -129,14 +129,22 @@ public sealed class CalibrationObservationEvidence
             if (feature.PixelX < 0 || feature.PixelY < 0 || feature.PixelX >= frame.Metadata.Width ||
                 feature.PixelY >= frame.Metadata.Height)
                 throw new ArgumentException("CalibrationObservationOutsideFrame");
-        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        var hashParts = new[]
         {
-            "sharpinspect-calibration-observation-v1", observationId.ToString("D"), frame.SourceHash,
+            result.Receipt is null ? "sharpinspect-calibration-observation-v1" :
+                "sharpinspect-calibration-observation-v2", observationId.ToString("D"), frame.SourceHash,
             procedure.ContentHash, InputHash, result.Features.Count.ToString(CultureInfo.InvariantCulture),
             result.Diagnostics.Count.ToString(CultureInfo.InvariantCulture)
         }.Concat(result.Features.OrderBy(value => value.StableFeatureId, StringComparer.Ordinal)
             .Select(value => value.ContentHash)).Concat(result.Diagnostics.OrderBy(value => value.Key, StringComparer.Ordinal)
-            .SelectMany(value => new[] { value.Key, value.Value })));
+            .SelectMany(value => new[] { value.Key, value.Value }));
+        if (result.Receipt is { } receipt)
+            hashParts = hashParts.Concat(new[]
+            {
+                receipt.Format.Id, receipt.Format.Version, receipt.Format.ContentHash,
+                receipt.ContentHash
+            });
+        ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
     public Guid ObservationId { get; }
     public CalibrationFrameEvidence Frame { get; }
@@ -163,17 +171,27 @@ public sealed class CalibrationCandidateEvidence
         SelectionHash = CameraSetupValidation.Hash(selectionHash, nameof(selectionHash));
         Result = result ?? throw new ArgumentNullException(nameof(result));
         ComputedAtUtc = computedAtUtc.ToUniversalTime();
-        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        var hashParts = new[]
         {
-            "sharpinspect-calibration-candidate-v1", candidateId.ToString("D"), sessionId.ToString("D"),
-            SessionHeaderHash, SelectionHash, ComputedAtUtc.ToString("O"), result.Coefficients.ContentHash,
-            result.Coefficients.Format.Id, result.Coefficients.Format.Version, result.Coefficients.Format.ContentHash,
+            result.Evidence is null ? "sharpinspect-calibration-candidate-v1" :
+                "sharpinspect-calibration-candidate-v2",
+            candidateId.ToString("D"), sessionId.ToString("D"), SessionHeaderHash, SelectionHash,
+            ComputedAtUtc.ToString("O"), result.Coefficients.ContentHash,
+            result.Coefficients.Format.Id, result.Coefficients.Format.Version,
+            result.Coefficients.Format.ContentHash,
             result.QualityMetrics.Count.ToString(CultureInfo.InvariantCulture),
             result.Diagnostics.Count.ToString(CultureInfo.InvariantCulture)
         }.Concat(result.QualityMetrics.OrderBy(value => value.Key, StringComparer.Ordinal)
             .SelectMany(value => new[] { value.Key, value.Value.ToString("R", CultureInfo.InvariantCulture), value.Unit }))
             .Concat(result.Diagnostics.OrderBy(value => value.Key, StringComparer.Ordinal)
-                .SelectMany(value => new[] { value.Key, value.Value })));
+                .SelectMany(value => new[] { value.Key, value.Value }));
+        if (result.Evidence is { } evidence)
+            hashParts = hashParts.Concat(new[]
+            {
+                evidence.Format.Id, evidence.Format.Version, evidence.Format.ContentHash,
+                evidence.ContentHash
+            });
+        ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
     public Guid CandidateId { get; }
     public Guid SessionId { get; }

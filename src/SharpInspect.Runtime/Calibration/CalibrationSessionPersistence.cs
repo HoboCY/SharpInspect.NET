@@ -153,6 +153,7 @@ internal sealed class CalibrationEventWork
 internal static class CalibrationSessionStorageCodec
 {
     internal const int FormatVersion = 1;
+    private const int EvidenceEventFormatVersion = 2;
     internal const int MaximumEncodedChars = 700_000;
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -160,6 +161,9 @@ internal static class CalibrationSessionStorageCodec
         WriteIndented = false,
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
+
+    private static bool UsesEvidenceV2(CalibrationSessionEvent value) =>
+        value.Candidate?.Result.Evidence is not null || value.Observation?.Result.Receipt is not null;
 
     internal static byte[] EncodeHeader(CalibrationSessionHeader value)
     {
@@ -188,7 +192,9 @@ internal static class CalibrationSessionStorageCodec
     internal static byte[] EncodeEvent(CalibrationSessionEvent value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        var payload = JsonSerializer.SerializeToUtf8Bytes(EventDto.From(value), Json);
+        var payload = UsesEvidenceV2(value)
+            ? JsonSerializer.SerializeToUtf8Bytes(EventV2Dto.From(value), Json)
+            : JsonSerializer.SerializeToUtf8Bytes(EventDto.From(value), Json);
         if (payload.Length is < 1 or > CalibrationSessionStoreOptions.SqliteValueLimitBytes)
             throw new InvalidOperationException("CalibrationSessionEventPayloadOversized");
         return payload;
@@ -198,8 +204,44 @@ internal static class CalibrationSessionStorageCodec
     {
         if (payload is null || payload.Length is < 1 or > CalibrationSessionStoreOptions.SqliteValueLimitBytes)
             throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid");
+        int formatVersion;
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("FormatVersion", out var version) ||
+                !version.TryGetInt32(out formatVersion))
+                throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid", ex);
+        }
+
+        return formatVersion switch
+        {
+            FormatVersion => DecodeV1Event(payload),
+            EvidenceEventFormatVersion => DecodeV2Event(payload),
+            _ => throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid")
+        };
+    }
+
+    private static CalibrationSessionEvent DecodeV1Event(byte[] payload)
+    {
         EventDto? dto;
         try { dto = JsonSerializer.Deserialize<EventDto>(payload, Json); }
+        catch (JsonException ex) { throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid", ex); }
+        if (dto is null) throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid");
+        var canonical = JsonSerializer.SerializeToUtf8Bytes(dto, Json);
+        if (!payload.SequenceEqual(canonical))
+            throw new InvalidOperationException("CalibrationSessionEventCanonicalMismatch");
+        return dto.ToValue();
+    }
+
+    private static CalibrationSessionEvent DecodeV2Event(byte[] payload)
+    {
+        EventV2Dto? dto;
+        try { dto = JsonSerializer.Deserialize<EventV2Dto>(payload, Json); }
         catch (JsonException ex) { throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid", ex); }
         if (dto is null) throw new InvalidOperationException("CalibrationSessionEventPayloadInvalid");
         var canonical = JsonSerializer.SerializeToUtf8Bytes(dto, Json);
@@ -214,7 +256,9 @@ internal static class CalibrationSessionStorageCodec
         string? previousHash, byte[] payload, long authorizationAuditSequence, string authorizationAuditHash) =>
         AlgorithmContractValidation.HashParts(new[]
         {
-            "sharpinspect-calibration-session-event-v1", value.SessionId.ToString("D"),
+            UsesEvidenceV2(value)
+                ? "sharpinspect-calibration-session-event-v2"
+                : "sharpinspect-calibration-session-event-v1", value.SessionId.ToString("D"),
             value.EventId.ToString("D"), value.OperationId.ToString("D"), sequence.ToString(CultureInfo.InvariantCulture),
             value.Kind, value.Phase.ToString(), value.Outcome.ToString(), value.ReasonCode,
             value.OccurredAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture), previousHash,
@@ -765,6 +809,59 @@ internal static class CalibrationSessionStorageCodec
         }
     }
 
+    /// <summary>
+    /// V2 is used when a candidate carries computation evidence or an observation
+    /// carries an extractor receipt. Keeping separate DTOs leaves the V1 computation
+    /// and extraction shapes untouched, including their null omission-free JSON.
+    /// </summary>
+    private sealed class EventV2Dto
+    {
+        public int FormatVersion { get; set; }
+        public string? EventId { get; set; }
+        public string? SessionId { get; set; }
+        public string? OperationId { get; set; }
+        public int Phase { get; set; }
+        public int Outcome { get; set; }
+        public string? ReasonCode { get; set; }
+        public string? OccurredAtUtc { get; set; }
+        public FrameDto? Frame { get; set; }
+        public ObservationV2Dto? Observation { get; set; }
+        public ExclusionDto? Exclusion { get; set; }
+        public CandidateV2Dto? Candidate { get; set; }
+        public AuthorizationCommandDto? AuthorizationCommand { get; set; }
+        public TemporaryConfigurationDto? TemporaryConfiguration { get; set; }
+
+        internal static EventV2Dto From(CalibrationSessionEvent value) => new()
+        {
+            FormatVersion = EvidenceEventFormatVersion,
+            EventId = value.EventId.ToString("D"), SessionId = value.SessionId.ToString("D"),
+            OperationId = value.OperationId.ToString("D"), Phase = (int)value.Phase,
+            Outcome = (int)value.Outcome, ReasonCode = value.ReasonCode,
+            OccurredAtUtc = value.OccurredAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+            Frame = FrameDto.From(value.Frame), Observation = ObservationV2Dto.From(value.Observation),
+            Exclusion = ExclusionDto.From(value.Exclusion), Candidate = CandidateV2Dto.From(value.Candidate),
+            AuthorizationCommand = AuthorizationCommandDto.From(value.AuthorizationCommand),
+            TemporaryConfiguration = TemporaryConfigurationDto.From(value.TemporaryConfiguration)
+        };
+
+        internal CalibrationSessionEvent ToValue()
+        {
+            if (FormatVersion != EvidenceEventFormatVersion ||
+                !Guid.TryParseExact(EventId, "D", out var eventId) || eventId == Guid.Empty ||
+                !Guid.TryParseExact(SessionId, "D", out var sessionId) || sessionId == Guid.Empty ||
+                !Guid.TryParseExact(OperationId, "D", out var operationId) || operationId == Guid.Empty ||
+                !DateTimeOffset.TryParseExact(OccurredAtUtc, "O", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var occurred) || occurred.Offset != TimeSpan.Zero ||
+                (Candidate?.Result?.Evidence is null && Observation?.Result?.Receipt is null))
+                throw Invalid("CalibrationSessionEventPayloadInvalid");
+            return new CalibrationSessionEvent(eventId, sessionId, operationId,
+                (CalibrationSessionPhase)Phase, (CalibrationSessionOutcome)Outcome,
+                ReasonCode ?? string.Empty, occurred, Frame?.ToValue(), Observation?.ToValue(),
+                Exclusion?.ToValue(), Candidate?.ToValue(), AuthorizationCommand?.ToValue(),
+                TemporaryConfiguration?.ToValue());
+        }
+    }
+
     private sealed class FrameDto
     {
         public string? SessionId { get; set; }
@@ -973,6 +1070,68 @@ internal static class CalibrationSessionStorageCodec
             Diagnostics?.Select(value => value.ToValue()));
     }
 
+    private sealed class ObservationV2Dto
+    {
+        public string? ObservationId { get; set; }
+        public FrameDto? Frame { get; set; }
+        public ProcedureDto? Procedure { get; set; }
+        public string? InputHash { get; set; }
+        public ExtractionV2Dto? Result { get; set; }
+
+        internal static ObservationV2Dto? From(CalibrationObservationEvidence? value) =>
+            value is null ? null : new()
+            {
+                ObservationId = value.ObservationId.ToString("D"), Frame = FrameDto.From(value.Frame),
+                Procedure = ProcedureDto.From(value.Procedure), InputHash = value.InputHash,
+                Result = ExtractionV2Dto.From(value.Result)
+            };
+
+        internal CalibrationObservationEvidence ToValue()
+        {
+            if (!Guid.TryParseExact(ObservationId, "D", out var id) || id == Guid.Empty ||
+                Frame is null || Procedure is null || Result is null)
+                throw Invalid("CalibrationObservationPayloadInvalid");
+            return new CalibrationObservationEvidence(id, Frame.ToValue(), Procedure.ToValue(),
+                InputHash ?? string.Empty, Result.ToValue());
+        }
+    }
+
+    private sealed class ExtractionV2Dto
+    {
+        public List<FeatureDto>? Features { get; set; }
+        public List<DiagnosticDto>? Diagnostics { get; set; }
+        public ExtractionReceiptDto? Receipt { get; set; }
+
+        internal static ExtractionV2Dto From(CalibrationExtractionResult value) => new()
+        {
+            Features = value.Features.Select(FeatureDto.From).ToList(),
+            Diagnostics = value.Diagnostics.Select(DiagnosticDto.From).ToList(),
+            Receipt = ExtractionReceiptDto.From(value.Receipt)
+        };
+
+        internal CalibrationExtractionResult ToValue() =>
+            new(Features?.Select(value => value.ToValue()),
+                Diagnostics?.Select(value => value.ToValue()), Receipt?.ToValue());
+    }
+
+    private sealed class ExtractionReceiptDto
+    {
+        public ContractDto? Format { get; set; }
+        public string? CanonicalBytes { get; set; }
+
+        internal static ExtractionReceiptDto? From(CalibrationExtractionReceipt? value) =>
+            value is null ? null : new()
+            {
+                Format = ContractDto.From(value.Format),
+                CanonicalBytes = Convert.ToBase64String(value.GetBytes())
+            };
+
+        internal CalibrationExtractionReceipt ToValue() =>
+            new(Format?.ToValue() ?? throw Invalid("CalibrationExtractionReceiptFormatMissing"),
+                DecodeBytes(CanonicalBytes, "CalibrationExtractionReceiptInvalid",
+                    CalibrationExtractionReceipt.MaximumBytes));
+    }
+
     private sealed class FeatureDto
     {
         public string? StableFeatureId { get; set; }
@@ -1051,6 +1210,75 @@ internal static class CalibrationSessionStorageCodec
             QualityMetrics?.Select(value => value.ToValue()), Diagnostics?.Select(value => value.ToValue()));
     }
 
+    private sealed class CandidateV2Dto
+    {
+        public string? CandidateId { get; set; }
+        public string? SessionId { get; set; }
+        public string? SessionHeaderHash { get; set; }
+        public string? SelectionHash { get; set; }
+        public ComputationV2Dto? Result { get; set; }
+        public string? ComputedAtUtc { get; set; }
+
+        internal static CandidateV2Dto? From(CalibrationCandidateEvidence? value) =>
+            value is null ? null : new()
+            {
+                CandidateId = value.CandidateId.ToString("D"), SessionId = value.SessionId.ToString("D"),
+                SessionHeaderHash = value.SessionHeaderHash, SelectionHash = value.SelectionHash,
+                Result = ComputationV2Dto.From(value.Result),
+                ComputedAtUtc = value.ComputedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+            };
+
+        internal CalibrationCandidateEvidence ToValue()
+        {
+            if (!Guid.TryParseExact(CandidateId, "D", out var candidate) || candidate == Guid.Empty ||
+                !Guid.TryParseExact(SessionId, "D", out var session) || session == Guid.Empty ||
+                Result is null ||
+                !DateTimeOffset.TryParseExact(ComputedAtUtc, "O", CultureInfo.InvariantCulture,
+                    DateTimeStyles.None, out var computed) || computed.Offset != TimeSpan.Zero)
+                throw Invalid("CalibrationCandidatePayloadInvalid");
+            return new CalibrationCandidateEvidence(candidate, session, SessionHeaderHash ?? string.Empty,
+                SelectionHash ?? string.Empty, Result!.ToValue(), computed);
+        }
+    }
+
+    private sealed class ComputationV2Dto
+    {
+        public CoefficientsDto? Coefficients { get; set; }
+        public List<MetricDto>? QualityMetrics { get; set; }
+        public List<DiagnosticDto>? Diagnostics { get; set; }
+        public ComputationEvidenceDto? Evidence { get; set; }
+
+        internal static ComputationV2Dto From(CalibrationProcedureComputationResult value) => new()
+        {
+            Coefficients = CoefficientsDto.From(value.Coefficients),
+            QualityMetrics = value.QualityMetrics.Select(MetricDto.From).ToList(),
+            Diagnostics = value.Diagnostics.Select(DiagnosticDto.From).ToList(),
+            Evidence = ComputationEvidenceDto.From(value.Evidence)
+        };
+
+        internal CalibrationProcedureComputationResult ToValue() =>
+            new(Coefficients?.ToValue() ?? throw Invalid("CalibrationCoefficientPayloadMissing"),
+                QualityMetrics?.Select(value => value.ToValue()),
+                Diagnostics?.Select(value => value.ToValue()), Evidence?.ToValue());
+    }
+
+    private sealed class ComputationEvidenceDto
+    {
+        public ContractDto? Format { get; set; }
+        public string? CanonicalBytes { get; set; }
+
+        internal static ComputationEvidenceDto? From(CalibrationComputationEvidencePayload? value) =>
+            value is null ? null : new()
+            {
+                Format = ContractDto.From(value.Format),
+                CanonicalBytes = Convert.ToBase64String(value.GetBytes())
+            };
+
+        internal CalibrationComputationEvidencePayload ToValue() =>
+            new(Format?.ToValue() ?? throw Invalid("CalibrationComputationEvidenceFormatMissing"),
+                DecodeBytes(CanonicalBytes, "CalibrationComputationEvidencePayloadInvalid"));
+    }
+
     private sealed class CoefficientsDto
     {
         public ContractDto? Format { get; set; }
@@ -1077,12 +1305,13 @@ internal static class CalibrationSessionStorageCodec
         return Guid.TryParseExact(value, "D", out var parsed) && parsed != Guid.Empty ? parsed : throw Invalid(reason);
     }
 
-    private static byte[] DecodeBytes(string? value, string reason)
+    private static byte[] DecodeBytes(string? value, string reason,
+        int maximumBytes = CalibrationProcedureInputPayload.MaximumBytes)
     {
         try
         {
             var bytes = Convert.FromBase64String(value ?? string.Empty);
-            if (bytes.Length is < 1 or > CalibrationProcedureInputPayload.MaximumBytes)
+            if (bytes.Length < 1 || bytes.Length > maximumBytes)
                 throw Invalid(reason);
             return bytes;
         }

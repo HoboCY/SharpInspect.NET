@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.Calibration.OpenCvSharp</PackageId>
+    <Description>Typed checkerboard intrinsic calibration and retained observation evidence for SharpInspect.NET.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SharpInspect.OpenCvSharp/SharpInspect.OpenCvSharp.csproj" />
+  </ItemGroup>
+</Project>

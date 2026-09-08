@@ -113,6 +113,7 @@ try {
     $taskPackages = @('Abstractions','Runtime','Wpf','OpenCvSharp','Cameras.Virtual')
     if ($Ticket -ge 21) { $taskPackages += 'Cameras.Hikrobot' }
     if ($Ticket -ge 22) { $taskPackages += 'Cameras.Conformance' }
+    if ($Ticket -ge 25) { $taskPackages += 'Calibration.OpenCvSharp' }
     foreach ($taskName in $taskPackages) {
         Invoke-TaskDotnet ('pack-' + $taskName + '.log') @('pack',"src/SharpInspect.$taskName/SharpInspect.$taskName.csproj",
             '-c','Release','--no-build','--no-restore','--output',$taskFeed)

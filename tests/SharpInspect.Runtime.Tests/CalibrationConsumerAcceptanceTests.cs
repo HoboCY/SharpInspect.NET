@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
 using SharpInspect.Abstractions;
+using SharpInspect.Calibration.OpenCvSharp.Tests;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
@@ -22,6 +23,11 @@ public sealed class CalibrationConsumerAcceptanceTests
 {
     private const int SchemaVersion = 14;
     private const string UserName = "v124-validation-admin";
+    private const string CheckerboardFrozenManifestHash =
+        "1329D4C19AD2F781E47599710A5D200831A33CEB54E30CD97D837CC3EB13CC16";
+    private const string CheckerboardExtractionReceiptContractId =
+        "sharpinspect.checkerboard-extraction-receipt";
+    private const string CheckerboardExtractionReceiptContractVersion = "1";
 
     [Fact]
     public async Task V124_N01_IndependentConsumerRunsCalibrationAndReadOnlyRestart()
@@ -204,6 +210,315 @@ public sealed class CalibrationConsumerAcceptanceTests
         }
     }
 
+    [Fact]
+    public async Task V125_N01_IndependentConsumerRunsCheckerboardCalibrationAndReadOnlyRestart()
+    {
+        var repository = FindRepositoryRoot();
+        var configuredConsumer = Environment.GetEnvironmentVariable(
+            "SHARPINSPECT_CALIBRATION_CONSUMER");
+        var consumer = ResolveConsumer(repository, configuredConsumer);
+        Assert.True(File.Exists(consumer),
+            "Build the calibration consumer before running the process acceptance test.");
+
+        var configuredEvidence = Environment.GetEnvironmentVariable(
+            "SHARPINSPECT_CALIBRATION_EVIDENCE_ROOT");
+        var directory = Path.GetFullPath(configuredEvidence is { Length: > 0 }
+            ? Path.Combine(configuredEvidence, "checkerboard")
+            : Path.Combine(Path.GetTempPath(), "SharpInspect.NET-validation-artifacts",
+                "ticket25-process", Guid.NewGuid().ToString("N")));
+        Directory.CreateDirectory(directory);
+        var images = Path.Combine(directory, "checkerboard-images");
+        var imageSet = await PrepareCheckerboardImagesAsync(repository, images)
+            .ConfigureAwait(true);
+        var databasePath = Path.Combine(directory, "calibration-session.sqlite");
+        Assert.False(File.Exists(databasePath),
+            "Calibration acceptance requires a fresh evidence directory.");
+
+        var audit = new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1",
+            "SharpInspect.CalibrationConsumer." + Guid.NewGuid().ToString("N"))
+        {
+            AllowInitialKeyCreation = true,
+            CheckpointEveryEntries = 2,
+            VerificationInterval = TimeSpan.FromSeconds(1),
+            KeyDirectory = Path.Combine(directory, "private-keys")
+        };
+        var options = CreateStoreOptions(directory, databasePath, audit,
+            maximumFrames: SyntheticCheckerboardFixture.Poses.Count + 4);
+        var password = "V125 isolated fixture " + Guid.NewGuid().ToString("N") + "!";
+        Guid principal;
+        var runLog = Path.Combine(directory, "calibration-run.json");
+        var restartLog = Path.Combine(directory, "calibration-restart.json");
+        try
+        {
+            principal = await BootstrapInFriendHostAsync(options, password)
+                .ConfigureAwait(true);
+
+            var common = new[]
+            {
+                "--mode", "run",
+                "--directory", directory,
+                "--checkerboard-images", images,
+                "--user-name", UserName,
+                "--expected-principal", principal.ToString("D"),
+                "--audit-key", audit.SigningKeyName
+            };
+            var consumerSha256 = await ConsumerHashAsync(consumer).ConfigureAwait(true);
+            var run = await RunProcessAsync(consumer, repository.FullName, common, password)
+                .ConfigureAwait(true);
+            Assert.DoesNotContain(password, run.Output, StringComparison.Ordinal);
+            await WriteJsonAsync(runLog, new
+            {
+                mode = "run",
+                exitCode = run.ExitCode,
+                output = run.Output,
+                consumer,
+                externalNuGetConsumer = !string.IsNullOrWhiteSpace(configuredConsumer),
+                consumerSha256,
+                windowsAdminBootstrap = "FixtureOnly",
+                productionWindowsAdministratorValidation = "NotRun"
+            }).ConfigureAwait(true);
+            Assert.True(run.ExitCode == 0, run.Output);
+            Assert.Contains("V125-N01 checkerboard-calibration-consumer PASS", run.Output);
+
+            var runEvidencePath = Path.Combine(directory, "calibration-session-evidence.json");
+            Assert.True(new FileInfo(runEvidencePath).Length > 0);
+            using var runEvidence = JsonDocument.Parse(
+                await File.ReadAllTextAsync(runEvidencePath).ConfigureAwait(true));
+            var runRoot = runEvidence.RootElement;
+            Assert.Equal("Pass", runRoot.GetProperty("result").GetString());
+            Assert.Equal(SchemaVersion, runRoot.GetProperty("schema").GetInt32());
+            Assert.Equal("checkerboard", runRoot.GetProperty("calibrationMode").GetString());
+
+            var checkerboard = runRoot.GetProperty("checkerboard");
+            Assert.Equal("checkerboard-v1", checkerboard.GetProperty("datasetVersion").GetString());
+            Assert.Equal(CheckerboardFrozenManifestHash,
+                checkerboard.GetProperty("frozenManifestHash").GetString());
+            Assert.Equal(imageSet.ManifestHash,
+                checkerboard.GetProperty("imageManifestHash").GetString());
+            Assert.True(checkerboard.GetProperty("pathsContained").GetBoolean());
+            Assert.True(checkerboard.GetProperty("manifestBound").GetBoolean());
+            Assert.Equal(20, checkerboard.GetProperty("imageCount").GetInt32());
+            Assert.Equal(24, runRoot.GetProperty("store")
+                .GetProperty("maximumFramesPerSession").GetInt32());
+            Assert.Equal(20, runRoot.GetProperty("extractionReceiptCount").GetInt32());
+            var runReceipts = runRoot.GetProperty("extractionReceipts")
+                .EnumerateArray().ToArray();
+            Assert.Equal(20, runReceipts.Length);
+            Assert.Equal(20, runReceipts.Select(item => item.GetProperty("frameId")
+                .GetString()).Distinct(StringComparer.Ordinal).Count());
+            foreach (var receipt in runReceipts)
+            {
+                Assert.Equal(32, receipt.GetProperty("length").GetInt32());
+                Assert.Matches("^[0-9A-Fa-f]{64}$",
+                    receipt.GetProperty("receiptContentHash").GetString() ?? string.Empty);
+                Assert.Matches("^[0-9A-Fa-f]{64}$",
+                    receipt.GetProperty("receiptCanonicalBytesHash").GetString() ?? string.Empty);
+                var format = receipt.GetProperty("format");
+                Assert.Equal(CheckerboardExtractionReceiptContractId,
+                    format.GetProperty("id").GetString());
+                Assert.Equal(CheckerboardExtractionReceiptContractVersion,
+                    format.GetProperty("version").GetString());
+                Assert.Matches("^[0-9A-Fa-f]{64}$",
+                    format.GetProperty("contentHash").GetString() ?? string.Empty);
+            }
+
+            var input = runRoot.GetProperty("checkerboardInput");
+            Assert.Equal(9, input.GetProperty("innerColumns").GetInt32());
+            Assert.Equal(6, input.GetProperty("innerRows").GetInt32());
+            Assert.Equal(25, input.GetProperty("squareSizeMillimeters").GetDouble());
+            Assert.Equal("TopCamera", input.GetProperty("logicalCameraRole").GetString());
+            Assert.Equal(640, input.GetProperty("effectiveConfiguration")
+                .GetProperty("regionOfInterest").GetProperty("width").GetInt32());
+            Assert.Equal(480, input.GetProperty("effectiveConfiguration")
+                .GetProperty("regionOfInterest").GetProperty("height").GetInt32());
+            Assert.Equal("Mono8", input.GetProperty("effectiveConfiguration")
+                .GetProperty("pixelFormat").GetString());
+
+            var procedure = runRoot.GetProperty("procedure");
+            Assert.Equal("sharpinspect.checkerboard-intrinsics",
+                procedure.GetProperty("id").GetString());
+            Assert.Equal("1", procedure.GetProperty("version").GetString());
+            Assert.Equal(64, procedure.GetProperty("contentHash").GetString()!.Length);
+
+            var afterExit = runRoot.GetProperty("evidenceAfterExit");
+            Assert.Equal(20, afterExit.GetProperty("frameCount").GetInt32());
+            Assert.Equal(20, afterExit.GetProperty("observationCount").GetInt32());
+            Assert.Equal(1, afterExit.GetProperty("exclusionCount").GetInt32());
+            Assert.Equal(19, afterExit.GetProperty("selection")
+                .GetProperty("includedFrameCount").GetInt32());
+            Assert.Equal(19, afterExit.GetProperty("selection")
+                .GetProperty("sufficientFeatureFrameCount").GetInt32());
+
+            var candidate = runRoot.GetProperty("candidate");
+            var candidateHash = candidate.GetProperty("contentHash").GetString();
+            Assert.False(string.IsNullOrWhiteSpace(candidateHash));
+            Assert.True(candidate.GetProperty("developmentOnly").GetBoolean());
+            Assert.False(candidate.GetProperty("canPublish").GetBoolean());
+            Assert.False(candidate.GetProperty("canActivate").GetBoolean());
+            Assert.True(candidate.GetProperty("immutable").GetBoolean());
+            Assert.Equal("CannotPublish", candidate.GetProperty("publication").GetString());
+            Assert.True(candidate.GetProperty("typedCoefficientsDecoded").GetBoolean());
+            Assert.True(candidate.GetProperty("typedEvidenceDecoded").GetBoolean());
+            Assert.Equal(19, candidate.GetProperty("decodedViewCount").GetInt32());
+            Assert.Equal(1026, candidate.GetProperty("decodedPointCount").GetInt32());
+            Assert.True(candidate.GetProperty("evidencePayloadBytes").GetInt32() <=
+                CalibrationComputationEvidencePayload.MaximumBytes);
+            var candidateEvidenceHash = candidate.GetProperty("evidenceContentHash").GetString();
+            Assert.Equal(64, candidateEvidenceHash!.Length);
+
+            var identities = runRoot.GetProperty("rawFrameIdentities").EnumerateArray().ToArray();
+            Assert.Equal(20, identities.Length);
+            Assert.Equal(20, identities.Select(item => item.GetProperty("frameId").GetString())
+                .Distinct(StringComparer.Ordinal).Count());
+            Assert.All(identities, item =>
+            {
+                Assert.Equal(64, item.GetProperty("sourceHash").GetString()!.Length);
+                Assert.Equal(64, item.GetProperty("pixelHash").GetString()!.Length);
+                Assert.Equal(640, item.GetProperty("width").GetInt32());
+                Assert.Equal(480, item.GetProperty("height").GetInt32());
+            });
+
+            var wpf = runRoot.GetProperty("wpfSummary");
+            Assert.True(wpf.GetProperty("rendered").GetBoolean());
+            Assert.True(wpf.GetProperty("framesReadOnly").GetBoolean());
+            Assert.True(wpf.GetProperty("observationsReadOnly").GetBoolean());
+            Assert.True(wpf.GetProperty("passwordEmpty").GetBoolean());
+            Assert.True(wpf.GetProperty("coordinateEditingUnavailable").GetBoolean());
+            var screenshots = runRoot.GetProperty("screenshots").EnumerateArray()
+                .Select(item => item.GetString() ?? string.Empty).ToArray();
+            Assert.Contains("calibration-session-candidate.png", screenshots);
+            Assert.True(new FileInfo(Path.Combine(directory,
+                "calibration-session-candidate.png")).Length > 0);
+
+            var restartArguments = new[]
+            {
+                "--mode", "restart",
+                "--directory", directory,
+                "--checkerboard-images", images,
+                "--user-name", UserName,
+                "--expected-principal", principal.ToString("D"),
+                "--audit-key", audit.SigningKeyName
+            };
+            var restart = await RunProcessAsync(consumer, repository.FullName,
+                restartArguments, password).ConfigureAwait(true);
+            Assert.DoesNotContain(password, restart.Output, StringComparison.Ordinal);
+            await WriteJsonAsync(restartLog, new
+            {
+                mode = "restart",
+                exitCode = restart.ExitCode,
+                output = restart.Output,
+                consumer,
+                externalNuGetConsumer = !string.IsNullOrWhiteSpace(configuredConsumer),
+                consumerSha256,
+                windowsAdminBootstrap = "FixtureOnly",
+                productionWindowsAdministratorValidation = "NotRun"
+            }).ConfigureAwait(true);
+            Assert.True(restart.ExitCode == 0, restart.Output);
+            Assert.Contains("V125-N02 checkerboard-calibration-restart PASS", restart.Output);
+
+            var restartEvidencePath = Path.Combine(directory, "calibration-session-restart.json");
+            Assert.True(new FileInfo(restartEvidencePath).Length > 0);
+            using var restartEvidence = JsonDocument.Parse(
+                await File.ReadAllTextAsync(restartEvidencePath).ConfigureAwait(true));
+            var restartRoot = restartEvidence.RootElement;
+            Assert.Equal("Pass", restartRoot.GetProperty("result").GetString());
+            Assert.Equal("checkerboard", restartRoot.GetProperty("calibrationMode").GetString());
+            Assert.Equal(runRoot.GetProperty("sessionId").GetString(),
+                restartRoot.GetProperty("sessionId").GetString());
+            Assert.Equal(candidateHash, restartRoot.GetProperty("candidateHash").GetString());
+            Assert.Equal(candidateEvidenceHash,
+                restartRoot.GetProperty("candidateEvidenceHash").GetString());
+            Assert.True(restartRoot.GetProperty("readOnlyQueryDatabaseUnchanged").GetBoolean());
+            Assert.Equal(20, restartRoot.GetProperty("frameCount").GetInt32());
+            Assert.Equal(19, restartRoot.GetProperty("validViewCount").GetInt32());
+            Assert.Equal(1026, restartRoot.GetProperty("validPointCount").GetInt32());
+            Assert.Equal(20, restartRoot.GetProperty("extractionReceiptCount").GetInt32());
+            var retainedReceipts = restartRoot.GetProperty("retainedExtractionReceipts")
+                .EnumerateArray().ToArray();
+            Assert.Equal(20, retainedReceipts.Length);
+            var runReceiptsByFrame = runReceipts.ToDictionary(item =>
+                item.GetProperty("frameId").GetString()!, StringComparer.Ordinal);
+            var retainedReceiptsByFrame = retainedReceipts.ToDictionary(item =>
+                item.GetProperty("frameId").GetString()!, StringComparer.Ordinal);
+            Assert.Equal(runReceiptsByFrame.Keys.OrderBy(value => value, StringComparer.Ordinal),
+                retainedReceiptsByFrame.Keys.OrderBy(value => value, StringComparer.Ordinal));
+            foreach (var pair in runReceiptsByFrame)
+            {
+                var retained = retainedReceiptsByFrame[pair.Key];
+                Assert.Equal(pair.Value.GetProperty("receiptContentHash").GetString(),
+                    retained.GetProperty("receiptContentHash").GetString());
+                Assert.Equal(pair.Value.GetProperty("receiptCanonicalBytesHash").GetString(),
+                    retained.GetProperty("receiptCanonicalBytesHash").GetString());
+                Assert.Equal(pair.Value.GetProperty("length").GetInt32(),
+                    retained.GetProperty("length").GetInt32());
+                Assert.Equal(pair.Value.GetProperty("format").GetRawText(),
+                    retained.GetProperty("format").GetRawText());
+            }
+            Assert.Equal(0, restartRoot.GetProperty("openedDevices").GetInt32());
+            Assert.False(restartRoot.GetProperty("ready").GetBoolean());
+            Assert.True(restartRoot.GetProperty("productionOutputsAbsent").GetBoolean());
+
+            var hash = await ConsumerHashAsync(consumer).ConfigureAwait(true);
+            Assert.Equal(consumerSha256, hash);
+            Assert.Equal(64, hash.Length);
+        }
+        finally
+        {
+            var key = WindowsMachineAuditKey.GetKeyPath(audit);
+            if (File.Exists(key)) File.Delete(key);
+            if (Directory.Exists(audit.KeyDirectory))
+                Directory.Delete(audit.KeyDirectory, recursive: true);
+        }
+    }
+
+    private static async Task<(string ManifestHash, string[] RawHashes)> PrepareCheckerboardImagesAsync(
+        DirectoryInfo repository, string directory)
+    {
+        Directory.CreateDirectory(directory);
+        var frozenSource = Path.Combine(repository.FullName, "tests",
+            "SharpInspect.Calibration.OpenCvSharp.Tests", "Fixtures", "checkerboard-v1.json");
+        var frozenManifest = Path.Combine(directory, "checkerboard-v1.json");
+        File.Copy(frozenSource, frozenManifest, overwrite: false);
+        var frozenHash = Convert.ToHexString(SHA256.HashData(
+            await File.ReadAllBytesAsync(frozenManifest).ConfigureAwait(true)));
+        Assert.Equal(CheckerboardFrozenManifestHash, frozenHash);
+
+        var rawHashes = new List<string>(SyntheticCheckerboardFixture.Poses.Count);
+        var entries = new List<object>(SyntheticCheckerboardFixture.Poses.Count);
+        for (var index = 0; index < SyntheticCheckerboardFixture.Poses.Count; index++)
+        {
+            var pixels = SyntheticCheckerboardFixture.Render(index);
+            var fileName = $"frame-{index:D2}.raw";
+            await File.WriteAllBytesAsync(Path.Combine(directory, fileName), pixels)
+                .ConfigureAwait(true);
+            var hash = Convert.ToHexString(SHA256.HashData(pixels));
+            rawHashes.Add(hash);
+            entries.Add(new
+            {
+                index,
+                file = fileName,
+                sha256 = hash,
+                width = SyntheticCheckerboardFixture.ImageWidth,
+                height = SyntheticCheckerboardFixture.ImageHeight,
+                strideBytes = SyntheticCheckerboardFixture.ImageWidth,
+                pixelFormat = "Mono8"
+            });
+        }
+
+        var manifestPath = Path.Combine(directory, "checkerboard-images.json");
+        await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            datasetVersion = SyntheticCheckerboardFixture.DatasetVersion,
+            frozenManifest = "checkerboard-v1.json",
+            frozenManifestSha256 = frozenHash,
+            images = entries
+        }, new JsonSerializerOptions { WriteIndented = true })).ConfigureAwait(true);
+        var manifestHash = Convert.ToHexString(SHA256.HashData(
+            await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(true)));
+        return (manifestHash, rawHashes.ToArray());
+    }
+
     private static DirectoryInfo FindRepositoryRoot()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
@@ -256,7 +571,7 @@ public sealed class CalibrationConsumerAcceptanceTests
     }
 
     private static ProductionStoreOptions CreateStoreOptions(string directory,
-        string databasePath, AuditIntegrityPolicy audit)
+        string databasePath, AuditIntegrityPolicy audit, int maximumFrames = 4)
     {
         var evidenceRoot = Path.GetFullPath(Path.Combine(directory, "calibration-evidence"));
         Directory.CreateDirectory(evidenceRoot);
@@ -274,7 +589,7 @@ public sealed class CalibrationConsumerAcceptanceTests
                 MaximumSessions = 4,
                 MaximumEvents = 256,
                 MaximumEventPayloadBytes = 256 * 1024,
-                MaximumFramesPerSession = 4,
+                MaximumFramesPerSession = maximumFrames,
                 MaximumFrameBytes = 16L * 1024 * 1024,
                 MaximumTotalFrameBytes = 64L * 1024 * 1024
             }

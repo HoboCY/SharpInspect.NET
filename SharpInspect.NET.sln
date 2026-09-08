@@ -45,6 +45,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Confor
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.CalibrationConsumer", "samples\SharpInspect.CalibrationConsumer\SharpInspect.CalibrationConsumer.csproj", "{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Calibration.OpenCvSharp", "src\SharpInspect.Calibration.OpenCvSharp\SharpInspect.Calibration.OpenCvSharp.csproj", "{E45E93F8-4971-4460-9D98-7072EE6B46F2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Calibration.OpenCvSharp.Tests", "tests\SharpInspect.Calibration.OpenCvSharp.Tests\SharpInspect.Calibration.OpenCvSharp.Tests.csproj", "{FEBC77D8-58B5-4B6C-8975-DD9B24C52038}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -126,6 +130,14 @@ Global
 		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E45E93F8-4971-4460-9D98-7072EE6B46F2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E45E93F8-4971-4460-9D98-7072EE6B46F2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E45E93F8-4971-4460-9D98-7072EE6B46F2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E45E93F8-4971-4460-9D98-7072EE6B46F2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FEBC77D8-58B5-4B6C-8975-DD9B24C52038}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FEBC77D8-58B5-4B6C-8975-DD9B24C52038}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FEBC77D8-58B5-4B6C-8975-DD9B24C52038}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FEBC77D8-58B5-4B6C-8975-DD9B24C52038}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E99BBDB8-638E-4212-B4AD-B53ACD1132BE} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
@@ -146,5 +158,7 @@ Global
 		{FB3F5BAE-C8FE-49D7-B8C0-0434AA66FB4D} = {6D788117-615D-402D-845B-2C93729654A6}
 		{9907913C-BD30-4AF8-B644-9BCC3009FF20} = {D54536D5-B62E-4964-938E-3937B4DB9749}
 		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE} = {6D788117-615D-402D-845B-2C93729654A6}
+		{E45E93F8-4971-4460-9D98-7072EE6B46F2} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
+		{FEBC77D8-58B5-4B6C-8975-DD9B24C52038} = {D54536D5-B62E-4964-938E-3937B4DB9749}
 	EndGlobalSection
 EndGlobal

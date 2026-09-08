@@ -37,7 +37,7 @@ $calibrationAssets = Get-Content -LiteralPath (Join-Path $calibrationCopy 'obj/p
 if (@($calibrationAssets.libraries.PSObject.Properties | Where-Object { $_.Value.type -ceq 'project' }).Count -ne 0) {
     throw 'Calibration consumer still references a source project.'
 }
-foreach ($calibrationPackage in 'Abstractions','Runtime','Wpf','Cameras.Virtual') {
+foreach ($calibrationPackage in 'Abstractions','Runtime','Wpf','Cameras.Virtual','OpenCvSharp','Calibration.OpenCvSharp') {
     if (-not $calibrationAssets.libraries.PSObject.Properties['SharpInspect.NET.' + $calibrationPackage + '/0.1.0-dev.1']) {
         throw "Calibration consumer package is missing: $calibrationPackage"
     }
@@ -87,6 +87,41 @@ try {
         ready=$false; canPublish=$false; canActivate=$false; physicalHardwareQualification='NotRun'; production='NotRun'
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $calibrationEvidence 'acceptance.json') -Encoding utf8
     Write-Output 'V124-N01/N02 calibration NuGet consumer and independent restart PASS'
+    $checkerboardDirectory = Join-Path $calibrationEvidence 'checkerboard'
+    $checkerboardResult = Get-Content -LiteralPath (Join-Path $checkerboardDirectory 'calibration-session-evidence.json') -Raw | ConvertFrom-Json
+    $checkerboardRestart = Get-Content -LiteralPath (Join-Path $checkerboardDirectory 'calibration-session-restart.json') -Raw | ConvertFrom-Json
+    if ($checkerboardResult.result -cne 'Pass' -or $checkerboardResult.calibrationMode -cne 'checkerboard' -or
+        $checkerboardResult.schema -ne 14 -or $checkerboardResult.checkerboard.imageCount -ne 20 -or
+        $checkerboardResult.checkerboard.frozenManifestHash -cne '1329D4C19AD2F781E47599710A5D200831A33CEB54E30CD97D837CC3EB13CC16' -or
+        $checkerboardResult.global.ready -cne $false -or $checkerboardResult.candidate.canPublish -cne $false -or
+        $checkerboardResult.candidate.canActivate -cne $false -or
+        $checkerboardResult.candidate.decodedViewCount -ne 19 -or $checkerboardResult.candidate.decodedPointCount -ne 1026 -or
+        $checkerboardResult.extractionReceiptCount -ne 20 -or
+        $checkerboardResult.store.maximumFramesPerSession -ne 24 -or
+        $checkerboardRestart.result -cne 'Pass' -or $checkerboardRestart.calibrationMode -cne 'checkerboard' -or
+        $checkerboardRestart.candidateHash -cne $checkerboardResult.candidate.contentHash -or
+        $checkerboardRestart.candidateEvidenceHash -cne $checkerboardResult.candidate.evidenceContentHash -or
+        $checkerboardRestart.validViewCount -ne 19 -or $checkerboardRestart.validPointCount -ne 1026 -or
+        $checkerboardRestart.extractionReceiptCount -ne 20 -or
+        $checkerboardRestart.openedDevices -ne 0 -or $checkerboardRestart.readOnlyQueryDatabaseUnchanged -cne $true -or
+        $checkerboardRestart.ready -cne $false) {
+        throw 'Checkerboard calibration consumer or read-only restart did not satisfy its retained evidence contract.'
+    }
+    if (@($checkerboardResult.screenshots).Count -lt 3) { throw 'Checkerboard candidate WPF render evidence is missing.' }
+    foreach ($checkerboardScreenshot in $checkerboardResult.screenshots) {
+        $checkerboardImage = [IO.Path]::GetFullPath((Join-Path $checkerboardDirectory $checkerboardScreenshot))
+        if (-not $checkerboardImage.StartsWith($checkerboardDirectory + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $checkerboardImage -PathType Leaf) -or
+            (Get-Item -LiteralPath $checkerboardImage).Length -eq 0) { throw 'Checkerboard WPF render artifact is invalid.' }
+    }
+    [ordered]@{
+        result='Pass'; validationIds=@('V125-N01','V125-N02'); externalNuGetConsumer=$true; independentRestart=$true
+        consumerSha256=(Get-FileHash -LiteralPath $calibrationDll -Algorithm SHA256).Hash
+        sessionId=$checkerboardResult.sessionId; frameCount=20; exclusionCount=1; selectedViewCount=19
+        candidateHash=$checkerboardRestart.candidateHash; evidenceHash=$checkerboardRestart.candidateEvidenceHash
+        ready=$false; canPublish=$false; canActivate=$false; physicalHardwareQualification='NotRun'; production='NotRun'
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $checkerboardDirectory 'acceptance.json') -Encoding utf8
+    Write-Output 'V125-N01/N02 checkerboard NuGet consumer and independent restart PASS'
 }
 finally {
     [Environment]::SetEnvironmentVariable('SHARPINSPECT_CALIBRATION_CONSUMER',$calibrationPriorConsumer,'Process')

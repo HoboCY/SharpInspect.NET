@@ -12,6 +12,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticCheckerboardFixture.cs"
+             Link="Fixtures/SyntheticCheckerboardFixture.cs" />
+  </ItemGroup>
   <PropertyGroup>
     <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' == 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/x64/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>
     <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' != 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>

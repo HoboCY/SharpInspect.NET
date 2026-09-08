@@ -441,11 +441,19 @@ public sealed class CalibrationSessionViewModel : ObservableObject, IAsyncDispos
         : "尚未读取证据选择评估。";
 
     public string CandidateSummary => Candidate is { } candidate
-        ? $"Candidate={candidate.CandidateId:D} · 系数哈希={candidate.Result.Coefficients.ContentHash} · " +
+        ? $"Candidate={candidate.CandidateId:D} · 候选哈希={candidate.ContentHash} · " +
+          $"系数契约={candidate.Result.Coefficients.Format.Id}/{candidate.Result.Coefficients.Format.Version} · " +
+          $"系数哈希={candidate.Result.Coefficients.ContentHash} · " +
           $"质量指标={candidate.Result.QualityMetrics.Count} · DevelopmentOnly={candidate.DevelopmentOnly} · " +
           $"CanPublish={candidate.CanPublish} · CanActivate={candidate.CanActivate} · " +
           $"原因={candidate.AcceptanceReasonCode}"
         : "尚未保留标定候选。";
+
+    public string CandidateEvidenceSummary => Candidate?.Result.Evidence is { } evidence
+        ? $"计算证据：{evidence.Format.Id}/{evidence.Format.Version} · " +
+          $"契约哈希={evidence.Format.ContentHash} · 内容哈希={evidence.ContentHash} · {evidence.Length} 字节。" +
+          "逐图与逐点明细保留在候选中，可由对应过程的类型化解码器审阅。"
+        : "此候选尚无独立计算证据载荷。";
 
     public string CandidateDiagnosticSummary => Candidate is { } candidate
         ? string.Join("; ", candidate.Result.Diagnostics.Select(diagnostic =>
@@ -1603,7 +1611,7 @@ public sealed class CalibrationSessionViewModel : ObservableObject, IAsyncDispos
             nameof(ExclusionRows), nameof(CandidateMetricRows), nameof(Candidate), nameof(SelectionEvaluation),
             nameof(StationGateSummary), nameof(CalibrationStateSummary), nameof(SessionHeaderSummary),
             nameof(TemporaryReadbackSummary),
-            nameof(SelectionSummary), nameof(CandidateSummary), nameof(CandidateDiagnosticSummary),
+            nameof(SelectionSummary), nameof(CandidateSummary), nameof(CandidateEvidenceSummary), nameof(CandidateDiagnosticSummary),
             nameof(SelectedFrame), nameof(SelectedFrameImage),
             nameof(SelectedFrameRow), nameof(HasSelectedFrameImage), nameof(StatusMessage), nameof(ErrorCode), nameof(InputErrorCode),
             nameof(CanStart), nameof(CanCapture), nameof(CanExclude), nameof(CanCompute), nameof(CanExit),

@@ -247,7 +247,8 @@ public sealed partial class StationRuntime
         {
             var cancelled = ex is OperationCanceledException && coordinator.CancellationRequested;
             reason = cancelled ? "CalibrationSessionCancelled" :
-                ex is TimeoutException ? "CalibrationProcedureDeadlineExceeded" : "CalibrationOperationFailed";
+                ex is TimeoutException ? "CalibrationProcedureDeadlineExceeded" :
+                ex is CalibrationProcedureException procedureFailure ? procedureFailure.ReasonCode : "CalibrationOperationFailed";
             try
             {
                 await coordinator.RestoreAsync(command.CorrelationId,

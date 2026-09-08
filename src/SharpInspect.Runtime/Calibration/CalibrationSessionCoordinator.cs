@@ -140,11 +140,14 @@ internal sealed class CalibrationSessionCoordinator
                 var loan = new CalibrationBorrowedFrame(image);
                 loans.Add(loan);
                 inputs.Add(new CalibrationObservationInput(loan, observation.Result.Features,
-                    Header.SessionId, observation.Frame.FrameId, observation.Frame.SourceHash));
+                    Header.SessionId, observation.Frame.FrameId, observation.Frame.SourceHash,
+                    observation.Result.Receipt));
             }
             var result = await InvokeProcedureAsync(command.CorrelationId,
                 token => _procedure!.ComputeAsync(Header.Command.Plan.Input, inputs, token)).ConfigureAwait(false);
             ThrowIfCancellationRequested();
+            if (result.Coefficients.Format != Header.Command.Plan.Requirement.CoefficientContract)
+                throw new CalibrationProcedureException("CalibrationCoefficientContractMismatch");
             var candidate = new CalibrationCandidateEvidence(Guid.NewGuid(), Header.SessionId,
                 Header.ContentHash, selected.Selection.SelectionHash, result, DateTimeOffset.UtcNow);
             await RecordAsync(command.CorrelationId, CalibrationSessionPhase.CandidateRetained,

@@ -1,0 +1,276 @@
+{
+  "datasetVersion": "checkerboard-v1",
+  "datasetKind": "synthetic-checkerboard-intrinsics",
+  "geometry": {
+    "imageWidth": 640,
+    "imageHeight": 480,
+    "innerCorners": {
+      "columns": 9,
+      "rows": 6
+    },
+    "squareSizeMillimeters": 25.0,
+    "cornerCoordinates": "(column * 25, row * 25, 0)",
+    "boardBoundsMillimeters": {
+      "xMin": -25.0,
+      "xMax": 225.0,
+      "yMin": -25.0,
+      "yMax": 150.0
+    }
+  },
+  "camera": {
+    "model": "pinhole",
+    "fx": 800.0,
+    "fy": 820.0,
+    "cx": 319.5,
+    "cy": 239.5,
+    "pixelCenterConvention": "integer coordinate is the pixel centre (OpenCV convention)"
+  },
+  "distortion": {
+    "model": "Brown-Conrady",
+    "k1": -0.12,
+    "k2": 0.035,
+    "p1": 0.001,
+    "p2": -0.0008,
+    "k3": 0.0
+  },
+  "poses": [
+    {
+      "index": 0,
+      "rotationXDegrees": -18.0,
+      "rotationYDegrees": -22.0,
+      "rotationZDegrees": -15.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -62.5,
+      "translationZMillimeters": 680.0
+    },
+    {
+      "index": 1,
+      "rotationXDegrees": 18.0,
+      "rotationYDegrees": 22.0,
+      "rotationZDegrees": 15.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -62.5,
+      "translationZMillimeters": 680.0
+    },
+    {
+      "index": 2,
+      "rotationXDegrees": -26.0,
+      "rotationYDegrees": 16.0,
+      "rotationZDegrees": 24.0,
+      "translationXMillimeters": -115.0,
+      "translationYMillimeters": -50.0,
+      "translationZMillimeters": 720.0
+    },
+    {
+      "index": 3,
+      "rotationXDegrees": 26.0,
+      "rotationYDegrees": -16.0,
+      "rotationZDegrees": -24.0,
+      "translationXMillimeters": -85.0,
+      "translationYMillimeters": -75.0,
+      "translationZMillimeters": 720.0
+    },
+    {
+      "index": 4,
+      "rotationXDegrees": -15.0,
+      "rotationYDegrees": 28.0,
+      "rotationZDegrees": -20.0,
+      "translationXMillimeters": -65.0,
+      "translationYMillimeters": -85.0,
+      "translationZMillimeters": 760.0
+    },
+    {
+      "index": 5,
+      "rotationXDegrees": 15.0,
+      "rotationYDegrees": -28.0,
+      "rotationZDegrees": 20.0,
+      "translationXMillimeters": -135.0,
+      "translationYMillimeters": -40.0,
+      "translationZMillimeters": 760.0
+    },
+    {
+      "index": 6,
+      "rotationXDegrees": -30.0,
+      "rotationYDegrees": -18.0,
+      "rotationZDegrees": 12.0,
+      "translationXMillimeters": -125.0,
+      "translationYMillimeters": -70.0,
+      "translationZMillimeters": 820.0
+    },
+    {
+      "index": 7,
+      "rotationXDegrees": 30.0,
+      "rotationYDegrees": 18.0,
+      "rotationZDegrees": -12.0,
+      "translationXMillimeters": -75.0,
+      "translationYMillimeters": -55.0,
+      "translationZMillimeters": 820.0
+    },
+    {
+      "index": 8,
+      "rotationXDegrees": -21.0,
+      "rotationYDegrees": 24.0,
+      "rotationZDegrees": -27.0,
+      "translationXMillimeters": -145.0,
+      "translationYMillimeters": -35.0,
+      "translationZMillimeters": 860.0
+    },
+    {
+      "index": 9,
+      "rotationXDegrees": 21.0,
+      "rotationYDegrees": -24.0,
+      "rotationZDegrees": 27.0,
+      "translationXMillimeters": -55.0,
+      "translationYMillimeters": -90.0,
+      "translationZMillimeters": 860.0
+    },
+    {
+      "index": 10,
+      "rotationXDegrees": -17.0,
+      "rotationYDegrees": -30.0,
+      "rotationZDegrees": 18.0,
+      "translationXMillimeters": -160.0,
+      "translationYMillimeters": -45.0,
+      "translationZMillimeters": 900.0
+    },
+    {
+      "index": 11,
+      "rotationXDegrees": 17.0,
+      "rotationYDegrees": 30.0,
+      "rotationZDegrees": -18.0,
+      "translationXMillimeters": -40.0,
+      "translationYMillimeters": -80.0,
+      "translationZMillimeters": 900.0
+    },
+    {
+      "index": 12,
+      "rotationXDegrees": -28.0,
+      "rotationYDegrees": 20.0,
+      "rotationZDegrees": -15.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -72.5,
+      "translationZMillimeters": 640.0
+    },
+    {
+      "index": 13,
+      "rotationXDegrees": 28.0,
+      "rotationYDegrees": -20.0,
+      "rotationZDegrees": 15.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -30.0,
+      "translationZMillimeters": 640.0
+    },
+    {
+      "index": 14,
+      "rotationXDegrees": -19.0,
+      "rotationYDegrees": 26.0,
+      "rotationZDegrees": 30.0,
+      "translationXMillimeters": -70.0,
+      "translationYMillimeters": -70.0,
+      "translationZMillimeters": 700.0
+    },
+    {
+      "index": 15,
+      "rotationXDegrees": 19.0,
+      "rotationYDegrees": -26.0,
+      "rotationZDegrees": -30.0,
+      "translationXMillimeters": -130.0,
+      "translationYMillimeters": -55.0,
+      "translationZMillimeters": 700.0
+    },
+    {
+      "index": 16,
+      "rotationXDegrees": -25.0,
+      "rotationYDegrees": -15.0,
+      "rotationZDegrees": -22.0,
+      "translationXMillimeters": -155.0,
+      "translationYMillimeters": -62.5,
+      "translationZMillimeters": 780.0
+    },
+    {
+      "index": 17,
+      "rotationXDegrees": 25.0,
+      "rotationYDegrees": 15.0,
+      "rotationZDegrees": 22.0,
+      "translationXMillimeters": -45.0,
+      "translationYMillimeters": -62.5,
+      "translationZMillimeters": 780.0
+    },
+    {
+      "index": 18,
+      "rotationXDegrees": -16.0,
+      "rotationYDegrees": 19.0,
+      "rotationZDegrees": -29.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -100.0,
+      "translationZMillimeters": 880.0
+    },
+    {
+      "index": 19,
+      "rotationXDegrees": 16.0,
+      "rotationYDegrees": -19.0,
+      "rotationZDegrees": 29.0,
+      "translationXMillimeters": -100.0,
+      "translationYMillimeters": -25.0,
+      "translationZMillimeters": 880.0
+    }
+  ],
+  "renderingRule": {
+    "projection": "pinhole",
+    "rotationOrder": "Rz * Ry * Rx",
+    "distortionApplication": "Brown-Conrady is applied from undistorted normalized coordinates to image coordinates",
+    "inverseDistortion": "five Newton iterations per ray, starting at the distorted normalized coordinate",
+    "rayPlaneIntersection": "inverse rigid rotation R^T maps each camera ray to the board z=0 plane",
+    "pixelCenterConvention": "integer coordinates are pixel centres",
+    "subpixelOffsets": [
+      [
+        -0.25,
+        -0.25
+      ],
+      [
+        0.25,
+        -0.25
+      ],
+      [
+        -0.25,
+        0.25
+      ],
+      [
+        0.25,
+        0.25
+      ]
+    ],
+    "boardPattern": "ten by seven alternating black and white squares; the one-square perimeter surrounds the nine by six inner-corner grid",
+    "firstSquare": "white at (xMin, yMin)",
+    "blackValue": 0,
+    "whiteValue": 255,
+    "backgroundValue": 170,
+    "output": "row-major Mono8 bytes, width multiplied by height"
+  },
+  "preregisteredTests": {
+    "scope": "fixture bounds only; not production acceptance",
+    "intrinsics": {
+      "fxFyAbsoluteErrorPixelsMax": 20.0,
+      "cxCyAbsoluteErrorPixelsMax": 10.0
+    },
+    "distortion": {
+      "k1AbsoluteErrorMax": 0.08,
+      "function": {
+        "normalizedRadiusMax": 0.25,
+        "pixelErrorMax": 2.0
+      },
+      "k2K3Identifiability": "acknowledged; judge recovered distortion by function error rather than requiring independent k2 and k3 recovery"
+    },
+    "cornerExtraction": {
+      "maxErrorPixels": 1.0
+    },
+    "residuals": {
+      "perViewFinite": true,
+      "perPointFinite": true
+    },
+    "excludeOneFrameBeforeCompute": {
+      "excludedFrameCount": 1,
+      "retainedRemainingData": true
+    }
+  }
+}

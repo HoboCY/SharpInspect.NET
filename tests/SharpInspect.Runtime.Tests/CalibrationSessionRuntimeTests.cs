@@ -23,6 +23,34 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class CalibrationSessionRuntimeTests
 {
     [Fact]
+    public async Task V125_R01_UnexpectedCoefficientContractFailsAndRestoresWithoutCandidate()
+    {
+        await using var fixture = await Fixture.CreateAsync(withDevelopmentFixture: true);
+        fixture.Procedure.CoefficientOverride = new RecipeContractReference("unexpected-coefficients", "1", new string('B', 64));
+        await fixture.WaitForHealthySourceAsync();
+        var start = await fixture.Runtime.SubmitAsync(await fixture.CreateAuthorizedStartCommandAsync());
+        Assert.Equal(CommandDisposition.Accepted, start.Disposition);
+        var sessionId = (await WaitForSnapshotAsync(fixture, state => state.CalibrationSession is
+            { Phase: CalibrationSessionPhase.Collecting, OperationInProgress: false })).CalibrationSession!.SessionId;
+        var capture = await fixture.Runtime.SubmitAsync(new CaptureCalibrationFrameCommand(Guid.NewGuid(), fixture.User.Invocation, sessionId));
+        Assert.Equal(CommandDisposition.Accepted, capture.Disposition);
+        await WaitForSnapshotAsync(fixture, state => state.CalibrationSession is
+            { ObservationCount: 1, OperationInProgress: false });
+        var compute = await fixture.Runtime.SubmitAsync(new ComputeCalibrationCandidateCommand(Guid.NewGuid(), fixture.User.Invocation, sessionId));
+        Assert.Equal(CommandDisposition.Accepted, compute.Disposition);
+        var settled = await WaitForSnapshotAsync(fixture, state => state.CalibrationSession is
+            { OperationInProgress: false, Phase: CalibrationSessionPhase.CandidateRetained or CalibrationSessionPhase.Restored });
+        var evidence = await fixture.QueryEvidenceAsync(sessionId);
+        Assert.True(evidence.Available, evidence.ReasonCode);
+        Assert.Null(evidence.Evidence!.Candidate);
+        Assert.Equal(CalibrationSessionPhase.Restored, settled.CalibrationSession!.Phase);
+        Assert.Equal("CalibrationCoefficientContractMismatch", settled.CalibrationSession.ReasonCode);
+        Assert.True(settled.CalibrationSession.RestorationVerified);
+        Assert.False(settled.Ready);
+        Assert.Equal(ExclusiveMode.None, settled.Mode);
+    }
+
+    [Fact]
     public async Task V124_R01_NoDevelopmentFixtureStopsBeforeAnyPhysicalAdmission()
     {
         await using var fixture = await Fixture.CreateAsync(withDevelopmentFixture: false);
@@ -1089,6 +1117,7 @@ public sealed class CalibrationSessionRuntimeTests
         internal TaskCompletionSource<bool> InputValidationStarted => _inputValidationStarted;
         internal VisionFrame? LastComputeFrame { get; private set; }
         internal bool CancellationObserved { get; private set; }
+        internal RecipeContractReference? CoefficientOverride { get; set; }
         public CalibrationProcedureDescriptor Descriptor { get; }
         public ICalibrationInputCodec<byte> InputCodec => _codec;
 
@@ -1117,9 +1146,9 @@ public sealed class CalibrationSessionRuntimeTests
         internal void ReleaseCompute() => _releaseCompute.TrySetResult(true);
         internal void ReleaseInputValidation() => _releaseInputValidation.TrySetResult(true);
 
-        private static CalibrationProcedureComputationResult Result() =>
+        private CalibrationProcedureComputationResult Result() =>
             new(new CalibrationCoefficientPayload(
-                new RecipeContractReference("v124-coefficients", "1", new string('A', 64)),
+                CoefficientOverride ?? new RecipeContractReference("v124-coefficients", "1", new string('A', 64)),
                 new byte[] { 7, 4 }), new[] { new CalibrationQualityMetric("fit", 1, "unit") });
 
         private sealed class ByteCodec : ICalibrationInputCodec<byte>

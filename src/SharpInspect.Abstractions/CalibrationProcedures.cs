@@ -208,13 +208,22 @@ public sealed class CalibrationExtractionResult
 
     public CalibrationExtractionResult(IEnumerable<CalibrationImageFeature>? features,
         IEnumerable<CalibrationProcedureDiagnostic>? diagnostics = null)
+        : this(features, diagnostics, null)
+    {
+    }
+
+    public CalibrationExtractionResult(IEnumerable<CalibrationImageFeature>? features,
+        IEnumerable<CalibrationProcedureDiagnostic>? diagnostics,
+        CalibrationExtractionReceipt? receipt)
     {
         Features = CopyFeatures(features, nameof(features));
         Diagnostics = CopyDiagnostics(diagnostics, nameof(diagnostics));
+        Receipt = receipt;
     }
 
     public ReadOnlyCollection<CalibrationImageFeature> Features { get; }
     public ReadOnlyCollection<CalibrationProcedureDiagnostic> Diagnostics { get; }
+    public CalibrationExtractionReceipt? Receipt { get; }
 
     private static ReadOnlyCollection<CalibrationImageFeature> CopyFeatures(
         IEnumerable<CalibrationImageFeature>? values, string parameterName)
@@ -246,12 +255,20 @@ public sealed class CalibrationObservationInput
     public CalibrationObservationInput(VisionFrame frame,
         IEnumerable<CalibrationImageFeature>? features, Guid sessionId, Guid frameId,
         string sourceHash)
+        : this(frame, features, sessionId, frameId, sourceHash, null)
+    {
+    }
+
+    public CalibrationObservationInput(VisionFrame frame,
+        IEnumerable<CalibrationImageFeature>? features, Guid sessionId, Guid frameId,
+        string sourceHash, CalibrationExtractionReceipt? receipt)
     {
         Frame = ValidateFrame(frame);
         Features = CopyFeatures(features, nameof(features));
         SessionId = ValidateId(sessionId, nameof(sessionId));
         FrameId = ValidateId(frameId, nameof(frameId));
         SourceHash = ValidateHash(sourceHash, nameof(sourceHash));
+        Receipt = receipt;
     }
 
     public VisionFrame Frame { get; }
@@ -259,6 +276,7 @@ public sealed class CalibrationObservationInput
     public Guid SessionId { get; }
     public Guid FrameId { get; }
     public string SourceHash { get; }
+    public CalibrationExtractionReceipt? Receipt { get; }
 
     private static VisionFrame ValidateFrame(VisionFrame frame)
     {
@@ -329,17 +347,27 @@ public sealed class CalibrationProcedureComputationResult
     public const int MaximumDiagnosticCount = 32;
 
     public CalibrationProcedureComputationResult(CalibrationCoefficientPayload coefficients,
+        IEnumerable<CalibrationQualityMetric>? qualityMetrics,
+        IEnumerable<CalibrationProcedureDiagnostic>? diagnostics)
+        : this(coefficients, qualityMetrics, diagnostics, null)
+    {
+    }
+
+    public CalibrationProcedureComputationResult(CalibrationCoefficientPayload coefficients,
         IEnumerable<CalibrationQualityMetric>? qualityMetrics = null,
-        IEnumerable<CalibrationProcedureDiagnostic>? diagnostics = null)
+        IEnumerable<CalibrationProcedureDiagnostic>? diagnostics = null,
+        CalibrationComputationEvidencePayload? evidence = null)
     {
         Coefficients = coefficients ?? throw new ArgumentNullException(nameof(coefficients));
         QualityMetrics = CopyMetrics(qualityMetrics, nameof(qualityMetrics));
         Diagnostics = CopyDiagnostics(diagnostics, nameof(diagnostics));
+        Evidence = evidence;
     }
 
     public CalibrationCoefficientPayload Coefficients { get; }
     public ReadOnlyCollection<CalibrationQualityMetric> QualityMetrics { get; }
     public ReadOnlyCollection<CalibrationProcedureDiagnostic> Diagnostics { get; }
+    public CalibrationComputationEvidencePayload? Evidence { get; }
 
     private static ReadOnlyCollection<CalibrationQualityMetric> CopyMetrics(
         IEnumerable<CalibrationQualityMetric>? values, string parameterName)
