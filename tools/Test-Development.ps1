@@ -199,6 +199,48 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_EVIDENCE_ROOT',$taskPreviousCameraEvidence,'Process')
         }
     }
+    if ($Ticket -ge 19) {
+        $taskPreviousRecoveryConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_CONSUMER','Process')
+        $taskPreviousRecoveryEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_EVIDENCE_ROOT',(Join-Path $taskRun 'camera-recovery-demo'),'Process')
+            Invoke-TaskDotnet 'camera-recovery-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~CameraRecoveryConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'camera-recovery-consumer-tests'))
+            foreach ($taskRecoveryFile in @('evidence.json','camera-recovery-evidence.json','camera-recovery-restart.json',
+                'summary.json','process.log','restart.log')) {
+                $taskRecoveryArtifact = Join-Path $taskRun ('camera-recovery-demo/' + $taskRecoveryFile)
+                if (-not (Test-Path -LiteralPath $taskRecoveryArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskRecoveryArtifact).Length -eq 0) {
+                    throw "Camera recovery consumer evidence is missing or empty: $taskRecoveryFile"
+                }
+            }
+            $taskRecoveryAcceptance = Get-Content -LiteralPath (Join-Path $taskRun 'camera-recovery-demo/evidence.json') -Raw | ConvertFrom-Json
+            $taskRecoveryEvidence = Get-Content -LiteralPath (Join-Path $taskRun 'camera-recovery-demo/camera-recovery-evidence.json') -Raw | ConvertFrom-Json
+            $taskRecoverySummary = Get-Content -LiteralPath (Join-Path $taskRun 'camera-recovery-demo/summary.json') -Raw | ConvertFrom-Json
+            $taskRecoveryConsumerHash = (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash
+            if ($taskRecoveryAcceptance.Result -cne 'Pass' -or $taskRecoveryAcceptance.ExternalNuGetConsumer -cne $true -or
+                $taskRecoveryAcceptance.IndependentRestart -cne $true -or $taskRecoveryAcceptance.DatabaseReadOnlyByRestart -cne $true -or
+                $taskRecoveryAcceptance.ConsumerSha256 -cne $taskRecoveryConsumerHash -or
+                $taskRecoveryEvidence.Result -cne 'Pass' -or $taskRecoveryEvidence.Ready -cne $false -or
+                $taskRecoveryEvidence.ConsumerSha256 -cne $taskRecoveryConsumerHash -or
+                $taskRecoveryEvidence.ExhaustionMaximumAttempts -ne 20 -or $taskRecoveryEvidence.AuditBeforePhysicalStart -cne $true -or
+                $taskRecoveryEvidence.CameraRecoveryFailedLatched -cne $true -or
+                $taskRecoverySummary.OutstandingLeases -ne 0 -or $taskRecoverySummary.LeasesReturned -cne $true) {
+                throw 'Camera recovery consumer evidence failed its measured result or artifact binding.'
+            }
+            foreach ($taskRecoveryNotRun in @('PhysicalHardwareQualification','StationAcceptance','Production','NativeCrashIsolation')) {
+                if ($taskRecoveryAcceptance.$taskRecoveryNotRun -cne 'NotRun' -or $taskRecoveryEvidence.$taskRecoveryNotRun -cne 'NotRun') {
+                    throw "Camera recovery development evidence overstates qualification: $taskRecoveryNotRun"
+                }
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_CONSUMER',$taskPreviousRecoveryConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_EVIDENCE_ROOT',$taskPreviousRecoveryEvidence,'Process')
+        }
+    }
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'

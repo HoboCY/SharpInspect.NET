@@ -14,6 +14,8 @@ public sealed partial class StationRuntime
     private Guid? _cameraAcquisitionProtocolEpoch;
     private long _cameraAcquisitionProtocolCursor;
     private bool _cameraAcquisitionProtocolFault;
+    private bool CameraAcquisitionRegistered =>
+        _cameraAcquisitionService is not null || _cameraRecoveryService is not null;
 
     internal static string CameraAcquisitionAlarmCode(CameraProtocolViolationKind kind) => kind switch
     {
@@ -31,7 +33,7 @@ public sealed partial class StationRuntime
 
     private bool IsCameraAcquisitionAlarmMappingValid(AlarmPolicy? policy)
     {
-        if (_cameraAcquisitionService is null) return true;
+        if (!CameraAcquisitionRegistered) return true;
         if (policy is null) return false;
         return Enum.GetValues<CameraProtocolViolationKind>().All(kind =>
             policy.TryGetRule(CameraAcquisitionAlarmCode(kind), out var rule) && rule is not null &&
@@ -42,7 +44,7 @@ public sealed partial class StationRuntime
 
     private StationStateSnapshot ApplyCameraAcquisitionStateLocked(StationStateSnapshot next)
     {
-        if (_cameraAcquisitionService is null) return next;
+        if (!CameraAcquisitionRegistered) return next;
         var valid = IsCameraAcquisitionAlarmMappingValid(ConfiguredAlarmPolicy);
         if (valid && !_cameraAcquisitionProtocolFault) return next;
         var blockers = next.AdmissionBlockers.Where(code => code is not
@@ -67,7 +69,7 @@ public sealed partial class StationRuntime
     // neither register this source nor call the station's observation boundary.
     private void ScheduleCameraAcquisitionObservationsLocked()
     {
-        if (_cameraAcquisitionService is null || _disposed || _shutdownRequested ||
+        if (!CameraAcquisitionRegistered || _disposed || _shutdownRequested ||
             !_storeInitialization.IsCompletedSuccessfully ||
             _cameraAcquisitionObservation is { IsCompleted: false } ||
             !IsCameraAcquisitionAlarmMappingValid(ConfiguredAlarmPolicy) ||
@@ -79,8 +81,8 @@ public sealed partial class StationRuntime
     {
         try
         {
-            await _cameraAcquisitionService!.RefreshProtocolObservationsAsync(_lifetime.Token).ConfigureAwait(false);
-            var batch = _cameraAcquisitionService.ReadProtocolObservations(_cameraAcquisitionProtocolCursor, 64);
+            await RefreshCameraProtocolAsync(_lifetime.Token).ConfigureAwait(false);
+            var batch = ReadCameraProtocol(_cameraAcquisitionProtocolCursor, 64);
             var changedEpoch = _cameraAcquisitionProtocolEpoch.HasValue &&
                 _cameraAcquisitionProtocolEpoch != batch.Epoch;
             if (changedEpoch || batch.Overflowed)
@@ -89,7 +91,7 @@ public sealed partial class StationRuntime
                     DateTimeOffset.UtcNow).ConfigureAwait(false)) return;
                 _cameraAcquisitionProtocolCursor = batch.FirstAvailableSequence - 1;
                 if (changedEpoch)
-                    batch = _cameraAcquisitionService.ReadProtocolObservations(_cameraAcquisitionProtocolCursor, 64);
+                    batch = ReadCameraProtocol(_cameraAcquisitionProtocolCursor, 64);
             }
             _cameraAcquisitionProtocolEpoch = batch.Epoch;
             foreach (var observation in batch.Observations)
@@ -107,6 +109,16 @@ public sealed partial class StationRuntime
             MarkAuditFault("CameraProtocolObservationUnavailable", alarmAuthorityUnavailable: true);
         }
     }
+
+    private async Task<CameraProtocolSnapshot> RefreshCameraProtocolAsync(CancellationToken cancellationToken) =>
+        _cameraRecoveryService is not null
+            ? await _cameraRecoveryService.RefreshProtocolObservationsAsync(cancellationToken).ConfigureAwait(false)
+            : await _cameraAcquisitionService!.RefreshProtocolObservationsAsync(cancellationToken).ConfigureAwait(false);
+
+    private CameraProtocolSnapshot ReadCameraProtocol(long afterSequence, int maximumCount) =>
+        _cameraRecoveryService is not null
+            ? _cameraRecoveryService.ReadProtocolObservations(afterSequence, maximumCount)
+            : _cameraAcquisitionService!.ReadProtocolObservations(afterSequence, maximumCount);
 
     private async Task<bool> PersistCameraProtocolAlarmAsync(CameraProtocolViolationKind kind,
         DateTimeOffset observedAtUtc)

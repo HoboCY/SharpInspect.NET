@@ -28,6 +28,7 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
 pwsh -File tools/Test-Ticket18.ps1
+pwsh -File tools/Test-Ticket19.ps1
 ```
 
 脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket18/<run>/`，
@@ -111,6 +112,24 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --camera-acqu
 
 此入口输出组件证据、真实关联身份及可重复比较的规范化重放。真实设备、PLC、算法执行、
 Provider Qualification、生产流程和 Station Acceptance 均未在该开发入口执行。
+
+## 有限相机恢复开发入口
+
+`AddSharpInspectCameraRecovery(factory)` 注册独占原相机及其专用 Provider 的恢复服务，
+默认每 5 秒尝试一次、每周期最多 20 次；部署宿主可显式设置间隔和次数。
+每次仅按原稳定身份打开设备，并重新完整应用配置、回读验证及武装原采集模式。
+旧设备、在途调用或帧 lease 尚未实际释放时，服务不会打开下一台设备。
+
+次数耗尽后停止自动尝试。重新启动周期使用 `StartCameraRecoveryCycleCommand`，
+要求相机管理权限、绑定到本次命令的 Step-Up 和先持久化的审计受理记录。
+存储通过 `ProductionStoreOptions.CameraRecovery` 显式启用 schema 11；旧库需要受控迁移，
+不会在启动时自动升级。服务保持 Qualification 范围，Ready 始终为 false；
+恢复成功只更新相机源健康，报警确认、复位、待确认结果及生产武装保留各自的约束。
+
+`tools/Test-Ticket19.ps1` 会构建独立 NuGet 消费宿主，执行虚拟设备断线、失败重试、
+20 次耗尽、真实身份授权重启及独立进程只读复核，保存周期、尝试次数、审计和 lease 证据。
+稳定验证 ID 见 [V1-19 记录](docs/verification/v1-19.md)。真实硬件、Station Acceptance、
+生产流程和原生 SDK 崩溃隔离均不属于此开发入口的验证结果。
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，

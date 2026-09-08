@@ -7,12 +7,13 @@ namespace SharpInspect.Runtime.Cameras;
 /// physical camera call and keeps that call alive after a caller-facing timeout or
 /// cancellation until its actual task has quiesced.
 /// </summary>
-public sealed class CameraAcquisitionService : IAsyncDisposable
+public sealed partial class CameraAcquisitionService : IAsyncDisposable
 {
     private const int MaximumProtocolReadCount = 64;
     private readonly object _sync = new();
     private readonly IControlledCameraDevice _device;
     private readonly CameraDeviceDescriptor _descriptor;
+    private readonly CameraCapabilities _capabilities;
     private readonly EffectiveCameraConfiguration _configuration;
     private readonly IFrameAcquisitionClock _clock;
     private readonly CameraAcquisitionOptions _options;
@@ -21,7 +22,6 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
 
     private Attempt? _attempt;
     private bool _disposed;
-    private Task? _disposeTask;
     private Guid? _adapterEpoch;
     private long _adapterCursor;
     private Task<CameraProtocolSnapshot>? _protocolReadTask;
@@ -39,6 +39,8 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
         _device = device ?? throw new ArgumentNullException(nameof(device));
         _descriptor = device.Descriptor ?? throw new ArgumentException(
             "CameraDeviceDescriptorUnavailable", nameof(device));
+        _capabilities = device.Capabilities ?? throw new ArgumentException(
+            "CameraCapabilitiesUnavailable", nameof(device));
         _configuration = effectiveConfiguration ?? throw new ArgumentNullException(nameof(effectiveConfiguration));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -133,6 +135,8 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
         {
             if (_disposed)
                 return ReadProtocolObservationsLocked(0, MaximumProtocolReadCount);
+            if (HasPendingHealthReadLocked())
+                return ReadProtocolObservationsLocked(0, MaximumProtocolReadCount);
 
             readTask = _protocolReadTask ??= StartProtocolReadLocked(_adapterCursor);
         }
@@ -201,36 +205,21 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Attempt? attempt;
-        Task disposal;
-        lock (_sync)
-        {
-            if (!_disposed)
-            {
-                _disposed = true;
-                attempt = _attempt;
-                _disposeTask = Task.Run(() => DisposeCoreAsync(attempt));
-            }
-            else
-            {
-                attempt = _attempt;
-                _disposeTask ??= Task.Run(() => DisposeCoreAsync(attempt));
-            }
-
-            disposal = _disposeTask;
-        }
-
-        if (attempt is not null)
-            attempt.RequestCancellation();
+        var retirement = BeginRetirement();
 
         try
         {
-            await disposal.WaitAsync(_options.ShutdownWaitTimeout).ConfigureAwait(false);
+            await retirement.WaitAsync(_options.ShutdownWaitTimeout).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             // The background owner retains the physical device and continues the
             // invocation -> acquire -> stop -> dispose order after this bounded wait.
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A bounded public shutdown never exposes an adapter fault. BeginRetirement
+            // retains the owner and reports the fault to its internal consumer.
         }
     }
 
@@ -261,7 +250,7 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
         lock (_sync)
         {
             if (_disposed) return Rejected("CameraAcquisitionServiceDisposed");
-            if (_attempt is not null || _admissionInProgress)
+            if (_attempt is not null || _admissionInProgress || HasPendingHealthReadLocked())
             {
                 AppendProtocolLocked(CameraProtocolViolationKind.TriggerWhileBusy,
                     "CameraAcquisitionBusy", null, null, 0);
@@ -336,57 +325,20 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
 
     }
 
-    private async Task DisposeCoreAsync(Attempt? attempt)
-    {
-        if (attempt is not null)
-        {
-            attempt.RequestCancellation();
-            try { await attempt.PhysicalCompletion.Task.ConfigureAwait(false); }
-            catch (Exception exception) when (exception is not OutOfMemoryException) { }
-        }
-
-        // A protocol read or the pre-admission refresh is physical device work too.
-        // Do not start Stop/Dispose concurrently with either operation. If one is
-        // hung, this owner remains pending and DisposeAsync's caller-facing wait is
-        // still bounded by ShutdownWaitTimeout.
-        await WaitForAdmissionAndProtocolReadAsync().ConfigureAwait(false);
-
-        // These invocations are deliberately started on the ThreadPool. An adapter
-        // is allowed to block synchronously, and DisposeAsync's caller must retain its
-        // bounded return even when the physical owner does not cooperate.
-        try
-        {
-            var stop = await InvokeOperationAsync(() => _device.StopAsync())
-                .ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            // Stop failure does not authorize skipping Dispose; the device remains
-            // owned until the subsequent physical Dispose call has quiesced.
-        }
-
-        try
-        {
-            await InvokeDisposeAsync(_device).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            // There is no safe ownership release on a Dispose fault. The service is
-            // already closed, so no replacement or further device call is admitted.
-        }
-    }
-
     private async Task WaitForAdmissionAndProtocolReadAsync()
     {
         while (true)
         {
             Task? admission;
             Task<CameraProtocolSnapshot>? protocolRead;
+            Task<CameraHealthSnapshot?>? healthRead;
             lock (_sync)
             {
                 admission = _admissionCompletion?.Task;
                 protocolRead = _protocolReadTask;
-                if (admission is null && protocolRead is null && !_admissionInProgress)
+                healthRead = _healthReadTask;
+                if (admission is null && protocolRead is null && healthRead is null &&
+                    !_admissionInProgress)
                     return;
             }
 
@@ -412,6 +364,17 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
                         _protocolReadTask = null;
                         _protocolTimeoutReportedTask = null;
                     }
+                }
+            }
+
+            if (healthRead is not null)
+            {
+                try { await healthRead.ConfigureAwait(false); }
+                catch (Exception exception) when (exception is not OutOfMemoryException) { }
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_healthReadTask, healthRead) && healthRead.IsCompleted)
+                        _healthReadTask = null;
                 }
             }
         }
@@ -1129,11 +1092,13 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
                 return;
             }
 
+            var trackedLease = new TrackedLease(_service, lease);
+            _service.TrackLeaseLocked(trackedLease);
             _terminal = true;
             CloseHandlesLocked();
             _control.Close();
             Completion.TrySetResult(new CameraAcquisitionOutcome(_request.Correlation,
-                _request.LogicalCameraRole, _start, lease, null, "CameraFrameAcquired",
+                _request.LogicalCameraRole, _start, trackedLease, null, "CameraFrameAcquired",
                 ExecutionStatus.Success));
         }
 
@@ -1224,14 +1189,21 @@ public sealed class CameraAcquisitionService : IAsyncDisposable
         private void DisposeLateLeaseLocked(IFrameBufferLease? lease)
         {
             if (lease is null) return;
+            var owned = new TrackedLease(_service, lease);
+            _service.TrackLeaseLocked(owned);
             // Lease disposal is adapter/owner code. Never invoke it while holding
             // the service gate; a provider may synchronously re-enter Runtime or
             // block while returning its pool slot.
-            var disposal = Task.Factory.StartNew(static state =>
+            var disposal = Task.Factory.StartNew(async state =>
             {
-                ((IFrameBufferLease)state!).Dispose();
-            }, lease, CancellationToken.None, TaskCreationOptions.DenyChildAttach,
-                TaskScheduler.Default);
+                var trackedLease = (TrackedLease)state!;
+                trackedLease.Dispose();
+                // Outer Dispose may leave native readers alive. Late/invalid
+                // frames need the same actual return proof as transferred frames.
+                if (!await trackedLease.ReturnCompletion.ConfigureAwait(false))
+                    throw new InvalidOperationException("CameraLeaseReleaseFailed");
+            }, owned, CancellationToken.None, TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default).Unwrap();
             _leaseDisposalTask = _leaseDisposalTask is null
                 ? disposal
                 : Task.WhenAll(_leaseDisposalTask, disposal);

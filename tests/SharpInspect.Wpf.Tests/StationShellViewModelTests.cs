@@ -10,6 +10,27 @@ namespace SharpInspect.Wpf.Tests;
 public sealed class StationShellViewModelTests
 {
     [Fact]
+    public async Task V119_U01_RecoveryProgressBecomesUnknownWhenSnapshotExpires()
+    {
+        var clock = new FakeClock();
+        await using var viewModel = new StationShellViewModel(new ControlledRuntime(),
+            new InlineUiDispatcher(), clock,
+            new SnapshotFreshnessPolicy(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(20)));
+        var recovery = new CameraRecoverySnapshot("Primary", Guid.NewGuid(), 3, Guid.NewGuid(),
+            CameraRecoveryState.Recovering, 2, 20, TimeSpan.FromSeconds(5), null, false, null,
+            "CameraRecoveryInProgress");
+        await viewModel.ApplySnapshotAsync(Snapshot(Guid.NewGuid(), 1, ready: false) with
+            { CameraRecovery = recovery });
+        Assert.Same(recovery, viewModel.State.DisplayedCameraRecovery);
+        Assert.Equal(2, viewModel.State.DisplayedCameraRecovery!.AttemptCount);
+        clock.Advance(TimeSpan.FromMilliseconds(101));
+        viewModel.RefreshFreshness();
+        Assert.Null(viewModel.State.DisplayedCameraRecovery);
+        Assert.Same(recovery, viewModel.State.CameraRecovery);
+        Assert.False(viewModel.State.Ready);
+    }
+
+    [Fact]
     public async Task DuplicateOrOlderRevisionDoesNotRefreshArrivalAgeOrReadyDisplay()
     {
         var runtime = new ControlledRuntime();

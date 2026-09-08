@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Integrity;
+using SharpInspect.Runtime.Storage;
 
 namespace SharpInspect.Runtime.Identity;
 
@@ -41,7 +42,10 @@ internal enum IdentityEventKind
     AlarmActionAuthorized,
     RecipeDraftSaved,
     CameraSetupActionAuthorized,
-    CameraSetupOperationCompleted
+    CameraSetupOperationCompleted,
+    CameraRecoveryCycleStartAuthorized,
+    CameraRecoveryCycleStartCompleted,
+    CameraRecoveryCycleStartFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -61,7 +65,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     Guid? BoundCommandCorrelationId = null, string? ActionCommandKind = null,
     string? PreviousPermissions = null, string? ResultingPermissions = null,
     Guid? OperationId = null, Guid? RecoveryCodeId = null, Guid? PreviousRecoveryKitId = null,
-    string? RecoverySafetyEvidence = null)
+    string? RecoverySafetyEvidence = null,
+    Guid? CameraRecoveryExpectedCycleId = null, string? CameraRecoveryLogicalRole = null,
+    string? CameraRecoveryReasonCode = null)
 {
     internal byte[] Encode(long ordinal, int schemaVersion = 6)
     {
@@ -109,14 +115,23 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > 10)
+        if (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion)
+        {
+            fields.AddRange(new string?[]
+            {
+                CameraRecoveryExpectedCycleId?.ToString("D"), CameraRecoveryLogicalRole,
+                CameraRecoveryReasonCode
+            });
+        }
+
+        if (schemaVersion is < 3 or > CameraRecoveryStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > 10)
+        if (schemaVersion is < 3 or > CameraRecoveryStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -141,7 +156,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -167,6 +182,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= 10 ||
                     legacyKind is not IdentityEventKind.CameraSetupActionAuthorized and
                     not IdentityEventKind.CameraSetupOperationCompleted,
+                    "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion ||
+                    legacyKind is not IdentityEventKind.CameraRecoveryCycleStartAuthorized and
+                    not IdentityEventKind.CameraRecoveryCycleStartCompleted and
+                    not IdentityEventKind.CameraRecoveryCycleStartFailed,
                     "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
@@ -232,6 +252,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      (schemaVersion >= 9 || actionKind != AuditedCommandKind.SaveRecipeDraft) &&
                      (schemaVersion >= 10 || (actionKind != AuditedCommandKind.RebindCamera &&
                         actionKind != AuditedCommandKind.ApplyCameraDebugConfiguration)) &&
+                     (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion ||
+                        actionKind != AuditedCommandKind.StartCameraRecoveryCycle) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -251,6 +273,23 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         Guid.TryParseExact(fields[index], "D", out _), "AuditRecoveryPayloadInvalid");
                 AuditChainDatabase.Require(fields[45] is null || IsSafeIdentifier(fields[45]),
                     "AuditRecoveryPayloadInvalid");
+            }
+
+            if (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion)
+            {
+                var recoveryKind = Enum.Parse<IdentityEventKind>(fields[2]!);
+                var recoveryEvent = recoveryKind is IdentityEventKind.CameraRecoveryCycleStartAuthorized or
+                    IdentityEventKind.CameraRecoveryCycleStartCompleted or
+                    IdentityEventKind.CameraRecoveryCycleStartFailed;
+                var hasRecoveryFields = fields[46] is not null || fields[47] is not null || fields[48] is not null;
+                AuditChainDatabase.Require(hasRecoveryFields == recoveryEvent,
+                    "AuditCameraRecoveryPayloadInvalid");
+                if (recoveryEvent)
+                {
+                    AuditChainDatabase.Require(Guid.TryParseExact(fields[46], "D", out var expectedCycle) &&
+                        expectedCycle != Guid.Empty && IsStableAsciiIdentifier(fields[47]) &&
+                        IsStableAsciiIdentifier(fields[48]), "AuditCameraRecoveryPayloadInvalid");
+                }
             }
 
             return revision;
@@ -275,7 +314,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         {
             var fields = DecodeFields(payload);
             var grant = stepUpGrantId?.ToString("D");
-            return fields.Length == 46 &&
+            return fields.Length is 46 or 49 &&
                 fields[0] == ordinal.ToString(CultureInfo.InvariantCulture) &&
                 fields[2] == IdentityEventKind.RecipeDraftSaved.ToString() &&
                 fields[4] == stationId && fields[5] == principalId.ToString("D") &&
@@ -286,6 +325,50 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[37] == draftId.ToString("D") && fields[38] == operationId.ToString("D") &&
                 fields[39] == AuditedCommandKind.SaveRecipeDraft.ToString() &&
                 fields[9] == "RecipeDraftAuthorized";
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>Reads the dedicated schema-11 camera recovery authorization envelope.</summary>
+    internal static bool TryReadCameraRecoveryAuthorization(byte[] payload, long ordinal,
+        string stationId, out CameraRecoveryAuthorizationAudit binding)
+    {
+        binding = null!;
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, CameraRecoveryStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            if (fields.Length != 49 || !Enum.TryParse<IdentityEventKind>(fields[2], out var kind) ||
+                kind is not (IdentityEventKind.CameraRecoveryCycleStartAuthorized or
+                    IdentityEventKind.CameraRecoveryCycleStartCompleted or
+                    IdentityEventKind.CameraRecoveryCycleStartFailed) ||
+                !Guid.TryParseExact(fields[5], "D", out var principal) || principal == Guid.Empty ||
+                !Guid.TryParseExact(fields[25], "D", out var session) || session == Guid.Empty ||
+                !Guid.TryParseExact(fields[30], "D", out var actor) || actor == Guid.Empty ||
+                !Guid.TryParseExact(fields[31], "D", out var correlation) || correlation == Guid.Empty ||
+                !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) || boundCorrelation == Guid.Empty ||
+                !Guid.TryParseExact(fields[46], "D", out var expectedCycle) || expectedCycle == Guid.Empty ||
+                !long.TryParse(fields[35], NumberStyles.None, CultureInfo.InvariantCulture, out var revision) ||
+                revision < 0 || fields[33] != Permission.ManageCameraBindings.ToString() ||
+                fields[37] is not { Length: > 0 } || !IsStableAsciiIdentifier(fields[37]) ||
+                fields[47] != fields[37] || !IsStableAsciiIdentifier(fields[48]) ||
+                fields[39] != AuditedCommandKind.StartCameraRecoveryCycle.ToString() ||
+                !Enum.TryParse<AuditedCommandKind>(fields[39], out var commandKind) ||
+                commandKind != AuditedCommandKind.StartCameraRecoveryCycle)
+                return false;
+            Guid? grant = null;
+            if (fields[32] is not null)
+            {
+                if (!Guid.TryParseExact(fields[32], "D", out var parsedGrant) || parsedGrant == Guid.Empty)
+                    return false;
+                grant = parsedGrant;
+            }
+            binding = new CameraRecoveryAuthorizationAudit(kind, principal, actor, correlation, grant,
+                fields[33]!, fields[37]!, boundCorrelation, commandKind, expectedCycle, session,
+                revision, fields[9]!, fields[48]!);
+            return true;
         }
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
@@ -375,7 +458,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         var countBytes = reader.ReadBytes(4);
         if (countBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
         var count = BinaryPrimitives.ReadInt32BigEndian(countBytes);
-        if (count != 46) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        if (count is not (46 or 49)) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
         var fields = new string?[count];
         for (var index = 0; index < fields.Length; index++)
         {
@@ -399,6 +482,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
     private static bool IsSafeIdentifier(string? value) => value is { Length: > 0 and <= 128 } &&
         value.Trim() == value && !value.Any(char.IsControl);
+
+    private static bool IsStableAsciiIdentifier(string? value) => value is { Length: > 0 and <= 128 } &&
+        value.All(c => c is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or
+            (>= '0' and <= '9') or '.' or '_' or '-');
 
     private static bool IsPermissionSet(string? value, int maximumPermissions)
     {
@@ -426,3 +513,9 @@ internal sealed record CameraAuthorizationAudit(
     Guid? StepUpGrantId, string RequiredPermission, string ActionTargetId,
     Guid BoundCommandCorrelationId, AuditedCommandKind CommandKind, Guid OperationId,
     Guid SessionId, long AuthorizationRevision, string ReasonCode);
+
+internal sealed record CameraRecoveryAuthorizationAudit(
+    IdentityEventKind Kind, Guid PrincipalId, Guid ActorPrincipalId, Guid CommandCorrelationId,
+    Guid? StepUpGrantId, string RequiredPermission, string ActionTargetId,
+    Guid BoundCommandCorrelationId, AuditedCommandKind CommandKind, Guid ExpectedCycleId,
+    Guid SessionId, long AuthorizationRevision, string ReasonCode, string RecoveryReasonCode);

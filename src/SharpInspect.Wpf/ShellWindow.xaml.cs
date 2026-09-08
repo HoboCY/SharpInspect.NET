@@ -504,7 +504,11 @@ public partial class ShellWindow : Window
             new StateRow("框架 / Provider 资格", Value(s is null ? null : $"{s.Qualification.Framework} / {s.Qualification.Provider}")),
             new StateRow("性能 / 工位资格", Value(s is null ? null : $"{s.Qualification.Performance} / {s.Qualification.StationAcceptance}")),
             new StateRow("性能健康 / 预算违例", Value(s is null ? null : $"{s.Performance.State} / {s.Performance.BudgetViolation}"))
-        };
+        }.Concat(s?.CameraRecovery is { } recovery ? new[]
+        {
+            new StateRow("相机恢复 / 尝试次数", $"{recovery.State} / {recovery.AttemptCount} / {recovery.MaximumAttempts}"),
+            new StateRow("相机恢复原因", recovery.ReasonCode)
+        } : Array.Empty<StateRow>());
         BlockersLabel.Text = s is null ? "当前状态未知，等待新的完整快照。" : string.Join(" · ", s.AdmissionBlockers);
         var outcome = _viewModel.LastCommandOutcome;
         OutcomeLabel.Text = _viewModel.CommandFailureCode is not null

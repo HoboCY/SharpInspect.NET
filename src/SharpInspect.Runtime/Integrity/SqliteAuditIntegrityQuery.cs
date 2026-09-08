@@ -49,7 +49,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 using var key = _openKey(policy);
                 using var connection = SqliteNative.Open(path, readOnly: true);
                 var db = connection.Handle!;
-                if (_options.RecipeDrafts is not null)
+                if (_options.CameraRecovery is not null)
+                    CameraRecoveryStoreOptions.ConfigureSqliteLimit(db);
+                else if (_options.RecipeDrafts is not null)
                     RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
                 else if (schemaSupportsArchive(_options))
                     AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
@@ -58,9 +60,11 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
                 if (schema == RecipeDraftStoreOptions.SchemaVersion ||
-                    schema == CameraSetupStoreOptions.SchemaVersion && _options.RecipeDrafts is not null)
+                    (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion &&
+                        _options.RecipeDrafts is not null))
                     RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
-                else if (schema == CameraSetupStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is null)
+                else if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion &&
+                    _options.AlgorithmResultArchive is null)
                     CameraSetupStoreOptions.ConfigureSqliteLimit(db);
                 else if (schema >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
                 else if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
@@ -88,17 +92,23 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
                 if (_options.CameraSetup is null && schema == CameraSetupStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CameraSetupConfigurationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10,
+                if (_options.CameraRecovery is not null && schema < CameraRecoveryStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
+                if (_options.CameraRecovery is null && schema == CameraRecoveryStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11,
                     "AuditGovernedMigrationRequired");
                 var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
                 var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion ||
-                    schema == CameraSetupStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
-                var cameraSchema = schema == CameraSetupStoreOptions.SchemaVersion;
+                    (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion &&
+                        _options.RecipeDrafts is not null);
+                var cameraSchema = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion;
+                var recoverySchema = schema == CameraRecoveryStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
                 var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
-                var fullVerification = archiveVerification || draftVerification || cameraSchema || alarmStartup;
+                var fullVerification = archiveVerification || draftVerification || cameraSchema || recoverySchema || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
@@ -106,13 +116,16 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     verificationRequest, fullVerification ? false : startup, deadline,
                     archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
                     recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null,
-                    cameraSetupOptions: cameraSchema ? _options.CameraSetup : null);
+                    cameraSetupOptions: cameraSchema ? _options.CameraSetup : null,
+                    cameraRecoveryOptions: recoverySchema ? _options.CameraRecovery : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
                     _options.RecipeDrafts);
                 if (cameraSchema) AuditChainDatabase.RequireFullCameraSetupVerification(db, report, deadline,
                     _options.CameraSetup);
+                if (recoverySchema) AuditChainDatabase.RequireFullCameraRecoveryVerification(db, report, deadline,
+                    _options.CameraRecovery);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -144,6 +157,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
         if (exception is InvalidOperationException { Message: var cameraReason } &&
             cameraReason.StartsWith("CameraSetup", StringComparison.Ordinal))
             return cameraReason;
+        if (exception is InvalidOperationException { Message: var recoveryReason } &&
+            recoveryReason.StartsWith("CameraRecovery", StringComparison.Ordinal))
+            return recoveryReason;
         if (exception is InvalidOperationException { Message: "IdentityAuthenticationGovernedMigrationRequired" })
             return "IdentityAuthenticationGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "IdentityAuthorizationGovernedMigrationRequired" })

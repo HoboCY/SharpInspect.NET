@@ -26,6 +26,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private readonly FrameBufferPool? _frameBufferPool;
     private readonly CameraSetupRuntime _cameraSetupRuntime;
     private readonly CameraAcquisitionService? _cameraAcquisitionService;
+    private readonly CameraRecoveryService? _cameraRecoveryService;
     private readonly AlgorithmExecutionGuard _executionGuard;
     private readonly bool _algorithmExecutionRegistered;
     private readonly Task _storeInitialization;
@@ -47,13 +48,17 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null,
         AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null,
         IEnumerable<ICameraProvider>? cameraProviders = null, CameraSetupOptions? cameraSetupOptions = null,
-        CameraAcquisitionService? cameraAcquisitionService = null)
+        CameraAcquisitionService? cameraAcquisitionService = null,
+        CameraRecoveryService? cameraRecoveryService = null)
     {
         _audit = audit;
         _sessions = sessions;
         _authorization = authorization;
         _frameBufferPool = frameBufferPool;
         _cameraAcquisitionService = cameraAcquisitionService;
+        if (cameraAcquisitionService is not null && cameraRecoveryService is not null)
+            throw new ArgumentException("CameraRecoveryAcquisitionOwnershipConflict");
+        _cameraRecoveryService = cameraRecoveryService;
         _executionGuard = executionGuard ?? AlgorithmExecutionGuard.CurrentProcess;
         _algorithmExecutionRegistered = algorithmExecutionOptions is not null;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
@@ -88,6 +93,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit));
         _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);
         _snapshot = ApplyCameraAcquisitionStateLocked(_snapshot);
+        _snapshot = ApplyCameraRecoveryStateLocked(_snapshot);
         if (_sessions is not null)
         {
             lock (_sync)
@@ -208,7 +214,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         {
             LocalAuthorizationService.PreparedManagement? prepared = null;
             var alarmCommand = command is AcknowledgeAlarmCommand or ResetAlarmCommand;
+            var cameraRecoveryCommand = command is StartCameraRecoveryCycleCommand;
             var governedCommand = _authorization is not null && (alarmCommand ||
+                cameraRecoveryCommand ||
                 command is IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
             if (governedCommand)
             {
@@ -261,12 +269,15 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     forced = _snapshot.LastCommand?.State == OperationState.Pending ? "OperationInProgress" : null;
                     epoch = _snapshot.RuntimeEpoch;
                 }
-                var governed = alarmCommand
+                var governed = cameraRecoveryCommand
+                    ? await HandleCameraRecoveryCommandAsync((StartCameraRecoveryCycleCommand)command,
+                        epoch, attempt, forced, deadline, cancellationToken).ConfigureAwait(false)
+                    : alarmCommand
                     ? await _authorization!.HandleAlarmCommandAsync(command, epoch, attempt, forced,
                         alarms => EvaluateAlarmCommand(alarms, command), deadline, cancellationToken).ConfigureAwait(false)
                     : await _authorization!.HandleCommandAsync(command, epoch, attempt, prepared!, forced, deadline, cancellationToken).ConfigureAwait(false);
                 if (governed.Audit == AuditPersistence.Unavailable) MarkAuditFault("TraceAuditUnavailable");
-                if (governed.Disposition == CommandDisposition.Accepted)
+                if (governed.Disposition == CommandDisposition.Accepted && !cameraRecoveryCommand)
                 {
                     if (alarmCommand) await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
                     lock (_sync)
@@ -449,6 +460,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     PublishLocked(next);
                     ScheduleAlarmMaintenanceLocked();
                     ScheduleCameraAcquisitionObservationsLocked();
+                    ScheduleCameraRecoveryObservationsLocked();
                 }
             }
         }
@@ -487,6 +499,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
         next = ApplyCameraAcquisitionStateLocked(next);
+        next = ApplyCameraRecoveryStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
@@ -539,6 +552,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         await _storeInitialization.ConfigureAwait(false);
         if (_alarmMaintenance is not null) await _alarmMaintenance.ConfigureAwait(false);
         if (_cameraAcquisitionObservation is not null) await _cameraAcquisitionObservation.ConfigureAwait(false);
+        if (_cameraRecoveryObservation is not null) await _cameraRecoveryObservation.ConfigureAwait(false);
         _lifetime.Dispose();
     }
 }

@@ -26,6 +26,7 @@ public sealed class StationStateViewModel : ObservableObject
     public RecipeReference? ActiveRecipe => _rawSnapshot?.ActiveRecipe;
     public ExecutionCorrelationId? CurrentExecution => _rawSnapshot?.CurrentExecution;
     public CameraHealth Camera => _rawSnapshot?.Camera ?? UnknownCamera;
+    public CameraRecoverySnapshot? CameraRecovery => _rawSnapshot?.CameraRecovery;
     public PlcHealth Plc => _rawSnapshot?.Plc ?? UnknownPlc;
     public SubsystemHealth Store => _rawSnapshot?.Store ?? UnknownSubsystem;
     public EvidenceHealth Evidence => _rawSnapshot?.Evidence ?? UnknownEvidence;
@@ -46,6 +47,7 @@ public sealed class StationStateViewModel : ObservableObject
     public HealthState DisplayedPlcConnection => IsFresh ? Plc.Connection : HealthState.Unknown;
     public HealthState DisplayedStoreState => IsFresh ? Store.State : HealthState.Unknown;
     public CameraHealth DisplayedCamera => IsFresh ? Camera : UnknownCamera;
+    public CameraRecoverySnapshot? DisplayedCameraRecovery => IsFresh ? CameraRecovery : null;
     public PlcHealth DisplayedPlc => IsFresh ? Plc : UnknownPlc;
     public SubsystemHealth DisplayedStore => IsFresh ? Store : UnknownSubsystem;
     public EvidenceHealth DisplayedEvidence => IsFresh ? Evidence : UnknownEvidence;
@@ -69,6 +71,7 @@ public sealed class StationStateViewModel : ObservableObject
         OnPropertyChanged(nameof(Ready));
         OnPropertyChanged(nameof(DisplayedHealthy));
         OnPropertyChanged(nameof(DisplayedCameraConnection));
+        OnPropertyChanged(nameof(DisplayedCameraRecovery));
         OnPropertyChanged(nameof(DisplayedPlcConnection));
         OnPropertyChanged(nameof(DisplayedStoreState));
         OnPropertyChanged(nameof(DisplayedEvidenceState));

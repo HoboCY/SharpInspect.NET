@@ -22,8 +22,26 @@ public static class ServiceCollectionExtensions
         Func<IServiceProvider, CameraAcquisitionService> factory)
     {
         ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(factory);
-        if (services.Any(item => item.ServiceType == typeof(CameraAcquisitionService)))
+        if (services.Any(item => item.ServiceType == typeof(CameraAcquisitionService) ||
+            item.ServiceType == typeof(CameraRecoveryService)))
             throw new ArgumentException("CameraAcquisitionAlreadyRegistered", nameof(services));
+        services.AddSingleton(factory);
+        return services;
+    }
+
+    /// <summary>
+    /// Registers one qualification camera owner with bounded same-device recovery.
+    /// The container owns the recovery service, which owns its acquisition services.
+    /// The recovery service also owns its dedicated provider; the clock remains
+    /// the factory caller's responsibility.
+    /// </summary>
+    public static IServiceCollection AddSharpInspectCameraRecovery(this IServiceCollection services,
+        Func<IServiceProvider, CameraRecoveryService> factory)
+    {
+        ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(factory);
+        if (services.Any(item => item.ServiceType == typeof(CameraAcquisitionService) ||
+            item.ServiceType == typeof(CameraRecoveryService)))
+            throw new ArgumentException("CameraRecoveryAlreadyRegistered", nameof(services));
         services.AddSingleton(factory);
         return services;
     }
@@ -107,7 +125,8 @@ public static class ServiceCollectionExtensions
             algorithmExecutionOptions: p.GetService<AlgorithmExecutionOptions>(),
             cameraProviders: p.GetServices<ICameraProvider>(),
             cameraSetupOptions: p.GetService<CameraSetupOptions>(),
-            cameraAcquisitionService: p.GetService<CameraAcquisitionService>()));
+            cameraAcquisitionService: p.GetService<CameraAcquisitionService>(),
+            cameraRecoveryService: p.GetService<CameraRecoveryService>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -163,7 +182,8 @@ public static class ServiceCollectionExtensions
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
             p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
-            p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>()));
+            p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
+            p.GetService<CameraRecoveryService>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));

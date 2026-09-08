@@ -54,6 +54,9 @@ internal static class Program
         var draftQueryDirectory = Option("--recipe-draft-query");
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
+        var cameraRecoveryDirectory = Option("--camera-recovery-check");
+        var cameraRecoveryQueryDirectory = Option("--camera-recovery-query");
+        var cameraRecoveryEnabled = cameraRecoveryDirectory is not null || cameraRecoveryQueryDirectory is not null;
         var draftEnabled = draftCheckDirectory is not null || draftQueryDirectory is not null ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
@@ -63,8 +66,9 @@ internal static class Program
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
-            CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null
+            CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled
                 ? new CameraSetupStoreOptions() : null,
+            CameraRecovery = cameraRecoveryEnabled ? new CameraRecoveryStoreOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -80,6 +84,10 @@ internal static class Program
             return CameraSetupDemo.Run(storeOptions, cameraSetupDirectory, Option("--user-name"), Option("--expected-principal"));
         if (cameraSetupQueryDirectory is not null)
             return CameraSetupDemo.Query(storeOptions, cameraSetupQueryDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (cameraRecoveryDirectory is not null)
+            return CameraRecoveryDemo.Run(storeOptions, cameraRecoveryDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (cameraRecoveryQueryDirectory is not null)
+            return CameraRecoveryDemo.Query(storeOptions, cameraRecoveryQueryDirectory, Option("--user-name"), Option("--expected-principal"));
         if (administratorRecoveryCheck)
             return AdministratorRecoveryDemo.Run(storeOptions);
         if (args.Contains("--alarm-check", StringComparer.OrdinalIgnoreCase))

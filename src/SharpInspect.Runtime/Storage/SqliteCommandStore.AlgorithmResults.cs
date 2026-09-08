@@ -288,11 +288,18 @@ internal sealed partial class SqliteCommandStore
                     _signingKey.PublicKeyBase64,
                     new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries),
                     false, deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
-                    recipeDraftOptions: _options.RecipeDrafts);
+                    recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
+                    cameraRecoveryOptions: _options.CameraRecovery);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                     _options.RecipeDrafts);
+                if (_options.CameraSetup is not null)
+                    AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                        _options.CameraSetup);
+                if (_options.CameraRecovery is not null)
+                    AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
+                        _options.CameraRecovery);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

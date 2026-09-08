@@ -50,7 +50,8 @@ public sealed partial class StationRuntime
             }
             return;
         }
-        if (!IsAlgorithmHungAlarmMappingValid(policy) || !IsCameraAcquisitionAlarmMappingValid(policy))
+        if (!IsAlgorithmHungAlarmMappingValid(policy) || !IsCameraAcquisitionAlarmMappingValid(policy) ||
+            !IsCameraRecoveryAlarmMappingValid(policy))
         {
             lock (_sync)
             {
@@ -67,9 +68,13 @@ public sealed partial class StationRuntime
         {
             lock (_sync) _registeredAlarmSources.Add(FrameBufferAlarmSource);
         }
-        if (_cameraAcquisitionService is not null && IsCameraAcquisitionAlarmMappingValid(policy))
+        if (CameraAcquisitionRegistered && IsCameraAcquisitionAlarmMappingValid(policy))
         {
             lock (_sync) _registeredAlarmSources.Add(CameraAcquisitionAlarmSource);
+        }
+        if (_cameraRecoveryService is not null && IsCameraRecoveryAlarmMappingValid(policy))
+        {
+            lock (_sync) _registeredAlarmSources.Add(CameraRecoveryAlarmSource);
         }
         await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
         // Commands await the complete initialization before handling. Acquiring their gate
@@ -202,7 +207,8 @@ public sealed partial class StationRuntime
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null) return;
         if (!IsAlgorithmHungAlarmMappingValid(ConfiguredAlarmPolicy) ||
-            !IsCameraAcquisitionAlarmMappingValid(ConfiguredAlarmPolicy))
+            !IsCameraAcquisitionAlarmMappingValid(ConfiguredAlarmPolicy) ||
+            !IsCameraRecoveryAlarmMappingValid(ConfiguredAlarmPolicy))
         {
             lock (_sync)
             {
@@ -263,7 +269,9 @@ public sealed partial class StationRuntime
                     unmet |= required & AlarmResetPrerequisites.NoActiveExecution;
                 if (_snapshot.Evidence.PendingDeliveries > 0 || _snapshot.Handshake != HandshakePhase.Idle)
                     unmet |= required & AlarmResetPrerequisites.NoPendingDelivery;
-                if (_snapshot.Recovery != RecoveryState.None)
+                if (_snapshot.Recovery != RecoveryState.None ||
+                    (_cameraRecoveryService is not null &&
+                     _cameraRecoveryService.GetSnapshot().State != CameraRecoveryState.Healthy))
                     unmet |= required & AlarmResetPrerequisites.RecoveryComplete;
                 if (_snapshot.Mode != ExclusiveMode.None)
                     unmet |= required & AlarmResetPrerequisites.NoExclusiveMode;
@@ -339,7 +347,10 @@ public sealed partial class StationRuntime
             {
                 expired = _alarmObservations.Where(pair => pair.Key != StartupAlarmCode &&
                     !(pair.Key == FrameBufferAlarmCode && _frameBufferPool is not null &&
-                      IsFrameBufferAlarmMappingValid(policy)) && pair.Value.Healthy &&
+                      IsFrameBufferAlarmMappingValid(policy)) &&
+                    !(_cameraRecoveryService is not null &&
+                      (pair.Key is CameraDisconnectedAlarmCode or CameraRecoveryFailedAlarmCode) &&
+                      IsCameraRecoveryAlarmMappingValid(policy)) && pair.Value.Healthy &&
                     !IsFresh(pair.Value, policy)).Select(pair => new AlarmObservation(_snapshot.RuntimeEpoch,
                         NextAlarmObservationSequenceLocked(pair.Key), pair.Key,
                         policy.Rules.Single(rule => rule.Code == pair.Key).Source, false, DateTimeOffset.UtcNow)).ToArray();

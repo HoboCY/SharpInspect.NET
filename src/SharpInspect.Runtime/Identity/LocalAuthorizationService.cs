@@ -144,6 +144,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ArmProductionCommand => Permission.ArmProduction,
         AcknowledgeAlarmCommand => Permission.AcknowledgeAlarm,
         ResetAlarmCommand => Permission.ResetAlarm,
+        StartCameraRecoveryCycleCommand => Permission.ManageCameraBindings,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -160,6 +161,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             IdentityManagementCommand management => management.TargetPrincipalId.ToString("D"),
             AcknowledgeAlarmCommand acknowledge => acknowledge.AlarmInstanceId.ToString("D"),
             ResetAlarmCommand reset => reset.AlarmInstanceId.ToString("D"),
+            StartCameraRecoveryCycleCommand recovery => recovery.LogicalRole,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -180,6 +182,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ResetAlarm => Permission.ResetAlarm,
         AuditedCommandKind.RebindCamera or AuditedCommandKind.ApplyCameraDebugConfiguration =>
             Permission.ManageCameraBindings,
+        AuditedCommandKind.StartCameraRecoveryCycle => Permission.ManageCameraBindings,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
@@ -197,6 +200,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ArmProductionCommand => AuditedCommandKind.ArmProduction,
         AcknowledgeAlarmCommand => AuditedCommandKind.AcknowledgeAlarm,
         ResetAlarmCommand => AuditedCommandKind.ResetAlarm,
+        StartCameraRecoveryCycleCommand => AuditedCommandKind.StartCameraRecoveryCycle,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

@@ -21,11 +21,17 @@ public sealed partial class StationRuntime
 
     public ValueTask<CameraSetupOperationResult> RebindAsync(CameraRebindRequest request,
         CancellationToken cancellationToken = default) =>
-        _cameraSetupRuntime.RebindAsync(request, cancellationToken);
+        _cameraRecoveryService is not null
+            ? ValueTask.FromResult(new CameraSetupOperationResult(false,
+                "CameraRecoveryOwnsDevice", AuditPersistence.NotAttempted))
+            : _cameraSetupRuntime.RebindAsync(request, cancellationToken);
 
     public ValueTask<CameraSetupOperationResult> ApplyDebugConfigurationAsync(
         CameraDebugConfigurationRequest request, CancellationToken cancellationToken = default) =>
-        _cameraSetupRuntime.ApplyDebugConfigurationAsync(request, cancellationToken);
+        _cameraRecoveryService is not null
+            ? ValueTask.FromResult(new CameraSetupOperationResult(false,
+                "CameraRecoveryOwnsDevice", AuditPersistence.NotAttempted))
+            : _cameraSetupRuntime.ApplyDebugConfigurationAsync(request, cancellationToken);
 
     private CameraSetupRuntime.CameraStationContext ReadCameraStationContext()
     {

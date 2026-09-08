@@ -109,6 +109,23 @@ internal static class AuditChainDatabase
              PRAGMA user_version=10;", StringComparison.Ordinal);
             return sql;
         }
+        if (version == CameraRecoveryStoreOptions.SchemaVersion)
+        {
+            // Schema 11 keeps the schema-10 audit envelope and camera
+            // positions byte-for-byte. Recovery terminal events are typed in
+            // their own bounded ledger and therefore remain metadata entries
+            // with all position columns NULL.
+            var sql = SchemaSqlFor(CameraSetupStoreOptions.SchemaVersion)
+                .Replace("PRAGMA user_version=10;", "PRAGMA user_version=11;", StringComparison.Ordinal);
+            const string cameraEvent = " OR (Kind='CameraSetupEvent'";
+            var cameraStart = sql.LastIndexOf(cameraEvent, StringComparison.Ordinal);
+            var checkClose = cameraStart < 0 ? -1 : sql.IndexOf(")));", cameraStart, StringComparison.Ordinal);
+            if (cameraStart < 0 || checkClose < 0)
+                throw new InvalidOperationException("AuditSchemaDefinitionInvalid");
+            sql = sql.Insert(checkClose + 1, @" OR (Kind='CameraRecoveryStoreActivated' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL)
+                 OR (Kind='CameraRecoveryEvent' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL)");
+            return sql;
+        }
         throw new ArgumentOutOfRangeException(nameof(version));
     }
 
@@ -117,7 +134,8 @@ internal static class AuditChainDatabase
         "RecipeDraftCapacityExceeded" or "RecipeDraftArchiveCapacityExceeded" or
         "RecipeDraftRevisionCapacityExceeded" or "RecipeDraftTotalCapacityExceeded" or
         "CameraSetupCapacityExceeded" or "CameraSetupEventCapacityExceeded" or
-        "CameraSetupTotalCapacityExceeded";
+        "CameraSetupTotalCapacityExceeded" or "CameraRecoveryEventCapacityExceeded" or
+        "CameraRecoveryTotalCapacityExceeded";
 
     private static (long Sequence, string PreviousHash, int SchemaVersion) NextSequence(
         sqlite3 db, AuditIntegrityPolicy policy, StoreDeadline deadline, bool archiveData,
@@ -219,7 +237,7 @@ internal static class AuditChainDatabase
         IdentityAuditEvent fact, StoreDeadline deadline)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11, "AuditSchemaInvalid");
         var next = NextSequence(db, policy, deadline, archiveData: false);
         var sequence = next.Sequence;
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
@@ -262,7 +280,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion or
-            CameraSetupStoreOptions.SchemaVersion,
+            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) == 0,
             "AlgorithmResultArchiveActivationConflict");
@@ -283,7 +301,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion or
-            CameraSetupStoreOptions.SchemaVersion,
+            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadAuditBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true);
@@ -301,7 +319,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, RecipeDraftStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion,
+        Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
+            CameraRecoveryStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) == 0,
             "RecipeDraftActivationConflict");
@@ -326,7 +345,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, long position, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion,
+        Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
+            CameraRecoveryStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadRecipeDraftBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true, recipeDraftData: true);
@@ -344,7 +364,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, CameraSetupStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == CameraSetupStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion,
+            "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraSetupStoreActivated';", deadline) == 0,
             "CameraSetupActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -363,7 +384,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, long position, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == CameraSetupStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion,
+            "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_setup_events WHERE Position=?;", deadline, Number(position));
         Require(payloadText is { Length: > 0 and <= CameraSetupStorageCodec.MaximumEncodedPayloadChars },
             "CameraSetupEventMissing");
@@ -375,6 +397,39 @@ internal static class AuditChainDatabase
         Execute(db, "INSERT INTO audit_entries(Sequence,Kind,CameraPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
             deadline, Number(next.Sequence), "CameraSetupEvent", Number(position), Convert.ToBase64String(payload),
             next.PreviousHash, hash);
+        if (next.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return next.Sequence;
+    }
+
+    internal static long AppendCameraRecoveryActivation(sqlite3 db, AuditIntegrityPolicy policy,
+        IAuditSigningKey key, CameraRecoveryStoreOptions options, StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == CameraRecoveryStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraRecoveryStoreActivated';", deadline) == 0,
+            "CameraRecoveryActivationConflict");
+        var payload = options.EncodeActivationPayload();
+        var next = NextSequence(db, policy, deadline, archiveData: false, cameraSetupData: true);
+        AppendEntry(db, policy, "CameraRecoveryStoreActivated", null, payload, deadline);
+        if (next.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return next.Sequence;
+    }
+
+    internal static long AppendCameraRecoveryEvent(sqlite3 db, AuditIntegrityPolicy policy,
+        IAuditSigningKey key, long position, StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == CameraRecoveryStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        var payloadText = Text(db, "SELECT Payload FROM camera_recovery_terminal_events WHERE Position=?;",
+            deadline, Number(position));
+        Require(payloadText is { Length: > 0 and <= CameraRecoveryStorageCodec.MaximumEncodedPayloadChars },
+            "CameraRecoveryTerminalMissing");
+        var payload = Convert.FromBase64String(payloadText!);
+        _ = SqliteCommandStore.ReadAndValidateCameraRecovery(db, position, payload, deadline);
+        var next = NextSequence(db, policy, deadline, archiveData: false, cameraSetupData: true);
+        AppendEntry(db, policy, "CameraRecoveryEvent", null, payload, deadline);
         if (next.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
             CreateCheckpoint(db, policy, key, deadline);
         return next.Sequence;
@@ -440,29 +495,37 @@ internal static class AuditChainDatabase
         string trustedPublicKey, AuditVerificationRequest request, bool startup, StoreDeadline deadline,
         bool validateAnchorReceipt = true, AlgorithmResultArchiveOptions? archiveOptions = null,
         RecipeDraftStoreOptions? recipeDraftOptions = null,
-        CameraSetupStoreOptions? cameraSetupOptions = null)
+        CameraSetupStoreOptions? cameraSetupOptions = null,
+        CameraRecoveryStoreOptions? cameraRecoveryOptions = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11, "AuditSchemaInvalid");
         var hasIdentity = schemaVersion >= 3;
         var hasAlarm = schemaVersion >= 7;
-        var hasCamera = schemaVersion == CameraSetupStoreOptions.SchemaVersion;
+        var hasCamera = schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion;
+        var hasRecovery = schemaVersion == CameraRecoveryStoreOptions.SchemaVersion;
         if (hasCamera != (cameraSetupOptions is not null))
             throw new InvalidOperationException(hasCamera
                 ? "CameraSetupConfigurationRequired" : "CameraSetupGovernedMigrationRequired");
+        if (hasRecovery != (cameraRecoveryOptions is not null))
+            throw new InvalidOperationException(hasRecovery
+                ? "CameraRecoveryConfigurationRequired" : "CameraRecoveryGovernedMigrationRequired");
         var hasArchive = schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion ||
-            (schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion &&
-             archiveOptions is not null);
+            ((schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
+                CameraRecoveryStoreOptions.SchemaVersion) && archiveOptions is not null);
         var hasDraft = schemaVersion == RecipeDraftStoreOptions.SchemaVersion ||
-            (schemaVersion == CameraSetupStoreOptions.SchemaVersion && recipeDraftOptions is not null);
+            ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion) &&
+                recipeDraftOptions is not null);
         if (schemaVersion == RecipeDraftStoreOptions.SchemaVersion && recipeDraftOptions is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if (archiveOptions is not null && !hasArchive)
             throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
-        if (recipeDraftOptions is null && schemaVersion == CameraSetupStoreOptions.SchemaVersion &&
+        if (recipeDraftOptions is null &&
+            (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion) &&
             TableExists(db, "recipe_draft_revisions", deadline))
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
-        if (archiveOptions is null && schemaVersion == CameraSetupStoreOptions.SchemaVersion &&
+        if (archiveOptions is null &&
+            (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion) &&
             TableExists(db, "development_algorithm_results", deadline))
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
         if (hasArchive)
@@ -481,6 +544,11 @@ internal static class AuditChainDatabase
         {
             cameraSetupOptions!.Validate();
             SqliteCommandStore.RequireConfiguredCameraSetup(db, cameraSetupOptions, deadline);
+        }
+        if (hasRecovery)
+        {
+            cameraRecoveryOptions!.Validate();
+            SqliteCommandStore.RequireConfiguredCameraRecovery(db, cameraRecoveryOptions, deadline);
         }
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");
@@ -520,14 +588,17 @@ internal static class AuditChainDatabase
         var maxResult = hasArchive ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline) : 0;
         var maxDraft = hasDraft ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM recipe_draft_revisions;", deadline) : 0;
         var maxCamera = hasCamera ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM camera_setup_events;", deadline) : 0;
+        var maxRecovery = hasRecovery ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM camera_recovery_terminal_events;", deadline) : 0;
         var archiveActivations = hasArchive ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) : 0;
         var draftActivations = hasDraft ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) : 0;
         var cameraActivations = hasCamera ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraSetupStoreActivated';", deadline) : 0;
+        var recoveryActivations = hasRecovery ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraRecoveryStoreActivated';", deadline) : 0;
         Require(!hasArchive || archiveActivations == 1, "AlgorithmResultArchiveActivationMissing");
         Require(!hasDraft || draftActivations == 1, "RecipeDraftActivationMissing");
         Require(!hasCamera || cameraActivations == 1, "CameraSetupActivationMissing");
+        Require(!hasRecovery || recoveryActivations == 1, "CameraRecoveryActivationMissing");
         Require(checked(maxFact + maxIdentity + maxAlarm + maxResult + maxDraft + maxCamera +
-            archiveActivations + draftActivations + cameraActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
+            maxRecovery + archiveActivations + draftActivations + cameraActivations + recoveryActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
             "SELECT COALESCE(MAX(FactPosition),0) FROM audit_entries;", deadline) &&
             (!hasAlarm || maxAlarm == Scalar(db, "SELECT COALESCE(MAX(AlarmPosition),0) FROM audit_entries;", deadline)) &&
             (!hasArchive || maxResult == Scalar(db, "SELECT COALESCE(MAX(ResultPosition),0) FROM audit_entries;", deadline)) &&
@@ -546,7 +617,9 @@ internal static class AuditChainDatabase
         var fullArchiveVerification = hasArchive && archiveOptions is not null;
         var fullDraftVerification = hasDraft && recipeDraftOptions is not null;
         var fullCameraVerification = hasCamera && cameraSetupOptions is not null;
-        var prefixCheckpoint = startup && !fullArchiveVerification && !fullDraftVerification && !fullCameraVerification ? checkpoint : ReadCheckpoint(db,
+        var fullRecoveryVerification = hasRecovery && cameraRecoveryOptions is not null;
+        var prefixCheckpoint = startup && !fullArchiveVerification && !fullDraftVerification && !fullCameraVerification &&
+            !fullRecoveryVerification ? checkpoint : ReadCheckpoint(db,
             "WHERE Sequence<=? ORDER BY Sequence DESC LIMIT 1", deadline, Number(request.AfterSequence));
         if (prefixCheckpoint is not null) VerifyCheckpoint(policy, prefixCheckpoint, trustedKeyId, trustedPublicKey);
         var after = prefixCheckpoint is null ? 0 : prefixCheckpoint.Sequence - 1;
@@ -564,6 +637,9 @@ internal static class AuditChainDatabase
         var resultOrdinal = hasArchive ? Scalar(db, "SELECT ResultPosition FROM audit_entries WHERE ResultPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var draftOrdinal = hasDraft ? Scalar(db, "SELECT DraftPosition FROM audit_entries WHERE DraftPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var cameraOrdinal = hasCamera ? Scalar(db, "SELECT CameraPosition FROM audit_entries WHERE CameraPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
+        var recoveryOrdinal = hasRecovery ? Scalar(db,
+            "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraRecoveryEvent' AND Sequence<=?;",
+            deadline, Number(after)) : 0;
         var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + "," + (hasDraft ? "DraftPosition" : "NULL") + "," + (hasCamera ? "CameraPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
             deadline, s => new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
                 SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
@@ -672,6 +748,25 @@ internal static class AuditChainDatabase
                     cameraSetupOptions!);
                 Require(cameraBinding.Length > 0, "CameraSetupBindingMismatch");
             }
+            else if (hasRecovery && row.Kind == "CameraRecoveryStoreActivated")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null,
+                    "CameraRecoveryActivationBindingMismatch");
+                SqliteCommandStore.VerifyCameraRecoveryActivationPayload(db, payload,
+                    cameraRecoveryOptions!, deadline);
+            }
+            else if (hasRecovery && row.Kind == "CameraRecoveryEvent")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null,
+                    "CameraRecoveryPositionGap");
+                var position = CameraRecoveryStorageCodec.ReadPosition(payload);
+                Require(position == ++recoveryOrdinal, "CameraRecoveryPositionGap");
+                var recoveryBinding = SqliteCommandStore.ReadAndValidateCameraRecovery(db, position,
+                    payload, deadline, cameraRecoveryOptions!);
+                Require(recoveryBinding.Length > 0, "CameraRecoveryBindingMismatch");
+            }
             else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null,
                 "AuditEntryKindUnsupported");
             var cp = ReadCheckpoint(db, "WHERE Sequence=?", deadline, Number(row.Sequence));
@@ -728,6 +823,17 @@ internal static class AuditChainDatabase
             "CameraSetupVerificationBudgetExceeded");
         if (options is not null)
             SqliteCommandStore.ValidateCameraSetupHistory(db, options, deadline);
+    }
+
+    internal static void RequireFullCameraRecoveryVerification(sqlite3 db,
+        AuditIntegrityReport report, StoreDeadline deadline,
+        CameraRecoveryStoreOptions? options = null)
+    {
+        Require(report.VerifiedFromSequence == 1 &&
+            report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
+            "CameraRecoveryVerificationBudgetExceeded");
+        if (options is not null)
+            SqliteCommandStore.ValidateCameraRecoveryHistory(db, options, deadline);
     }
 
     internal static void VerifyCheckpoint(AuditIntegrityPolicy policy, AuditCheckpoint cp, string keyId, string publicKey)

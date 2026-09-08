@@ -95,6 +95,7 @@ internal sealed partial class SqliteCommandStore
         if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
         else if (_options.AlgorithmResultArchive is not null)
             AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+        else if (_options.CameraRecovery is not null) CameraRecoveryStoreOptions.ConfigureSqliteLimit(connection.Handle!);
         else CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
         var database = connection.Handle!;
         var deadline = new StoreDeadline(_options.QueryTimeout);
@@ -105,8 +106,12 @@ internal sealed partial class SqliteCommandStore
                 _signingKey.PublicKeyBase64,
                 new AuditVerificationRequest(0, _policy.MaximumVerificationEntries), startup: true,
                 deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
-                recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup);
+                recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
+                cameraRecoveryOptions: _options.CameraRecovery);
             AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline, _options.CameraSetup);
+            if (_options.CameraRecovery is not null)
+                AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
+                    _options.CameraRecovery);
             var state = ReadCameraSetupState(database, logicalRole, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return new CameraSetupReadResult(state.ToPublicResult(), state);
@@ -201,14 +206,16 @@ internal sealed partial class SqliteCommandStore
         }
         AuditChainDatabase.Require(rows.Count <= options.MaximumEvents, "CameraSetupEventCapacityExceeded");
         ValidateCameraAuthorizationHistory(database, values, options, byOperation.Count,
-            byOperation.Values.Select(item => item.LogicalRole).ToHashSet(StringComparer.Ordinal), deadline);
+            byOperation.Values.Select(item => item.LogicalRole).ToHashSet(StringComparer.Ordinal), deadline,
+            checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline)));
     }
 
     private static void ValidateCameraAuthorizationHistory(sqlite3 database,
         IReadOnlyList<CameraSetupEvent> cameraEvents, CameraSetupStoreOptions options,
-        int cameraPendingCount, IReadOnlySet<string> cameraPendingRoles, StoreDeadline deadline)
+        int cameraPendingCount, IReadOnlySet<string> cameraPendingRoles, StoreDeadline deadline,
+        int schemaVersion)
     {
-        var facts = ReadCameraAuthorizationFacts(database, deadline);
+        var facts = ReadCameraAuthorizationFacts(database, deadline, schemaVersion);
         var stationId = facts.StationId;
         var authorizations = facts.Authorizations;
         var commandRows = facts.Commands;
@@ -346,7 +353,7 @@ internal sealed partial class SqliteCommandStore
 
     private static (string StationId, List<CameraAuthorizationAudit> Authorizations,
         List<CameraCommandAudit> Commands) ReadCameraAuthorizationFacts(sqlite3 database,
-        StoreDeadline deadline)
+        StoreDeadline deadline, int schemaVersion)
     {
         var stationId = AuditChainDatabase.Text(database,
             "SELECT StationId FROM audit_policy WHERE Id=1;", deadline);
@@ -372,7 +379,7 @@ internal sealed partial class SqliteCommandStore
         foreach (var row in identityRows)
         {
             if (IdentityAuditEvent.TryReadCameraAuthorization(row.Payload, row.Ordinal,
-                    stationId!, CameraSetupStoreOptions.SchemaVersion, out var binding))
+                    stationId!, schemaVersion, out var binding))
             {
                 authorizations.Add(binding);
             }
@@ -856,7 +863,8 @@ internal sealed partial class SqliteCommandStore
              builder.Apply(value);
         }
         var cameraOperations = rows.Select(row => ParseCameraGuid(row.OperationId)).ToHashSet();
-        var authorizationFacts = ReadCameraAuthorizationFacts(database, deadline);
+        var authorizationFacts = ReadCameraAuthorizationFacts(database, deadline,
+            checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline)));
         var pendingAdmissions = FindPendingRebindAdmissions(authorizationFacts.Authorizations,
             authorizationFacts.Commands, cameraOperations);
         var pendingAdmission = pendingAdmissions.SingleOrDefault(item =>
