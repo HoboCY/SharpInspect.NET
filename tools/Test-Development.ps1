@@ -380,6 +380,50 @@ try {
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $taskRun 'virtual-camera/replay-comparison.json') -Encoding utf8
         Write-Output 'V116-N02 independent-process virtual-camera replay PASS processes=2 evidenceBytesEqual=true'
     }
+    if ($Ticket -ge 18) {
+        $taskAcquisitionRuns = @()
+        foreach ($taskReplayIndex in @(1,2)) {
+            $taskAcquisitionDirectory = Join-Path $taskRun ('camera-acquisition/replay-' + $taskReplayIndex)
+            $taskAcquisitionLog = 'camera-acquisition-replay-' + $taskReplayIndex + '.log'
+            Invoke-TaskDotnet $taskAcquisitionLog @($taskConsumerDll,'--camera-acquisition-check',$taskAcquisitionDirectory)
+            foreach ($taskAcquisitionFile in @('evidence.json','summary.json','replay-evidence.json')) {
+                $taskAcquisitionArtifact = Join-Path $taskAcquisitionDirectory $taskAcquisitionFile
+                if (-not (Test-Path -LiteralPath $taskAcquisitionArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskAcquisitionArtifact).Length -eq 0) {
+                    throw "Controlled acquisition evidence is missing or empty: $taskAcquisitionFile"
+                }
+            }
+            $taskAcquisitionSummary = Get-Content -LiteralPath (Join-Path $taskAcquisitionDirectory 'summary.json') -Raw | ConvertFrom-Json
+            if ($taskAcquisitionSummary.Result -cne 'Pass' -or $taskAcquisitionSummary.ProductionReady -cne $false -or
+                $taskAcquisitionSummary.PhysicalDevices -cne 'NotRun' -or
+                $taskAcquisitionSummary.ProviderQualification -cne 'NotRun' -or
+                $taskAcquisitionSummary.StationAcceptance -cne 'NotRun' -or
+                $taskAcquisitionSummary.ProductionCycle -cne 'NotRun' -or
+                $taskAcquisitionSummary.AlgorithmExecution -cne 'NotRun' -or
+                $taskAcquisitionSummary.RuntimeComponent -cne 'Pass' -or
+                $taskAcquisitionSummary.Scenarios -cne 4 -or
+                $taskAcquisitionSummary.AcceptedAttempts -cne 6 -or
+                $taskAcquisitionSummary.SuccessfulFrames -cne 4 -or
+                $taskAcquisitionSummary.LeasesReturned -cne $true -or
+                $taskAcquisitionSummary.OutstandingLeases -cne 0 -or
+                $taskAcquisitionSummary.InfrastructureFailures -cne 0 -or
+                $taskAcquisitionSummary.ConsumerSha256 -cne (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash) {
+                throw 'Controlled acquisition consumer failed its measured result, applicability or binary binding.'
+            }
+            $taskAcquisitionRuns += [ordered]@{
+                run=$taskReplayIndex
+                replaySha256=(Get-FileHash -LiteralPath (Join-Path $taskAcquisitionDirectory 'replay-evidence.json') -Algorithm SHA256).Hash
+                evidenceSha256=(Get-FileHash -LiteralPath (Join-Path $taskAcquisitionDirectory 'evidence.json') -Algorithm SHA256).Hash
+                summarySha256=(Get-FileHash -LiteralPath (Join-Path $taskAcquisitionDirectory 'summary.json') -Algorithm SHA256).Hash
+            }
+        }
+        if ($taskAcquisitionRuns[0].replaySha256 -cne $taskAcquisitionRuns[1].replaySha256) {
+            throw 'Two controlled acquisition consumers disagreed on identity-normalized deterministic replay evidence.'
+        }
+        [ordered]@{ verificationId='V118-N02'; result='Pass'; independentProcesses=2; runs=$taskAcquisitionRuns } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $taskRun 'camera-acquisition/replay-comparison.json') -Encoding utf8
+        Write-Output 'V118-N02 independent-process controlled acquisition replay PASS processes=2 productionReady=false'
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

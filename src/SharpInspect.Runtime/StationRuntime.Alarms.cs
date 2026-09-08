@@ -50,7 +50,7 @@ public sealed partial class StationRuntime
             }
             return;
         }
-        if (!IsAlgorithmHungAlarmMappingValid(policy))
+        if (!IsAlgorithmHungAlarmMappingValid(policy) || !IsCameraAcquisitionAlarmMappingValid(policy))
         {
             lock (_sync)
             {
@@ -66,6 +66,10 @@ public sealed partial class StationRuntime
         if (_frameBufferPool is not null && IsFrameBufferAlarmMappingValid(policy))
         {
             lock (_sync) _registeredAlarmSources.Add(FrameBufferAlarmSource);
+        }
+        if (_cameraAcquisitionService is not null && IsCameraAcquisitionAlarmMappingValid(policy))
+        {
+            lock (_sync) _registeredAlarmSources.Add(CameraAcquisitionAlarmSource);
         }
         await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
         // Commands await the complete initialization before handling. Acquiring their gate
@@ -197,7 +201,8 @@ public sealed partial class StationRuntime
     private async Task RefreshAlarmsAsync(CancellationToken cancellationToken)
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null) return;
-        if (!IsAlgorithmHungAlarmMappingValid(ConfiguredAlarmPolicy))
+        if (!IsAlgorithmHungAlarmMappingValid(ConfiguredAlarmPolicy) ||
+            !IsCameraAcquisitionAlarmMappingValid(ConfiguredAlarmPolicy))
         {
             lock (_sync)
             {

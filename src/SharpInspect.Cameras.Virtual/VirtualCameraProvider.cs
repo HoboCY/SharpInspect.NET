@@ -33,7 +33,7 @@ public sealed record VirtualCameraProviderDiagnostics(
 /// Deterministic, development-only camera provider. It owns no wall-clock
 /// timers and does not turn a virtual result into hardware qualification.
 /// </summary>
-public sealed class VirtualCameraProvider : ICameraProvider
+public sealed partial class VirtualCameraProvider : ICameraProvider
 {
     public const string ProviderId = "SharpInspect.Virtual";
     public const string ProviderVersion = "1";
@@ -331,7 +331,7 @@ public sealed class VirtualCameraProvider : ICameraProvider
     }
 }
 
-internal sealed class VirtualCameraDevice : ICameraDevice
+internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
 {
     private readonly VirtualCameraProvider _provider;
     private readonly VirtualCameraProvider.VirtualCameraSession _session;
@@ -342,6 +342,9 @@ internal sealed class VirtualCameraDevice : ICameraDevice
     private readonly CameraDeviceDescriptor _descriptor;
     private readonly List<IDisposable> _unsolicitedHandles = new();
     private readonly List<PendingAcquisition> _retiredAcquisitions = new();
+    private readonly Guid _protocolEpoch = Guid.NewGuid();
+    private readonly Queue<CameraProtocolObservation> _protocolObservations = new();
+    private long _protocolSequence;
 
     private CameraConnectionState _connection = CameraConnectionState.Open;
     private CameraConfigurationState _configuration = CameraConfigurationState.Unconfigured;
@@ -585,7 +588,8 @@ internal sealed class VirtualCameraDevice : ICameraDevice
                 }
 
                 var timeoutTicks = checked((long)_effective.AcquisitionTimeoutMs * TimeSpan.TicksPerMillisecond);
-                pending.Handles.Add(_clock.Schedule(checked(start.MonotonicTimestamp + timeoutTicks),
+            pending.Handles.Add(_clock.Schedule(checked(start.MonotonicTimestamp + timeoutTicks),
+                    FrameAcquisitionClockPhase.Deadline,
                     () => OnAcquisitionTimeout(pending)));
             }
             catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
@@ -745,14 +749,38 @@ internal sealed class VirtualCameraDevice : ICameraDevice
                 if (signals.Any(signal => signal.Kind == VirtualCameraSignalKind.Disconnect))
                 {
                     pending.IgnoreLateSignals = true;
-                    DropSignalsLocked(signals, "VirtualCameraLateFrameDropped");
+                    DropSignalsLocked(signals, "VirtualCameraLateFrameDropped",
+                        pending.Request.Correlation);
                     CloseLocked(new CameraFault(CameraFaultClassification.ConnectionLost,
                         "VirtualCameraDisconnected"));
                     handles = TakeRetiredHandlesLocked().ToArray();
                 }
                 else
                 {
-                    DropSignalsLocked(signals, "VirtualCameraLateFrameDropped");
+                    DropSignalsLocked(signals, "VirtualCameraLateFrameDropped",
+                        pending.Request.Correlation);
+                }
+            }
+            else if (pending.Control is { } closedControl && closedControl.IsClosed)
+            {
+                if (closedControl.Start is null)
+                {
+                    // A control closed before Busy represents a normal
+                    // cancellation; there is no physical frame to classify.
+                    handles = CompleteAcquisitionLocked(pending, Failure(
+                        CameraAcquisitionFailureKind.Cancelled, "VirtualCameraControlClosed"),
+                        false, true);
+                }
+                else
+                {
+                    // A frame from a request whose Busy gate has already
+                    // closed is a late frame. Keep the old request's
+                    // correlation so it cannot be attributed to a newer one.
+                    DropSignalsLocked(signals, "VirtualCameraLateFrameDropped",
+                        pending.Request.Correlation);
+                    handles = CompleteAcquisitionLocked(pending, Failure(
+                        CameraAcquisitionFailureKind.Cancelled, "VirtualCameraControlClosed"),
+                        false, false);
                 }
             }
             else if (signals.Any(signal => signal.Kind == VirtualCameraSignalKind.Disconnect))
@@ -768,12 +796,20 @@ internal sealed class VirtualCameraDevice : ICameraDevice
                     signal.Association != VirtualFrameAssociation.CurrentRequest).ToArray();
                 AddDroppedFramesLocked(nonCurrent.Length);
                 if (nonCurrent.Length != 0)
+                {
+                    RecordProtocolLocked(CameraProtocolViolationKind.CorrelationMismatch,
+                        "VirtualCameraFrameAssociationDropped", pending.Request.Correlation,
+                        nonCurrent.Length);
                     SetFaultLocked(CameraFaultClassification.ProtocolViolation,
                         "VirtualCameraFrameAssociationDropped");
+                }
 
                 if (current.Length > 1)
                 {
                     AddDroppedFramesLocked(current.Length);
+                    RecordProtocolLocked(CameraProtocolViolationKind.ExtraFrame,
+                        "VirtualCameraFrameAmbiguous", pending.Request.Correlation,
+                        current.Length);
                     SetFaultLocked(CameraFaultClassification.ProtocolViolation,
                         "VirtualCameraFrameAmbiguous");
                     handles = CompleteAcquisitionLocked(pending, Failure(
@@ -782,9 +818,54 @@ internal sealed class VirtualCameraDevice : ICameraDevice
                 }
                 else if (current.Length == 1)
                 {
-                    var result = PublishFrameLocked(pending, current[0]);
-                    var closeForBuffer = result.Failure?.Kind == CameraAcquisitionFailureKind.BufferUnavailable;
-                    handles = CompleteAcquisitionLocked(pending, result, closeForBuffer, closeForBuffer);
+                    if (pending.Control is { } control &&
+                        (!control.IsBusy || control.Start is null))
+                    {
+                        RecordProtocolLocked(CameraProtocolViolationKind.EarlyFrame,
+                            "VirtualCameraFrameBeforeBusy", pending.Request.Correlation);
+                        SetFaultLocked(CameraFaultClassification.ProtocolViolation,
+                            "VirtualCameraFrameBeforeBusy");
+                        handles = CompleteAcquisitionLocked(pending, Failure(
+                            CameraAcquisitionFailureKind.ProtocolViolation,
+                            "VirtualCameraFrameBeforeBusy"), false, true);
+                    }
+                    else if (pending.Control is { } timestampControl &&
+                        timestampControl.Start is { } controlledStart &&
+                        (controlledStart.BusyAt.MonotonicTimestamp !=
+                            pending.AcceptedTimePoint.MonotonicTimestamp ||
+                         controlledStart.MonotonicFrequency != VirtualCameraClock.Frequency))
+                    {
+                        RecordProtocolLocked(CameraProtocolViolationKind.CorrelationMismatch,
+                            "VirtualCameraBusyTimestampMismatch", pending.Request.Correlation);
+                        SetFaultLocked(CameraFaultClassification.ProtocolViolation,
+                            "VirtualCameraBusyTimestampMismatch");
+                        handles = CompleteAcquisitionLocked(pending, Failure(
+                            CameraAcquisitionFailureKind.ProtocolViolation,
+                            "VirtualCameraBusyTimestampMismatch"), false, true);
+                    }
+                    else if (pending.Control is { } &&
+                        _effective?.ProductionAcquisitionMode == ProductionAcquisitionMode.HardwareTrigger &&
+                        !pending.HardwarePulseGranted)
+                    {
+                        RecordProtocolLocked(CameraProtocolViolationKind.EarlyFrame,
+                            "VirtualCameraHardwareFrameBeforePulse", pending.Request.Correlation);
+                        SetFaultLocked(CameraFaultClassification.ProtocolViolation,
+                            "VirtualCameraHardwareFrameBeforePulse");
+                        handles = CompleteAcquisitionLocked(pending, Failure(
+                            CameraAcquisitionFailureKind.ProtocolViolation,
+                            "VirtualCameraHardwareFrameBeforePulse"), false, false);
+                    }
+                    else
+                    {
+                        if (pending.Control is { } activeControl)
+                            pending.StartTimePoint = activeControl.Start!.BusyAt;
+                        var result = PublishFrameLocked(pending, current[0]);
+                        if (result.Failure?.Kind == CameraAcquisitionFailureKind.ProtocolViolation)
+                            RecordProtocolLocked(CameraProtocolViolationKind.InvalidFrame,
+                                result.Failure.ReasonCode, pending.Request.Correlation);
+                        var closeForBuffer = result.Failure?.Kind == CameraAcquisitionFailureKind.BufferUnavailable;
+                        handles = CompleteAcquisitionLocked(pending, result, closeForBuffer, closeForBuffer);
+                    }
                 }
             }
         }
@@ -809,12 +890,16 @@ internal sealed class VirtualCameraDevice : ICameraDevice
         {
             if (!ReferenceEquals(_pendingAcquisition, pending) || pending.Completed)
                 return;
+            // Before Busy there is no physical frame to observe, so retire the
+            // schedule. After Busy, preserve the old script so its late frame
+            // is recorded against the retired request rather than a new one.
+            var preserveLateSignals = pending.Control?.Start is not null;
             handles = CompleteAcquisitionLocked(pending, Failure(
                 CameraAcquisitionFailureKind.Cancelled, "VirtualCameraAcquisitionCancelled"),
-                false, false);
+                false, pending.Controlled && !preserveLateSignals);
         }
-        // Remaining events stay observable as late drops. Stop/Dispose explicitly
-        // cancel their schedule; ordinary cancellation preserves the drop evidence.
+        // Legacy cancellation keeps remaining events observable as late drops;
+        // controlled cancellation retains only the post-Busy late evidence.
         DisposeHandles(handles);
     }
 
@@ -908,16 +993,21 @@ internal sealed class VirtualCameraDevice : ICameraDevice
         {
             if (_disposed || _connection != CameraConnectionState.Open) return;
             AddDroppedFramesLocked(1);
+            RecordProtocolLocked(CameraProtocolViolationKind.EarlyFrame,
+                "VirtualCameraUnsolicitedFrameDropped");
             SetFaultLocked(CameraFaultClassification.ProtocolViolation,
                 "VirtualCameraUnsolicitedFrameDropped");
         }
     }
 
-    private void DropSignalsLocked(IEnumerable<VirtualCameraSignal> signals, string reason)
+    private void DropSignalsLocked(IEnumerable<VirtualCameraSignal> signals, string reason,
+        ExecutionCorrelationId? correlation = null)
     {
         var count = signals.Count(signal => signal.Kind == VirtualCameraSignalKind.Frame);
         if (count == 0) return;
         AddDroppedFramesLocked(count);
+        RecordProtocolLocked(CameraProtocolViolationKind.LateFrame, reason,
+            correlation ?? _pendingAcquisition?.Request.Correlation, count);
         SetFaultLocked(CameraFaultClassification.ProtocolViolation, reason);
     }
 
@@ -1097,6 +1187,12 @@ internal sealed class VirtualCameraDevice : ICameraDevice
         internal readonly TaskCompletionSource<FrameAcquisitionResult> Completion;
         internal readonly List<IDisposable> Handles = new();
         internal FrameTimePoint StartTimePoint = new(DateTimeOffset.UnixEpoch, 0);
+        internal FrameTimePoint AcceptedTimePoint = new(DateTimeOffset.UnixEpoch, 0);
+        internal FrameAcquisitionControl? Control;
+        internal bool Controlled;
+        internal bool HardwarePulseGranted;
+        internal IDisposable? CancellationRegistration;
+        internal CancellationToken CancellationToken;
         internal bool IgnoreLateSignals;
         internal bool Completed;
     }

@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket17.ps1
+pwsh -File tools/Test-Ticket18.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket17/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket18/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 空间不足时可添加 `-ArtifactRoot E:\SharpInspectEvidence\artifacts`，把验证产物与隔离包缓存
 放到另一个本地卷；源码、锁文件和验证步骤保持相同。
@@ -86,6 +86,31 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --virtual-cam
 `Test-Ticket17.ps1` 包含真实登录与 Step-Up 的独立 WPF 消费流程、Virtual Camera 成功/失败配置、
 重启读取和窗口截图；真实硬件、Provider 资格与站点生产验收不在该开发验证中。
 验证映射见 [V1-17 记录](docs/verification/v1-17.md)。
+
+## 受控单帧采集开发入口
+
+`CameraAcquisitionService` 独占一台已配置、Armed 的 `IControlledCameraDevice`，
+每次受理生成一个 Qualification 身份，完成至多一次采集。被拒绝的请求没有采集身份，
+公开入口拒绝 Production；该组件不替代正式 Station Qualification Session 或生产 Trigger 受理。
+成功结果的 `TakeFrame()` 领取唯一 lease；未领取时释放结果归还 lease，领取后由消费者负责释放。
+
+软件触发等待 pending 确认及 Busy 门后发出；硬触发夹具先观察 Busy，再使用精确关联身份
+调用 `VirtualCameraProvider.PulseHardwareTrigger`。截止时间从 Busy 起计，用完整规范帧的
+单调时间裁决。超时形成 Timeout + Unknown，断线形成 Error + Unknown，不重拍、不运行算法。
+实际设备调用尚未完成时保持 CleanupPending，迟到帧不会进入下一请求。
+
+Virtual 脚本时间仍相对接受采集请求；受控测试在 pending 到 Busy 之间不推进虚拟时间。
+相同截止时刻的帧观察先于超时裁决，测试无需等待适配器的 Busy 通知 continuation。
+显式注册 `AddSharpInspectCameraAcquisition(factory)` 后，服务容器负责异步释放组件，
+StationRuntime 按完整报警政策映射读取协议事实并写入签名报警历史。
+政策要求及稳定验证 ID 见 [V1-18 记录](docs/verification/v1-18.md)。
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --camera-acquisition-check D:\SharpInspectEvidence\controlled-acquisition
+```
+
+此入口输出组件证据、真实关联身份及可重复比较的规范化重放。真实设备、PLC、算法执行、
+Provider Qualification、生产流程和 Station Acceptance 均未在该开发入口执行。
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，
@@ -419,7 +444,10 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-12 单帧执行与完整结果校验映射](docs/verification/v1-12.md)、
 [V1-13 时限、取消与 Hung 恢复映射](docs/verification/v1-13.md)、
 [V1-14 Frame Pixel 归档与查看器映射](docs/verification/v1-14.md)、
-[V1-15 通用草稿编辑与历史映射](docs/verification/v1-15.md)。
+[V1-15 通用草稿编辑与历史映射](docs/verification/v1-15.md)、
+[V1-16 Virtual Camera 映射](docs/verification/v1-16.md)、
+[V1-17 相机绑定与配置映射](docs/verification/v1-17.md)、
+[V1-18 受控采集映射](docs/verification/v1-18.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

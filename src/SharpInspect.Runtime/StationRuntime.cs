@@ -25,6 +25,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private readonly LocalAuthorizationService? _authorization;
     private readonly FrameBufferPool? _frameBufferPool;
     private readonly CameraSetupRuntime _cameraSetupRuntime;
+    private readonly CameraAcquisitionService? _cameraAcquisitionService;
     private readonly AlgorithmExecutionGuard _executionGuard;
     private readonly bool _algorithmExecutionRegistered;
     private readonly Task _storeInitialization;
@@ -45,12 +46,14 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null,
         LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null,
         AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null,
-        IEnumerable<ICameraProvider>? cameraProviders = null, CameraSetupOptions? cameraSetupOptions = null)
+        IEnumerable<ICameraProvider>? cameraProviders = null, CameraSetupOptions? cameraSetupOptions = null,
+        CameraAcquisitionService? cameraAcquisitionService = null)
     {
         _audit = audit;
         _sessions = sessions;
         _authorization = authorization;
         _frameBufferPool = frameBufferPool;
+        _cameraAcquisitionService = cameraAcquisitionService;
         _executionGuard = executionGuard ?? AlgorithmExecutionGuard.CurrentProcess;
         _algorithmExecutionRegistered = algorithmExecutionOptions is not null;
         var interval = heartbeatInterval ?? TimeSpan.FromSeconds(1);
@@ -84,6 +87,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             authorization, ReadCameraStationContext, PublishCameraSetupLocked,
             authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit));
         _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);
+        _snapshot = ApplyCameraAcquisitionStateLocked(_snapshot);
         if (_sessions is not null)
         {
             lock (_sync)
@@ -444,6 +448,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     }
                     PublishLocked(next);
                     ScheduleAlarmMaintenanceLocked();
+                    ScheduleCameraAcquisitionObservationsLocked();
                 }
             }
         }
@@ -481,6 +486,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     {
         next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
+        next = ApplyCameraAcquisitionStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
@@ -532,6 +538,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_completion is not null) await _completion.ConfigureAwait(false);
         await _storeInitialization.ConfigureAwait(false);
         if (_alarmMaintenance is not null) await _alarmMaintenance.ConfigureAwait(false);
+        if (_cameraAcquisitionObservation is not null) await _cameraAcquisitionObservation.ConfigureAwait(false);
         _lifetime.Dispose();
     }
 }

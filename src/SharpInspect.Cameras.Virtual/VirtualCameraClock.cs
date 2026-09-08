@@ -6,7 +6,7 @@ namespace SharpInspect.Cameras.Virtual;
 /// Deterministic monotonic time for virtual camera adapters. It has no dependency
 /// on a wall clock, timer, or task scheduler; callers advance it explicitly.
 /// </summary>
-public sealed class VirtualCameraClock : IDisposable
+public sealed class VirtualCameraClock : IFrameAcquisitionClock, IDisposable
 {
     public const long Frequency = TimeSpan.TicksPerSecond;
 
@@ -22,6 +22,13 @@ public sealed class VirtualCameraClock : IDisposable
     private bool _disposed;
     private bool _operationActive;
     private int _operationThreadId;
+    private bool _advancing;
+    private long _phaseTimestamp;
+    private FrameAcquisitionClockPhase _phaseBarrier;
+    // Once a deadline callback has started at a timestamp, observations at
+    // that same timestamp can no longer be inserted after the adjudication.
+    // This watermark intentionally survives the AdvanceCore operation.
+    private long _deadlineWatermark = long.MinValue;
 
     public VirtualCameraClock(DateTimeOffset initialUtc)
     {
@@ -56,6 +63,11 @@ public sealed class VirtualCameraClock : IDisposable
     {
         lock (_stateGate) return new FrameTimePoint(_utcNow, _timestamp);
     }
+
+    // Keep the historical public constant for callers that use the virtual
+    // clock directly; the interface is implemented explicitly so its instance
+    // contract cannot be confused with that constant.
+    long IFrameAcquisitionClock.Frequency => Frequency;
 
     public void AdvanceBy(TimeSpan delta)
     {
@@ -138,20 +150,34 @@ public sealed class VirtualCameraClock : IDisposable
 
     /// <summary>Schedules adapter-owned work at a monotonic timestamp.</summary>
     internal IDisposable Schedule(long dueTimestamp, Action callback)
+        => ScheduleCore(dueTimestamp, FrameAcquisitionClockPhase.FrameObservation, callback);
+
+    public IDisposable Schedule(long dueTimestamp, FrameAcquisitionClockPhase phase,
+        Action callback) => ScheduleCore(dueTimestamp, phase, callback);
+
+    private IDisposable ScheduleCore(long dueTimestamp, FrameAcquisitionClockPhase phase,
+        Action callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        if (!Enum.IsDefined(typeof(FrameAcquisitionClockPhase), phase))
+            throw new ArgumentOutOfRangeException(nameof(phase));
         lock (_stateGate)
         {
             EnsureNotDisposedLocked();
             if (dueTimestamp < _timestamp)
                 throw new ArgumentOutOfRangeException(nameof(dueTimestamp),
                     "VirtualCameraClockScheduleInPast");
+            if (dueTimestamp == _deadlineWatermark && phase < FrameAcquisitionClockPhase.Deadline)
+                throw new InvalidOperationException("VirtualCameraClockPhaseClosed");
+            if (_advancing && dueTimestamp == _phaseTimestamp && phase < _phaseBarrier)
+                throw new InvalidOperationException("VirtualCameraClockPhaseClosed");
             if (_events.Count >= MaximumPendingEvents)
                 throw new InvalidOperationException("VirtualCameraClockScheduleCapacityExceeded");
             if (_nextRegistrationSequence == long.MaxValue)
                 throw new InvalidOperationException("VirtualCameraClockScheduleSequenceExhausted");
 
-            var scheduled = new ScheduledEvent(dueTimestamp, _nextRegistrationSequence++, callback);
+            var scheduled = new ScheduledEvent(dueTimestamp, phase,
+                _nextRegistrationSequence++, callback);
             _events.Add(scheduled);
             return new ScheduleHandle(this, scheduled);
         }
@@ -177,37 +203,55 @@ public sealed class VirtualCameraClock : IDisposable
     private void AdvanceCore(long target, DateTimeOffset targetUtc)
     {
         var executedCallbacks = 0;
-        while (true)
+        lock (_stateGate) _advancing = true;
+        try
         {
-            ScheduledEvent scheduled;
-            lock (_stateGate)
+            while (true)
             {
-                if (_disposed) return;
-                if (_events.Count == 0 || _events.Min!.DueTimestamp > target)
+                ScheduledEvent scheduled;
+                lock (_stateGate)
                 {
-                    _timestamp = target;
-                    _utcNow = targetUtc;
-                    return;
+                    if (_disposed) return;
+                    if (_events.Count == 0 || _events.Min!.DueTimestamp > target)
+                    {
+                        _timestamp = target;
+                        _utcNow = targetUtc;
+                        return;
+                    }
+
+                    scheduled = _events.Min!;
+                    _events.Remove(scheduled);
+                    if (executedCallbacks >= MaximumCallbacksPerAdvance)
+                        throw new InvalidOperationException("VirtualCameraClockCallbackLimitExceeded");
+
+                    var elapsed = scheduled.DueTimestamp - _timestamp;
+                    _utcNow = AddUtc(_utcNow, elapsed, nameof(target));
+                    _timestamp = scheduled.DueTimestamp;
+                    _phaseTimestamp = scheduled.DueTimestamp;
+                    _phaseBarrier = scheduled.Phase;
+                    if (scheduled.Phase == FrameAcquisitionClockPhase.Deadline &&
+                        scheduled.DueTimestamp > _deadlineWatermark)
+                        _deadlineWatermark = scheduled.DueTimestamp;
                 }
 
-                scheduled = _events.Min!;
-                _events.Remove(scheduled);
-                if (executedCallbacks >= MaximumCallbacksPerAdvance)
-                    throw new InvalidOperationException("VirtualCameraClockCallbackLimitExceeded");
-
-                var elapsed = scheduled.DueTimestamp - _timestamp;
-                _utcNow = AddUtc(_utcNow, elapsed, nameof(target));
-                _timestamp = scheduled.DueTimestamp;
+                executedCallbacks++;
+                try
+                {
+                    scheduled.Callback();
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                {
+                    throw new InvalidOperationException("VirtualCameraClockCallbackFailed");
+                }
             }
-
-            executedCallbacks++;
-            try
+        }
+        finally
+        {
+            lock (_stateGate)
             {
-                scheduled.Callback();
-            }
-            catch (Exception exception) when (exception is not OutOfMemoryException)
-            {
-                throw new InvalidOperationException("VirtualCameraClockCallbackFailed");
+                _advancing = false;
+                _phaseTimestamp = 0;
+                _phaseBarrier = FrameAcquisitionClockPhase.FrameObservation;
             }
         }
     }
@@ -277,14 +321,17 @@ public sealed class VirtualCameraClock : IDisposable
 
     private sealed class ScheduledEvent
     {
-        internal ScheduledEvent(long dueTimestamp, long registrationSequence, Action callback)
+        internal ScheduledEvent(long dueTimestamp, FrameAcquisitionClockPhase phase,
+            long registrationSequence, Action callback)
         {
             DueTimestamp = dueTimestamp;
+            Phase = phase;
             RegistrationSequence = registrationSequence;
             Callback = callback;
         }
 
         internal long DueTimestamp { get; }
+        internal FrameAcquisitionClockPhase Phase { get; }
         internal long RegistrationSequence { get; }
         internal Action Callback { get; }
     }
@@ -299,7 +346,10 @@ public sealed class VirtualCameraClock : IDisposable
             if (left is null) return -1;
             if (right is null) return 1;
             var due = left.DueTimestamp.CompareTo(right.DueTimestamp);
-            return due != 0 ? due : left.RegistrationSequence.CompareTo(right.RegistrationSequence);
+            if (due != 0) return due;
+            var phase = left.Phase.CompareTo(right.Phase);
+            return phase != 0 ? phase :
+                left.RegistrationSequence.CompareTo(right.RegistrationSequence);
         }
     }
 

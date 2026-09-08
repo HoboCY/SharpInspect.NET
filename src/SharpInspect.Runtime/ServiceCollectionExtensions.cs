@@ -13,6 +13,21 @@ namespace SharpInspect.Runtime;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers one explicitly constructed, non-production acquisition component.
+    /// The service provider owns its lifetime; the component exclusively owns its device.
+    /// StationRuntime observes protocol facts without granting production admission.
+    /// </summary>
+    public static IServiceCollection AddSharpInspectCameraAcquisition(this IServiceCollection services,
+        Func<IServiceProvider, CameraAcquisitionService> factory)
+    {
+        ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(factory);
+        if (services.Any(item => item.ServiceType == typeof(CameraAcquisitionService)))
+            throw new ArgumentException("CameraAcquisitionAlreadyRegistered", nameof(services));
+        services.AddSingleton(factory);
+        return services;
+    }
+
     /// <summary>Registers the bounded computation engine without opening production admission.</summary>
     public static IServiceCollection AddSharpInspectAlgorithmExecution(this IServiceCollection services,
         AlgorithmExecutionOptions options)
@@ -91,7 +106,8 @@ public static class ServiceCollectionExtensions
             frameBufferPool: p.GetService<FrameBufferPool>(), executionGuard: p.GetService<AlgorithmExecutionGuard>(),
             algorithmExecutionOptions: p.GetService<AlgorithmExecutionOptions>(),
             cameraProviders: p.GetServices<ICameraProvider>(),
-            cameraSetupOptions: p.GetService<CameraSetupOptions>()));
+            cameraSetupOptions: p.GetService<CameraSetupOptions>(),
+            cameraAcquisitionService: p.GetService<CameraAcquisitionService>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -147,7 +163,7 @@ public static class ServiceCollectionExtensions
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
             p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
-            p.GetService<CameraSetupOptions>()));
+            p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
