@@ -24,7 +24,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal bool CalibrationEnabled => CalibrationSessionsEnabled;
     private bool RecipeDraftEnabled => _options.RecipeDrafts is not null;
     private bool AlgorithmArchiveEnabled => _options.AlgorithmResultArchive is not null;
-    private int SchemaVersion => CalibrationSessionsEnabled ? CalibrationSessionStoreOptions.SchemaVersion :
+    private int SchemaVersion => CalibrationGovernanceEnabled ? CalibrationGovernanceStoreOptions.SchemaVersion :
+        CalibrationSessionsEnabled ? CalibrationSessionStoreOptions.SchemaVersion :
         ImagingSetupEnabled ? ImagingSetupStoreOptions.SchemaVersion :
         CameraNetworkEnabled ? CameraNetworkStoreOptions.SchemaVersion :
         CameraRecoveryEnabled ? CameraRecoveryStoreOptions.SchemaVersion :
@@ -74,6 +75,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         options.CameraNetwork?.Validate();
         options.ImagingSetup?.Validate();
         options.CalibrationSessions?.Validate();
+        options.CalibrationGovernance?.Validate();
+        if (options.CalibrationGovernance is not null && options.CalibrationSessions is null)
+            throw new ArgumentException("CalibrationGovernanceRequiresCalibrationSessions", nameof(options));
         if (options.AlgorithmResultArchive is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("AlgorithmResultArchiveRequiresIdentityAndAudit", nameof(options));
@@ -390,7 +394,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
-    private string MigrationReason(int existingVersion) => CalibrationSessionsEnabled
+    private string MigrationReason(int existingVersion) => CalibrationGovernanceEnabled
+        ? "CalibrationGovernanceMigrationRequired"
+        : CalibrationSessionsEnabled
         ? "CalibrationGovernedMigrationRequired"
         : ImagingSetupEnabled
         ? "ImagingSetupGovernedMigrationRequired"
@@ -432,7 +438,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion)
             return new StoreWriteResult(false,
-                !CalibrationSessionsEnabled && version == CalibrationSessionStoreOptions.SchemaVersion
+                !CalibrationGovernanceEnabled && version == CalibrationGovernanceStoreOptions.SchemaVersion
+                    ? "CalibrationGovernanceConfigurationRequired"
+                    : !CalibrationSessionsEnabled && version == CalibrationSessionStoreOptions.SchemaVersion
                     ? "CalibrationConfigurationRequired"
                     : !ImagingSetupEnabled && version == ImagingSetupStoreOptions.SchemaVersion
                     ? "ImagingSetupConfigurationRequired"
@@ -462,26 +470,26 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     (version == SchemaVersion || version is RecipeDraftStoreOptions.SchemaVersion or
                         CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                        CalibrationSessionStoreOptions.SchemaVersion);
+                        CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var alarmSchema = version >= 7 && _options.AlarmPolicy is not null;
                 var draftSchema = RecipeDraftEnabled &&
                     (version is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
                         CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-                        ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion);
+                        ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var cameraSchema = CameraSetupEnabled &&
                     (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                        CalibrationSessionStoreOptions.SchemaVersion);
+                        CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var recoverySchema = CameraRecoveryEnabled &&
                     (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-                        ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion);
+                        ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var networkSchema = CameraNetworkEnabled &&
                     (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                        CalibrationSessionStoreOptions.SchemaVersion);
+                        CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var imagingSchema = ImagingSetupEnabled &&
-                    (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion);
+                    (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
                 var calibrationSchema = CalibrationSessionsEnabled &&
-                    version == CalibrationSessionStoreOptions.SchemaVersion;
+                    version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
                     archiveSchema || alarmSchema || draftSchema || cameraSchema || recoverySchema || networkSchema || imagingSchema || calibrationSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
@@ -492,7 +500,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     cameraRecoveryOptions: recoverySchema ? _options.CameraRecovery : null,
                     cameraNetworkOptions: networkSchema ? _options.CameraNetwork : null,
                     imagingSetupOptions: imagingSchema ? _options.ImagingSetup : null,
-                    calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null);
+                    calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null,
+                    governanceOptions: _options.CalibrationGovernance);
                 if (alarmSchema) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -517,34 +526,37 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (version == AlgorithmResultArchiveOptions.SchemaVersion || version == RecipeDraftStoreOptions.SchemaVersion ||
             version == CameraSetupStoreOptions.SchemaVersion || version == CameraRecoveryStoreOptions.SchemaVersion ||
             version == CameraNetworkStoreOptions.SchemaVersion || version == ImagingSetupStoreOptions.SchemaVersion ||
-            version == CalibrationSessionStoreOptions.SchemaVersion)
+            version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
         {
             if (AlgorithmArchiveEnabled)
                 SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
         }
         if ((version is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
             CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion) &&
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             RecipeDraftEnabled)
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, _options.RecipeDrafts!, deadline);
         if (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion)
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
             SqliteCommandStore.RequireConfiguredCameraSetup(database, _options.CameraSetup!, deadline);
         if (CameraRecoveryEnabled && (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion))
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraRecovery(database, _options.CameraRecovery!, deadline);
         if (CameraNetworkEnabled && (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion))
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraNetwork(database, _options.CameraNetwork!, deadline);
-        if (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion)
+        if (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
             SqliteCommandStore.RequireConfiguredImagingSetup(database, _options.ImagingSetup!, deadline);
-        if (version == CalibrationSessionStoreOptions.SchemaVersion)
+        if (version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
         {
             SqliteCommandStore.RequireConfiguredCalibrationSessions(database, _options.CalibrationSessions!, deadline);
             SqliteCommandStore.ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline,
                 _policy?.StationId ?? string.Empty);
         }
+
+        if (version == CalibrationGovernanceStoreOptions.SchemaVersion)
+            ValidateCalibrationGovernanceHistory(database, _options.CalibrationGovernance!, deadline);
 
         if (!ConfigureProductionProfile(database, deadline))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
@@ -603,6 +615,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 SqliteNative.Execute(database, CalibrationSessionSchemaSql, deadline);
                 InitializeCalibrationSessionSchema(database, _options.CalibrationSessions!, deadline);
             }
+            if (CalibrationGovernanceEnabled)
+                InitializeCalibrationGovernanceSchema(database, _options.CalibrationGovernance!, deadline,
+                    _policy!, _signingKey!);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
             return new StoreWriteResult(true, "TraceStoreReady");
@@ -681,7 +696,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
                         cameraNetworkOptions: networkStore ? _options.CameraNetwork : null,
                         imagingSetupOptions: imagingStore ? _options.ImagingSetup : null,
-                        calibrationSessionOptions: calibrationStore ? _options.CalibrationSessions : null);
+                        calibrationSessionOptions: calibrationStore ? _options.CalibrationSessions : null,
+                        governanceOptions: _options.CalibrationGovernance);
                     if (alarmStore)
                         AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                     if (archiveStore)
@@ -975,6 +991,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (CameraNetworkEnabled) SqliteNative.Execute(canonicalDatabase, CameraNetworkSchemaSql, deadline);
         if (ImagingSetupEnabled) SqliteNative.Execute(canonicalDatabase, ImagingSetupSchemaSql, deadline);
         if (CalibrationSessionsEnabled) SqliteNative.Execute(canonicalDatabase, CalibrationSessionSchemaSql, deadline);
+        if (CalibrationGovernanceEnabled) SqliteNative.Execute(canonicalDatabase, CalibrationGovernanceSchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;
@@ -1085,6 +1102,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (SchemaVersion >= 5)
             {
                 sql = sql.Replace("CHECK(CommandKind IN (0,1,2,3,4,5,6))",
+                    SchemaVersion >= 15 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28))" :
                     SchemaVersion >= 14 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24))" :
                     SchemaVersion >= 13 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19))" :
                     SchemaVersion >= 12 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18))" :

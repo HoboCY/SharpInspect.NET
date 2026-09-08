@@ -146,6 +146,9 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ResetAlarmCommand => Permission.ResetAlarm,
         StartCameraRecoveryCycleCommand => Permission.ManageCameraBindings,
         StartCalibrationSessionCommand or CalibrationSessionCommand => Permission.RunCalibration,
+        PublishCalibrationAcceptancePolicyCommand => Permission.ManageCalibrationAcceptancePolicy,
+        EvaluateCalibrationCandidateCommand or PublishCalibrationProfileCommand => Permission.PublishCalibration,
+        RecordPhysicalCalibrationVerificationCommand => Permission.RecordPhysicalCalibrationVerification,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -165,6 +168,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             StartCameraRecoveryCycleCommand recovery => recovery.LogicalRole,
             StartCalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             CalibrationSessionCommand calibration => calibration.AuthorizationTarget,
+            CalibrationGovernanceCommand calibration => calibration.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -190,6 +194,10 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.StartCalibrationSession or AuditedCommandKind.CaptureCalibrationFrame or
             AuditedCommandKind.ExcludeCalibrationFrame or AuditedCommandKind.ComputeCalibrationCandidate or
             AuditedCommandKind.ExitCalibrationSession => Permission.RunCalibration,
+        AuditedCommandKind.PublishCalibrationAcceptancePolicy => Permission.ManageCalibrationAcceptancePolicy,
+        AuditedCommandKind.EvaluateCalibrationCandidate or AuditedCommandKind.PublishCalibrationProfile =>
+            Permission.PublishCalibration,
+        AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
@@ -213,6 +221,10 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ExcludeCalibrationFrameCommand => AuditedCommandKind.ExcludeCalibrationFrame,
         ComputeCalibrationCandidateCommand => AuditedCommandKind.ComputeCalibrationCandidate,
         ExitCalibrationSessionCommand => AuditedCommandKind.ExitCalibrationSession,
+        PublishCalibrationAcceptancePolicyCommand => AuditedCommandKind.PublishCalibrationAcceptancePolicy,
+        EvaluateCalibrationCandidateCommand => AuditedCommandKind.EvaluateCalibrationCandidate,
+        PublishCalibrationProfileCommand => AuditedCommandKind.PublishCalibrationProfile,
+        RecordPhysicalCalibrationVerificationCommand => AuditedCommandKind.RecordPhysicalCalibrationVerification,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

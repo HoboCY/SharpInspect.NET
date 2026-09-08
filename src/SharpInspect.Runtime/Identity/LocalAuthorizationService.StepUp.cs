@@ -125,9 +125,10 @@ internal sealed partial class LocalAuthorizationService
 
     private IdentityAuditEvent AuthorizationEvent(IdentityAuthorityState state, IdentityEventKind kind, string reason,
         StepUpBinding? binding, Guid? actorId, Guid? sessionId, Guid? grantId, Guid? correlationId,
-        long authorizationRevision, Guid? targetPrincipalId = null, IdentityManagementReason? managementReason = null)
+        long authorizationRevision, Guid? targetPrincipalId = null, IdentityManagementReason? managementReason = null,
+        DateTimeOffset? capturedTime = null)
     {
-        var now = _utcNow();
+        var now = capturedTime ?? _utcNow();
         if (now > state.LastObservedUtc) state.LastObservedUtc = now;
         return new IdentityAuditEvent(Guid.NewGuid(), kind, state.LastObservedUtc, state.StationId,
             targetPrincipalId ?? actorId, null, null, null, reason,

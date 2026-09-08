@@ -13,7 +13,7 @@ internal static class Program
             Console.Error.WriteLine("Usage: --mode bootstrap|run|restart|wpf|all --directory <path> " +
                 "[--trace-db <path>] [--evidence-root <path>] [--identity-policy <json>] " +
                 "[--alarm-policy <json>] [--checkerboard-images <directory>] " +
-                "[--planar-images <directory>] --user-name <name> " +
+                "[--planar-images <directory>] [--governance] --user-name <name> " +
                 "[--display-name <name>] [--expected-principal <guid>]");
             return 2;
         }
@@ -33,16 +33,27 @@ internal static class Program
                 else if (arguments.Mode is CalibrationConsumerMode.Run or CalibrationConsumerMode.Wpf)
                     await CalibrationConsumer.RunAsync(arguments, password, render: true);
                 else if (arguments.Mode == CalibrationConsumerMode.Restart)
+                {
                     await CalibrationConsumer.RestartAsync(arguments, password);
+                    if (arguments.Governance) await CalibrationConsumer.RestartGovernanceAsync(arguments, password);
+                }
                 else
                 {
                     await CalibrationConsumer.RunAsync(arguments, password, render: true);
                     await CalibrationConsumer.RestartAsync(arguments, password);
+                    if (arguments.Governance) await CalibrationConsumer.RestartGovernanceAsync(arguments, password);
                 }
 
                 if (arguments.Mode == CalibrationConsumerMode.Bootstrap)
                     return;
                 var planar = arguments.PlanarImagesDirectory is not null;
+                if (arguments.Governance)
+                {
+                    Console.WriteLine(arguments.Mode == CalibrationConsumerMode.Restart
+                        ? "V127-N02 calibration-governance-restart PASS schema=15 readOnly=true ready=false"
+                        : "V127-N01 calibration-governance-consumer PASS schema=15 developmentOnly=true ready=false");
+                    return;
+                }
                 Console.WriteLine(arguments.Mode == CalibrationConsumerMode.Restart &&
                     planar
                     ? "V126-N02 planar-homography-restart PASS schema=14 " +

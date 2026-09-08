@@ -632,7 +632,7 @@ public sealed class CalibrationSessionRuntimeTests
         return current;
     }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         private const string UserName = "calibration-session-admin";
         private const string Password = "V124 calibration session test secret 26!";
@@ -648,7 +648,8 @@ public sealed class CalibrationSessionRuntimeTests
             TestProvider provider, TestDevice initial, CameraRecoveryService recovery,
             TestProcedure procedure, SignedIn user, CameraBindingRevision binding,
             ImagingSetupRevision imaging, CalibrationSessionPlan plan,
-            EffectiveCameraConfiguration baselineEffective)
+            EffectiveCameraConfiguration baselineEffective,
+            CalibrationAcceptancePolicy? governancePolicy)
         {
             _directory = directory;
             _audit = audit;
@@ -667,6 +668,7 @@ public sealed class CalibrationSessionRuntimeTests
             Imaging = imaging;
             Plan = plan;
             BaselineEffective = baselineEffective;
+            GovernancePolicy = governancePolicy;
         }
 
         internal ProductionStoreOptions Options { get; }
@@ -684,11 +686,15 @@ public sealed class CalibrationSessionRuntimeTests
         internal ImagingSetupRevision Imaging { get; }
         internal CalibrationSessionPlan Plan { get; }
         internal EffectiveCameraConfiguration BaselineEffective { get; }
+        internal CalibrationAcceptancePolicy? GovernancePolicy { get; }
         internal RequestedCameraConfiguration BaselineRequested { get; private init; } = null!;
 
         internal static async Task<Fixture> CreateAsync(bool withDevelopmentFixture,
             bool blockCompute = false, TimeSpan? operationTimeout = null,
-            bool blockInputValidation = false)
+            bool blockInputValidation = false, bool withCalibrationGovernance = false,
+            Func<DateTimeOffset>? utcNow = null, bool withGovernanceEvidence = false,
+            PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
+            double governanceSampleThreshold = 1)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Calibration session integration requires Windows machine protection.");
@@ -707,7 +713,7 @@ public sealed class CalibrationSessionRuntimeTests
                 VerificationInterval = TimeSpan.FromSeconds(1),
                 MaximumVerificationEntries = 10_000
             };
-            var authorizationPolicy = CreateAuthorizationPolicy();
+            var authorizationPolicy = CreateAuthorizationPolicy(withCalibrationGovernance);
             var identityOptions = new LocalIdentityOptions(audit.StationId,
                 new LocalPasswordPolicy
                 {
@@ -732,6 +738,9 @@ public sealed class CalibrationSessionRuntimeTests
                     MaximumFrameBytes = 1024 * 1024,
                     MaximumTotalFrameBytes = 8 * 1024 * 1024
                 },
+                CalibrationGovernance = withCalibrationGovernance
+                    ? new CalibrationGovernanceStoreOptions()
+                    : null,
                 CommitTimeout = TimeSpan.FromSeconds(5),
                 QueryTimeout = TimeSpan.FromSeconds(5),
                 QueueCapacity = 16
@@ -753,7 +762,8 @@ public sealed class CalibrationSessionRuntimeTests
                     new FixtureConsoleAuthority());
                 sessions = new InteractiveSessionService(identity,
                     identityOptions.AuthenticationPolicy, identity.PersistSessionEventAsync);
-                authorization = new LocalAuthorizationService(store, identityOptions, identity, sessions);
+                authorization = new LocalAuthorizationService(store, identityOptions, identity, sessions,
+                    utcNow: utcNow);
 
                 var token = await identity.ProvisionBootstrapTokenAsync();
                 Assert.True(token.Succeeded, token.ReasonCode);
@@ -784,8 +794,13 @@ public sealed class CalibrationSessionRuntimeTests
                 var binding = await AppendCompletedBindingAsync(store, audit, user, target);
                 var imaging = await AppendImagingAsync(store, options, authorization, user, binding);
 
-                var procedure = new TestProcedure(blockCompute, blockInputValidation);
-                var plan = CreatePlan(procedure, baselineRequested);
+                var procedure = new TestProcedure(blockCompute, blockInputValidation,
+                    withGovernanceEvidence);
+                var governancePolicy = withCalibrationGovernance
+                    ? CreateGovernancePolicy(procedure, "1", governanceSampleThreshold, null)
+                    : null;
+                var plan = CreatePlan(procedure, baselineRequested,
+                    governancePolicy?.Reference);
                 var imagingReference = ImagingSetupRevisionReference.FromRevision(imaging);
                 var calibrationOptions = new CalibrationSessionOptions
                 {
@@ -809,11 +824,12 @@ public sealed class CalibrationSessionRuntimeTests
                 runtime = new StationRuntime(store, TimeSpan.FromMilliseconds(20), sessions,
                     authorization, cameraRecoveryService: recovery,
                     calibrationSessionOptions: calibrationOptions,
-                    calibrationProcedures: registry, productionStoreOptions: options);
+                    calibrationProcedures: registry, productionStoreOptions: options,
+                    physicalCalibrationVerificationRegistry: physicalCalibrationVerificationRegistry);
 
                 var fixture = new Fixture(directory, audit, options, store, identity, sessions,
                     authorization, runtime, provider, initial, recovery, procedure, user, binding,
-                    imaging, plan, baselineEffective)
+                    imaging, plan, baselineEffective, governancePolicy)
                 {
                     BaselineRequested = baselineRequested
                 };
@@ -846,6 +862,18 @@ public sealed class CalibrationSessionRuntimeTests
             Assert.NotNull(result.GrantId);
             await WaitForVerifiedAsync(Store);
             return command with { Invocation = User.Invocation with { StepUpGrantId = result.GrantId } };
+        }
+
+        internal async Task<CommandInvocation> GrantAsync(Permission permission, Guid correlationId,
+            string authorizationTarget, AuditedCommandKind commandKind)
+        {
+            var result = await Authorization.ReauthenticateAsync(new StepUpRequest(Guid.NewGuid(),
+                User.Invocation, new StepUpBinding(permission, correlationId, authorizationTarget,
+                    commandKind), Password));
+            Assert.True(result.Succeeded, result.ReasonCode);
+            Assert.NotNull(result.GrantId);
+            await WaitForVerifiedAsync(Store);
+            return User.Invocation with { StepUpGrantId = result.GrantId };
         }
 
         internal async Task<CalibrationSessionQueryResult> QueryEvidenceAsync(Guid sessionId) =>
@@ -964,7 +992,7 @@ public sealed class CalibrationSessionRuntimeTests
         }
 
         private static CalibrationSessionPlan CreatePlan(TestProcedure procedure,
-            RequestedCameraConfiguration temporary)
+            RequestedCameraConfiguration temporary, RecipeContractReference? acceptancePolicy = null)
         {
             var hash = new string('A', 64);
             var inputContract = new RecipeContractReference("v124-calibration-input", "1", hash);
@@ -972,22 +1000,88 @@ public sealed class CalibrationSessionRuntimeTests
             return new CalibrationSessionPlan(
                 new CalibrationRequirement(Role, CalibrationKind.Intrinsic, "geometry",
                     new RecipeContractReference("v124-coefficients", "1", hash),
-                    new RecipeContractReference("v124-acceptance", "1", hash)),
+                    acceptancePolicy ?? new RecipeContractReference("v124-acceptance", "1", hash)),
                 descriptor, new CalibrationProcedureInputPayload(inputContract, new byte[] { 1 }),
                 temporary, new CalibrationEvidenceSelectionPolicy("v124-selection", "1",
                     minimumFrames: 1, minimumFeaturesPerFrame: 2, minimumImageCoverage: 0));
+        }
+
+        internal CalibrationAcceptancePolicy CreateGovernancePolicy(string version = "1",
+            double sampleThreshold = 1, TimeSpan? physicalValidity = null) =>
+            CreateGovernancePolicy(Procedure, version, sampleThreshold, physicalValidity);
+
+        private static CalibrationAcceptancePolicy CreateGovernancePolicy(TestProcedure procedure,
+            string version, double sampleThreshold, TimeSpan? physicalValidity)
+        {
+            var hash = new string('A', 64);
+            var coefficient = new RecipeContractReference("v124-coefficients", "1", hash);
+            var independent = new RecipeContractReference("v127-independent-reference", "1", hash);
+            return new CalibrationAcceptancePolicy("v124-acceptance", version,
+                CalibrationKind.Intrinsic, "geometry", procedure.Descriptor.Procedure,
+                procedure.Descriptor.InputContract, coefficient,
+                procedure.ExtractionReceiptContract, procedure.ComputationEvidenceContract,
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.Sample,
+                    CalibrationPolicyApplicability.Required, new[]
+                    {
+                        new CalibrationMetricGate("sample-frames",
+                            CalibrationPolicyFactReference.IncludedFrameCount,
+                            CalibrationGateComparison.MinimumInclusive, sampleThreshold)
+                    }),
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.Coverage,
+                    CalibrationPolicyApplicability.Required, new[]
+                    {
+                        new CalibrationMetricGate("image-coverage",
+                            CalibrationPolicyFactReference.SelectionImageCoverage,
+                            CalibrationGateComparison.MinimumInclusive, 0)
+                    }),
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.PoseDiversity,
+                    CalibrationPolicyApplicability.NotApplicable,
+                    notApplicableReason: "V127 pose diversity is separately verified."),
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.MaximumPerImageResidual,
+                    CalibrationPolicyApplicability.NotApplicable,
+                    notApplicableReason: "V127 image residuals are retained in computation evidence."),
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.MaximumPerPointResidual,
+                    CalibrationPolicyApplicability.Required, new[]
+                    {
+                        new CalibrationMetricGate("point-fit",
+                            CalibrationPolicyFactReference.ProcedureMetric("fit", "unit"),
+                            CalibrationGateComparison.MaximumInclusive, 1)
+                    }),
+                new CalibrationGateSection(CalibrationAcceptanceGateCategory.InvalidObservation,
+                    CalibrationPolicyApplicability.Required, new[]
+                    {
+                        new CalibrationMetricGate("excluded-frames",
+                            CalibrationPolicyFactReference.ExcludedFrameCount,
+                            CalibrationGateComparison.MaximumInclusive, 0)
+                    }),
+                new PhysicalCalibrationVerificationRequirement(
+                    CalibrationPolicyApplicability.Required,
+                    new RecipeContractReference("v127-physical-procedure", "1", hash),
+                    new RecipeContractReference("v127-physical-evidence", "1", hash),
+                    independent, physicalValidity ?? TimeSpan.FromHours(1), new[]
+                    {
+                        new CalibrationMetricGate("physical-fit",
+                            CalibrationPolicyFactReference.PhysicalVerificationMetric(
+                                "physical-fit", "unit"),
+                            CalibrationGateComparison.MaximumInclusive, 255)
+                    }));
         }
 
         private static RequestedCameraConfiguration Configuration(double exposure) => new(
             ProductionAcquisitionMode.SoftwareTrigger, exposure, 0,
             new RegionOfInterest(0, 0, 2, 2), VisionPixelFormat.Mono8, null, 100, 0, null);
 
-        private static AuthorizationPolicy CreateAuthorizationPolicy()
+        private static AuthorizationPolicy CreateAuthorizationPolicy(bool includeGovernance = false)
         {
             var development = AuthorizationPolicy.Development;
             var roles = development.RoleBundles.ToDictionary(item => item.Key,
                 item => item.Key == HumanRoleBundle.Administrator
                     ? item.Value.Append(Permission.RunCalibration)
+                        .Concat(includeGovernance ? new[]
+                        {
+                            Permission.ManageCalibrationAcceptancePolicy,
+                            Permission.RecordPhysicalCalibrationVerification
+                        } : Array.Empty<Permission>())
                     : item.Value.AsEnumerable());
             return new AuthorizationPolicy("v124-calibration", "1", roles);
         }
@@ -1073,7 +1167,7 @@ public sealed class CalibrationSessionRuntimeTests
         }
     }
 
-    private sealed record SignedIn(Guid PrincipalId, Guid SessionId,
+    internal sealed record SignedIn(Guid PrincipalId, Guid SessionId,
         long AuthorizationRevision)
     {
         internal CommandInvocation Invocation => new(CommandSource.PhysicalConsole,
@@ -1086,10 +1180,11 @@ public sealed class CalibrationSessionRuntimeTests
             "S-1-5-21-V124-CalibrationSession");
     }
 
-    private sealed class TestProcedure : ICalibrationProcedure<byte>
+    internal sealed class TestProcedure : ICalibrationProcedure<byte>
     {
         private readonly bool _blockCompute;
         private readonly bool _blockInputValidation;
+        private readonly bool _withGovernanceEvidence;
         private readonly TaskCompletionSource<bool> _computeStarted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _releaseCompute =
@@ -1101,12 +1196,18 @@ public sealed class CalibrationSessionRuntimeTests
         private int _inputValidationBlocked;
         private readonly ICalibrationInputCodec<byte> _codec;
 
-        internal TestProcedure(bool blockCompute, bool blockInputValidation = false)
+        internal TestProcedure(bool blockCompute, bool blockInputValidation = false,
+            bool withGovernanceEvidence = false)
         {
             _blockCompute = blockCompute;
             _blockInputValidation = blockInputValidation;
+            _withGovernanceEvidence = withGovernanceEvidence;
             var hash = new string('A', 64);
             var input = new RecipeContractReference("v124-calibration-input", "1", hash);
+            ExtractionReceiptContract = new RecipeContractReference(
+                "v127-calibration-receipt", "1", hash);
+            ComputationEvidenceContract = new RecipeContractReference(
+                "v127-calibration-evidence", "1", hash);
             _codec = new ByteCodec(this, input);
             Descriptor = new CalibrationProcedureDescriptor(
                 new RecipeContractReference("v124-calibration-procedure", "1", hash),
@@ -1118,16 +1219,24 @@ public sealed class CalibrationSessionRuntimeTests
         internal VisionFrame? LastComputeFrame { get; private set; }
         internal bool CancellationObserved { get; private set; }
         internal RecipeContractReference? CoefficientOverride { get; set; }
+        internal RecipeContractReference ExtractionReceiptContract { get; }
+        internal RecipeContractReference ComputationEvidenceContract { get; }
         public CalibrationProcedureDescriptor Descriptor { get; }
         public ICalibrationInputCodec<byte> InputCodec => _codec;
 
         public ValueTask<CalibrationExtractionResult> ExtractAsync(
-            CalibrationExtractionContext<byte> context, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(new CalibrationExtractionResult(new[]
+            CalibrationExtractionContext<byte> context, CancellationToken cancellationToken = default)
+        {
+            var receipt = _withGovernanceEvidence
+                ? new CalibrationExtractionReceipt(ExtractionReceiptContract,
+                    context.FrameId.ToByteArray())
+                : null;
+            return ValueTask.FromResult(new CalibrationExtractionResult(new[]
             {
                 new CalibrationImageFeature("top-left", 0, 0),
                 new CalibrationImageFeature("bottom-right", 1, 1)
-            }));
+            }, Array.Empty<CalibrationProcedureDiagnostic>(), receipt));
+        }
 
         public async ValueTask<CalibrationProcedureComputationResult> ComputeAsync(
             CalibrationComputationContext<byte> context,
@@ -1140,16 +1249,23 @@ public sealed class CalibrationSessionRuntimeTests
             _computeStarted.TrySetResult(true);
             if (_blockCompute)
                 await _releaseCompute.Task.ConfigureAwait(false);
-            return Result();
+            return Result(context);
         }
 
         internal void ReleaseCompute() => _releaseCompute.TrySetResult(true);
         internal void ReleaseInputValidation() => _releaseInputValidation.TrySetResult(true);
 
-        private CalibrationProcedureComputationResult Result() =>
-            new(new CalibrationCoefficientPayload(
+        private CalibrationProcedureComputationResult Result(CalibrationComputationContext<byte> context)
+        {
+            var evidence = _withGovernanceEvidence
+                ? new CalibrationComputationEvidencePayload(ComputationEvidenceContract,
+                    context.Observations.SelectMany(value => value.FrameId.ToByteArray()).ToArray())
+                : null;
+            return new(new CalibrationCoefficientPayload(
                 CoefficientOverride ?? new RecipeContractReference("v124-coefficients", "1", new string('A', 64)),
-                new byte[] { 7, 4 }), new[] { new CalibrationQualityMetric("fit", 1, "unit") });
+                new byte[] { 7, 4 }), new[] { new CalibrationQualityMetric("fit", 1, "unit") },
+                diagnostics: null, evidence: evidence);
+        }
 
         private sealed class ByteCodec : ICalibrationInputCodec<byte>
         {
@@ -1177,7 +1293,7 @@ public sealed class CalibrationSessionRuntimeTests
         }
     }
 
-    private sealed class TestProvider : ICameraProvider
+    internal sealed class TestProvider : ICameraProvider
     {
         private readonly object _sync = new();
         private TestDevice? _initial;
@@ -1224,7 +1340,7 @@ public sealed class CalibrationSessionRuntimeTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class TestDevice : IControlledCameraDevice
+    internal sealed class TestDevice : IControlledCameraDevice
     {
         private readonly object _sync = new();
         private readonly TestClock _clock;
@@ -1455,7 +1571,7 @@ public sealed class CalibrationSessionRuntimeTests
         }
     }
 
-    private sealed class TestClock : IFrameAcquisitionClock
+    internal sealed class TestClock : IFrameAcquisitionClock
     {
         private readonly object _sync = new();
         private readonly List<Scheduled> _scheduled = new();

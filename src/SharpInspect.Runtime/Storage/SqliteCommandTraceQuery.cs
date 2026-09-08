@@ -79,18 +79,24 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
              }, cancellationToken);
         SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15)) throw new InvalidOperationException("StoreSchemaUnavailable");
         if (options.CalibrationSessions is not null && schemaVersion < CalibrationSessionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
-        if (options.CalibrationSessions is null && schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
+        if (options.CalibrationSessions is null &&
+            (schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationConfigurationRequired");
+        if (options.CalibrationGovernance is not null && schemaVersion < CalibrationGovernanceStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("CalibrationGovernanceMigrationRequired");
+        if (options.CalibrationGovernance is null && schemaVersion == CalibrationGovernanceStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("CalibrationGovernanceConfigurationRequired");
         if ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion) && options.CameraSetup is null)
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) && options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
             throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
-        if (schemaVersion == CameraRecoveryStoreOptions.SchemaVersion && options.CameraRecovery is null)
+        if ((schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
+            options.CameraRecovery is null)
             throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
         if (schemaVersion < CameraRecoveryStoreOptions.SchemaVersion && options.CameraRecovery is not null)
             throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
@@ -98,7 +104,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("CameraNetworkConfigurationRequired");
         if (schemaVersion < CameraNetworkStoreOptions.SchemaVersion && options.CameraNetwork is not null)
             throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
-        if (schemaVersion == ImagingSetupStoreOptions.SchemaVersion && options.ImagingSetup is null)
+        if ((schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
+            options.ImagingSetup is null)
             throw new InvalidOperationException("ImagingSetupConfigurationRequired");
         if (schemaVersion < ImagingSetupStoreOptions.SchemaVersion && options.ImagingSetup is not null)
             throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
@@ -112,7 +119,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
         if (schemaVersion == ImagingSetupStoreOptions.SchemaVersion)
             RequireImagingSchemaConfiguration(database, options, deadline, cancellationToken);
-        if (schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
+        if (schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
             RequireCalibrationSchemaConfiguration(database, options, deadline, cancellationToken);
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
@@ -223,6 +230,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
         SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
         SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup!, deadline);
         SqliteCommandStore.RequireConfiguredCalibrationSessions(database, options.CalibrationSessions!, deadline);
+        if (options.CalibrationGovernance is not null)
+            SqliteCommandStore.RequireConfiguredCalibrationGovernance(database, options.CalibrationGovernance, deadline);
     }
 
     private static CommandTraceRecord ReadRecord(SQLitePCL.sqlite3_stmt statement)

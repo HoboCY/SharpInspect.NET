@@ -200,6 +200,28 @@ internal static class AuditChainDatabase
              PRAGMA user_version=14;", StringComparison.Ordinal);
             return sql;
         }
+        if (version == CalibrationGovernanceStoreOptions.SchemaVersion)
+        {
+            // Schema 15 preserves every schema-14 calibration column and
+            // payload envelope, then adds one independent governance position
+            // binding.  The schema-14 SQL branch above remains untouched so
+            // its canonical audit bytes and checks cannot drift.
+            var sql = SchemaSqlFor(CalibrationSessionStoreOptions.SchemaVersion)
+                .Replace("CalibrationManifestPosition INTEGER UNIQUE,", "CalibrationManifestPosition INTEGER UNIQUE, GovernancePosition INTEGER UNIQUE,", StringComparison.Ordinal)
+                .Replace("ImagingPosition IS NULL)", "ImagingPosition IS NULL AND GovernancePosition IS NULL)", StringComparison.Ordinal)
+                .Replace("PRAGMA user_version=14;", @"
+             CREATE INDEX ix_audit_governance_sequence ON audit_entries(Sequence) WHERE GovernancePosition IS NOT NULL;
+             PRAGMA user_version=15;", StringComparison.Ordinal);
+            const string calibrationManifest = " OR (Kind='CalibrationFrameManifest'";
+            var manifestStart = sql.LastIndexOf(calibrationManifest, StringComparison.Ordinal);
+            var checkClose = manifestStart < 0 ? -1 : sql.IndexOf(")));", manifestStart,
+                StringComparison.Ordinal);
+            if (manifestStart < 0 || checkClose < 0)
+                throw new InvalidOperationException("AuditSchemaDefinitionInvalid");
+            sql = sql.Insert(checkClose + 1, @" OR (Kind='CalibrationGovernanceStoreActivated' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL AND NetworkPosition IS NULL AND ImagingPosition IS NULL AND CalibrationSessionPosition IS NULL AND CalibrationEventPosition IS NULL AND CalibrationManifestPosition IS NULL AND GovernancePosition IS NULL)
+                 OR (Kind='CalibrationGovernanceEvent' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL AND NetworkPosition IS NULL AND ImagingPosition IS NULL AND CalibrationSessionPosition IS NULL AND CalibrationEventPosition IS NULL AND CalibrationManifestPosition IS NULL AND GovernancePosition IS NOT NULL AND GovernancePosition>0)");
+            return sql;
+        }
         throw new ArgumentOutOfRangeException(nameof(version));
     }
 
@@ -215,7 +237,9 @@ internal static class AuditChainDatabase
         "ImagingSetupRevisionCapacityExceeded" or "ImagingSetupTotalCapacityExceeded" or
         "ImagingSetupPayloadCapacityExceeded" or "CalibrationSessionCapacityExceeded" or
         "CalibrationEventCapacityExceeded" or "CalibrationEventPayloadCapacityExceeded" or
-        "CalibrationFrameCapacityExceeded" or "CalibrationFrameTotalCapacityExceeded";
+        "CalibrationFrameCapacityExceeded" or "CalibrationFrameTotalCapacityExceeded" or
+        "CalibrationGovernanceEntryCapacityExceeded" or "CalibrationGovernancePayloadCapacityExceeded" or
+        "CalibrationGovernanceTotalCapacityExceeded" or "CalibrationGovernanceAuditCapacityExceeded";
 
     internal enum CameraNetworkAuditWriteMode
     {
@@ -243,7 +267,7 @@ internal static class AuditChainDatabase
         int schemaVersion, CameraNetworkAuditWriteMode mode, StoreDeadline deadline)
     {
         if (schemaVersion is not (CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion) ||
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) ||
             !TableExists(db, "camera_network_events", deadline)) return 0;
         var pending = PendingCameraNetworkOperations(db, deadline);
         return mode switch
@@ -258,7 +282,8 @@ internal static class AuditChainDatabase
         sqlite3 db, AuditIntegrityPolicy policy, StoreDeadline deadline, bool archiveData,
         bool recipeDraftData = false, bool cameraSetupData = false, bool cameraNetworkData = false,
         bool imagingData = false,
-        CameraNetworkAuditWriteMode cameraNetworkMode = CameraNetworkAuditWriteMode.Generic)
+        CameraNetworkAuditWriteMode cameraNetworkMode = CameraNetworkAuditWriteMode.Generic,
+        bool governanceData = false)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
         var previous = Tail(db, deadline);
@@ -272,10 +297,12 @@ internal static class AuditChainDatabase
                 : imagingData ? ImagingSetupStoreOptions.ControlVerificationReserve : 0;
             if (schemaVersion == CameraNetworkStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, CameraNetworkStoreOptions.ControlVerificationReserve);
-            if (schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion)
+            if (schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, ImagingSetupStoreOptions.ControlVerificationReserve);
             if (schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, CalibrationSessionStoreOptions.ControlVerificationReserve);
+            if (schemaVersion == CalibrationGovernanceStoreOptions.SchemaVersion)
+                controlReserve = Math.Max(controlReserve, CalibrationGovernanceStoreOptions.ControlVerificationReserve);
             var reservedTerminalOperations = CameraNetworkReservedTerminalOperations(db,
                 schemaVersion, cameraNetworkMode, deadline);
             var limit = checked(policy.MaximumVerificationEntries - controlReserve -
@@ -285,6 +312,7 @@ internal static class AuditChainDatabase
                 : cameraNetworkData || schemaVersion == CameraNetworkStoreOptions.SchemaVersion
                     ? "CameraNetworkCapacityExceeded"
                 : imagingData ? "ImagingSetupCapacityExceeded"
+                : governanceData ? "CalibrationGovernanceAuditCapacityExceeded"
                 : cameraSetupData ? "CameraSetupCapacityExceeded" : "AuditVerificationCapacityExceeded");
         }
         return (sequence, previous.Hash, schemaVersion);
@@ -340,29 +368,59 @@ internal static class AuditChainDatabase
         long? imagingPosition = null,
         long? calibrationSessionPosition = null, long? calibrationEventPosition = null,
         long? calibrationManifestPosition = null,
+        long? governancePosition = null,
         CameraNetworkAuditWriteMode cameraNetworkMode = CameraNetworkAuditWriteMode.Generic)
     {
         var next = NextSequence(db, policy, deadline, archiveData: false,
             cameraNetworkData: cameraNetworkMode != CameraNetworkAuditWriteMode.Generic,
             imagingData: imagingPosition is not null || kind is "ImagingSetupRevision" or "ImagingSetupStoreActivated",
-            cameraNetworkMode: cameraNetworkMode);
+            cameraNetworkMode: cameraNetworkMode, governanceData: governancePosition is not null ||
+                kind is "CalibrationGovernanceStoreActivated" or "CalibrationGovernanceEvent");
         var sequence = next.Sequence;
         var previousHash = next.PreviousHash;
         var schemaVersion = next.SchemaVersion;
-        var hash = EntryHash(schemaVersion, policy.StationId, sequence, previousHash, kind,
-            position is { } ordinal ? Number(ordinal) : null,
-            identityPosition is { } identity ? Number(identity) : null,
-            alarmPosition is { } alarm ? Number(alarm) : null,
-            resultPosition is { } result ? Number(result) : null,
-            draftPosition is { } draft ? Number(draft) : null,
-            null,
-            networkPosition is { } network ? Number(network) : null,
-            imagingPosition is { } imaging ? Number(imaging) : null,
-            calibrationSessionPosition is { } calibrationSession ? Number(calibrationSession) : null,
-            calibrationEventPosition is { } calibrationEvent ? Number(calibrationEvent) : null,
-            calibrationManifestPosition is { } calibrationManifest ? Number(calibrationManifest) : null,
-            payload);
-        if (schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion)
+        var hash = schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion
+            ? EntryHashV11(schemaVersion, policy.StationId, sequence, previousHash, kind,
+                position is { } ordinal15 ? Number(ordinal15) : null,
+                identityPosition is { } identity15 ? Number(identity15) : null,
+                alarmPosition is { } alarm15 ? Number(alarm15) : null,
+                resultPosition is { } result15 ? Number(result15) : null,
+                draftPosition is { } draft15 ? Number(draft15) : null,
+                null,
+                networkPosition is { } network15 ? Number(network15) : null,
+                imagingPosition is { } imaging15 ? Number(imaging15) : null,
+                calibrationSessionPosition is { } calibrationSession15 ? Number(calibrationSession15) : null,
+                calibrationEventPosition is { } calibrationEvent15 ? Number(calibrationEvent15) : null,
+                calibrationManifestPosition is { } calibrationManifest15 ? Number(calibrationManifest15) : null,
+                governancePosition is { } governance15 ? Number(governance15) : null, payload)
+            : EntryHash(schemaVersion, policy.StationId, sequence, previousHash, kind,
+                position is { } ordinal ? Number(ordinal) : null,
+                identityPosition is { } identity ? Number(identity) : null,
+                alarmPosition is { } alarm ? Number(alarm) : null,
+                resultPosition is { } result ? Number(result) : null,
+                draftPosition is { } draft ? Number(draft) : null,
+                null,
+                networkPosition is { } network ? Number(network) : null,
+                imagingPosition is { } imaging ? Number(imaging) : null,
+                calibrationSessionPosition is { } calibrationSession ? Number(calibrationSession) : null,
+                calibrationEventPosition is { } calibrationEvent ? Number(calibrationEvent) : null,
+                calibrationManifestPosition is { } calibrationManifest ? Number(calibrationManifest) : null,
+                payload);
+        if (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p15 ? Number(p15) : null,
+                identityPosition is { } i15 ? Number(i15) : null,
+                alarmPosition is { } a15 ? Number(a15) : null,
+                resultPosition is { } r15 ? Number(r15) : null,
+                draftPosition is { } d15 ? Number(d15) : null,
+                null, networkPosition is { } n15 ? Number(n15) : null,
+                imagingPosition is { } m15 ? Number(m15) : null,
+                calibrationSessionPosition is { } s15 ? Number(s15) : null,
+                calibrationEventPosition is { } e15 ? Number(e15) : null,
+                calibrationManifestPosition is { } f15 ? Number(f15) : null,
+                governancePosition is { } g15 ? Number(g15) : null,
+                Convert.ToBase64String(payload), previousHash, hash);
+        else if (schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion)
             Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", deadline,
                 Number(sequence), kind, position is { } p14 ? Number(p14) : null,
                 identityPosition is { } i14 ? Number(i14) : null,
@@ -432,16 +490,26 @@ internal static class AuditChainDatabase
         CameraNetworkAuditWriteMode cameraNetworkMode = CameraNetworkAuditWriteMode.Generic)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15, "AuditSchemaInvalid");
         var next = NextSequence(db, policy, deadline, archiveData: false,
             cameraNetworkMode: cameraNetworkMode);
         var sequence = next.Sequence;
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
         var payload = fact.Encode(ordinal, schemaVersion);
         IdentityAuditEvent.VerifyPayload(payload, ordinal, policy.StationId, schemaVersion);
-        Execute(db, "INSERT INTO audit_entries(Sequence,Kind,IdentityPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
-            deadline, Number(sequence), "IdentityEvent", Number(ordinal), Convert.ToBase64String(payload), next.PreviousHash,
-            EntryHash(schemaVersion, policy.StationId, sequence, next.PreviousHash, "IdentityEvent", null, Number(ordinal), null, null, payload));
+        var hash = schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion
+            ? EntryHashV11(schemaVersion, policy.StationId, sequence, next.PreviousHash, "IdentityEvent",
+                null, Number(ordinal), null, null, null, null, null, null, null, null, null, null, payload)
+            : EntryHash(schemaVersion, policy.StationId, sequence, next.PreviousHash, "IdentityEvent", null,
+                Number(ordinal), null, null, payload);
+        if (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,IdentityPosition,GovernancePosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?);",
+                deadline, Number(sequence), "IdentityEvent", Number(ordinal), null,
+                Convert.ToBase64String(payload), next.PreviousHash, hash);
+        else
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,IdentityPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
+                deadline, Number(sequence), "IdentityEvent", Number(ordinal), Convert.ToBase64String(payload),
+                next.PreviousHash, hash);
         if (sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
             CreateCheckpoint(db, policy, key, deadline);
         return sequence;
@@ -478,7 +546,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion or
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) == 0,
             "AlgorithmResultArchiveActivationConflict");
@@ -501,7 +569,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion or
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadAuditBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true);
@@ -521,7 +589,8 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
             CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) == 0,
             "RecipeDraftActivationConflict");
@@ -548,7 +617,8 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
             CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadRecipeDraftBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true, recipeDraftData: true);
@@ -568,7 +638,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraSetupStoreActivated';", deadline) == 0,
             "CameraSetupActivationConflict");
@@ -590,7 +660,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_setup_events WHERE Position=?;", deadline, Number(position));
         Require(payloadText is { Length: > 0 and <= CameraSetupStorageCodec.MaximumEncodedPayloadChars },
@@ -613,7 +683,8 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraRecoveryStoreActivated';", deadline) == 0,
             "CameraRecoveryActivationConflict");
@@ -630,7 +701,8 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+            ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_recovery_terminal_events WHERE Position=?;",
             deadline, Number(position));
@@ -650,7 +722,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraNetworkStoreActivated';", deadline) == 0,
             "CameraNetworkActivationConflict");
@@ -667,7 +739,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion,
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_network_events WHERE Position=?;",
             deadline, Number(position));
@@ -691,7 +763,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, ImagingSetupStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+        Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ImagingSetupStoreActivated';",
             deadline) == 0, "ImagingSetupActivationConflict");
@@ -708,7 +781,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, ImagingSetupStoreOptions options, long position, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion,
+        Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM imaging_setup_revisions WHERE Position=?;",
             deadline, Number(position));
@@ -729,7 +803,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, CalibrationSessionStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == CalibrationSessionStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationStoreActivated';",
             deadline) == 0, "CalibrationActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -750,7 +825,8 @@ internal static class AuditChainDatabase
     internal static long AppendCalibrationLedgerEntry(sqlite3 db, AuditIntegrityPolicy policy,
         IAuditSigningKey key, string kind, long position, byte[] payload, StoreDeadline deadline)
     {
-        Require(Scalar(db, "PRAGMA user_version;", deadline) == CalibrationSessionStoreOptions.SchemaVersion,
+        Require(Scalar(db, "PRAGMA user_version;", deadline) is CalibrationSessionStoreOptions.SchemaVersion or
+            CalibrationGovernanceStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(kind is "CalibrationSessionHeader" or "CalibrationSessionEvent" or "CalibrationFrameManifest" &&
             position > 0 && payload.Length is > 0 and <= CalibrationSessionStoreOptions.SqliteValueLimitBytes &&
@@ -760,6 +836,41 @@ internal static class AuditChainDatabase
             calibrationSessionPosition: kind == "CalibrationSessionHeader" ? position : null,
             calibrationEventPosition: kind == "CalibrationSessionEvent" ? position : null,
             calibrationManifestPosition: kind == "CalibrationFrameManifest" ? position : null);
+        var tail = Tail(db, deadline);
+        if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
+            policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return sequence;
+    }
+
+    internal static long AppendCalibrationGovernanceStoreActivation(sqlite3 db,
+        AuditIntegrityPolicy policy, IAuditSigningKey key, CalibrationGovernanceStoreOptions options,
+        StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == CalibrationGovernanceStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationGovernanceStoreActivated';",
+            deadline) == 0, "CalibrationGovernanceActivationConflict");
+        var payload = options.EncodeActivationPayload();
+        AppendEntry(db, policy, "CalibrationGovernanceStoreActivated", null, payload, deadline);
+        var tail = Tail(db, deadline);
+        if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
+            policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return tail.Sequence;
+    }
+
+    internal static long AppendCalibrationGovernanceLedgerEntry(sqlite3 db,
+        AuditIntegrityPolicy policy, IAuditSigningKey key, long position, byte[] payload,
+        StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == CalibrationGovernanceStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(position > 0 && payload.Length is > 0 and <= CalibrationGovernanceStoreOptions.SqliteValueLimitBytes &&
+            Convert.ToBase64String(payload).Length <= CalibrationGovernanceStoreOptions.SqliteValueLimitBytes * 2,
+            "CalibrationGovernanceAuditPayloadInvalid");
+        var sequence = AppendEntry(db, policy, SqliteCommandStore.CalibrationGovernanceEventKind, null, payload, deadline,
+            governancePosition: position);
         var tail = Tail(db, deadline);
         if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
             policy.CheckpointEveryEntries)
@@ -831,23 +942,25 @@ internal static class AuditChainDatabase
         CameraRecoveryStoreOptions? cameraRecoveryOptions = null,
         CameraNetworkStoreOptions? cameraNetworkOptions = null,
         ImagingSetupStoreOptions? imagingSetupOptions = null,
-        CalibrationSessionStoreOptions? calibrationSessionOptions = null)
+        CalibrationSessionStoreOptions? calibrationSessionOptions = null,
+        CalibrationGovernanceStoreOptions? governanceOptions = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15, "AuditSchemaInvalid");
         var hasIdentity = schemaVersion >= 3;
         var hasAlarm = schemaVersion >= 7;
         var hasCamera = schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion;
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
         var hasRecovery = schemaVersion == CameraRecoveryStoreOptions.SchemaVersion ||
-            schemaVersion == CalibrationSessionStoreOptions.SchemaVersion ||
+            schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion ||
             (schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) && cameraRecoveryOptions is not null;
         var hasNetwork = schemaVersion == CameraNetworkStoreOptions.SchemaVersion ||
-            (schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion) &&
+            (schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             cameraNetworkOptions is not null;
-        var hasImaging = schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion;
-        var hasCalibration = schemaVersion == CalibrationSessionStoreOptions.SchemaVersion;
+        var hasImaging = schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
+        var hasCalibration = schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
+        var hasGovernance = schemaVersion == CalibrationGovernanceStoreOptions.SchemaVersion;
         if (hasCamera != (cameraSetupOptions is not null))
             throw new InvalidOperationException(hasCamera
                 ? "CameraSetupConfigurationRequired" : "CameraSetupGovernedMigrationRequired");
@@ -863,15 +976,24 @@ internal static class AuditChainDatabase
         if (hasCalibration != (calibrationSessionOptions is not null))
             throw new InvalidOperationException(hasCalibration
                 ? "CalibrationConfigurationRequired" : "CalibrationGovernedMigrationRequired");
+        if (hasGovernance != (governanceOptions is not null))
+            throw new InvalidOperationException(hasGovernance
+                ? "CalibrationGovernanceConfigurationRequired" : "CalibrationGovernanceMigrationRequired");
+        if (hasGovernance)
+        {
+            governanceOptions!.Validate();
+            SqliteCommandStore.RequireConfiguredCalibrationGovernance(db, governanceOptions, deadline);
+        }
         var hasArchive = schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion ||
             ((schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
                 CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion) &&
+                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+                CalibrationGovernanceStoreOptions.SchemaVersion) &&
                 archiveOptions is not null);
         var hasDraft = schemaVersion == RecipeDraftStoreOptions.SchemaVersion ||
             ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                 CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                CalibrationSessionStoreOptions.SchemaVersion) &&
+                CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                 recipeDraftOptions is not null);
         if (schemaVersion == RecipeDraftStoreOptions.SchemaVersion && recipeDraftOptions is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
@@ -880,13 +1002,13 @@ internal static class AuditChainDatabase
         if (recipeDraftOptions is null &&
             (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                 CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                CalibrationSessionStoreOptions.SchemaVersion) &&
+                CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             TableExists(db, "recipe_draft_revisions", deadline))
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if (archiveOptions is null &&
             (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                 CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                CalibrationSessionStoreOptions.SchemaVersion) &&
+                CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             TableExists(db, "development_algorithm_results", deadline))
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
         if (hasArchive)
@@ -920,19 +1042,21 @@ internal static class AuditChainDatabase
             SqliteCommandStore.RequireConfiguredCalibrationSessions(db, calibrationSessionOptions, deadline);
         }
         if ((schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion) &&
+                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+                CalibrationGovernanceStoreOptions.SchemaVersion) &&
             cameraRecoveryOptions is null && TableExists(db, "camera_recovery_terminal_events", deadline))
             throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
         if ((schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
-                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion) &&
+                ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+                CalibrationGovernanceStoreOptions.SchemaVersion) &&
             cameraRecoveryOptions is not null && !TableExists(db, "camera_recovery_terminal_events", deadline))
             throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
         if ((schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                CalibrationSessionStoreOptions.SchemaVersion) &&
+                CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             cameraNetworkOptions is null && TableExists(db, "camera_network_events", deadline))
             throw new InvalidOperationException("CameraNetworkConfigurationRequired");
         if ((schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                CalibrationSessionStoreOptions.SchemaVersion) &&
+                CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
             cameraNetworkOptions is not null && !TableExists(db, "camera_network_events", deadline))
             throw new InvalidOperationException("CameraNetworkConfigurationRequired");
         if (hasRecovery)
@@ -958,16 +1082,22 @@ internal static class AuditChainDatabase
             (hasImaging ? "ImagingPosition" : "NULL") + "," +
             (hasCalibration ? "CalibrationSessionPosition" : "NULL") + "," +
             (hasCalibration ? "CalibrationEventPosition" : "NULL") + "," +
-            (hasCalibration ? "CalibrationManifestPosition" : "NULL") +
+            (hasCalibration ? "CalibrationManifestPosition" : "NULL") + "," +
+            (hasGovernance ? "GovernancePosition" : "NULL") +
             " FROM audit_entries WHERE Sequence=1;", deadline,
-            s => Enumerable.Range(0, hasCalibration ? 15 : hasImaging ? 12 : 11)
+            s => Enumerable.Range(0, hasGovernance ? 16 : hasCalibration ? 15 : hasImaging ? 12 : 11)
                 .Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
         Require(genesis is not null && genesis[0] == "SigningKeyCreated" && genesis[2] == AuditCanonical.GenesisHash &&
             genesis[4] is null && genesis[5] is null && genesis[6] is null && genesis[7] is null && genesis[8] is null &&
             genesis[9] is null && genesis[10] is null && (!hasImaging || genesis[11] is null) &&
-            (!hasCalibration || (genesis[12] is null && genesis[13] is null && genesis[14] is null)),
+            (!hasCalibration || (genesis[12] is null && genesis[13] is null && genesis[14] is null)) &&
+            (!hasGovernance || genesis[15] is null),
             "AuditGenesisMissingOrInvalid");
-        var genesisHash = hasCalibration
+        var genesisHash = hasGovernance
+            ? EntryHashV11(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
+                genesis![0]!, genesis[4], genesis[5], genesis[6], genesis[7], genesis[8], genesis[9], genesis[10], genesis[11],
+                genesis[12], genesis[13], genesis[14], genesis[15], Convert.FromBase64String(genesis[1]!))
+            : hasCalibration
             ? EntryHash(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
                 genesis![0]!, genesis[4], genesis[5], genesis[6], genesis[7], genesis[8], genesis[9], genesis[10], genesis[11],
                 genesis[12], genesis[13], genesis[14], Convert.FromBase64String(genesis[1]!))
@@ -1011,6 +1141,7 @@ internal static class AuditChainDatabase
         var maxCalibrationSession = hasCalibration ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM calibration_sessions;", deadline) : 0;
         var maxCalibrationEvent = hasCalibration ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM calibration_session_events;", deadline) : 0;
         var maxCalibrationManifest = hasCalibration ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM calibration_frame_manifests;", deadline) : 0;
+        var maxGovernance = hasGovernance ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM calibration_governance_events;", deadline) : 0;
         var archiveActivations = hasArchive ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) : 0;
         var draftActivations = hasDraft ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) : 0;
         var cameraActivations = hasCamera ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraSetupStoreActivated';", deadline) : 0;
@@ -1018,6 +1149,7 @@ internal static class AuditChainDatabase
         var networkActivations = hasNetwork ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraNetworkStoreActivated';", deadline) : 0;
         var imagingActivations = hasImaging ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ImagingSetupStoreActivated';", deadline) : 0;
         var calibrationActivations = hasCalibration ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationStoreActivated';", deadline) : 0;
+        var governanceActivations = hasGovernance ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationGovernanceStoreActivated';", deadline) : 0;
         Require(!hasArchive || archiveActivations == 1, "AlgorithmResultArchiveActivationMissing");
         Require(!hasDraft || draftActivations == 1, "RecipeDraftActivationMissing");
         Require(!hasCamera || cameraActivations == 1, "CameraSetupActivationMissing");
@@ -1025,9 +1157,10 @@ internal static class AuditChainDatabase
         Require(!hasNetwork || networkActivations == 1, "CameraNetworkActivationMissing");
         Require(!hasImaging || imagingActivations == 1, "ImagingSetupActivationMissing");
         Require(!hasCalibration || calibrationActivations == 1, "CalibrationActivationMissing");
+        Require(!hasGovernance || governanceActivations == 1, "CalibrationGovernanceActivationMissing");
         Require(checked(maxFact + maxIdentity + maxAlarm + maxResult + maxDraft + maxCamera +
             maxRecovery + maxNetwork + maxImaging + maxCalibrationSession + maxCalibrationEvent + maxCalibrationManifest +
-            archiveActivations + draftActivations + cameraActivations + recoveryActivations + networkActivations + imagingActivations + calibrationActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
+            maxGovernance + archiveActivations + draftActivations + cameraActivations + recoveryActivations + networkActivations + imagingActivations + calibrationActivations + governanceActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
             "SELECT COALESCE(MAX(FactPosition),0) FROM audit_entries;", deadline) &&
             (!hasAlarm || maxAlarm == Scalar(db, "SELECT COALESCE(MAX(AlarmPosition),0) FROM audit_entries;", deadline)) &&
             (!hasArchive || maxResult == Scalar(db, "SELECT COALESCE(MAX(ResultPosition),0) FROM audit_entries;", deadline)) &&
@@ -1038,6 +1171,7 @@ internal static class AuditChainDatabase
             (!hasCalibration || maxCalibrationSession == Scalar(db, "SELECT COALESCE(MAX(CalibrationSessionPosition),0) FROM audit_entries;", deadline)) &&
             (!hasCalibration || maxCalibrationEvent == Scalar(db, "SELECT COALESCE(MAX(CalibrationEventPosition),0) FROM audit_entries;", deadline)) &&
             (!hasCalibration || maxCalibrationManifest == Scalar(db, "SELECT COALESCE(MAX(CalibrationManifestPosition),0) FROM audit_entries;", deadline)) &&
+            (!hasGovernance || maxGovernance == Scalar(db, "SELECT COALESCE(MAX(GovernancePosition),0) FROM audit_entries;", deadline)) &&
             Scalar(db, "SELECT COALESCE(MIN(Position),1) FROM command_facts;", deadline) == 1, "AuditUnchainedFact");
         long? anchored = null;
         if (policy.RequireExternalAnchor && validateAnchorReceipt)
@@ -1055,8 +1189,10 @@ internal static class AuditChainDatabase
         var fullNetworkVerification = hasNetwork && cameraNetworkOptions is not null;
         var fullImagingVerification = hasImaging && imagingSetupOptions is not null;
         var fullCalibrationVerification = hasCalibration && calibrationSessionOptions is not null;
+        var fullGovernanceVerification = hasGovernance && governanceOptions is not null;
         var prefixCheckpoint = startup && !fullArchiveVerification && !fullDraftVerification && !fullCameraVerification &&
-            !fullRecoveryVerification && !fullNetworkVerification && !fullImagingVerification && !fullCalibrationVerification ? checkpoint : ReadCheckpoint(db,
+            !fullRecoveryVerification && !fullNetworkVerification && !fullImagingVerification &&
+            !fullCalibrationVerification && !fullGovernanceVerification ? checkpoint : ReadCheckpoint(db,
             "WHERE Sequence<=? ORDER BY Sequence DESC LIMIT 1", deadline, Number(request.AfterSequence));
         if (prefixCheckpoint is not null) VerifyCheckpoint(policy, prefixCheckpoint, trustedKeyId, trustedPublicKey);
         var after = prefixCheckpoint is null ? 0 : prefixCheckpoint.Sequence - 1;
@@ -1082,14 +1218,16 @@ internal static class AuditChainDatabase
         var calibrationSessionOrdinal = hasCalibration ? Scalar(db, "SELECT CalibrationSessionPosition FROM audit_entries WHERE CalibrationSessionPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var calibrationEventOrdinal = hasCalibration ? Scalar(db, "SELECT CalibrationEventPosition FROM audit_entries WHERE CalibrationEventPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var calibrationManifestOrdinal = hasCalibration ? Scalar(db, "SELECT CalibrationManifestPosition FROM audit_entries WHERE CalibrationManifestPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
-        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + "," + (hasDraft ? "DraftPosition" : "NULL") + "," + (hasCamera ? "CameraPosition" : "NULL") + "," + (hasNetwork ? "NetworkPosition" : "NULL") + "," + (hasImaging ? "ImagingPosition" : "NULL") + "," + (hasCalibration ? "CalibrationSessionPosition" : "NULL") + "," + (hasCalibration ? "CalibrationEventPosition" : "NULL") + "," + (hasCalibration ? "CalibrationManifestPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
+        var governanceOrdinal = hasGovernance ? Scalar(db, "SELECT GovernancePosition FROM audit_entries WHERE GovernancePosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
+        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + "," + (hasDraft ? "DraftPosition" : "NULL") + "," + (hasCamera ? "CameraPosition" : "NULL") + "," + (hasNetwork ? "NetworkPosition" : "NULL") + "," + (hasImaging ? "ImagingPosition" : "NULL") + "," + (hasCalibration ? "CalibrationSessionPosition" : "NULL") + "," + (hasCalibration ? "CalibrationEventPosition" : "NULL") + "," + (hasCalibration ? "CalibrationManifestPosition" : "NULL") + "," + (hasGovernance ? "GovernancePosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
             deadline, s => new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
                 SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
                 SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6), SqliteNative.ColumnText(s, 7), SqliteNative.ColumnText(s, 8),
                 SqliteNative.ColumnText(s, 9), SqliteNative.ColumnText(s, 10), SqliteNative.ColumnText(s, 11), SqliteNative.ColumnText(s, 12),
                 hasCalibration ? SqliteNative.ColumnText(s, 13) : null,
                 hasCalibration ? SqliteNative.ColumnText(s, 14) : null,
-                hasCalibration ? SqliteNative.ColumnText(s, 15) : null), Number(after), Number(count));
+                hasCalibration ? SqliteNative.ColumnText(s, 15) : null,
+                hasGovernance ? SqliteNative.ColumnText(s, 16) : null), Number(after), Number(count));
         var next = after + 1;
         foreach (var row in rows)
         {
@@ -1102,7 +1240,10 @@ internal static class AuditChainDatabase
             var calibrationKind = row.Kind is "CalibrationSessionHeader" or "CalibrationSessionEvent" or "CalibrationFrameManifest";
             Require(calibrationKind || (row.CalibrationSessionPosition is null && row.CalibrationEventPosition is null &&
                 row.CalibrationManifestPosition is null), "AuditCalibrationPositionGap");
-            var encodedPayloadLimit = hasCalibration ? CalibrationSessionStorageCodec.MaximumEncodedChars :
+            var governanceKind = row.Kind is "CalibrationGovernanceStoreActivated" or "CalibrationGovernanceEvent";
+            Require(governanceKind || row.GovernancePosition is null, "AuditGovernancePositionGap");
+            var encodedPayloadLimit = governanceKind ? CalibrationGovernanceStoreOptions.SqliteValueLimitBytes * 2 :
+                hasCalibration ? CalibrationSessionStorageCodec.MaximumEncodedChars :
                 hasImaging ? ImagingSetupRevisionStorageCodec.MaximumEncodedPayloadChars :
                 hasNetwork ? CameraNetworkStorageCodec.MaximumEncodedPayloadChars :
                 hasCamera ? CameraSetupStorageCodec.MaximumEncodedPayloadChars :
@@ -1110,14 +1251,21 @@ internal static class AuditChainDatabase
                 hasAlarm ? AlarmStorageCodec.MaximumEncodedPayloadChars : 24000;
             Require(row.Payload.Length <= encodedPayloadLimit, "AuditPayloadOversize");
             var payload = Convert.FromBase64String(row.Payload);
-            var payloadLimit = hasCalibration ? CalibrationSessionStoreOptions.SqliteValueLimitBytes :
+            var payloadLimit = governanceKind ? CalibrationGovernanceStoreOptions.SqliteValueLimitBytes :
+                hasCalibration ? CalibrationSessionStoreOptions.SqliteValueLimitBytes :
                 hasImaging ? ImagingSetupRevisionStorageCodec.MaximumPayloadBytes :
                 hasNetwork ? CameraNetworkStorageCodec.MaximumPayloadBytes :
                 hasCamera ? CameraSetupStorageCodec.MaximumPayloadBytes :
                 hasArchive ? AlgorithmResultArchiveOptions.MaximumBindingPayloadBytes :
                 hasAlarm ? AlarmStorageCodec.MaximumPayloadBytes : 16384;
             Require(payload.Length <= payloadLimit, "AuditPayloadOversize");
-            var rowHash = hasCalibration
+            var rowHash = hasGovernance
+                ? EntryHashV11(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
+                    row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition,
+                    row.DraftPosition, row.CameraPosition, row.NetworkPosition, row.ImagingPosition,
+                    row.CalibrationSessionPosition, row.CalibrationEventPosition, row.CalibrationManifestPosition,
+                    row.GovernancePosition, payload)
+                : hasCalibration
                 ? EntryHash(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
                     row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition,
                     row.DraftPosition, row.CameraPosition, row.NetworkPosition, row.ImagingPosition,
@@ -1325,6 +1473,30 @@ internal static class AuditChainDatabase
                     Number(position));
                 Require(stored is not null && stored == row.Payload, "CalibrationManifestAuditBindingMismatch");
             }
+            else if (hasGovernance && row.Kind == "CalibrationGovernanceStoreActivated")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
+                    row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null &&
+                    row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null &&
+                    row.GovernancePosition is null, "CalibrationGovernanceActivationBindingMismatch");
+                SqliteCommandStore.VerifyCalibrationGovernanceActivationPayload(db, payload,
+                    governanceOptions!, deadline);
+            }
+            else if (hasGovernance && row.Kind == "CalibrationGovernanceEvent")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
+                    row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null &&
+                    row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null,
+                    "CalibrationGovernancePositionGap");
+                if (!long.TryParse(row.GovernancePosition, NumberStyles.None, CultureInfo.InvariantCulture,
+                        out var position))
+                    throw new InvalidOperationException("CalibrationGovernancePositionGap");
+                Require(position == ++governanceOrdinal, "CalibrationGovernancePositionGap");
+                SqliteCommandStore.VerifyCalibrationGovernanceAuditPayload(db, position, payload,
+                    governanceOptions!, deadline);
+            }
             else if (hasImaging && row.Kind == "ImagingSetupStoreActivated")
             {
                 Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
@@ -1348,7 +1520,7 @@ internal static class AuditChainDatabase
                     payload, deadline, imagingSetupOptions!);
                 Require(imagingBinding.Length > 0, "ImagingSetupBindingMismatch");
             }
-            else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null && row.NetworkPosition is null && row.ImagingPosition is null,
+            else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null && row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null && row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null && row.GovernancePosition is null,
                 "AuditEntryKindUnsupported");
             var cp = ReadCheckpoint(db, "WHERE Sequence=?", deadline, Number(row.Sequence));
             if ((row.Sequence - 1) % policy.CheckpointEveryEntries == 0)
@@ -1366,6 +1538,10 @@ internal static class AuditChainDatabase
         if (startup) Require(verifiedThrough == tail.Sequence, "AuditVerificationBudgetExceeded");
         if (hasAlarm)
             _ = AlarmStorageCodec.ReadPersistedPolicy(db, deadline);
+        // Every schema-15 audit observation checks cross-record policy, candidate,
+        // profile and verification semantics as well as signed row hashes.
+        if (hasGovernance)
+            SqliteCommandStore.ValidateCalibrationGovernanceHistory(db, governanceOptions!, deadline);
         return new AuditIntegrityReport(AuditIntegrityState.Verified,
             startup ? "AuditStartupTailVerified" : after == 0 && verifiedThrough == tail.Sequence ? "AuditRetainedChainVerified" : "AuditSegmentVerified",
             policy.StationId, policy.Version, tail.Sequence, after + 1, verifiedThrough,
@@ -1437,6 +1613,17 @@ internal static class AuditChainDatabase
             "ImagingSetupVerificationBudgetExceeded");
         if (options is not null)
             SqliteCommandStore.ValidateImagingSetupHistory(db, options, deadline);
+    }
+
+    internal static void RequireFullCalibrationGovernanceVerification(sqlite3 db,
+        AuditIntegrityReport report, StoreDeadline deadline,
+        CalibrationGovernanceStoreOptions? options = null)
+    {
+        Require(report.VerifiedFromSequence == 1 &&
+            report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
+            "CalibrationGovernanceVerificationBudgetExceeded");
+        if (options is not null)
+            SqliteCommandStore.ValidateCalibrationGovernanceHistory(db, options, deadline);
     }
 
     internal static void VerifyCheckpoint(AuditIntegrityPolicy policy, AuditCheckpoint cp, string keyId, string publicKey)
@@ -1550,7 +1737,12 @@ internal static class AuditChainDatabase
         string? draftPosition, string? cameraPosition, string? networkPosition, string? imagingPosition,
         string? calibrationSessionPosition, string? calibrationEventPosition, string? calibrationManifestPosition,
         byte[] payload) =>
-        AuditCanonical.Hash(stationId, sequence, previousHash, schemaVersion >= CameraSetupStoreOptions.SchemaVersion
+        schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion
+            ? EntryHashV11(schemaVersion, stationId, sequence, previousHash, kind, factPosition,
+                identityPosition, alarmPosition, resultPosition, draftPosition, cameraPosition,
+                networkPosition, imagingPosition, calibrationSessionPosition, calibrationEventPosition,
+                calibrationManifestPosition, null, payload)
+        : AuditCanonical.Hash(stationId, sequence, previousHash, schemaVersion >= CameraSetupStoreOptions.SchemaVersion
             ? schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion
                 ? AuditCanonical.Encode("AuditEntryEnvelopeV10", kind, factPosition, identityPosition, alarmPosition,
                     resultPosition, draftPosition, cameraPosition, networkPosition, imagingPosition,
@@ -1575,6 +1767,17 @@ internal static class AuditChainDatabase
                 : schemaVersion >= 3
                     ? AuditCanonical.Encode("AuditEntryEnvelopeV3", kind, factPosition, identityPosition, Convert.ToBase64String(payload))
                     : payload);
+
+    private static string EntryHashV11(long schemaVersion, string stationId, long sequence, string previousHash,
+        string kind, string? factPosition, string? identityPosition, string? alarmPosition,
+        string? resultPosition, string? draftPosition, string? cameraPosition, string? networkPosition,
+        string? imagingPosition, string? calibrationSessionPosition, string? calibrationEventPosition,
+        string? calibrationManifestPosition, string? governancePosition, byte[] payload) =>
+        AuditCanonical.Hash(stationId, sequence, previousHash,
+            AuditCanonical.Encode("AuditEntryEnvelopeV11", kind, factPosition, identityPosition,
+                alarmPosition, resultPosition, draftPosition, cameraPosition, networkPosition,
+                imagingPosition, calibrationSessionPosition, calibrationEventPosition,
+                calibrationManifestPosition, governancePosition, Convert.ToBase64String(payload)));
     internal static void Require(bool condition, string reason)
     {
         if (!condition) throw new InvalidOperationException(reason);
@@ -1589,5 +1792,6 @@ internal static class AuditChainDatabase
     private sealed record ChainRow(long Sequence, string Kind, string? FactPosition, string Payload, string PreviousHash,
         string Hash, string? IdentityPosition, string? AlarmPosition, string? ResultPosition, string? DraftPosition,
         string? CameraPosition, string? NetworkPosition, string? ImagingPosition,
-        string? CalibrationSessionPosition, string? CalibrationEventPosition, string? CalibrationManifestPosition);
+        string? CalibrationSessionPosition, string? CalibrationEventPosition, string? CalibrationManifestPosition,
+        string? GovernancePosition);
 }

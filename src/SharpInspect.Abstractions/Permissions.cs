@@ -43,7 +43,11 @@ public enum Permission : ushort
     /// <summary>Author and persist a bounded Recipe Draft revision.</summary>
     EditRecipeDraft = 31,
     /// <summary>Run an exclusive calibration session without publishing its candidate.</summary>
-    RunCalibration = 32
+    RunCalibration = 32,
+    /// <summary>Manage the project-specific calibration acceptance policy.</summary>
+    ManageCalibrationAcceptancePolicy = 33,
+    /// <summary>Record independent physical calibration verification evidence.</summary>
+    RecordPhysicalCalibrationVerification = 34
 }
 
 /// <summary>

@@ -81,7 +81,8 @@ internal sealed partial class SqliteCommandStore
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
-                calibrationSessionOptions: _options.CalibrationSessions);
+                calibrationSessionOptions: _options.CalibrationSessions,
+                governanceOptions: _options.CalibrationGovernance);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -134,7 +135,8 @@ internal sealed partial class SqliteCommandStore
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
-                calibrationSessionOptions: _options.CalibrationSessions);
+                calibrationSessionOptions: _options.CalibrationSessions,
+                governanceOptions: _options.CalibrationGovernance);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -271,7 +273,8 @@ internal sealed partial class SqliteCommandStore
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
-                calibrationSessionOptions: _options.CalibrationSessions);
+                calibrationSessionOptions: _options.CalibrationSessions,
+                governanceOptions: _options.CalibrationGovernance);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -287,7 +290,8 @@ internal sealed partial class SqliteCommandStore
                 _options.ImagingSetup);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
-            var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&
+            var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null ||
+                work.CalibrationGovernanceUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
@@ -326,15 +330,17 @@ internal sealed partial class SqliteCommandStore
             var alarmState = work.AlarmCommandUpdate is null ? null :
                 AlarmStorageCodec.BuildState(persistedAlarmPolicy,
                     AlarmStorageCodec.ReadEvents(database, deadline), work.RuntimeEpoch);
+            var governanceState = work.CalibrationGovernanceCommand is null ? null :
+                ReadCalibrationGovernanceCommandState(database, work.CalibrationGovernanceCommand, deadline);
             var evaluated = work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
-                cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation);
+                cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState);
             decision = evaluated;
             guard = evaluated.CommitGuard;
             if (evaluated.NoMutation)
             {
                 AuditChainDatabase.Require(evaluated.Events.Count == 0 && evaluated.CommandFacts is null &&
                     evaluated.CameraEvents is null && evaluated.ImagingRevision is null &&
-                    evaluated.CalibrationAdmission is null && guard is null,
+                    evaluated.CalibrationAdmission is null && evaluated.CalibrationGovernance is null && guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
                 committed = true;
@@ -397,6 +403,9 @@ internal sealed partial class SqliteCommandStore
                 IdentityStateProtection.Sign(protectedState, state.StationId, state.Revision, identitySequence, _signingKey));
             AppendIdentityCommandFacts(database, evaluated.CommandFacts, work.CommandCorrelationId, deadline,
                 allowTerminalContinuation: work.CameraSetupUpdate is not null);
+            if (evaluated.CalibrationGovernance is not null)
+                AppendGovernanceIdentityMutation(database, evaluated, governanceState!,
+                    work.CalibrationGovernanceCommand!, deadline);
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -660,6 +669,14 @@ internal sealed partial class SqliteCommandStore
 
     private sealed class IdentityWork
     {
+        internal IdentityWork(CalibrationGovernanceCommand command,
+            Func<IdentityAuthorityState, CalibrationGovernanceCommandState, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            CalibrationGovernanceCommand = command;
+            CalibrationGovernanceUpdate = update;
+        }
+
         internal IdentityWork(Func<IdentityAuthorityState, IdentityUpdate> update) => Update = update;
 
         internal IdentityWork(Guid commandCorrelationId,
@@ -718,11 +735,16 @@ internal sealed partial class SqliteCommandStore
         internal Func<IdentityAuthorityState, CameraSetupStoreSnapshot, ImagingSetupStoreSnapshot, bool,
             IdentityUpdate>? ImagingSetupUpdate { get; }
         internal object? Result { get; set; }
+        internal CalibrationGovernanceCommand? CalibrationGovernanceCommand { get; }
+        internal Func<IdentityAuthorityState, CalibrationGovernanceCommandState, bool, IdentityUpdate>?
+            CalibrationGovernanceUpdate { get; }
 
         internal IdentityUpdate Evaluate(IdentityAuthorityState state, AlarmStateSnapshot? alarmState,
             bool duplicateCorrelation, RecoveryOperationState? existingRecoveryOperation,
             CameraSetupStoreSnapshot? cameraSetupState, bool duplicateCameraOperation,
-            ImagingSetupStoreSnapshot? imagingSetupState = null, bool duplicateImagingOperation = false) =>
+            ImagingSetupStoreSnapshot? imagingSetupState = null, bool duplicateImagingOperation = false,
+            CalibrationGovernanceCommandState? governanceState = null) =>
+            CalibrationGovernanceUpdate is not null ? CalibrationGovernanceUpdate(state, governanceState!, duplicateCorrelation) :
             AlarmCommandUpdate is not null ? AlarmCommandUpdate(state, alarmState!, duplicateCorrelation) :
             CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
             RecoveryOperationUpdate is not null ? RecoveryOperationUpdate(state, existingRecoveryOperation) :
@@ -747,5 +769,6 @@ internal sealed record IdentityUpdate(
     IReadOnlyList<CameraSetupEvent>? CameraEvents = null,
     ImagingSetupRevisionMutation? ImagingRevision = null,
     CalibrationSessionHeader? CalibrationAdmission = null,
-    bool NoMutation = false);
+    bool NoMutation = false,
+    CalibrationGovernanceMutation? CalibrationGovernance = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

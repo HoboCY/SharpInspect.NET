@@ -24,6 +24,51 @@ public sealed class CalibrationSessionSchemaCompatibilityTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
+    public async Task V127_S01_Schema15RestartsWithOptionalLedgers(bool network, bool archiveAndDraft)
+    {
+        await using var fixture = await CalibrationSchemaFixture.CreateAsync(network, archiveAndDraft,
+            calibration: true, governance: true);
+        Assert.Equal(15L, await fixture.ScalarAsync("PRAGMA user_version;"));
+        Assert.Equal(1L, await fixture.ScalarAsync(
+            "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationGovernanceStoreActivated';"));
+        Assert.Equal(0L, await fixture.ScalarAsync("SELECT COUNT(*) FROM calibration_governance_events;"));
+        Assert.Equal(AuditIntegrityState.Verified, (await VerifyAsync(fixture.Options)).State);
+        await fixture.RestartStoreAsync();
+        Assert.Equal(AuditIntegrityState.Verified, (await VerifyAsync(fixture.Options)).State);
+        _ = await new SqliteCommandTraceQuery(fixture.Options).QueryAsync(new CommandTraceFilter());
+    }
+
+    [Theory]
+    [InlineData(false, "CalibrationGovernanceMigrationRequired")]
+    [InlineData(true, "CalibrationGovernanceConfigurationRequired")]
+    public async Task V127_S02_GovernanceOptInCannotMigrateOrDowngradeExistingStore(bool governance,
+        string expectedReason)
+    {
+        await using var fixture = await CalibrationSchemaFixture.CreateAsync(false, false,
+            calibration: true, governance: governance);
+        await fixture.StopStoreAsync();
+        _ = await fixture.ScalarAsync("PRAGMA user_version;");
+        var before = await DatabaseFingerprintAsync(fixture.Options.DatabasePath);
+        var mismatched = CalibrationSchemaFixture.OptionsFor(fixture.Options, calibration: true,
+            governance: governance ? null : new CalibrationGovernanceStoreOptions());
+        await using var rejected = new SqliteCommandStore(mismatched);
+        var initialization = await rejected.Initialization.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.False(initialization.Committed);
+        Assert.Equal(expectedReason, initialization.ReasonCode);
+        var audit = await VerifyAsync(mismatched);
+        Assert.Equal(AuditIntegrityState.Faulted, audit.State);
+        Assert.Equal(expectedReason, audit.ReasonCode);
+        var trace = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SqliteCommandTraceQuery(mismatched).QueryAsync(new CommandTraceFilter()).AsTask());
+        Assert.Equal(expectedReason, trace.Message);
+        Assert.Equal(before, await DatabaseFingerprintAsync(fixture.Options.DatabasePath));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
     public async Task V124_S01_Schema14InitializesAndRestartsForOptionalLedgerCombinations(
         bool includeNetwork, bool includeArchiveAndDraft)
     {
@@ -216,7 +261,7 @@ internal sealed class CalibrationSchemaFixture : IAsyncDisposable
     internal SqliteCommandStore Store { get; private set; }
 
     internal static async Task<CalibrationSchemaFixture> CreateAsync(
-        bool includeNetwork, bool includeArchiveAndDraft, bool calibration)
+        bool includeNetwork, bool includeArchiveAndDraft, bool calibration, bool governance = false)
     {
         if (!OperatingSystem.IsWindows())
             throw SkipException.ForSkip("Schema-14 signed storage requires Windows machine protection.");
@@ -253,6 +298,7 @@ internal sealed class CalibrationSchemaFixture : IAsyncDisposable
             ImagingSetup = new ImagingSetupStoreOptions(),
             AlgorithmResultArchive = includeArchiveAndDraft ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = includeArchiveAndDraft ? new RecipeDraftStoreOptions(execution) : null,
+            CalibrationGovernance = governance ? new CalibrationGovernanceStoreOptions() : null,
             CalibrationSessions = calibration ? new CalibrationSessionStoreOptions
             {
                 EvidenceRoot = Path.Combine(directory, "calibration-evidence")
@@ -280,7 +326,8 @@ internal sealed class CalibrationSchemaFixture : IAsyncDisposable
     }
 
     internal static ProductionStoreOptions OptionsFor(ProductionStoreOptions source,
-        bool calibration, string? calibrationEvidenceRoot = null) => new(source.DatabasePath)
+        bool calibration, string? calibrationEvidenceRoot = null,
+        CalibrationGovernanceStoreOptions? governance = null) => new(source.DatabasePath)
         {
             AuditIntegrityPolicy = source.AuditIntegrityPolicy,
             LocalIdentity = source.LocalIdentity,
@@ -291,6 +338,7 @@ internal sealed class CalibrationSchemaFixture : IAsyncDisposable
             CameraRecovery = source.CameraRecovery,
             CameraNetwork = source.CameraNetwork,
             ImagingSetup = source.ImagingSetup,
+            CalibrationGovernance = governance,
             CalibrationSessions = calibration
                 ? new CalibrationSessionStoreOptions
                 {

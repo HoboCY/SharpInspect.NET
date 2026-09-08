@@ -15,7 +15,8 @@ namespace SharpInspect.Runtime;
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
 public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime,
-    IImagingSetupRuntime, ICalibrationSessionQuery, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+    IImagingSetupRuntime, ICalibrationSessionQuery, ICalibrationGovernanceRuntime, ICalibrationGovernanceQuery,
+    IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -55,11 +56,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CameraRecoveryService? cameraRecoveryService = null,
         CalibrationSessionOptions? calibrationSessionOptions = null,
         CalibrationProcedureRegistry? calibrationProcedures = null,
-        ProductionStoreOptions? productionStoreOptions = null)
+        ProductionStoreOptions? productionStoreOptions = null,
+        PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null)
     {
         _audit = audit;
         _sessions = sessions;
         _authorization = authorization;
+        _physicalCalibrationVerifiers = physicalCalibrationVerificationRegistry;
         _frameBufferPool = frameBufferPool;
         _cameraAcquisitionService = cameraAcquisitionService;
         if (cameraAcquisitionService is not null && cameraRecoveryService is not null)
@@ -200,6 +203,12 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         var attempt = Guid.NewGuid();
         RuntimeCommandOutcome Unavailable(string reason) => new(command.CorrelationId,
             CommandDisposition.Rejected, reason, AuditPersistence.Unavailable, attempt);
+        if (command is CalibrationGovernanceCommand && (command.CorrelationId == Guid.Empty || command.Invocation is null))
+            return Unavailable("InvalidCommandContext");
+        if (command is CalibrationGovernanceCommand &&
+            _audit is not SqliteCommandStore { CalibrationGovernanceEnabled: true })
+            return new(command.CorrelationId, CommandDisposition.Rejected, "CalibrationGovernanceUnavailable",
+                AuditPersistence.NotAttempted, attempt);
         lock (_sync)
         {
             if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
@@ -228,8 +237,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             var alarmCommand = command is AcknowledgeAlarmCommand or ResetAlarmCommand;
             var cameraRecoveryCommand = command is StartCameraRecoveryCycleCommand;
             var calibrationCommand = command is StartCalibrationSessionCommand or CalibrationSessionCommand;
+            var calibrationGovernanceCommand = command is CalibrationGovernanceCommand;
             var governedCommand = _authorization is not null && (alarmCommand ||
-                cameraRecoveryCommand || calibrationCommand ||
+                cameraRecoveryCommand || calibrationCommand || calibrationGovernanceCommand ||
                 command is IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
             if (governedCommand)
             {
@@ -243,6 +253,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 if (prepared.Reason is "ManagementPreparationCapacityExceeded" or "ManagementPreparationDeadlineExceeded" or "ManagementPreparationUnavailable")
                     return Unavailable(prepared.Reason);
             }
+            var governancePreparation = governedCommand && command is CalibrationGovernanceCommand governanceCommand
+                ? await PrepareCalibrationGovernanceAsync(governanceCommand, deadline, cancellationToken).ConfigureAwait(false)
+                : null;
             while (true)
             {
                 entered = await _commandGate.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
@@ -303,6 +316,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 }
                 var governed = calibrationCommand
                     ? await HandleCalibrationCommandAsync(command, epoch, attempt, deadline, cancellationToken).ConfigureAwait(false)
+                    : calibrationGovernanceCommand
+                    ? await _authorization!.HandleCalibrationGovernanceCommandAsync((CalibrationGovernanceCommand)command,
+                        epoch, attempt, forced, governancePreparation!, deadline, cancellationToken).ConfigureAwait(false)
                     : cameraRecoveryCommand
                     ? await HandleCameraRecoveryCommandAsync((StartCameraRecoveryCycleCommand)command,
                         epoch, attempt, forced, deadline, cancellationToken).ConfigureAwait(false)
@@ -406,6 +422,10 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 ExcludeCalibrationFrameCommand => AuditedCommandKind.ExcludeCalibrationFrame,
                 ComputeCalibrationCandidateCommand => AuditedCommandKind.ComputeCalibrationCandidate,
                 ExitCalibrationSessionCommand => AuditedCommandKind.ExitCalibrationSession,
+                PublishCalibrationAcceptancePolicyCommand => AuditedCommandKind.PublishCalibrationAcceptancePolicy,
+                EvaluateCalibrationCandidateCommand => AuditedCommandKind.EvaluateCalibrationCandidate,
+                PublishCalibrationProfileCommand => AuditedCommandKind.PublishCalibrationProfile,
+                RecordPhysicalCalibrationVerificationCommand => AuditedCommandKind.RecordPhysicalCalibrationVerification,
                 GracefulProductionStopCommand => AuditedCommandKind.GracefulProductionStop,
                 GovernedAuditChangeCommand change when _audit?.Integrity is { State: not AuditIntegrityState.NotConfigured } => change.Change switch
                 {

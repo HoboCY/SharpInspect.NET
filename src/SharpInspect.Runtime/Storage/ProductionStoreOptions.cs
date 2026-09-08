@@ -47,4 +47,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 14 governed calibration-session evidence store.</summary>
     public CalibrationSessionStoreOptions? CalibrationSessions { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 15 calibration-governance ledger.</summary>
+    public CalibrationGovernanceStoreOptions? CalibrationGovernance { get; init; }
 }

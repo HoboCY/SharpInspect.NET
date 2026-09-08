@@ -1631,7 +1631,8 @@ internal sealed partial class SqliteCommandStore
             recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
             cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
             imagingSetupOptions: _options.ImagingSetup,
-            calibrationSessionOptions: _options.CalibrationSessions);
+            calibrationSessionOptions: _options.CalibrationSessions,
+            governanceOptions: _options.CalibrationGovernance);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -2149,7 +2150,7 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Text(database, "SELECT StationId FROM audit_policy WHERE Id=1;", deadline) ??
         throw new InvalidOperationException("CalibrationStationIdentityMissing");
 
-    private CalibrationSessionEvidence BuildEvidence(sqlite3 database, CalibrationSessionRow row,
+    private static CalibrationSessionEvidence BuildEvidence(sqlite3 database, CalibrationSessionRow row,
         StoreDeadline deadline)
     {
         var events = ReadCalibrationEventRows(database, row.Header.SessionId, deadline);

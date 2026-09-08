@@ -121,12 +121,6 @@ internal static class CameraRecoveryDemo
             var firstFrameHash = ConsumeFrame(firstRecovered, Role);
             evidence.SetFrameHash("RecoveredQualification", firstFrameHash);
             Require(firstFrameHash is not null, "FirstRecoveryFrameMissing");
-            // A successful lease return is synchronous at the public boundary;
-            // the acquisition owner's final physical-drain continuation is
-            // deliberately asynchronous. Let that bounded ownership barrier
-            // settle before admitting the next request.
-            await Task.Delay(100).ConfigureAwait(false);
-
             var secondDisconnect = await AcquireAndAdvanceAsync(recovery, clock)
                 .ConfigureAwait(false);
             evidence.AddAttempt("ExhaustionDisconnect", secondDisconnect, expectFrame: false);
@@ -353,26 +347,35 @@ internal static class CameraRecoveryDemo
     private static async Task<CameraAcquisitionAttempt> AcquireAndAdvanceAsync(
         CameraRecoveryService recovery, VirtualCameraClock clock)
     {
-        var observedPendingEvents = clock.PendingEventCount;
-        var task = recovery.AcquireAsync(ExecutionKind.Qualification, Role).AsTask();
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!task.IsCompleted && DateTime.UtcNow < deadline)
+        while (true)
         {
-            var pendingEvents = clock.PendingEventCount;
-            if (pendingEvents != observedPendingEvents)
+            var observedPendingEvents = clock.PendingEventCount;
+            var task = recovery.AcquireAsync(ExecutionKind.Qualification, Role).AsTask();
+            while (!task.IsCompleted && DateTime.UtcNow < deadline)
             {
-                // The acquisition service schedules its signal and deadline on
-                // the worker thread. Observe a count change before advancing so
-                // an unrelated stale schedule cannot consume this one millisecond
-                // step before the request has installed its own events.
-                observedPendingEvents = pendingEvents;
-                clock.AdvanceBy(TimeSpan.FromMilliseconds(1));
+                var pendingEvents = clock.PendingEventCount;
+                if (pendingEvents != observedPendingEvents)
+                {
+                    // Observe this request installing its signal/deadline before
+                    // driving the virtual clock; stale schedules cannot consume it.
+                    observedPendingEvents = pendingEvents;
+                    clock.AdvanceBy(TimeSpan.FromMilliseconds(1));
+                }
+                else
+                    await Task.Delay(1).ConfigureAwait(false);
             }
-            else
-                await Task.Delay(1).ConfigureAwait(false);
+            Require(task.IsCompleted, "RecoveryAcquisitionNotScheduled");
+            var result = await task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            // Busy is rejected before a physical request starts. A prior frame's
+            // asynchronous drain or a health observation may still hold the gate.
+            // Never retry an accepted attempt or discard its acquisition outcome.
+            if (result.Accepted || result.Correlation is not null || result.Outcome is not null ||
+                result.ReasonCode != "CameraRecoveryBusy")
+                return result;
+            Require(DateTime.UtcNow < deadline, "RecoveryAcquisitionAdmissionDeadlineExceeded");
+            await Task.Delay(1).ConfigureAwait(false);
         }
-        Require(task.IsCompleted, "RecoveryAcquisitionNotScheduled");
-        return await task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 
     private static async Task DriveCycleAsync(CameraRecoveryService recovery,

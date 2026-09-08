@@ -129,6 +129,18 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>Explicit project verifier registration. It does not confer production or metrological qualification.</summary>
+    public static IServiceCollection AddSharpInspectPhysicalCalibrationVerification(this IServiceCollection services,
+        PhysicalCalibrationVerificationRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(registry);
+        if (services.Any(item => item.ServiceType == typeof(PhysicalCalibrationVerificationRegistry)))
+            throw new ArgumentException("PhysicalVerificationRegistryAlreadyRegistered", nameof(services));
+        services.AddSingleton(registry);
+        return services;
+    }
+
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
@@ -143,7 +155,8 @@ public static class ServiceCollectionExtensions
             cameraRecoveryService: p.GetService<CameraRecoveryService>(),
             calibrationSessionOptions: p.GetService<CalibrationSessionOptions>(),
             calibrationProcedures: p.GetService<CalibrationProcedureRegistry>(),
-            productionStoreOptions: p.GetService<ProductionStoreOptions>()));
+            productionStoreOptions: p.GetService<ProductionStoreOptions>(),
+            physicalCalibrationVerificationRegistry: p.GetService<PhysicalCalibrationVerificationRegistry>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -156,6 +169,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICalibrationSessionQuery>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationSessionQuery ??
             throw new InvalidOperationException("CalibrationSessionQueryUnavailable"));
+        RegisterCalibrationGovernance(services);
         return services;
     }
 
@@ -210,7 +224,7 @@ public static class ServiceCollectionExtensions
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
             p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
-            p.GetService<CalibrationProcedureRegistry>(), options));
+            p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -223,6 +237,17 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICalibrationSessionQuery>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationSessionQuery ??
             throw new InvalidOperationException("CalibrationSessionQueryUnavailable"));
+        RegisterCalibrationGovernance(services);
         return services;
+    }
+
+    private static void RegisterCalibrationGovernance(IServiceCollection services)
+    {
+        services.TryAddSingleton<ICalibrationGovernanceRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationGovernanceRuntime ??
+            throw new InvalidOperationException("CalibrationGovernanceUnavailable"));
+        services.TryAddSingleton<ICalibrationGovernanceQuery>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationGovernanceQuery ??
+            throw new InvalidOperationException("CalibrationGovernanceUnavailable"));
     }
 }

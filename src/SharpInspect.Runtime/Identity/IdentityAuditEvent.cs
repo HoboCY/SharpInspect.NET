@@ -47,7 +47,8 @@ internal enum IdentityEventKind
     CameraRecoveryCycleStartCompleted,
     CameraRecoveryCycleStartFailed,
     CalibrationSessionStartAuthorized,
-    CalibrationSessionActionAuthorized
+    CalibrationSessionActionAuthorized,
+    CalibrationGovernanceActionAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -126,14 +127,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > CalibrationSessionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > CalibrationSessionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -158,7 +159,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 or 13 or 14 => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 or 13 or 14 or 15 => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -196,6 +197,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion ||
                     legacyKind is not IdentityEventKind.CalibrationSessionStartAuthorized and
                     not IdentityEventKind.CalibrationSessionActionAuthorized,
+                    "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.CalibrationGovernanceActionAuthorized,
                     "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
@@ -269,13 +273,15 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         actionKind != AuditedCommandKind.DeclareImagingSetup) &&
                     (schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion ||
                         (int)actionKind < (int)AuditedCommandKind.StartCalibrationSession) &&
+                    (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
+                        (int)actionKind < (int)AuditedCommandKind.PublishCalibrationAcceptancePolicy) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
+                var maximumPermissions = schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
                 AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
                     IsPermissionSet(fields[41], maximumPermissions),
                     "AuditAuthorizationPayloadInvalid");

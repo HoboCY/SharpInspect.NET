@@ -173,6 +173,34 @@ try {
         ready=$false; canPublish=$false; canActivate=$false; physicalHardwareQualification='NotRun'; production='NotRun'
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $planarDirectory 'acceptance.json') -Encoding utf8
     Write-Output 'V126-N01/N02 planar homography NuGet consumer and independent restart PASS'
+    $governanceDirectory = Join-Path $calibrationEvidence 'governance'
+    $governanceResult = Get-Content -LiteralPath (Join-Path $governanceDirectory 'calibration-governance.json') -Raw | ConvertFrom-Json
+    $governanceRestart = Get-Content -LiteralPath (Join-Path $governanceDirectory 'calibration-governance-restart.json') -Raw | ConvertFrom-Json
+    if ($governanceResult.result -cne 'Pass' -or $governanceResult.schema -ne 15 -or
+        $governanceRestart.result -cne 'Pass' -or $governanceRestart.schema -ne 15 -or
+        $governanceResult.profile.contentHash -cne $governanceRestart.profile.contentHash -or
+        $governanceResult.coefficientHash -cne $governanceRestart.coefficientHash -or
+        (@($governanceResult.states) -join ',') -cne 'Missing,Current,Failed' -or
+        $governanceResult.replayRejected -cne $true -or $governanceRestart.verificationState -cne 'Failed' -or
+        $governanceRestart.readOnlyQueryDatabaseUnchanged -cne $true -or $governanceRestart.openedDevices -ne 0) {
+        throw 'Calibration governance consumer or independent restart evidence is invalid.'
+    }
+    foreach ($governanceReport in @($governanceResult, $governanceRestart)) {
+        if ($governanceReport.developmentOnly -cne $true -or $governanceReport.productionAuthority -cne $false -or
+            $governanceReport.ready -cne $false -or $governanceReport.canAdmitNewProductionTrigger -cne $false -or
+            $governanceReport.actualProductionTrigger -cne 'NotRun' -or $governanceReport.physicalMetrology -cne 'NotRun') {
+            throw 'Calibration governance development evidence overstates production or physical qualification.'
+        }
+    }
+    [ordered]@{
+        result='Pass'; validationIds=@('V127-N01','V127-N02'); externalNuGetConsumer=$true; independentRestart=$true
+        consumerSha256=(Get-FileHash -LiteralPath $calibrationDll -Algorithm SHA256).Hash
+        profileHash=$governanceResult.profile.contentHash; coefficientHash=$governanceResult.coefficientHash
+        candidateHash=$governanceResult.candidate.candidateContentHash; policyHash=$governanceResult.policy.contentHash
+        evaluationHash=$governanceResult.evaluation.contentHash; states=@($governanceResult.states); replayRejected=$true
+        developmentOnly=$true; ready=$false; productionAuthority=$false; actualProductionTrigger='NotRun'; physicalMetrology='NotRun'
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $governanceDirectory 'acceptance.json') -Encoding utf8
+    Write-Output 'V127-N01/N02 calibration governance NuGet consumer and independent restart PASS'
 }
 finally {
     [Environment]::SetEnvironmentVariable('SHARPINSPECT_CALIBRATION_CONSUMER',$calibrationPriorConsumer,'Process')

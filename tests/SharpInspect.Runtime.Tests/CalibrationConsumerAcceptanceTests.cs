@@ -19,7 +19,7 @@ namespace SharpInspect.Runtime.Tests;
 /// run and restart modes, so the production Windows administrator gate is not
 /// weakened by this test.
 /// </summary>
-public sealed class CalibrationConsumerAcceptanceTests
+public sealed partial class CalibrationConsumerAcceptanceTests
 {
     private const int SchemaVersion = 14;
     private const string UserName = "v124-validation-admin";
@@ -939,18 +939,20 @@ public sealed class CalibrationConsumerAcceptanceTests
     }
 
     private static ProductionStoreOptions CreateStoreOptions(string directory,
-        string databasePath, AuditIntegrityPolicy audit, int maximumFrames = 4)
+        string databasePath, AuditIntegrityPolicy audit, int maximumFrames = 4, bool governance = false)
     {
         var evidenceRoot = Path.GetFullPath(Path.Combine(directory, "calibration-evidence"));
         Directory.CreateDirectory(evidenceRoot);
         return new ProductionStoreOptions(databasePath)
         {
             AuditIntegrityPolicy = audit,
-            LocalIdentity = CreateIdentityOptions(audit.StationId),
+            LocalIdentity = CreateIdentityOptions(audit.StationId, governance),
             AlarmPolicy = RecoveryAlarmPolicy(),
             CameraSetup = new CameraSetupStoreOptions(),
             CameraRecovery = new CameraRecoveryStoreOptions(),
             ImagingSetup = new ImagingSetupStoreOptions(),
+            CalibrationGovernance = governance ? new CalibrationGovernanceStoreOptions
+            { MaximumEntries = 32, MaximumPayloadBytes = 256 * 1024, MaximumTotalBytes = 8 * 1024 * 1024 } : null,
             CalibrationSessions = new CalibrationSessionStoreOptions
             {
                 EvidenceRoot = evidenceRoot,
@@ -964,7 +966,7 @@ public sealed class CalibrationConsumerAcceptanceTests
         };
     }
 
-    private static LocalIdentityOptions CreateIdentityOptions(string stationId)
+    private static LocalIdentityOptions CreateIdentityOptions(string stationId, bool governance = false)
     {
         var roles = AuthorizationPolicy.Development.RoleBundles.ToDictionary(
             pair => pair.Key, pair => (IEnumerable<Permission>)pair.Value);
@@ -972,6 +974,10 @@ public sealed class CalibrationConsumerAcceptanceTests
             .Append(Permission.RunCalibration);
         roles[HumanRoleBundle.Administrator] = roles[HumanRoleBundle.Administrator]
             .Append(Permission.RunCalibration);
+        if (governance)
+            roles[HumanRoleBundle.Administrator] = roles[HumanRoleBundle.Administrator]
+                .Append(Permission.ManageCalibrationAcceptancePolicy)
+                .Append(Permission.RecordPhysicalCalibrationVerification);
         return new LocalIdentityOptions(stationId,
             new LocalPasswordPolicy
             {

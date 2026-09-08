@@ -29,7 +29,11 @@ public enum AuditedCommandKind
     CaptureCalibrationFrame = 21,
     ExcludeCalibrationFrame = 22,
     ComputeCalibrationCandidate = 23,
-    ExitCalibrationSession = 24
+    ExitCalibrationSession = 24,
+    PublishCalibrationAcceptancePolicy = 25,
+    EvaluateCalibrationCandidate = 26,
+    PublishCalibrationProfile = 27,
+    RecordPhysicalCalibrationVerification = 28
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

@@ -33,7 +33,9 @@ public sealed class AuthorizationPolicy
 
     private static readonly Permission[] MandatoryStepUpPermissions = AllPermissions
         .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe and
-            not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft and not Permission.RunCalibration)
+            not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft and not Permission.RunCalibration and
+            not Permission.ManageCalibrationAcceptancePolicy and
+            not Permission.RecordPhysicalCalibrationVerification)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -70,9 +72,18 @@ public sealed class AuthorizationPolicy
 
         var requestedStepUp = MaterializePermissions(
             stepUpPermissions ?? Array.Empty<Permission>(), nameof(stepUpPermissions));
+        var explicitlyAssignedCalibrationStepUp = copiedRoles.Values
+            .SelectMany(permissions => permissions)
+            .Where(permission => permission is Permission.RunCalibration or
+                Permission.ManageCalibrationAcceptancePolicy or
+                Permission.RecordPhysicalCalibrationVerification)
+            .Distinct()
+            .ToArray();
         var allStepUp = MandatoryStepUpPermissions
-            .Concat(copiedRoles.Values.Any(permissions => permissions.Contains(Permission.RunCalibration))
-                ? new[] { Permission.RunCalibration } : Array.Empty<Permission>())
+            .Concat(explicitlyAssignedCalibrationStepUp)
+            // Preserve the explicit policy override contract. A caller that
+            // deliberately requests a new Step-Up permission is creating a
+            // policy whose bytes must record that request.
             .Concat(requestedStepUp)
             .Distinct()
             .OrderBy(permission => permission)
@@ -123,9 +134,13 @@ public sealed class AuthorizationPolicy
     public bool RequiresStepUp(Permission permission)
     {
         ValidatePermission(permission, nameof(permission));
-        // A newly assigned Calibration permission always requires Step-Up, even
-        // under an older explicit role policy. Do not rewrite that policy's bytes.
-        return permission == Permission.RunCalibration || _stepUpPermissions.Contains(permission);
+        // Newly assigned calibration-governance permissions always require
+        // Step-Up, even under an older explicit role policy. Do not rewrite
+        // that policy's bytes merely because the account gains the permission.
+        return (permission is Permission.RunCalibration or
+            Permission.ManageCalibrationAcceptancePolicy or
+            Permission.RecordPhysicalCalibrationVerification) ||
+            _stepUpPermissions.Contains(permission);
     }
 
     /// <summary>Validates the immutable policy boundary and all enum values.</summary>
@@ -177,7 +192,9 @@ public sealed class AuthorizationPolicy
         // policy choice and must not silently change an existing store's
         // role bundles or content hash.
         var developmentAdministratorPermissions = AllPermissions
-            .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration)
+            .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration and
+                not Permission.ManageCalibrationAcceptancePolicy and
+                not Permission.RecordPhysicalCalibrationVerification)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

@@ -55,8 +55,13 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 SqliteNative.ConfigureSqliteLimit(db, _options, schema);
                 if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
-                if (_options.CalibrationSessions is null && schema == CalibrationSessionStoreOptions.SchemaVersion)
+                if (_options.CalibrationSessions is null &&
+                    (schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion))
                     throw new InvalidOperationException("CalibrationConfigurationRequired");
+                if (_options.CalibrationGovernance is not null && schema < CalibrationGovernanceStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CalibrationGovernanceMigrationRequired");
+                if (_options.CalibrationGovernance is null && schema == CalibrationGovernanceStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CalibrationGovernanceConfigurationRequired");
                 if (_options.LocalIdentity is not null && schema < 7)
                 {
                     var migrationReason = schema switch
@@ -93,33 +98,35 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
                 if (_options.ImagingSetup is null && schema == ImagingSetupStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("ImagingSetupConfigurationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14,
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15,
                     "AuditGovernedMigrationRequired");
                 var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
                     var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion ||
                     (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                        CalibrationSessionStoreOptions.SchemaVersion) &&
+                        CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                         _options.RecipeDrafts is not null;
                 var cameraSchema = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                     CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                    CalibrationSessionStoreOptions.SchemaVersion;
+                    CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
                 var recoverySchema = schema == CameraRecoveryStoreOptions.SchemaVersion ||
                     (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                        CalibrationSessionStoreOptions.SchemaVersion) &&
+                        CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                     _options.CameraRecovery is not null;
                 var networkSchema = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-                    CalibrationSessionStoreOptions.SchemaVersion) &&
+                    CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                     _options.CameraNetwork is not null;
-                var imagingSchema = schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion;
-                var calibrationSchema = schema == CalibrationSessionStoreOptions.SchemaVersion;
+                var imagingSchema = schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+                    CalibrationGovernanceStoreOptions.SchemaVersion;
+                var calibrationSchema = schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
+                var governanceSchema = schema == CalibrationGovernanceStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
                 var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
                 var networkVerification = networkSchema;
                 var fullVerification = archiveVerification || draftVerification || cameraSchema || recoverySchema || networkVerification ||
-                    imagingSchema || calibrationSchema || alarmStartup;
+                    imagingSchema || calibrationSchema || governanceSchema || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
@@ -131,7 +138,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     cameraRecoveryOptions: recoverySchema ? _options.CameraRecovery : null,
                     cameraNetworkOptions: networkSchema ? _options.CameraNetwork : null,
                     imagingSetupOptions: imagingSchema ? _options.ImagingSetup : null,
-                    calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null);
+                    calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null,
+                    governanceOptions: governanceSchema ? _options.CalibrationGovernance : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
@@ -144,6 +152,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     _options.CameraNetwork);
                 if (imagingSchema) AuditChainDatabase.RequireFullImagingSetupVerification(db, report, deadline,
                     _options.ImagingSetup);
+                if (governanceSchema) AuditChainDatabase.RequireFullCalibrationGovernanceVerification(db, report, deadline,
+                    _options.CalibrationGovernance);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);

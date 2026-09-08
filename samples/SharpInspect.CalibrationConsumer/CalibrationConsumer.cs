@@ -45,7 +45,8 @@ internal sealed record CalibrationConsumerArguments(
     string? ExpectedPrincipal,
     string? CheckerboardImagesDirectory,
     string? PlanarImagesDirectory,
-    bool Render)
+    bool Render,
+    bool Governance = false)
 {
     internal static bool TryParse(string[] args, out CalibrationConsumerArguments arguments,
         out string error)
@@ -124,6 +125,12 @@ internal sealed record CalibrationConsumerArguments(
 
             var checkerboardImages = Option("--checkerboard-images");
             var planarImages = Option("--planar-images");
+            var governance = args.Contains("--governance", StringComparer.OrdinalIgnoreCase);
+            if (governance && planarImages is null)
+            {
+                error = "governance-requires-planar-images";
+                return false;
+            }
             if (checkerboardImages is not null && planarImages is not null)
             {
                 error = "checkerboard-and-planar-images-are-mutually-exclusive";
@@ -142,7 +149,7 @@ internal sealed record CalibrationConsumerArguments(
                     ? Path.GetFullPath(checkerboardPath) : null,
                 planarImages is { } planarPath
                     ? Path.GetFullPath(planarPath) : null,
-                !args.Contains("--no-wpf", StringComparer.OrdinalIgnoreCase));
+                !args.Contains("--no-wpf", StringComparer.OrdinalIgnoreCase), governance);
             return true;
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
@@ -153,7 +160,7 @@ internal sealed record CalibrationConsumerArguments(
     }
 }
 
-internal static class CalibrationConsumer
+internal static partial class CalibrationConsumer
 {
     private const string Role = "TopCamera";
     private const string Device = "Virtual:Calibration-Consumer";
@@ -244,7 +251,7 @@ internal static class CalibrationConsumer
         var json = JsonSerializer.Serialize(new
         {
             result = "Pass",
-            schema = SchemaVersion,
+            schema = arguments.Governance ? 15 : SchemaVersion,
             stationId = arguments.StationId,
             userName = identity!.UserName,
             displayName = identity!.DisplayName,
@@ -290,7 +297,7 @@ internal static class CalibrationConsumer
             var plan = checkerboard
                 ? CreateCheckerboardPlan(CheckerboardTemporaryEffectiveConfiguration())
                 : planar
-                    ? CreatePlanarPlan(PlanarTemporaryEffectiveConfiguration())
+                    ? CreatePlanarPlan(PlanarTemporaryEffectiveConfiguration(), arguments.Governance)
                     : CreatePlan();
             var fixtureId = checkerboard
                 ? "CheckerboardCalibrationFixture-" + checkerboardImages!.ManifestHash
@@ -315,6 +322,8 @@ internal static class CalibrationConsumer
             else
                 await WriteRunEvidenceAsync(arguments, options, fixture, phaseA, phaseB,
                     databaseHash).ConfigureAwait(true);
+            if (arguments.Governance)
+                await RunGovernanceAsync(arguments, password, phaseB.AfterExit).ConfigureAwait(true);
         }
         catch (ArgumentException exception) when (checkerboard || planar)
         {
@@ -334,7 +343,7 @@ internal static class CalibrationConsumer
             .ConfigureAwait(true));
         var root = document.RootElement;
         Require(root.GetProperty("result").GetString() == "Pass" &&
-            root.GetProperty("schema").GetInt32() == SchemaVersion,
+            root.GetProperty("schema").GetInt32() == (arguments.Governance ? 15 : SchemaVersion),
             "run-evidence-contract-invalid");
         var sessionId = ParseGuid(root, "sessionId");
         var calibrationMode = root.TryGetProperty("calibrationMode", out var modeValue)
@@ -483,7 +492,7 @@ internal static class CalibrationConsumer
             "calibration-session-restart.json"), JsonSerializer.Serialize(new
             {
                 result = "Pass",
-                schema = SchemaVersion,
+                schema = arguments.Governance ? 15 : SchemaVersion,
                 calibrationMode,
                 sessionId,
                 state = evidence.State,
@@ -1053,12 +1062,12 @@ internal static class CalibrationConsumer
     }
 
     private static CalibrationSessionPlan CreatePlanarPlan(
-        EffectiveCameraConfiguration expectedConfiguration)
+        EffectiveCameraConfiguration expectedConfiguration, bool governance = false)
     {
         var procedure = new PlanarHomographyProcedure();
         var requirement = new CalibrationRequirement(Role, CalibrationKind.PlanarHomography,
             "PlanarHomographyFixtureOnly", PlanarHomographyContracts.Coefficients,
-            PlanarAcceptanceContract());
+            governance ? CreateGovernancePolicy().Reference : PlanarAcceptanceContract());
         var target = new ArucoPlanarTargetDefinition("planar-target-v1",
             "plane-frame-v1", new[]
             {
@@ -1422,6 +1431,7 @@ internal static class CalibrationConsumer
             CameraSetup = new CameraSetupStoreOptions(),
             CameraRecovery = new CameraRecoveryStoreOptions(),
             ImagingSetup = new ImagingSetupStoreOptions(),
+            CalibrationGovernance = arguments.Governance ? GovernanceStoreOptions() : null,
             CalibrationSessions = new CalibrationSessionStoreOptions
             {
                 EvidenceRoot = arguments.EvidenceRoot,
@@ -1544,6 +1554,10 @@ internal static class CalibrationConsumer
             .Append(Permission.RunCalibration);
         roles[HumanRoleBundle.Administrator] = roles[HumanRoleBundle.Administrator]
             .Append(Permission.RunCalibration);
+        if (arguments.Governance)
+            roles[HumanRoleBundle.Administrator] = roles[HumanRoleBundle.Administrator]
+                .Append(Permission.ManageCalibrationAcceptancePolicy)
+                .Append(Permission.RecordPhysicalCalibrationVerification);
         return new LocalIdentityOptions(arguments.StationId,
             new LocalPasswordPolicy
             {
@@ -1569,7 +1583,7 @@ internal static class CalibrationConsumer
             {
                 result = "Pass",
                 contractVersion = ContractVersion,
-                schema = SchemaVersion,
+                schema = arguments.Governance ? 15 : SchemaVersion,
                 modes = new[] { "run", "restart", "wpf", "all" },
                 startupMethod = "PhaseA setup owner then PhaseB Recovery owner; restart query-only",
                 validationIds = new[] { "V124_U01", "V124_U02", "V124_U03", "V124_U04",
@@ -1797,7 +1811,7 @@ internal static class CalibrationConsumer
             {
                 result = "Pass",
                 contractVersion = ContractVersion,
-                schema = SchemaVersion,
+                schema = arguments.Governance ? 15 : SchemaVersion,
                 calibrationMode = "checkerboard",
                 modes = new[] { "run", "restart", "wpf", "all" },
                 startupMethod = "PhaseA setup owner then PhaseB Recovery owner; restart query-only",
@@ -2114,7 +2128,7 @@ internal static class CalibrationConsumer
             {
                 result = "Pass",
                 contractVersion = ContractVersion,
-                schema = SchemaVersion,
+                schema = arguments.Governance ? 15 : SchemaVersion,
                 calibrationMode = "planar",
                 modes = new[] { "run", "restart", "wpf", "all" },
                 startupMethod = "PhaseA setup owner then PhaseB Recovery owner; restart query-only",

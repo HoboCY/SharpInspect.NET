@@ -50,20 +50,26 @@ public sealed class CalibrationFixtureCatalog
 }
 
 /// <summary>
-/// Checks exact compatibility using authorized current station projections and isolated fixture data.
-/// It cannot provide production calibration authority; publication and current validity require a later trusted store.
+/// Checks exact compatibility using authorized station projections and either isolated fixtures or the governed store.
+/// Development evidence cannot provide production calibration authority.
 /// </summary>
 public sealed class CalibrationRequirementResolver : ICalibrationRequirementResolver
 {
     private readonly ICameraSetupRuntime _cameras;
     private readonly IImagingSetupRuntime _imaging;
     private readonly CalibrationFixtureCatalog _fixtures;
+    private readonly ICalibrationGovernanceQuery? _governance;
     public CalibrationRequirementResolver(ICameraSetupRuntime cameras, IImagingSetupRuntime imaging,
         CalibrationFixtureCatalog? fixtures = null)
+        : this(cameras, imaging, fixtures, null) { }
+
+    public CalibrationRequirementResolver(ICameraSetupRuntime cameras, IImagingSetupRuntime imaging,
+        CalibrationFixtureCatalog? fixtures, ICalibrationGovernanceQuery? governance)
     {
         _cameras = cameras ?? throw new ArgumentNullException(nameof(cameras));
         _imaging = imaging ?? throw new ArgumentNullException(nameof(imaging));
         _fixtures = fixtures ?? new CalibrationFixtureCatalog(Array.Empty<CalibrationFixtureProfile>());
+        _governance = governance;
     }
 
     public async ValueTask<CalibrationRequirementCheckResult> CheckAsync(RecipeDraftContent recipe,
@@ -131,10 +137,21 @@ public sealed class CalibrationRequirementResolver : ICalibrationRequirementReso
                 observations.Add(new(requirement.ContentHash, false, "CalibrationProfileSelectionRequired"));
                 continue;
             }
-            var fixture = _fixtures.GetExact(reference, out var reason);
-            if (fixture is not null)
+            string reason;
+            CalibrationProfileContent? content;
+            if (_governance is null)
             {
-                var content = fixture.Content;
+                var fixture = _fixtures.GetExact(reference, out reason);
+                content = fixture?.Content;
+            }
+            else
+            {
+                var profile = await _governance.ReadProfileAsync(reference, invocation, cancellationToken).ConfigureAwait(false);
+                content = profile.Value?.Content;
+                reason = profile.ReasonCode;
+            }
+            if (content is not null)
+            {
                 reason = content.Requirement.Kind != requirement.Kind ||
                     content.Requirement.LogicalCameraRole != requirement.LogicalCameraRole ||
                     content.Requirement.LogicalPurpose != requirement.LogicalPurpose
@@ -146,6 +163,19 @@ public sealed class CalibrationRequirementResolver : ICalibrationRequirementReso
                     : content.RequestedGeometry != requested ? "CalibrationRequestedGeometryMismatch"
                     : content.EffectiveGeometry != effective ? "CalibrationEffectiveGeometryMismatch"
                     : "CalibrationCompatibleDevelopmentOnly";
+            }
+            if (reason == "CalibrationCompatibleDevelopmentOnly" && _governance is not null)
+            {
+                var validity = await _governance.GetValidityAsync(reference, invocation, cancellationToken).ConfigureAwait(false);
+                reason = !validity.Available || validity.Value is null ? validity.ReasonCode :
+                    validity.Value.Compatibility != CalibrationCompatibilityState.Compatible ? "CalibrationCurrentCompatibilityChanged" :
+                    validity.Value.Verification switch
+                    {
+                        CalibrationVerificationState.Expired => "CalibrationVerificationOverdue",
+                        CalibrationVerificationState.Failed => "CalibrationPhysicalVerificationFailed",
+                        CalibrationVerificationState.Missing => "CalibrationPhysicalVerificationMissing",
+                        _ => "CalibrationCompatibleDevelopmentOnly"
+                    };
             }
             observations.Add(new(requirement.ContentHash, reason == "CalibrationCompatibleDevelopmentOnly", reason, reference));
         }
