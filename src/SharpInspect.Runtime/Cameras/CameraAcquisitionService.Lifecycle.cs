@@ -21,6 +21,17 @@ public sealed partial class CameraAcquisitionService
     internal IFrameAcquisitionClock Clock => _clock;
 
     /// <summary>
+    /// Closes admission and waits for actual acquisition, lease, stop and device disposal completion.
+    /// Unlike bounded DisposeAsync, this task remains pending while a physical owner remains active.
+    /// A false result prohibits replacement and must not be treated as successful cleanup.
+    /// </summary>
+    public async Task<CameraRetirementObservation> RetireAsync()
+    {
+        var result = await BeginRetirement().ConfigureAwait(false);
+        return new CameraRetirementObservation(result.SafeToReplace, result.ReasonCode);
+    }
+
+    /// <summary>
     /// Closes admission immediately and owns one physical stop/dispose chain. The
     /// returned task is deliberately unbounded: a caller-facing DisposeAsync may
     /// wait for a configured bound, while the service retains the physical owner.

@@ -31,6 +31,7 @@ pwsh -File tools/Test-Ticket18.ps1
 pwsh -File tools/Test-Ticket19.ps1
 pwsh -File tools/Test-Ticket20.ps1
 pwsh -File tools/Test-Ticket21.ps1
+pwsh -File tools/Test-Ticket22.ps1
 ```
 
 脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticketNN/<run>/`（NN 为票号），
@@ -48,6 +49,24 @@ pwsh -File tools/Test-Ticket21.ps1
 | SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
 | SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
 | SharpInspect.Cameras.Hikrobot | SharpInspect.NET.Cameras.Hikrobot | 独立 MVS 适配、只读依赖诊断与受控单帧开发验证 |
+| SharpInspect.Cameras.Conformance | SharpInspect.NET.Cameras.Conformance | 可复用公共相机契约场景、冻结映射及开发验证证据 |
+
+## Camera Provider 契约验证
+
+Provider 维护者实现 `ICameraConformanceFixtureFactory`，提供固定身份、成像配置、规范像素摘要、
+外部刺激与真实资源清理完成信号，再将 `CameraConformanceSuite.Scenarios` 接入 T07 的执行设施。
+套件自己从 Provider／Device／Runtime 公共接口观察结果；不引用 WPF 或厂商适配器。
+可选扩展显式注册并合入冻结 Profile，缺少观察设施的必需项保持 Blocked。
+
+```powershell
+$revision = git rev-parse HEAD
+dotnet run --project samples/SharpInspect.CameraConformance.Probe -c Release -- run E:\SharpInspectEvidence\camera-conformance $revision
+dotnet run --project samples/SharpInspect.CameraConformance.Probe -c Release -- query E:\SharpInspectEvidence\camera-conformance $revision
+```
+
+示例仅运行 Virtual Camera，不访问真实设备。每次运行使用新的空证据目录；独立 query 校验不可覆盖记录和原始证据。
+公共行为通过不构成真实厂商组合的 Hardware Qualification，正式支持清单仍由独立准入门决定。
+范围与稳定验证 ID 见 [V1-22 记录](docs/verification/v1-22.md)。
 
 ## Hikrobot 适配器开发入口
 

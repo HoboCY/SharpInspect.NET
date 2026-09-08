@@ -161,6 +161,12 @@ public sealed class CameraRecoveryService : IAsyncDisposable
     /// <summary>Recovery qualification never grants production readiness.</summary>
     public bool Ready => false;
 
+    /// <summary>Read-only Busy/cleanup milestone of the currently owned acquisition service.</summary>
+    public CameraAcquisitionBusySnapshot? Busy
+    {
+        get { lock (_sync) return _current.Busy; }
+    }
+
     /// <summary>
     /// Monotonic proof counter for Station heartbeats. It advances only after an
     /// actual non-null health probe completes (including a typed unhealthy result),
@@ -498,7 +504,22 @@ public sealed class CameraRecoveryService : IAsyncDisposable
         }
     }
 
-    /// <summary>Disposes the engine after actual device/provider work has drained.</summary>
+    /// <summary>
+    /// Closes admission and observes actual completion of every owned device and provider retirement.
+    /// This unbounded task must complete safely before a test rig releases or replaces physical resources.
+    /// </summary>
+    public async Task<CameraRetirementObservation> RetireAsync()
+    {
+        await DisposeAsync().ConfigureAwait(false);
+        Task completion;
+        lock (_sync) completion = _disposeTask!;
+        await completion.ConfigureAwait(false);
+        lock (_sync)
+            return new CameraRetirementObservation(_providerDisposed,
+                _providerDisposed ? "CameraRecoveryRetired" : "CameraRecoveryRetirementUnsafe");
+    }
+
+    /// <summary>Requests owned retirement with a bounded caller wait; RetireAsync observes actual completion.</summary>
     public async ValueTask DisposeAsync()
     {
         Task disposeTask;

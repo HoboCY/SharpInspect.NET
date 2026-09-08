@@ -377,6 +377,51 @@ public sealed class CameraAcquisitionRetirementTests
         Assert.Equal(1, device.DisposeCalls);
     }
 
+    [Fact]
+    public async Task V122_L01_PublicRetirementWaitsBeyondBoundedDisposeForActualStopAndDispose()
+    {
+        var clock = new TestClock();
+        var device = new RetirementDevice(clock);
+        var stop = new TaskCompletionSource<CameraOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dispose = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        device.StopHandler = () => new ValueTask<CameraOperationResult>(stop.Task);
+        device.DisposeHandler = () => new ValueTask(dispose.Task);
+        await using var service = CreateService(device, clock);
+        var completion = service.RetireAsync();
+        try
+        {
+            await EventuallyAsync(() => device.StopCalls == 1);
+            await service.DisposeAsync();
+            Assert.False(completion.IsCompleted);
+            Assert.Equal(0, device.DisposeCalls);
+            stop.TrySetResult(CameraOperationResult.Success("FixtureStopped"));
+            await EventuallyAsync(() => device.DisposeCalls == 1);
+            Assert.False(completion.IsCompleted);
+            dispose.TrySetResult(true);
+            Assert.True((await completion.WaitAsync(TimeSpan.FromSeconds(2))).SafeToReplace);
+            Assert.True((await service.RetireAsync()).SafeToReplace);
+            Assert.Equal(new[] { "stop", "dispose" }, device.Events.ToArray());
+        }
+        finally
+        {
+            stop.TrySetResult(CameraOperationResult.Success("FixtureStopped"));
+            dispose.TrySetResult(true);
+        }
+    }
+
+    [Fact]
+    public async Task V122_L02_PublicRetirementPreservesUnsafeDisposeResult()
+    {
+        var clock = new TestClock();
+        var device = new RetirementDevice(clock)
+        { DisposeHandler = () => ValueTask.FromException(new InvalidOperationException("PrivateFixtureException")) };
+        await using var service = CreateService(device, clock);
+        var result = await service.RetireAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(result.SafeToReplace);
+        Assert.Equal("CameraDeviceDisposeFailed", result.ReasonCode);
+        Assert.Equal(1, device.DisposeCalls);
+    }
+
     private static CameraAcquisitionService CreateService(RetirementDevice device,
         TestClock clock, TimeSpan? protocolReadTimeout = null) => new(device, Config(), clock,
         new CameraAcquisitionOptions(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(50),

@@ -450,6 +450,77 @@ public sealed class CameraRecoveryServiceTests
         }
     }
 
+    [Fact]
+    public async Task V122_L03_PublicRecoveryRetirementWaitsForLateOpenedDeviceAndProvider()
+    {
+        var fixture = RecoveryFixture.Create(maximumAttempts: 1,
+            operationTimeout: TimeSpan.FromMilliseconds(25), shutdownWaitTimeout: TimeSpan.FromMilliseconds(25));
+        var release = new TaskCompletionSource<CameraOpenResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var late = new RecoveryDevice(fixture.Target, fixture.Clock);
+        fixture.Provider.OpenHandler = (_, _) => release.Task;
+        await using var service = fixture.Service;
+        fixture.Initial.HealthHandler = () => Disconnected(fixture.Clock);
+        await service.RefreshAsync();
+        fixture.Clock.FireDue();
+        try
+        {
+            await EventuallyAsync(() => fixture.Provider.OpenCalls == 1);
+            var retirement = service.RetireAsync();
+            await service.DisposeAsync();
+            Assert.False(retirement.IsCompleted);
+            Assert.Equal(0, fixture.Provider.DisposeCalls);
+            release.TrySetResult(CameraOpenResult.Success(late));
+            var result = await retirement.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(result.SafeToReplace);
+            Assert.Equal(1, late.DisposeCalls);
+            Assert.Equal(1, fixture.Provider.DisposeCalls);
+        }
+        finally { release.TrySetResult(CameraOpenResult.Success(late)); }
+    }
+
+    [Fact]
+    public async Task V122_L04_PublicRecoveryRetirementDoesNotReleaseProviderAfterUnsafeDeviceStop()
+    {
+        var fixture = RecoveryFixture.Create();
+        fixture.Initial.StopHandler = _ => Task.FromResult(CameraOperationResult.Failure("FixtureStopFailed"));
+        await using var service = fixture.Service;
+        var result = await service.RetireAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(result.SafeToReplace);
+        Assert.Equal("CameraRecoveryRetirementUnsafe", result.ReasonCode);
+        Assert.Equal(0, fixture.Provider.DisposeCalls);
+    }
+
+    [Fact]
+    public async Task V122_L05_RecoveryBusyPublishesTheCurrentAcquisitionCorrelation()
+    {
+        var fixture = RecoveryFixture.Create();
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ExecutionCorrelationId? observedCorrelation = null;
+        fixture.Initial.AcquireHandler = async (request, control, token) =>
+        {
+            observedCorrelation = request.Correlation;
+            Assert.True(control.AcknowledgePending(request));
+            await control.WaitForBusyAsync(token);
+            await release.Task;
+            return FrameAcquisitionResult.FailureResult(new CameraAcquisitionFailure(
+                CameraAcquisitionFailureKind.Cancelled, "FixtureCancelled"));
+        };
+        await using var service = fixture.Service;
+        await service.RefreshAsync();
+        Assert.Null(service.Busy);
+        var attempt = service.AcquireAsync(ExecutionKind.Qualification, "Primary").AsTask();
+        try
+        {
+            await EventuallyAsync(() => service.Busy is { IsBusy: true });
+            Assert.Equal(observedCorrelation, service.Busy!.Correlation);
+            Assert.False(service.Busy.CleanupPending);
+            release.TrySetResult(true);
+            await attempt.WaitAsync(TimeSpan.FromSeconds(5));
+            await EventuallyAsync(() => service.Busy is null);
+        }
+        finally { release.TrySetResult(true); }
+    }
+
     private sealed class RecoveryFixture
     {
         private RecoveryFixture(RecoveryProvider provider, CameraBindingTarget target,
@@ -563,6 +634,8 @@ public sealed class CameraRecoveryServiceTests
             ApplyAsyncHandler { get; set; }
         internal Func<CancellationToken, Task<CameraOperationResult>> StopHandler { get; set; }
             = _ => Task.FromResult(CameraOperationResult.Success("FixtureStopped"));
+        internal Func<FrameAcquisitionRequest, FrameAcquisitionControl, CancellationToken,
+            Task<FrameAcquisitionResult>>? AcquireHandler { get; set; }
 
         public CameraDeviceDescriptor Descriptor { get; private set; }
         public CameraCapabilities Capabilities { get; }
@@ -589,8 +662,9 @@ public sealed class CameraRecoveryServiceTests
 
         public ValueTask<FrameAcquisitionResult> AcquireAsync(FrameAcquisitionRequest request,
             FrameAcquisitionControl control, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(FrameAcquisitionResult.FailureResult(new CameraAcquisitionFailure(
-                CameraAcquisitionFailureKind.DeviceFault, "FixtureAcquireUnavailable")));
+            AcquireHandler is { } acquire ? new ValueTask<FrameAcquisitionResult>(acquire(request, control, cancellationToken)) :
+                ValueTask.FromResult(FrameAcquisitionResult.FailureResult(new CameraAcquisitionFailure(
+                    CameraAcquisitionFailureKind.DeviceFault, "FixtureAcquireUnavailable")));
 
         public ValueTask<CameraConfigurationResult> ApplyConfigurationAsync(
             RequestedCameraConfiguration requested, CancellationToken cancellationToken = default)

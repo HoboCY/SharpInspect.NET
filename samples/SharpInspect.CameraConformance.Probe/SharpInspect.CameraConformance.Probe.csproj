@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' != 'true'">
+    <ProjectReference Include="../../src/SharpInspect.Cameras.Conformance/SharpInspect.Cameras.Conformance.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Cameras.Virtual/SharpInspect.Cameras.Virtual.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' == 'true'">
+    <PackageReference Include="SharpInspect.NET.Cameras.Conformance" Version="0.1.0-dev.1" />
+    <PackageReference Include="SharpInspect.NET.Cameras.Virtual" Version="0.1.0-dev.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.lock.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

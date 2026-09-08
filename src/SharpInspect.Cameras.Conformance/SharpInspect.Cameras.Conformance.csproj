@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.Cameras.Conformance</PackageId>
+    <Description>Reusable public camera contract scenarios and development conformance evidence. Does not grant hardware qualification.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpInspect.Cameras.Conformance.Tests" />
+    <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+  </ItemGroup>
+</Project>

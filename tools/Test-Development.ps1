@@ -112,6 +112,7 @@ try {
     $taskFeed = Join-Path $taskRun 'packages'
     $taskPackages = @('Abstractions','Runtime','Wpf','OpenCvSharp','Cameras.Virtual')
     if ($Ticket -ge 21) { $taskPackages += 'Cameras.Hikrobot' }
+    if ($Ticket -ge 22) { $taskPackages += 'Cameras.Conformance' }
     foreach ($taskName in $taskPackages) {
         Invoke-TaskDotnet ('pack-' + $taskName + '.log') @('pack',"src/SharpInspect.$taskName/SharpInspect.$taskName.csproj",
             '-c','Release','--no-build','--no-restore','--output',$taskFeed)
@@ -615,6 +616,9 @@ try {
             packageSha256=(Get-FileHash -LiteralPath $taskHikrobotPackage -Algorithm SHA256).Hash } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskRun 'hikrobot-consumer-summary.json') -Encoding utf8
         Write-Output 'V121-N01 isolated Hikrobot NuGet consumer PASS nativeSdkLoaded=false hardwareQualification=NotRun'
+    }
+    if ($Ticket -ge 22) {
+        & (Join-Path $PSScriptRoot 'Test-CameraConformanceConsumer.ps1') -RunDirectory $taskRun -NugetConfig $taskNugetConfig -SourceRevision $taskEvidence.startingHead
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
