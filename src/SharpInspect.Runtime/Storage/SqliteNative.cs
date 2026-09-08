@@ -100,6 +100,48 @@ internal static class SqliteNative
             ThrowIfFailed(database, result, null, default, "TraceStoreBindFailed");
     }
 
+    /// <summary>
+    /// Set one connection-wide value limit that can accommodate every enabled
+    /// bounded ledger.  SQLite has a single SQLITE_LIMIT_LENGTH per connection;
+    /// configuring the optional network ledger first must not shrink a larger
+    /// recipe or algorithm payload limit in a combined store.
+    /// </summary>
+    internal static void ConfigureSqliteLimit(SQLitePCL.sqlite3 database,
+        ProductionStoreOptions options, long schemaVersion = 0)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(options);
+        // Plain trace/audit stores retain their original 64 KiB boundary.
+        // Identity enables the governed alarm ledger in schema 7 even when no
+        // station alarm policy has been registered.
+        var limit = options.LocalIdentity is not null
+            ? AlarmStorageCodec.SqliteValueLimitBytes : 65536;
+        if (options.RecipeDrafts is not null)
+            limit = Math.Max(limit, RecipeDraftStoreOptions.SqliteValueLimitBytes);
+        if (options.AlgorithmResultArchive is not null)
+            limit = Math.Max(limit, AlgorithmResultArchiveOptions.SqliteValueLimitBytes);
+        if (options.CameraNetwork is not null)
+            limit = Math.Max(limit, CameraNetworkStoreOptions.SqliteValueLimitBytes);
+        if (options.CameraRecovery is not null)
+            limit = Math.Max(limit, CameraRecoveryStoreOptions.SqliteValueLimitBytes);
+        if (options.CameraSetup is not null)
+            limit = Math.Max(limit, CameraSetupStoreOptions.SqliteValueLimitBytes);
+        // Read-only audit consumers may omit identity configuration. Preserve
+        // the historical schema's payload budget after reading its version,
+        // without reducing a larger limit from another configured ledger.
+        var schemaLimit = schemaVersion switch
+        {
+            7 => AlarmStorageCodec.SqliteValueLimitBytes,
+            8 => AlgorithmResultArchiveOptions.SqliteValueLimitBytes,
+            9 => RecipeDraftStoreOptions.SqliteValueLimitBytes,
+            10 or 11 => CameraSetupStoreOptions.SqliteValueLimitBytes,
+            12 => CameraNetworkStoreOptions.SqliteValueLimitBytes,
+            _ => 65536
+        };
+        limit = Math.Max(limit, schemaLimit);
+        _ = SQLitePCL.raw.sqlite3_limit(database, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, limit);
+    }
+
     public static int Step(
         SQLitePCL.sqlite3 database,
         SQLitePCL.sqlite3_stmt statement,
@@ -121,6 +163,10 @@ internal static class SqliteNative
 
     public static long ColumnInt64(SQLitePCL.sqlite3_stmt statement, int index) =>
         SQLitePCL.raw.sqlite3_column_int64(statement, index);
+
+    public static long? ColumnInt64Nullable(SQLitePCL.sqlite3_stmt statement, int index) =>
+        SQLitePCL.raw.sqlite3_column_type(statement, index) == SQLitePCL.raw.SQLITE_NULL
+            ? null : SQLitePCL.raw.sqlite3_column_int64(statement, index);
 
     public static void EnsureDeadline(StoreDeadline deadline, CancellationToken cancellationToken)
     {

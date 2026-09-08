@@ -143,7 +143,8 @@ internal sealed partial class SqliteCommandStore
                 _signingKey.PublicKeyBase64, new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries),
                 startup: false, deadline, validateAnchorReceipt: false,
                 archiveOptions: _options.AlgorithmResultArchive, recipeDraftOptions: _options.RecipeDrafts,
-                cameraSetupOptions: _options.CameraSetup, cameraRecoveryOptions: _options.CameraRecovery);
+                cameraSetupOptions: _options.CameraSetup, cameraRecoveryOptions: _options.CameraRecovery,
+                cameraNetworkOptions: _options.CameraNetwork);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -154,6 +155,9 @@ internal sealed partial class SqliteCommandStore
             if (_options.CameraRecovery is not null)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                     _options.CameraRecovery);
+            if (_options.CameraNetwork is not null)
+                AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                    _options.CameraNetwork);
             recipeDraftHistoryVerificationActive = false;
 
             var state = ReadIdentityState(database, deadline);
@@ -384,7 +388,8 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require((count == 0 || (minimumPosition == 1 && maximumPosition == count)) &&
             distinctPositions == count, "RecipeDraftPositionGap");
         var cameraSetupEnabled = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
-            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion;
+            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+            CameraNetworkStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
@@ -431,7 +436,8 @@ internal sealed partial class SqliteCommandStore
         var found = row!;
         _ = DecodeAndValidateRecipeDraftRow(found, options,
             cameraSetupEnabled: AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
-            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion);
+            CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+            CameraNetworkStoreOptions.SchemaVersion);
         return auditPayload;
     }
 

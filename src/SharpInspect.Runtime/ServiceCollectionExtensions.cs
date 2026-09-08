@@ -130,6 +130,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
+        services.TryAddSingleton<ICameraNetworkMaintenanceRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICameraNetworkMaintenanceRuntime ??
+            throw new InvalidOperationException("CameraNetworkMaintenanceRuntimeUnavailable"));
         return services;
     }
 
@@ -187,6 +190,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
+        services.TryAddSingleton<ICameraNetworkMaintenanceRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICameraNetworkMaintenanceRuntime ??
+            throw new InvalidOperationException("CameraNetworkMaintenanceRuntimeUnavailable"));
         return services;
     }
 }

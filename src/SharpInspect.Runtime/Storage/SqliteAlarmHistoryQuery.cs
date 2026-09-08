@@ -68,23 +68,18 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             throw new InvalidOperationException(pathReason);
         using var key = WindowsMachineAuditKey.Open(_options.AuditIntegrityPolicy!, false, out _);
         using var connection = SqliteNative.Open(path, readOnly: true);
-        if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.AlgorithmResultArchive is not null)
-            AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.CameraRecovery is not null)
-            CameraRecoveryStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.CameraSetup is not null)
-            CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
+        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
         var database = connection.Handle!;
         SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
         var committed = false;
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11,
+            SqliteNative.ConfigureSqliteLimit(database, _options, schema);
+            AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12,
                 schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
-            if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion)
+            if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                CameraNetworkStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
             else
                 AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
@@ -92,6 +87,10 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                 throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
             if (_options.CameraRecovery is null && schema == CameraRecoveryStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
+            if (_options.CameraNetwork is not null && schema < CameraNetworkStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
+            if (_options.CameraNetwork is null && schema == CameraNetworkStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CameraNetworkConfigurationRequired");
             if (schema == AlgorithmResultArchiveOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.AlgorithmResultArchive is not null,
                     "AlgorithmResultArchiveConfigurationRequired");
@@ -107,8 +106,11 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                 schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
             var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
-            var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion;
-            var recoveryStore = schema == CameraRecoveryStoreOptions.SchemaVersion;
+            var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                CameraNetworkStoreOptions.SchemaVersion;
+            var recoveryStore = schema is CameraRecoveryStoreOptions.SchemaVersion or
+                CameraNetworkStoreOptions.SchemaVersion && _options.CameraRecovery is not null;
+            var networkStore = schema == CameraNetworkStoreOptions.SchemaVersion;
             var verification = AuditChainDatabase.Verify(database, _options.AuditIntegrityPolicy!, key.KeyId,
                 key.PublicKeyBase64,
                 new AuditVerificationRequest(0, _options.AuditIntegrityPolicy!.MaximumVerificationEntries), false,
@@ -116,7 +118,8 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                 archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
                 recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
                 cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
-                cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null);
+                cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
+                cameraNetworkOptions: networkStore ? _options.CameraNetwork : null);
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -129,6 +132,9 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             if (recoveryStore)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                     _options.CameraRecovery);
+            if (networkStore)
+                AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                    _options.CameraNetwork);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AuditChainDatabase.Require(persistedPolicy is not null &&
                 persistedPolicy.ContentHash == _options.AlarmPolicy!.ContentHash &&
@@ -832,14 +838,7 @@ internal sealed partial class SqliteCommandStore
         return await Task.Run(() =>
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
-            if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-            else if (_options.AlgorithmResultArchive is not null)
-                AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
-            else if (_options.CameraRecovery is not null)
-                CameraRecoveryStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-            else if (_options.CameraSetup is not null)
-                CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-            else AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
+            SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
             var database = connection.Handle!;
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
@@ -847,9 +846,11 @@ internal sealed partial class SqliteCommandStore
             try
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11,
+                SqliteNative.ConfigureSqliteLimit(database, _options, schema);
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
-                if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion)
+                if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                    CameraNetworkStoreOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
                 else
                     AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
@@ -857,6 +858,10 @@ internal sealed partial class SqliteCommandStore
                     throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
                 if (_options.CameraRecovery is null && schema == CameraRecoveryStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
+                if (_options.CameraNetwork is not null && schema < CameraNetworkStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
+                if (_options.CameraNetwork is null && schema == CameraNetworkStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraNetworkConfigurationRequired");
                 if (schema == AlgorithmResultArchiveOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.AlgorithmResultArchive is not null,
                         "AlgorithmResultArchiveConfigurationRequired");
@@ -873,17 +878,21 @@ internal sealed partial class SqliteCommandStore
                 var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
                 var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
-                var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion;
-                var recoveryStore = schema == CameraRecoveryStoreOptions.SchemaVersion;
+                var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                    CameraNetworkStoreOptions.SchemaVersion;
+                var recoveryStore = schema == CameraRecoveryStoreOptions.SchemaVersion ||
+                    schema == CameraNetworkStoreOptions.SchemaVersion && _options.CameraRecovery is not null;
+                var networkStore = schema == CameraNetworkStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                    alarmStore || archiveStore || draftStore || cameraStore || recoveryStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore, deadline,
+                    alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
                     validateAnchorReceipt: false,
                     archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
                     recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
                     cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
-                    cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null);
+                    cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
+                    cameraNetworkOptions: networkStore ? _options.CameraNetwork : null);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveStore)
                     AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -896,6 +905,9 @@ internal sealed partial class SqliteCommandStore
                 if (recoveryStore)
                     AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                         _options.CameraRecovery);
+                if (networkStore)
+                    AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                        _options.CameraNetwork);
                 var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
                 AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);
                 var events = AlarmStorageCodec.ReadEvents(database, deadline);
@@ -947,14 +959,16 @@ internal sealed partial class SqliteCommandStore
             var archiveStore = _options.AlgorithmResultArchive is not null;
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
+            var networkStore = _options.CameraNetwork is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
                 validateAnchorReceipt: false,
                 archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery,
+                cameraNetworkOptions: _options.CameraNetwork);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -967,6 +981,9 @@ internal sealed partial class SqliteCommandStore
             if (recoveryStore)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                     _options.CameraRecovery);
+            if (networkStore)
+                AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                    _options.CameraNetwork);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AlarmStorageCodec.RequireConfiguredPolicy(persistedPolicy, _options.AlarmPolicy);
             var before = AlarmStorageCodec.BuildState(persistedPolicy,

@@ -124,14 +124,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > CameraRecoveryStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CameraNetworkStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > CameraRecoveryStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CameraNetworkStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -156,7 +156,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -252,8 +252,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      (schemaVersion >= 9 || actionKind != AuditedCommandKind.SaveRecipeDraft) &&
                      (schemaVersion >= 10 || (actionKind != AuditedCommandKind.RebindCamera &&
                         actionKind != AuditedCommandKind.ApplyCameraDebugConfiguration)) &&
-                     (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion ||
+                    (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion ||
                         actionKind != AuditedCommandKind.StartCameraRecoveryCycle) &&
+                    (schemaVersion >= CameraNetworkStoreOptions.SchemaVersion ||
+                        actionKind != AuditedCommandKind.ChangeCameraNetworkConfiguration) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -417,6 +419,47 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             binding = new CameraAuthorizationAudit(kind, principal, actor, correlation, grant,
                 requiredPermission, actionTarget, boundCorrelation, commandKind, operation, session, revision,
                 fields[9]!);
+            return true;
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>Reads the schema-12 network authorization envelope without changing
+    /// the schema-10/11 camera parser or its accepted command set.</summary>
+    internal static bool TryReadCameraNetworkAuthorization(byte[] payload, long ordinal,
+        string stationId, out CameraAuthorizationAudit binding)
+    {
+        binding = null!;
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, CameraNetworkStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            if (fields.Length != 49 || !Enum.TryParse<IdentityEventKind>(fields[2], out var kind) ||
+                kind is not (IdentityEventKind.CameraSetupActionAuthorized or
+                    IdentityEventKind.CameraSetupOperationCompleted) ||
+                !Guid.TryParseExact(fields[5], "D", out var principal) || principal == Guid.Empty ||
+                !Guid.TryParseExact(fields[25], "D", out var session) || session == Guid.Empty ||
+                !Guid.TryParseExact(fields[30], "D", out var actor) || actor == Guid.Empty ||
+                !Guid.TryParseExact(fields[31], "D", out var correlation) || correlation == Guid.Empty ||
+                !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) || boundCorrelation == Guid.Empty ||
+                !Guid.TryParseExact(fields[42], "D", out var operation) || operation == Guid.Empty ||
+                !long.TryParse(fields[35], NumberStyles.None, CultureInfo.InvariantCulture, out var revision) ||
+                revision < 0 || fields[33] != Permission.ManageCameraBindings.ToString() ||
+                fields[37] is not { Length: 64 } || !IsHash(fields[37]) ||
+                fields[39] != AuditedCommandKind.ChangeCameraNetworkConfiguration.ToString())
+                return false;
+            Guid? grant = null;
+            if (fields[32] is not null)
+            {
+                if (!Guid.TryParseExact(fields[32], "D", out var parsedGrant) || parsedGrant == Guid.Empty)
+                    return false;
+                grant = parsedGrant;
+            }
+            binding = new CameraAuthorizationAudit(kind, principal, actor, correlation, grant,
+                fields[33]!, fields[37]!, boundCorrelation, AuditedCommandKind.ChangeCameraNetworkConfiguration,
+                operation, session, revision, fields[9]!);
             return true;
         }
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or

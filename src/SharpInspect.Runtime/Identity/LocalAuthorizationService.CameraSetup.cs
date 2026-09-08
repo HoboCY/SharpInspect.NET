@@ -27,7 +27,9 @@ internal sealed partial class LocalAuthorizationService : ICameraSetupAuthorizer
             claimedSession == Guid.Empty)
             return CameraSetupAuthorization.Denied("InvalidCommandContext");
         if (!readOnly && (operationId == Guid.Empty ||
-            commandKind is not (AuditedCommandKind.RebindCamera or AuditedCommandKind.ApplyCameraDebugConfiguration)))
+            commandKind is not (AuditedCommandKind.RebindCamera or
+                AuditedCommandKind.ApplyCameraDebugConfiguration or
+                AuditedCommandKind.ChangeCameraNetworkConfiguration)))
             return CameraSetupAuthorization.Denied("CameraOperationIdRequired");
         // Discovery is a provider-scoped read and intentionally has no camera
         // role/target.  Setup reads and both mutations still require the exact
@@ -135,6 +137,23 @@ internal sealed partial class LocalAuthorizationService : ICameraSetupAuthorizer
         }
         return context.Owner.AcquireCameraSetupCommitGuard(context, state,
             requireActiveGrant, out reason);
+    }
+
+    /// <summary>
+    /// Checks the immutable command binding captured by the authorization
+    /// reservation.  Network maintenance carries a complete target hash rather
+    /// than a logical camera role, so the durable writer must compare the
+    /// request with the exact Step-Up reservation before it writes admission.
+    /// </summary>
+    internal static bool MatchesCameraSetupAuthorization(
+        CameraSetupAuthorizationReservation reservation, Guid operationId,
+        string targetId, AuditedCommandKind commandKind)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        if (operationId == Guid.Empty || string.IsNullOrEmpty(targetId)) return false;
+        return CameraAuthorizationContexts.TryGetValue(reservation, out var context) &&
+            context.OperationId == operationId && context.TargetId == targetId &&
+            context.CommandKind == commandKind;
     }
 
     private IIdentityTransactionGuard? AcquireCameraSetupCommitGuard(

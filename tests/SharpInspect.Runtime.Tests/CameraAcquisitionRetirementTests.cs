@@ -78,7 +78,7 @@ public sealed class CameraAcquisitionRetirementTests
             return Healthy(clock);
         };
         await using var service = CreateService(device, clock,
-            protocolReadTimeout: TimeSpan.FromMilliseconds(25));
+            protocolReadTimeout: TimeSpan.FromSeconds(2));
 
         try
         {

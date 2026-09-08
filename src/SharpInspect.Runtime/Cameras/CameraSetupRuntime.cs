@@ -13,7 +13,7 @@ namespace SharpInspect.Runtime.Cameras;
 /// authorized maintenance operation, but it never supplies a production lease or
 /// changes ActiveRecipe/Ready.
 /// </summary>
-internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
+internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime, IAsyncDisposable
 {
     private const int MaximumLogicalRoles = 16;
     private const int MaximumProviders = 4;
@@ -61,7 +61,8 @@ internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
         IIdentityAdministrationQuery? identityQuery, Func<CameraStationContext> readStation,
         Action<string, CameraSetupSnapshot> publishSetup,
         ICameraSetupAuthorizer? cameraAuthorizer = null,
-        ICameraSetupPersistence? persistence = null)
+        ICameraSetupPersistence? persistence = null,
+        ICameraNetworkPersistence? networkPersistence = null)
     {
         ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(options);
@@ -74,6 +75,7 @@ internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
         _identityQuery = identityQuery;
         _cameraAuthorizer = cameraAuthorizer;
         _persistence = persistence;
+        _networkPersistence = networkPersistence ?? CameraNetworkPersistenceFactory.Create(audit);
         _readStation = readStation;
         _publishSetup = publishSetup;
 
@@ -430,6 +432,10 @@ internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
                 return Failed("CameraSetupBusy", AuditPersistence.NotAttempted);
             }
 
+            var networkBarrier = await CheckNetworkBarrierAsync(linked.Token).ConfigureAwait(false);
+            if (networkBarrier is not null)
+                return await RejectBeforeAuditAsync(networkBarrier, authorization).ConfigureAwait(false);
+
             var persisted = await LoadPersistedAsync(request.LogicalRole, linked.Token).ConfigureAwait(false);
             if (!persisted.Succeeded)
                 return await RejectBeforeAuditAsync(persisted.ReasonCode, authorization).ConfigureAwait(false);
@@ -635,6 +641,9 @@ internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
                 return Failed("CameraSetupBusy", AuditPersistence.NotAttempted);
             }
 
+            var networkBarrier = await CheckNetworkBarrierAsync(linked.Token).ConfigureAwait(false);
+            if (networkBarrier is not null)
+                return await RejectBeforeAuditAsync(networkBarrier, authorization).ConfigureAwait(false);
             var persisted = await LoadPersistedAsync(request.LogicalRole, linked.Token).ConfigureAwait(false);
             if (!persisted.Succeeded)
                 return await RejectBeforeAuditAsync(persisted.ReasonCode, authorization).ConfigureAwait(false);
@@ -1986,6 +1995,7 @@ internal sealed class CameraSetupRuntime : ICameraSetupRuntime, IAsyncDisposable
     {
         _operationGate.Dispose();
         _queryGate.Dispose();
+        _networkQueryGate.Dispose();
         _physicalCapacity.Dispose();
         _lifetime.Dispose();
     }

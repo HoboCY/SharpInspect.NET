@@ -289,7 +289,7 @@ internal sealed partial class SqliteCommandStore
                     new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries),
                     false, deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                     recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                    cameraRecoveryOptions: _options.CameraRecovery);
+                    cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -300,6 +300,9 @@ internal sealed partial class SqliteCommandStore
                 if (_options.CameraRecovery is not null)
                     AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                         _options.CameraRecovery);
+                if (_options.CameraNetwork is not null)
+                    AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                        _options.CameraNetwork);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

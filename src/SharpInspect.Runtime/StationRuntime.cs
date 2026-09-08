@@ -12,7 +12,7 @@ namespace SharpInspect.Runtime;
 /// The initial, deliberately unconfigured station authority. Later tickets supply governed
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
-public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -91,6 +91,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             cameraSetupOptions ?? new CameraSetupOptions(), _audit, _sessions,
             authorization, ReadCameraStationContext, PublishCameraSetupLocked,
             authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit));
+        _cameraSetupRuntime.ConfigureNetworkMaintenance(TryReserveCameraNetworkMaintenance,
+            ReleaseCameraNetworkMaintenance, PublishCameraNetworkMaintenance);
         _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);
         _snapshot = ApplyCameraAcquisitionStateLocked(_snapshot);
         _snapshot = ApplyCameraRecoveryStateLocked(_snapshot);
@@ -258,6 +260,20 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 return Unavailable("CommandDeadlineExceeded");
             }
             await _storeInitialization.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
+            bool inspectNetworkBarrier;
+            lock (_sync)
+            {
+                // Preserve the original structural/duplicate rejection paths before
+                // performing an additional protected store read for a new Arm action.
+                inspectNetworkBarrier = command is ArmProductionCommand && command.CorrelationId != Guid.Empty &&
+                    _snapshot.LastCommand?.CorrelationId != command.CorrelationId &&
+                    command.Invocation is { } armInvocation && Enum.IsDefined(armInvocation.Source) &&
+                    armInvocation.PrincipalId?.Length is not > 256;
+            }
+            var cameraNetworkBarrier = inspectNetworkBarrier
+                ? await _cameraSetupRuntime.CheckNetworkBarrierAsync(cancellationToken).AsTask()
+                    .WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false)
+                : null;
             if (governedCommand)
             {
                 string? forced;
@@ -266,7 +282,10 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 {
                     if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
                     ReconcileAlgorithmExecutionLocked();
-                    forced = _snapshot.LastCommand?.State == OperationState.Pending ? "OperationInProgress" : null;
+                    forced = cameraNetworkBarrier ?? (_snapshot.LastCommand?.State == OperationState.Pending
+                        ? "OperationInProgress" : null);
+                    if (command is ArmProductionCommand && _cameraNetworkMaintenanceActive)
+                        forced = "CameraNetworkMaintenanceInProgress";
                     epoch = _snapshot.RuntimeEpoch;
                 }
                 var governed = cameraRecoveryCommand
@@ -290,7 +309,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             lock (_sync)
             {
                 if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
-                decision = DecideLocked(command);
+                decision = cameraNetworkBarrier is null ? DecideLocked(command) :
+                    new RuntimeCommandOutcome(command.CorrelationId, CommandDisposition.Rejected, cameraNetworkBarrier);
             }
             var fact = CreateFact(command, attempt, decision);
             var result = _audit is null || !_storeReady
@@ -347,6 +367,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             !Enum.IsDefined(typeof(CommandSource), command.Invocation.Source) || command.Invocation.PrincipalId?.Length > 256)
             return Reject("InvalidCommandContext");
         if (_snapshot.LastCommand?.CorrelationId == command.CorrelationId) return Reject("DuplicateCorrelationId");
+        if (command is ArmProductionCommand && _cameraNetworkMaintenanceActive)
+            return Reject("CameraNetworkMaintenanceInProgress");
         return command switch
         {
             AcknowledgeAlarmCommand or ResetAlarmCommand => Reject("AuthorizationUnavailable"),

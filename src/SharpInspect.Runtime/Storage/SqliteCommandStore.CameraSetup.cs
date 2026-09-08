@@ -92,11 +92,7 @@ internal sealed partial class SqliteCommandStore
         if (!initialized.Committed || !CameraSetupEnabled || _databasePath is null || _policy is null || _signingKey is null)
             throw new InvalidOperationException(initialized.ReasonCode);
         using var connection = SqliteNative.Open(_databasePath, readOnly: true);
-        if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.AlgorithmResultArchive is not null)
-            AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.CameraRecovery is not null) CameraRecoveryStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
+        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
         var database = connection.Handle!;
         var deadline = new StoreDeadline(_options.QueryTimeout);
         SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
@@ -107,11 +103,15 @@ internal sealed partial class SqliteCommandStore
                 new AuditVerificationRequest(0, _policy.MaximumVerificationEntries), startup: true,
                 deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery,
+                cameraNetworkOptions: _options.CameraNetwork);
             AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline, _options.CameraSetup);
             if (_options.CameraRecovery is not null)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                     _options.CameraRecovery);
+            if (_options.CameraNetwork is not null)
+                AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                    _options.CameraNetwork);
             var state = ReadCameraSetupState(database, logicalRole, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return new CameraSetupReadResult(state.ToPublicResult(), state);
@@ -382,6 +382,14 @@ internal sealed partial class SqliteCommandStore
                     stationId!, schemaVersion, out var binding))
             {
                 authorizations.Add(binding);
+            }
+            else if (schemaVersion >= CameraNetworkStoreOptions.SchemaVersion &&
+                IdentityAuditEvent.TryReadCameraNetworkAuthorization(row.Payload, row.Ordinal,
+                    stationId!, out _))
+            {
+                // Schema 12 reuses the camera setup identity event kinds for the
+                // independent network ledger. Its command kind is 18, so it is
+                // deliberately excluded from this schema-10 setup projection.
             }
             else if (IdentityAuditEvent.TryReadEventKind(row.Payload, out var kind) &&
                 kind is IdentityEventKind.CameraSetupActionAuthorized or

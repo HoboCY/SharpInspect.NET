@@ -92,21 +92,15 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             return new QueryResult(Empty(false, pathReason), null);
         using var key = WindowsMachineAuditKey.Open(_options.AuditIntegrityPolicy!, false, out _);
         using var connection = SqliteNative.Open(path, readOnly: true);
-        if (_options.RecipeDrafts is not null)
-            RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.AlgorithmResultArchive is not null)
-            AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.CameraRecovery is not null)
-            CameraRecoveryStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-        else if (_options.CameraSetup is not null)
-            CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
+        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
         var database = connection.Handle!;
         SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
         var committed = false;
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion)
+            if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                CameraNetworkStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
             else if (schema < CameraSetupStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
@@ -114,13 +108,17 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
             if (_options.CameraRecovery is null && schema == CameraRecoveryStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
+            if (_options.CameraNetwork is not null && schema < CameraNetworkStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
+            if (_options.CameraNetwork is null && schema == CameraNetworkStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CameraNetworkConfigurationRequired");
             if (_options.AlgorithmResultArchive is null)
                 throw new InvalidOperationException(schema == AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveConfigurationRequired"
                     : "AlgorithmResultArchiveGovernedMigrationRequired");
             AuditChainDatabase.Require(schema is AlgorithmResultArchiveOptions.SchemaVersion or
                 RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
-                CameraRecoveryStoreOptions.SchemaVersion,
+                CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
@@ -134,7 +132,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 new AuditVerificationRequest(0, policy.MaximumVerificationEntries), false, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (_options.RecipeDrafts is not null)
                 AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -145,6 +143,9 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             if (_options.CameraRecovery is not null)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                     _options.CameraRecovery);
+            if (_options.CameraNetwork is not null)
+                AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                    _options.CameraNetwork);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline);

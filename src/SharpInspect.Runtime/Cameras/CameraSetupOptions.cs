@@ -42,6 +42,9 @@ public sealed class CameraSetupOptions
     /// <summary>Bound for draining an in-flight provider operation during Runtime shutdown.</summary>
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>Explicit station interface for optional network maintenance; never read from command input.</summary>
+    public CameraStationNetwork? StationNetwork { get; init; }
+
     internal void Validate()
     {
         if (OperationTimeout < TimeSpan.FromMilliseconds(100) ||

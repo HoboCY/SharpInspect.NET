@@ -241,6 +241,58 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_RECOVERY_EVIDENCE_ROOT',$taskPreviousRecoveryEvidence,'Process')
         }
     }
+    if ($Ticket -ge 20) {
+        $taskPreviousNetworkConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_CONSUMER','Process')
+        $taskPreviousNetworkEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_EVIDENCE_ROOT',(Join-Path $taskRun 'camera-network-demo'),'Process')
+            Invoke-TaskDotnet 'camera-network-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~CameraNetworkConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'camera-network-consumer-tests'))
+            foreach ($taskNetworkFile in @('evidence.json','camera-network-evidence.json','camera-network-restart.json','camera-network-arm-restart.json',
+                'summary.json','process.log','restart.log')) {
+                $taskNetworkArtifact = Join-Path $taskRun ('camera-network-demo/' + $taskNetworkFile)
+                if (-not (Test-Path -LiteralPath $taskNetworkArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskNetworkArtifact).Length -eq 0) {
+                    throw "Camera network consumer evidence is missing or empty: $taskNetworkFile"
+                }
+            }
+            $taskNetworkAcceptance = Get-Content -LiteralPath (Join-Path $taskRun 'camera-network-demo/evidence.json') -Raw | ConvertFrom-Json
+            $taskNetworkEvidence = Get-Content -LiteralPath (Join-Path $taskRun 'camera-network-demo/camera-network-evidence.json') -Raw | ConvertFrom-Json
+            $taskNetworkSummary = Get-Content -LiteralPath (Join-Path $taskRun 'camera-network-demo/summary.json') -Raw | ConvertFrom-Json
+            $taskNetworkConsumerHash = (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash
+            if ($taskNetworkAcceptance.Result -cne 'Pass' -or $taskNetworkAcceptance.ExternalNuGetConsumer -cne $true -or
+                $taskNetworkAcceptance.IndependentRestart -cne $true -or $taskNetworkAcceptance.DatabaseReadOnlyByRestart -cne $true -or
+                $taskNetworkAcceptance.ConsumerSha256 -cne $taskNetworkConsumerHash -or
+                $taskNetworkEvidence.Result -cne 'Pass' -or $taskNetworkEvidence.Ready -cne $false -or
+                $taskNetworkEvidence.RequiresRecipeActivation -cne $true -or $taskNetworkEvidence.IdentityVerified -cne $true -or
+                $taskNetworkEvidence.AuditBeforePhysicalChange -cne $true -or
+                $taskNetworkEvidence.StartupQualificationOnly -cne $true -or
+                $taskNetworkEvidence.AnonymousRejectedWithoutProjection -cne $true -or
+                $taskNetworkEvidence.MissingStepUpRejectedWithoutProjection -cne $true -or
+                $taskNetworkEvidence.UnsupportedProviderRejectedWithoutProjection -cne $true -or
+                $taskNetworkEvidence.ArmRestartRejectedByReconciliation -cne $true -or
+                $taskNetworkEvidence.ArmRestartReadyFalse -cne $true -or
+                $taskNetworkEvidence.ArmRestartNoProviderRegistered -cne $true -or
+                $taskNetworkEvidence.ArmRestartMalformedRejected -cne $true -or
+                $taskNetworkEvidence.ArmRestartEmptyCorrelationRejected -cne $true -or
+                $taskNetworkEvidence.ArmRestartAnonymousRejected -cne $true -or
+                $taskNetworkEvidence.RequestedAddress -cne $taskNetworkEvidence.ObservedAddress -or
+                $taskNetworkSummary.AppliedCount -ne 1 -or $taskNetworkSummary.MaintenanceLeaseHeld -cne $false) {
+                throw 'Camera network consumer evidence failed its measured result or artifact binding.'
+            }
+            foreach ($taskNetworkNotRun in @('PhysicalHardwareQualification','StationAcceptance','Production','NativeCrashIsolation','HostNetworkMutation')) {
+                if ($taskNetworkAcceptance.$taskNetworkNotRun -cne 'NotRun' -or $taskNetworkEvidence.$taskNetworkNotRun -cne 'NotRun') {
+                    throw "Camera network development evidence overstates qualification: $taskNetworkNotRun"
+                }
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_CONSUMER',$taskPreviousNetworkConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_NETWORK_EVIDENCE_ROOT',$taskPreviousNetworkEvidence,'Process')
+        }
+    }
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'

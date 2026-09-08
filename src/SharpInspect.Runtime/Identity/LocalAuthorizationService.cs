@@ -180,7 +180,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ArmProduction => Permission.ArmProduction,
         AuditedCommandKind.AcknowledgeAlarm => Permission.AcknowledgeAlarm,
         AuditedCommandKind.ResetAlarm => Permission.ResetAlarm,
-        AuditedCommandKind.RebindCamera or AuditedCommandKind.ApplyCameraDebugConfiguration =>
+        AuditedCommandKind.RebindCamera or AuditedCommandKind.ApplyCameraDebugConfiguration or
+            AuditedCommandKind.ChangeCameraNetworkConfiguration =>
             Permission.ManageCameraBindings,
         AuditedCommandKind.StartCameraRecoveryCycle => Permission.ManageCameraBindings,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,

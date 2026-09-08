@@ -56,7 +56,10 @@ internal static class Program
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
         var cameraRecoveryQueryDirectory = Option("--camera-recovery-query");
+        var cameraNetworkDirectory = Option("--camera-network-check");
+        var cameraNetworkQueryDirectory = Option("--camera-network-query");
         var cameraRecoveryEnabled = cameraRecoveryDirectory is not null || cameraRecoveryQueryDirectory is not null;
+        var cameraNetworkEnabled = cameraNetworkDirectory is not null || cameraNetworkQueryDirectory is not null;
         var draftEnabled = draftCheckDirectory is not null || draftQueryDirectory is not null ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
@@ -66,9 +69,10 @@ internal static class Program
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
-            CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled
+            CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
                 ? new CameraSetupStoreOptions() : null,
-            CameraRecovery = cameraRecoveryEnabled ? new CameraRecoveryStoreOptions() : null,
+            CameraRecovery = cameraRecoveryEnabled || cameraNetworkEnabled ? new CameraRecoveryStoreOptions() : null,
+            CameraNetwork = cameraNetworkEnabled ? new CameraNetworkStoreOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -88,6 +92,10 @@ internal static class Program
             return CameraRecoveryDemo.Run(storeOptions, cameraRecoveryDirectory, Option("--user-name"), Option("--expected-principal"));
         if (cameraRecoveryQueryDirectory is not null)
             return CameraRecoveryDemo.Query(storeOptions, cameraRecoveryQueryDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (cameraNetworkDirectory is not null)
+            return CameraNetworkDemo.Run(storeOptions, cameraNetworkDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (cameraNetworkQueryDirectory is not null)
+            return CameraNetworkDemo.Query(storeOptions, cameraNetworkQueryDirectory, Option("--user-name"), Option("--expected-principal"));
         if (administratorRecoveryCheck)
             return AdministratorRecoveryDemo.Run(storeOptions);
         if (args.Contains("--alarm-check", StringComparer.OrdinalIgnoreCase))

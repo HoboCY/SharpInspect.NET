@@ -29,9 +29,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
 pwsh -File tools/Test-Ticket18.ps1
 pwsh -File tools/Test-Ticket19.ps1
+pwsh -File tools/Test-Ticket20.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket18/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticketNN/<run>/`（NN 为票号），
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 空间不足时可添加 `-ArtifactRoot E:\SharpInspectEvidence\artifacts`，把验证产物与隔离包缓存
 放到另一个本地卷；源码、锁文件和验证步骤保持相同。
@@ -130,6 +131,13 @@ Provider Qualification、生产流程和 Station Acceptance 均未在该开发�
 20 次耗尽、真实身份授权重启及独立进程只读复核，保存周期、尝试次数、审计和 lease 证据。
 稳定验证 ID 见 [V1-19 记录](docs/verification/v1-19.md)。真实硬件、Station Acceptance、
 生产流程和原生 SDK 崩溃隔离均不属于此开发入口的验证结果。
+
+相机网络维护通过独立的 `ICameraNetworkConfigurator` 扩展和
+`ICameraNetworkMaintenanceRuntime` 入口提供；普通 `VirtualCameraProvider` 不提供该能力。
+宿主显式声明 `CameraSetupOptions.StationNetwork` 并通过 `ProductionStoreOptions.CameraNetwork`
+启用 schema 12 审计。维护使用稳定设备身份，要求权限、Step-Up、停产条件和独占设备会话。
+修改后重新发现并读回同一设备，仍需独立完成 Recipe Activation。
+开发验证入口为 `tools/Test-Ticket20.ps1`，实际范围与证据见 [V1-20 记录](docs/verification/v1-20.md)。
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，

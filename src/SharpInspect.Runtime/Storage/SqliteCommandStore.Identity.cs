@@ -61,14 +61,7 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(database);
-            else if (_options.AlgorithmResultArchive is not null)
-                AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
-            else if (_options.CameraRecovery is not null)
-                CameraRecoveryStoreOptions.ConfigureSqliteLimit(database);
-            else if (_options.CameraSetup is not null)
-                CameraSetupStoreOptions.ConfigureSqliteLimit(database);
-            else AlarmStorageCodec.ConfigureSqliteLimit(database);
+            SqliteNative.ConfigureSqliteLimit(database, _options);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
@@ -76,13 +69,14 @@ internal sealed partial class SqliteCommandStore
             var draftStore = _options.RecipeDrafts is not null;
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
+            var networkStore = _options.CameraNetwork is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -92,6 +86,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraSetup);
             if (recoveryStore) AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                 _options.CameraRecovery);
+            if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                _options.CameraNetwork);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -112,12 +108,7 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(database);
-            else if (_options.AlgorithmResultArchive is not null)
-                AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
-            else if (_options.CameraSetup is not null)
-                CameraSetupStoreOptions.ConfigureSqliteLimit(database);
-            else AlarmStorageCodec.ConfigureSqliteLimit(database);
+            SqliteNative.ConfigureSqliteLimit(database, _options);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
@@ -125,13 +116,14 @@ internal sealed partial class SqliteCommandStore
             var draftStore = _options.RecipeDrafts is not null;
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
+            var networkStore = _options.CameraNetwork is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -141,6 +133,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraSetup);
             if (recoveryStore) AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                 _options.CameraRecovery);
+            if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                _options.CameraNetwork);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -253,13 +247,14 @@ internal sealed partial class SqliteCommandStore
             var draftStore = _options.RecipeDrafts is not null;
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
+            var networkStore = _options.CameraNetwork is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -269,6 +264,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraSetup);
             if (recoveryStore) AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
                 _options.CameraRecovery);
+            if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
+                _options.CameraNetwork);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&
@@ -521,7 +518,8 @@ internal sealed partial class SqliteCommandStore
         long StateRevision, long IdentitySequence, string? AuditHash, string? RecordHash);
 
     private void AppendIdentityCommandFacts(sqlite3 database, IReadOnlyList<CommandAuditFact>? facts,
-        Guid? expectedCorrelationId, StoreDeadline deadline, bool allowTerminalContinuation = false)
+        Guid? expectedCorrelationId, StoreDeadline deadline, bool allowTerminalContinuation = false,
+        AuditChainDatabase.CameraNetworkAuditWriteMode cameraNetworkMode = AuditChainDatabase.CameraNetworkAuditWriteMode.Generic)
     {
         if (facts is null || facts.Count == 0)
         {
@@ -565,7 +563,7 @@ internal sealed partial class SqliteCommandStore
                 "SELECT 1 FROM command_facts WHERE EventId=? LIMIT 1;", continuation.EventId, deadline),
                 "DuplicateEventId");
             InsertFact(database, continuation, aggregateSequence: 2, deadline);
-            AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, continuation.EventId, deadline);
+            AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, continuation.EventId, deadline, cameraNetworkMode);
             return;
         }
 
@@ -595,11 +593,11 @@ internal sealed partial class SqliteCommandStore
 
         InsertAttempt(database, outcome, deadline);
         InsertFact(database, outcome, aggregateSequence: 1, deadline);
-        AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, outcome.EventId, deadline);
+        AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, outcome.EventId, deadline, cameraNetworkMode);
         if (terminal is not null)
         {
             InsertFact(database, terminal, aggregateSequence: 2, deadline);
-            AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, terminal.EventId, deadline);
+            AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, terminal.EventId, deadline, cameraNetworkMode);
         }
     }
 

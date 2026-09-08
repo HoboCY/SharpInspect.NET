@@ -24,6 +24,8 @@ internal sealed partial class SqliteCommandStore
         if (_policy is null || !File.Exists(_databasePath) || new FileInfo(_databasePath!).Length == 0) return;
         using var read = SqliteNative.Open(_databasePath!, readOnly: true);
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
+        if (_options.CameraNetwork is null && version == CameraNetworkStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("CameraNetworkConfigurationRequired");
         if (_options.CameraRecovery is null && version == CameraRecoveryStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
         if (_options.RecipeDrafts is null && version == RecipeDraftStoreOptions.SchemaVersion)

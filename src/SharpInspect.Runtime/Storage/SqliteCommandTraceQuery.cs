@@ -45,9 +45,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                     // Filesystem and registry inspection must not block the WPF Dispatcher.
                     if (!StoragePathValidator.TryValidate(_options, out var currentPath, out var pathReason))
                         throw new InvalidOperationException(pathReason);
-                    return QueryCore(currentPath, filter, deadline, cancellationToken,
-                        _options.AlgorithmResultArchive is not null, _options.RecipeDrafts is not null,
-                        _options.CameraSetup is not null, _options.CameraRecovery is not null);
+                    return QueryCore(currentPath, filter, deadline, cancellationToken, _options);
                 }, CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -67,19 +65,11 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
     }
 
     private static CommandTracePage QueryCore(string databasePath, CommandTraceFilter filter, StoreDeadline deadline,
-        CancellationToken cancellationToken, bool archiveConfigured, bool draftConfigured, bool cameraConfigured,
-        bool recoveryConfigured)
+        CancellationToken cancellationToken, ProductionStoreOptions options)
     {
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         var database = connection.Handle!;
-        if (draftConfigured)
-            RecipeDraftStoreOptions.ConfigureSqliteLimit(database);
-        else if (archiveConfigured)
-            AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
-        else if (recoveryConfigured)
-            CameraRecoveryStoreOptions.ConfigureSqliteLimit(database);
-        else if (cameraConfigured)
-            CameraSetupStoreOptions.ConfigureSqliteLimit(database);
+        SqliteNative.ConfigureSqliteLimit(database, options);
         SqliteNative.Execute(database, "PRAGMA query_only=ON; PRAGMA foreign_keys=ON;", deadline, cancellationToken);
 
         var schemaVersion = SqliteNative.WithStatement(database, "PRAGMA user_version;", deadline,
@@ -88,22 +78,27 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 SqliteNative.Step(database, statement, deadline, cancellationToken);
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
             }, cancellationToken);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11)) throw new InvalidOperationException("StoreSchemaUnavailable");
-        if (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion && !cameraConfigured)
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+            CameraNetworkStoreOptions.SchemaVersion && options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
-        if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && cameraConfigured)
+        if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
             throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
-        if (schemaVersion == CameraRecoveryStoreOptions.SchemaVersion && !recoveryConfigured)
+        if (schemaVersion == CameraRecoveryStoreOptions.SchemaVersion && options.CameraRecovery is null)
             throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
-        if (schemaVersion < CameraRecoveryStoreOptions.SchemaVersion && recoveryConfigured)
+        if (schemaVersion < CameraRecoveryStoreOptions.SchemaVersion && options.CameraRecovery is not null)
             throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
-        if (schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion && !archiveConfigured)
+        if (schemaVersion == CameraNetworkStoreOptions.SchemaVersion && options.CameraNetwork is null)
+            throw new InvalidOperationException("CameraNetworkConfigurationRequired");
+        if (schemaVersion < CameraNetworkStoreOptions.SchemaVersion && options.CameraNetwork is not null)
+            throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
+        if (schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion && options.AlgorithmResultArchive is null)
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
-        if (schemaVersion < AlgorithmResultArchiveOptions.SchemaVersion && archiveConfigured)
+        if (schemaVersion < AlgorithmResultArchiveOptions.SchemaVersion && options.AlgorithmResultArchive is not null)
             throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
-        if (schemaVersion == RecipeDraftStoreOptions.SchemaVersion && !draftConfigured)
+        if (schemaVersion == RecipeDraftStoreOptions.SchemaVersion && options.RecipeDrafts is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
-        if (schemaVersion < RecipeDraftStoreOptions.SchemaVersion && draftConfigured)
+        if (schemaVersion < RecipeDraftStoreOptions.SchemaVersion && options.RecipeDrafts is not null)
             throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",

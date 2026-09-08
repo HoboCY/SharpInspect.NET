@@ -3,6 +3,7 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Storage;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Xunit;
@@ -170,6 +171,63 @@ public sealed class AlarmStorageTests
         }
         finally { DeleteMachineKey(fixture.PolicyIntegrity); }
     }
+
+    [Fact]
+    public async Task V120_M03_Schema7ReadOnlyAuditWithoutIdentityOrAlarmOptionsAcceptsLargeAlarmPayload()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw SkipException.ForSkip("Legacy schema 7 audit storage requires Windows machine protection.");
+
+        var fixture = CreateFixture("V120-M03", LargeLegacyPolicy());
+        try
+        {
+            await using (var store = new SqliteCommandStore(fixture.Options))
+            {
+                var initialized = await store.Initialization.WaitAsync(TimeSpan.FromSeconds(15));
+                Assert.True(initialized.Committed, initialized.ReasonCode);
+                await WaitForVerifiedAsync(store);
+            }
+
+            byte[] payload;
+            using (var connection = Open(fixture.DatabasePath, readOnly: true))
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "PRAGMA user_version;";
+                Assert.Equal(7L, Convert.ToInt64(command.ExecuteScalar(), CultureInfo.InvariantCulture));
+                command.CommandText = "SELECT Payload FROM alarm_events WHERE Position=1;";
+                var encoded = Assert.IsType<string>(command.ExecuteScalar());
+                payload = Convert.FromBase64String(encoded);
+            }
+
+            Assert.InRange(payload.Length, 64 * 1024 + 1, 131_072);
+            var before = SHA256.HashData(File.ReadAllBytes(fixture.DatabasePath));
+            var readOnlyOptions = new ProductionStoreOptions(fixture.DatabasePath)
+            {
+                AuditIntegrityPolicy = fixture.Options.AuditIntegrityPolicy,
+                CommitTimeout = fixture.Options.CommitTimeout,
+                QueryTimeout = fixture.Options.QueryTimeout,
+                QueueCapacity = fixture.Options.QueueCapacity
+            };
+            Assert.Null(readOnlyOptions.LocalIdentity);
+            Assert.Null(readOnlyOptions.AlarmPolicy);
+
+            var report = await new SqliteAuditIntegrityQuery(readOnlyOptions)
+                .VerifyAsync(new AuditVerificationRequest());
+
+            Assert.Equal(AuditIntegrityState.Verified, report.State);
+            Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(fixture.DatabasePath)));
+        }
+        finally { DeleteMachineKey(fixture.PolicyIntegrity); }
+    }
+
+    private static AlarmPolicy LargeLegacyPolicy() => new("V120LegacyAlarmPolicy", "1",
+        Enumerable.Range(0, 256).Select(index => new AlarmPolicyRule(
+            "C" + index.ToString("D3", CultureInfo.InvariantCulture) + new string('X', 60),
+            new string('S', 64), AlarmSeverity.Critical, ProductionImpact.FaultAbort, true,
+            AlarmNotification.UntilCleared, ushort.MaxValue, ushort.MaxValue,
+            AlarmResetPrerequisites.NoActiveExecution | AlarmResetPrerequisites.NoPendingDelivery |
+            AlarmResetPrerequisites.RecoveryComplete | AlarmResetPrerequisites.NoExclusiveMode)),
+        TimeSpan.FromMinutes(1), maximumActiveInstances: 256, maximumPlcEntries: 16);
 
     [Fact]
     public async Task V109_S09_TamperedCodeCannotDisappearFromFilteredHistory()

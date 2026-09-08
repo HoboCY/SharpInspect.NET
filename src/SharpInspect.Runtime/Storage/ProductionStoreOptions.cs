@@ -38,4 +38,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 11 camera recovery authorization ledger.</summary>
     public CameraRecoveryStoreOptions? CameraRecovery { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 12 camera network maintenance ledger.</summary>
+    public CameraNetworkStoreOptions? CameraNetwork { get; init; }
 }
