@@ -36,7 +36,31 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <ComboBox Grid.Column="0" ItemsSource="{Binding AssetKinds, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
-                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0" />
+                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0">
+                    <ComboBox.Style>
+                        <Style TargetType="{x:Type ComboBox}">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsLegacyCalibration}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ComboBox.Style>
+                </ComboBox>
+                <TextBlock Grid.Column="0" Text="历史 Calibration（需转换）" Foreground="#9B3430"
+                           VerticalAlignment="Center" TextWrapping="Wrap">
+                    <TextBlock.Style>
+                        <Style TargetType="{x:Type TextBlock}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsLegacyCalibration}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
                 <TextBox Grid.Column="1" Text="{Binding Role, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产角色" />
                 <TextBox Grid.Column="2" Text="{Binding ContractId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产契约 ID" />
                 <TextBox Grid.Column="3" Text="{Binding ContractVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产契约版本" />
@@ -54,11 +78,78 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <ComboBox Grid.Column="0" ItemsSource="{Binding PolicyKinds, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
-                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0" />
+                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0">
+                    <ComboBox.Style>
+                        <Style TargetType="{x:Type ComboBox}">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsLegacyCalibrationAcceptance}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ComboBox.Style>
+                </ComboBox>
+                <TextBlock Grid.Column="0" Text="历史 CalibrationAcceptance（需转换）" Foreground="#9B3430"
+                           VerticalAlignment="Center" TextWrapping="Wrap">
+                    <TextBlock.Style>
+                        <Style TargetType="{x:Type TextBlock}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsLegacyCalibrationAcceptance}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
                 <TextBox Grid.Column="1" Text="{Binding ContractId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策契约 ID" />
                 <TextBox Grid.Column="2" Text="{Binding ContractVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策契约版本" />
                 <TextBox Grid.Column="3" Text="{Binding ContractHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策内容 SHA-256" />
                 <Button Grid.Column="4" Content="移除" Tag="Policy" Click="RemoveRequirementClick" Padding="10,4" />
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="CalibrationTemplate">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="145" />
+                    <ColumnDefinition Width="135" />
+                    <ColumnDefinition Width="105" />
+                    <ColumnDefinition Width="135" />
+                    <ColumnDefinition Width="105" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding LogicalCameraRole}" Foreground="#334E68"
+                           VerticalAlignment="Center" Margin="0,0,6,0" ToolTip="由当前相机角色提供，不可在此行单独修改。" />
+                <ComboBox Grid.Column="1" ItemsSource="{Binding DataContext.CalibrationKinds, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
+                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0" />
+                <TextBox Grid.Column="2" Text="{Binding LogicalPurpose, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,0,6,0" ToolTip="标定逻辑用途" />
+                <TextBox Grid.Column="3" Text="{Binding CoefficientContractId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,0,6,0" ToolTip="系数格式契约 ID" />
+                <TextBox Grid.Column="4" Text="{Binding CoefficientContractVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,0,6,0" ToolTip="系数格式契约版本" />
+                <TextBox Grid.Column="5" Text="{Binding CoefficientContractHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,0,6,0" ToolTip="系数格式契约 SHA-256" />
+                <TextBox Grid.Column="6" Text="{Binding AcceptancePolicyId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,0,6,0" ToolTip="验收政策 ID；版本和 SHA-256 见下一行" />
+                <Button Grid.Column="7" Content="移除" Padding="10,4"
+                        Command="{Binding DataContext.RemoveCalibrationRequirementCommand, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
+                        CommandParameter="{Binding}" />
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="验收政策" Foreground="#6B7888"
+                           FontSize="10" VerticalAlignment="Center" Margin="0,2,6,0" />
+                <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                         Text="{Binding AcceptancePolicyVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,2,6,0" ToolTip="验收政策版本" />
+                <TextBox Grid.Row="1" Grid.Column="3" Grid.ColumnSpan="4"
+                         Text="{Binding AcceptancePolicyHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         MaxLength="64" Margin="0,2,6,0" ToolTip="验收政策 SHA-256" />
             </Grid>
         </DataTemplate>
     </UserControl.Resources>
@@ -187,6 +278,13 @@
                             <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
                                 <StackPanel>
                                     <WrapPanel>
+                                        <TextBlock Text="标定需求（typed）" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <Button Content="添加标定需求" Command="{Binding AddCalibrationRequirementCommand}" Margin="16,0,0,0" Padding="10,4" />
+                                    </WrapPanel>
+                                    <TextBlock Text="角色随当前相机角色绑定；标定类型、逻辑用途、系数格式契约与验收政策均需显式填写。旧 Calibration 资产需移除后重新建立 typed 需求。"
+                                               Foreground="#75531A" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    <ItemsControl ItemsSource="{Binding CalibrationRequirements}" ItemTemplate="{StaticResource CalibrationTemplate}" Margin="0,6,0,0" />
+                                    <WrapPanel Margin="0,14,0,0">
                                         <TextBlock Text="资产依赖" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" />
                                         <Button Content="添加资产" Click="AddAssetClick" Margin="16,0,0,0" Padding="10,4" />
                                     </WrapPanel>

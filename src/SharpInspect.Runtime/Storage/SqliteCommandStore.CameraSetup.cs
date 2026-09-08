@@ -104,7 +104,8 @@ internal sealed partial class SqliteCommandStore
                 deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery,
-                cameraNetworkOptions: _options.CameraNetwork);
+                cameraNetworkOptions: _options.CameraNetwork,
+                imagingSetupOptions: _options.ImagingSetup);
             AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline, _options.CameraSetup);
             if (_options.CameraRecovery is not null)
                 AuditChainDatabase.RequireFullCameraRecoveryVerification(database, verification, deadline,
@@ -112,6 +113,9 @@ internal sealed partial class SqliteCommandStore
             if (_options.CameraNetwork is not null)
                 AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
                     _options.CameraNetwork);
+            if (_options.ImagingSetup is not null)
+                AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                    _options.ImagingSetup);
             var state = ReadCameraSetupState(database, logicalRole, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return new CameraSetupReadResult(state.ToPublicResult(), state);
@@ -390,6 +394,14 @@ internal sealed partial class SqliteCommandStore
                 // Schema 12 reuses the camera setup identity event kinds for the
                 // independent network ledger. Its command kind is 18, so it is
                 // deliberately excluded from this schema-10 setup projection.
+            }
+            else if (schemaVersion >= ImagingSetupStoreOptions.SchemaVersion &&
+                IdentityAuditEvent.TryReadImagingSetupAuthorization(row.Payload, row.Ordinal,
+                    stationId!, out _))
+            {
+                // Schema 13 reuses the camera setup identity event envelope for
+                // imaging declarations. Its command kind is 19 and belongs to
+                // the independent imaging ledger.
             }
             else if (IdentityAuditEvent.TryReadEventKind(row.Payload, out var kind) &&
                 kind is IdentityEventKind.CameraSetupActionAuthorized or

@@ -12,7 +12,8 @@ namespace SharpInspect.Runtime;
 /// The initial, deliberately unconfigured station authority. Later tickets supply governed
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
-public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime,
+    IImagingSetupRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -90,7 +91,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         _cameraSetupRuntime = new CameraSetupRuntime(registeredProviders,
             cameraSetupOptions ?? new CameraSetupOptions(), _audit, _sessions,
             authorization, ReadCameraStationContext, PublishCameraSetupLocked,
-            authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit));
+            authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit),
+            imagingPersistence: ImagingSetupRevisionPersistenceFactory.Create(_audit));
         _cameraSetupRuntime.ConfigureNetworkMaintenance(TryReserveCameraNetworkMaintenance,
             ReleaseCameraNetworkMaintenance, PublishCameraNetworkMaintenance);
         _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);

@@ -126,6 +126,8 @@ internal static class SqliteNative
             limit = Math.Max(limit, CameraRecoveryStoreOptions.SqliteValueLimitBytes);
         if (options.CameraSetup is not null)
             limit = Math.Max(limit, CameraSetupStoreOptions.SqliteValueLimitBytes);
+        if (options.ImagingSetup is not null)
+            limit = Math.Max(limit, ImagingSetupStoreOptions.SqliteValueLimitBytes);
         // Read-only audit consumers may omit identity configuration. Preserve
         // the historical schema's payload budget after reading its version,
         // without reducing a larger limit from another configured ledger.
@@ -136,6 +138,7 @@ internal static class SqliteNative
             9 => RecipeDraftStoreOptions.SqliteValueLimitBytes,
             10 or 11 => CameraSetupStoreOptions.SqliteValueLimitBytes,
             12 => CameraNetworkStoreOptions.SqliteValueLimitBytes,
+            13 => ImagingSetupStoreOptions.SqliteValueLimitBytes,
             _ => 65536
         };
         limit = Math.Max(limit, schemaLimit);

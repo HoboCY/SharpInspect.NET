@@ -100,7 +100,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-                CameraNetworkStoreOptions.SchemaVersion)
+                CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
             else if (schema < CameraSetupStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
@@ -112,13 +112,18 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
             if (_options.CameraNetwork is null && schema == CameraNetworkStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CameraNetworkConfigurationRequired");
+            if (_options.ImagingSetup is not null && schema < ImagingSetupStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
+            if (_options.ImagingSetup is null && schema == ImagingSetupStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ImagingSetupConfigurationRequired");
             if (_options.AlgorithmResultArchive is null)
                 throw new InvalidOperationException(schema == AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveConfigurationRequired"
                     : "AlgorithmResultArchiveGovernedMigrationRequired");
             AuditChainDatabase.Require(schema is AlgorithmResultArchiveOptions.SchemaVersion or
                 RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
-                CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion,
+                CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
+                ImagingSetupStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
@@ -132,7 +137,8 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 new AuditVerificationRequest(0, policy.MaximumVerificationEntries), false, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
+                imagingSetupOptions: _options.ImagingSetup);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (_options.RecipeDrafts is not null)
                 AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -146,6 +152,9 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             if (_options.CameraNetwork is not null)
                 AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
                     _options.CameraNetwork);
+            if (_options.ImagingSetup is not null)
+                AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                    _options.ImagingSetup);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline);

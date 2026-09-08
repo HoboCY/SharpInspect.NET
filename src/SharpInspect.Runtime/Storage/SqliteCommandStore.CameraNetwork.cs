@@ -255,10 +255,11 @@ internal sealed partial class SqliteCommandStore
             new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries), startup: true,
             deadline, validateAnchorReceipt: false,
             archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
-            recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
-            cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
-            cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
-            cameraNetworkOptions: _options.CameraNetwork);
+             recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
+             cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
+             cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
+             cameraNetworkOptions: _options.CameraNetwork,
+             imagingSetupOptions: _options.ImagingSetup);
         if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
         if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -269,6 +270,9 @@ internal sealed partial class SqliteCommandStore
             _options.CameraRecovery);
         AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
             _options.CameraNetwork);
+        if (_options.ImagingSetup is not null)
+            AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                _options.ImagingSetup);
     }
 
     private StoreWriteResult AppendCameraNetworkAdmissionCore(sqlite3 database,

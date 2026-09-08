@@ -1,0 +1,203 @@
+<UserControl x:Class="SharpInspect.Wpf.ImagingSetupPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="640">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <ScrollViewer x:Name="ImagingScrollViewer" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="成像设置 · 登记物理修订" Foreground="#172B42"
+                           FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="这里仅登记经授权确认的物理成像变化，并显示当前绑定与历史修订。登记不会打开设备、控制设备、发布标定 Profile 或使生产 Ready。"
+                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12"
+                           TextWrapping="Wrap" />
+
+                <StackPanel x:Name="UnavailablePanel" Background="#FFF7E7" Visibility="Visible">
+                    <TextBlock x:Name="UnavailableText"
+                               Text="成像设置不可用：未配置成像修订和相机绑定服务。"
+                               Foreground="#75531A" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="当前状态：" Foreground="#556679" VerticalAlignment="Center" />
+                        <TextBlock x:Name="StatusLabel" Foreground="#334E68" VerticalAlignment="Center" />
+                        <Button x:Name="RefreshButton" Content="刷新当前绑定与修订"
+                                Click="RefreshClick" Margin="18,0,0,0" Padding="10,4"
+                                AutomationProperties.Name="刷新当前绑定与修订" />
+                        <Button x:Name="RefreshHistoryButton" Content="刷新历史"
+                                Click="RefreshHistoryClick" Margin="8,0,0,0" Padding="10,4"
+                                AutomationProperties.Name="刷新成像修订历史" />
+                    </WrapPanel>
+                    <TextBlock x:Name="StatusText" Foreground="#334E68" TextWrapping="Wrap" />
+                    <TextBlock x:Name="ErrorText" Foreground="#9B3430" Margin="0,4,0,10"
+                               TextWrapping="Wrap" />
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="逻辑相机角色与当前读回" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="请输入要检查的逻辑角色，例如 Primary；角色改变后必须重新刷新。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="逻辑相机角色" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="LogicalRoleBox" Grid.Column="1"
+                                         Text="{Binding LogicalCameraRole, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,0,7"
+                                         AutomationProperties.Name="逻辑相机角色" />
+                                <TextBlock Grid.Row="1" Text="当前相机绑定" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock x:Name="BindingText" Grid.Row="1" Grid.Column="1"
+                                           Text="{Binding BindingSummary}" Foreground="#334E68"
+                                           TextWrapping="Wrap" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="2" Text="当前成像修订" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock x:Name="RevisionText" Grid.Row="2" Grid.Column="1"
+                                           Text="{Binding CurrentRevisionSummary}" Foreground="#334E68"
+                                           TextWrapping="Wrap" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="3" Text="当前修订原因" Foreground="#556679" Margin="0,0,8,0" />
+                                <TextBlock x:Name="CurrentReasonText" Grid.Row="3" Grid.Column="1"
+                                           Text="{Binding CurrentRevisionReason}" Foreground="#334E68"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="物理成像定义" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="请填写维护后确认的镜头、调焦状态、支架姿态、工作距离和传感器方向。"
+                                       Foreground="#75531A" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="镜头标识" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="LensIdentityBox" Grid.Column="1"
+                                         Text="{Binding LensIdentity, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="128" Margin="0,0,14,7"
+                                         AutomationProperties.Name="镜头标识" />
+                                <TextBlock Grid.Column="2" Text="焦距 / 调焦状态" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="FocusStateBox" Grid.Column="3"
+                                         Text="{Binding FocusOrFocalLengthState, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="128" Margin="0,0,0,7"
+                                         AutomationProperties.Name="焦距或调焦状态" />
+                                <TextBlock Grid.Row="1" Text="支架姿态" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="MountingPoseBox" Grid.Row="1" Grid.Column="1"
+                                         Text="{Binding MountingPose, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="128" Margin="0,0,14,7"
+                                         AutomationProperties.Name="支架姿态" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="工作距离 mm" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="WorkingDistanceBox" Grid.Row="1" Grid.Column="3"
+                                         Text="{Binding WorkingDistanceMmText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,0,7"
+                                         AutomationProperties.Name="工作距离毫米" />
+                                <TextBlock Grid.Row="2" Text="传感器方向" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="SensorOrientationBox" Grid.Row="2" Grid.Column="1"
+                                         Text="{Binding SensorOrientation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="128" Margin="0,0,14,7"
+                                         AutomationProperties.Name="传感器方向" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="变更原因" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="ChangeReasonBox" Grid.Row="2" Grid.Column="3"
+                                         Text="{Binding ChangeReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="512" Margin="0,0,0,7"
+                                         AutomationProperties.Name="成像修订变更原因" />
+                            </Grid>
+                            <TextBlock Text="{Binding ValidationSummary}" Foreground="#75531A"
+                                       FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="确认登记" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="再次验证当前账户密码后，登记本次物理变化及原因。设备绑定或成像修订如已变化，需要刷新后重新确认。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="当前账户密码（仅本次验证使用）" Foreground="#556679" Margin="0,0,0,3" />
+                            <PasswordBox x:Name="StepUpPasswordBox"
+                                         ToolTip="提交后立即清除，不由页面保存。"
+                                         AutomationProperties.Name="当前密码" />
+                            <Button x:Name="DeclareButton" Content="登记成像修订"
+                                    Click="DeclareClick" HorizontalAlignment="Left"
+                                    Padding="10,4" Margin="0,8,0,0"
+                                    Background="#245B88" Foreground="White"
+                                    AutomationProperties.Name="登记成像修订" />
+                            <TextBlock x:Name="ChangeResultText" Foreground="#75531A"
+                                       FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            <TextBlock Text="标定需求仍由配方与 Runtime 精确检查；本页不发布系数、不选择历史 Profile，且始终保持 Production Ready=false。"
+                                       Foreground="#75531A" FontSize="11" Margin="0,6,0,0"
+                                       TextWrapping="Wrap" />
+                            <TextBlock Text="{Binding NoAutomaticPhysicalDetectionNotice}"
+                                       Foreground="#75531A" FontSize="11" Margin="0,4,0,0"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="成像修订历史 · 只读追溯" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="历史记录仅显示精确版本与物理定义，不代表当前生产权限，也不会自动选取或恢复任何标定 Profile。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <WrapPanel Margin="0,0,0,8">
+                                <Button x:Name="NextHistoryButton" Content="下一页"
+                                        Click="NextHistoryClick" Padding="10,4"
+                                        AutomationProperties.Name="下一页成像修订历史" />
+                                <TextBlock Text="页码：" Foreground="#556679"
+                                           VerticalAlignment="Center" Margin="12,0,0,0" />
+                                <TextBlock x:Name="HistoryPageText" Foreground="#334E68"
+                                           VerticalAlignment="Center" />
+                            </WrapPanel>
+                            <TextBlock x:Name="HistoryStatusText" Foreground="#334E68"
+                                       TextWrapping="Wrap" />
+                            <TextBlock x:Name="HistoryErrorText" Foreground="#9B3430"
+                                       Margin="0,4,0,8" TextWrapping="Wrap" />
+                            <DataGrid x:Name="HistoryGrid" ItemsSource="{Binding History}"
+                                      IsReadOnly="True" AutoGenerateColumns="False"
+                                      Height="240" MinHeight="150" CanUserAddRows="False"
+                                      CanUserDeleteRows="False" HeadersVisibility="Column"
+                                      GridLinesVisibility="Horizontal"
+                                      AutomationProperties.Name="成像修订历史">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="位置" Binding="{Binding Position}" Width="55" />
+                                    <DataGridTextColumn Header="Revision" Binding="{Binding Revision}" Width="70" />
+                                    <DataGridTextColumn Header="记录时间 UTC" Binding="{Binding RecordedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss.fff}}" Width="160" />
+                                    <DataGridTextColumn Header="镜头" Binding="{Binding Definition.LensIdentity}" Width="120" />
+                                    <DataGridTextColumn Header="焦距/调焦" Binding="{Binding Definition.FocusOrFocalLengthState}" Width="130" />
+                                    <DataGridTextColumn Header="工作距离 mm" Binding="{Binding Definition.WorkingDistanceMm, StringFormat={}{0:0.###}}" Width="100" />
+                                    <DataGridTextColumn Header="原因" Binding="{Binding ChangeReason}" Width="220" />
+                                    <DataGridTextColumn Header="修订 Hash" Binding="{Binding RevisionHash}" Width="230" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Border>
+</UserControl>

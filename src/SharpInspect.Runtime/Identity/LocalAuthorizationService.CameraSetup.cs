@@ -29,7 +29,8 @@ internal sealed partial class LocalAuthorizationService : ICameraSetupAuthorizer
         if (!readOnly && (operationId == Guid.Empty ||
             commandKind is not (AuditedCommandKind.RebindCamera or
                 AuditedCommandKind.ApplyCameraDebugConfiguration or
-                AuditedCommandKind.ChangeCameraNetworkConfiguration)))
+                AuditedCommandKind.ChangeCameraNetworkConfiguration or
+                AuditedCommandKind.DeclareImagingSetup)))
             return CameraSetupAuthorization.Denied("CameraOperationIdRequired");
         // Discovery is a provider-scoped read and intentionally has no camera
         // role/target.  Setup reads and both mutations still require the exact

@@ -335,6 +335,10 @@ internal sealed class RecipeDraftService : IRecipeDraftEditor, IAsyncDisposable
         registration = null;
         try
         {
+            if (content.AssetRequirements.Any(item => item.Kind == RecipeAssetKind.Calibration))
+                return Failure("RecipeLegacyCalibrationRequirementNeedsExplicitConversion");
+            if (content.PolicyRequirements.Any(item => item.Kind == RecipePolicyKind.CalibrationAcceptance))
+                return Failure("RecipeLegacyCalibrationPolicyNeedsExplicitConversion");
             if (content.Algorithm is null || content.Algorithm.Algorithm is null)
                 return Failure("RecipeDraftAlgorithmBindingInvalid");
             if (!_registrations.TryGetValue((content.Algorithm.Algorithm.Id, content.Algorithm.Algorithm.Version),

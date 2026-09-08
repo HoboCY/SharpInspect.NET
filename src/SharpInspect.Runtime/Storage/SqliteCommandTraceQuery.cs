@@ -77,10 +77,11 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             {
                 SqliteNative.Step(database, statement, deadline, cancellationToken);
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
-            }, cancellationToken);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12)) throw new InvalidOperationException("StoreSchemaUnavailable");
-        if (schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-            CameraNetworkStoreOptions.SchemaVersion && options.CameraSetup is null)
+             }, cancellationToken);
+        SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) && options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
             throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
@@ -92,6 +93,10 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("CameraNetworkConfigurationRequired");
         if (schemaVersion < CameraNetworkStoreOptions.SchemaVersion && options.CameraNetwork is not null)
             throw new InvalidOperationException("CameraNetworkGovernedMigrationRequired");
+        if (schemaVersion == ImagingSetupStoreOptions.SchemaVersion && options.ImagingSetup is null)
+            throw new InvalidOperationException("ImagingSetupConfigurationRequired");
+        if (schemaVersion < ImagingSetupStoreOptions.SchemaVersion && options.ImagingSetup is not null)
+            throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
         if (schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion && options.AlgorithmResultArchive is null)
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
         if (schemaVersion < AlgorithmResultArchiveOptions.SchemaVersion && options.AlgorithmResultArchive is not null)
@@ -100,6 +105,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if (schemaVersion < RecipeDraftStoreOptions.SchemaVersion && options.RecipeDrafts is not null)
             throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
+        if (schemaVersion == ImagingSetupStoreOptions.SchemaVersion)
+            RequireImagingSchemaConfiguration(database, options, deadline, cancellationToken);
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>
@@ -150,6 +157,37 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
         }
 
         return new CommandTracePage(new ReadOnlyCollection<CommandTraceRecord>(rows), through, next);
+    }
+
+    private static void RequireImagingSchemaConfiguration(SQLitePCL.sqlite3 database,
+        ProductionStoreOptions options, StoreDeadline deadline, CancellationToken cancellationToken)
+    {
+        // Schema 13 makes Recovery and Network independent optional ledgers.
+        // Its version alone cannot establish their presence or configuration.
+        void RequireOptionalLedger(string configTable, string eventTable, bool configured, string reason)
+        {
+            var count = SqliteNative.WithStatement(database,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (?,?);",
+                deadline, statement =>
+                {
+                    SqliteNative.BindText(database, statement, 1, configTable);
+                    SqliteNative.BindText(database, statement, 2, eventTable);
+                    SqliteNative.Step(database, statement, deadline, cancellationToken);
+                    return SqliteNative.ColumnInt64(statement, 0);
+                }, cancellationToken);
+            if (count != (configured ? 2 : 0)) throw new InvalidOperationException(reason);
+        }
+
+        RequireOptionalLedger("camera_recovery_store_config", "camera_recovery_terminal_events",
+            options.CameraRecovery is not null, "CameraRecoveryConfigurationRequired");
+        RequireOptionalLedger("camera_network_store_config", "camera_network_events",
+            options.CameraNetwork is not null, "CameraNetworkConfigurationRequired");
+        SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup!, deadline);
+        SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup!, deadline);
+        if (options.CameraRecovery is not null)
+            SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
+        if (options.CameraNetwork is not null)
+            SqliteCommandStore.RequireConfiguredCameraNetwork(database, options.CameraNetwork, deadline);
     }
 
     private static CommandTraceRecord ReadRecord(SQLitePCL.sqlite3_stmt statement)

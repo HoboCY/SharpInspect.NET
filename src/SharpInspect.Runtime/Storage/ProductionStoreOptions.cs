@@ -41,4 +41,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 12 camera network maintenance ledger.</summary>
     public CameraNetworkStoreOptions? CameraNetwork { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 13 immutable imaging setup declaration ledger.</summary>
+    public ImagingSetupStoreOptions? ImagingSetup { get; init; }
 }

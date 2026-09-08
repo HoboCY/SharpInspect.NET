@@ -620,6 +620,88 @@ try {
     if ($Ticket -ge 22) {
         & (Join-Path $PSScriptRoot 'Test-CameraConformanceConsumer.ps1') -RunDirectory $taskRun -NugetConfig $taskNugetConfig -SourceRevision $taskEvidence.startingHead
     }
+    if ($Ticket -ge 23) {
+        $taskImagingCalibrationConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_CONSUMER','Process')
+        $taskImagingCalibrationEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_EVIDENCE_ROOT',(Join-Path $taskRun 'imaging-calibration-demo'),'Process')
+            Invoke-TaskDotnet 'imaging-calibration-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~ImagingSetupConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'imaging-calibration-consumer-tests'))
+            foreach ($taskImagingFile in @('evidence.json','imaging-calibration-evidence.json',
+                    'imaging-calibration-restart.json','imaging-setup-panel.png',
+                    'imaging-setup-panel-form.png','process.log','restart.log')) {
+                $taskImagingArtifact = Join-Path $taskRun ('imaging-calibration-demo/' + $taskImagingFile)
+                if (-not (Test-Path -LiteralPath $taskImagingArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskImagingArtifact).Length -eq 0) {
+                    throw "Imaging calibration consumer evidence is missing or empty: $taskImagingFile"
+                }
+            }
+            $taskImagingAcceptance = Get-Content -LiteralPath (Join-Path $taskRun 'imaging-calibration-demo/evidence.json') -Raw | ConvertFrom-Json
+            $taskImagingEvidence = Get-Content -LiteralPath (Join-Path $taskRun 'imaging-calibration-demo/imaging-calibration-evidence.json') -Raw | ConvertFrom-Json
+            $taskImagingRestart = Get-Content -LiteralPath (Join-Path $taskRun 'imaging-calibration-demo/imaging-calibration-restart.json') -Raw | ConvertFrom-Json
+            $taskImagingConsumerHash = (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash
+            if ($taskImagingAcceptance.Result -cne 'Pass' -or
+                $taskImagingAcceptance.ExternalNuGetConsumer -cne $true -or
+                $taskImagingAcceptance.IndependentRestart -cne $true -or
+                $taskImagingAcceptance.DatabaseReadOnlyByRestart -cne $true -or
+                $taskImagingAcceptance.ConsumerSha256 -cne $taskImagingConsumerHash -or
+                $taskImagingAcceptance.ImagingHistoryRevisions -ne 2 -or
+                $taskImagingAcceptance.ExactProfileSelection -cne $true -or
+                $taskImagingAcceptance.OldProfileRejected -cne $true -or
+                $taskImagingAcceptance.NoAutomaticPhysicalDetection -cne $true -or
+                $taskImagingAcceptance.NoDefaultCoefficientContract -cne $true -or
+                $taskImagingAcceptance.UiPanelScreenshot -cne 'imaging-setup-panel.png' -or
+                $taskImagingAcceptance.UiPanelFormScreenshot -cne 'imaging-setup-panel-form.png' -or
+                $taskImagingAcceptance.UiPanelShowsBindingAndHistory -cne $true -or
+                $taskImagingAcceptance.UiPanelSubmissionFormEnabled -cne $true -or
+                $taskImagingAcceptance.UiPasswordBoxEmpty -cne $true -or
+                $taskImagingAcceptance.ProductionReady -cne $false -or
+                $taskImagingAcceptance.CanActivate -cne $false -or
+                $taskImagingAcceptance.Ready -cne $false -or
+                $taskImagingEvidence.Result -cne 'Pass' -or
+                $taskImagingEvidence.ImagingRevision2 -ne 2 -or
+                $taskImagingEvidence.CandidateCompatible -cne $true -or
+                $taskImagingEvidence.HistoricalCompatible -cne $true -or
+                $taskImagingEvidence.CandidateEvidencePurpose -cne 'DevelopmentOnly' -or
+                $taskImagingEvidence.HistoricalEvidencePurpose -cne 'DevelopmentOnly' -or
+                $taskImagingEvidence.OldProfileRejected -cne $true -or
+                $taskImagingEvidence.OldProfileReason -cne 'CalibrationImagingSetupRevisionMismatch' -or
+                $taskImagingEvidence.NoAutomaticPhysicalDetection -cne $true -or
+                $taskImagingEvidence.NoDefaultCoefficientContract -cne $true -or
+                $taskImagingEvidence.UiPanelShowsBindingAndHistory -cne $true -or
+                $taskImagingEvidence.UiPanelSubmissionFormEnabled -cne $true -or
+                $taskImagingEvidence.UiPasswordBoxEmpty -cne $true -or
+                $taskImagingEvidence.ProductionReady -cne $false -or
+                $taskImagingEvidence.CanActivate -cne $false -or
+                $taskImagingEvidence.Ready -cne $false -or
+                $taskImagingEvidence.OpenCount -ne 2 -or
+                $taskImagingEvidence.FramesProduced -ne 0 -or
+                $taskImagingRestart.Result -cne 'Pass' -or
+                $taskImagingRestart.HistoryCount -ne 2 -or
+                $taskImagingRestart.HashesPersisted -cne $true -or
+                $taskImagingRestart.ReadOnlyQueryDatabaseBytesUnchanged -cne $true -or
+                $taskImagingRestart.NoDefaultCoefficientContract -cne $true -or
+                $taskImagingRestart.OpenedDevices -ne 0 -or
+                $taskImagingRestart.ProductionReady -cne $false -or
+                $taskImagingRestart.CanActivate -cne $false -or
+                $taskImagingRestart.Ready -cne $false) {
+                throw 'Imaging calibration consumer evidence failed its measured result or artifact binding.'
+            }
+            foreach ($taskImagingNotRun in @('PhysicalHardwareQualification','StationAcceptance','Production','NativeCrashIsolation')) {
+                if ($taskImagingAcceptance.$taskImagingNotRun -cne 'NotRun' -or
+                    $taskImagingEvidence.$taskImagingNotRun -cne 'NotRun' -or
+                    $taskImagingRestart.$taskImagingNotRun -cne 'NotRun') {
+                    throw "Imaging calibration development evidence overstates qualification: $taskImagingNotRun"
+                }
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_CONSUMER',$taskImagingCalibrationConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_EVIDENCE_ROOT',$taskImagingCalibrationEvidence,'Process')
+        }
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

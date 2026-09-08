@@ -23,7 +23,8 @@ public enum AuditedCommandKind
     RebindCamera = 15,
     ApplyCameraDebugConfiguration = 16,
     StartCameraRecoveryCycle = 17,
-    ChangeCameraNetworkConfiguration = 18
+    ChangeCameraNetworkConfiguration = 18,
+    DeclareImagingSetup = 19
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

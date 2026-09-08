@@ -22,10 +22,14 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         new(Enum.GetValues<VisionPixelFormat>());
     private static readonly ReadOnlyCollection<int?> ValidBitsOptionsValue =
         new(new int?[] { null, 10, 12, 16 });
+    private const int MaximumCalibrationRequirements = 8;
     private static readonly ReadOnlyCollection<RecipeAssetKind> AssetKindsValue =
-        new(Enum.GetValues<RecipeAssetKind>());
+        new(new[] { RecipeAssetKind.AlgorithmModel });
     private static readonly ReadOnlyCollection<RecipePolicyKind> PolicyKindsValue =
-        new(Enum.GetValues<RecipePolicyKind>());
+        new(Enum.GetValues<RecipePolicyKind>()
+            .Where(kind => kind != RecipePolicyKind.CalibrationAcceptance).ToArray());
+    private static readonly ReadOnlyCollection<CalibrationKind> CalibrationKindsValue =
+        new(Enum.GetValues<CalibrationKind>());
 
     private readonly IRecipeDraftEditor? _editor;
     private readonly IInteractiveSessionService? _sessions;
@@ -39,6 +43,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     private readonly ReadOnlyObservableCollection<RecipeDraftAssetRequirementViewModel> _readOnlyAssets;
     private readonly ObservableCollection<RecipeDraftPolicyRequirementViewModel> _policies = new();
     private readonly ReadOnlyObservableCollection<RecipeDraftPolicyRequirementViewModel> _readOnlyPolicies;
+    private readonly ObservableCollection<RecipeDraftCalibrationRequirementViewModel> _calibrations = new();
+    private readonly ReadOnlyObservableCollection<RecipeDraftCalibrationRequirementViewModel> _readOnlyCalibrations;
     private readonly ObservableCollection<RecipeDraftHistoryItem> _history = new();
     private readonly ReadOnlyObservableCollection<RecipeDraftHistoryItem> _readOnlyHistory;
     private CancellationTokenSource? _activeCancellation;
@@ -94,6 +100,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         _readOnlyFields = new ReadOnlyObservableCollection<RecipeDraftFieldViewModel>(_fields);
         _readOnlyAssets = new ReadOnlyObservableCollection<RecipeDraftAssetRequirementViewModel>(_assets);
         _readOnlyPolicies = new ReadOnlyObservableCollection<RecipeDraftPolicyRequirementViewModel>(_policies);
+        _readOnlyCalibrations = new ReadOnlyObservableCollection<RecipeDraftCalibrationRequirementViewModel>(_calibrations);
         _readOnlyHistory = new ReadOnlyObservableCollection<RecipeDraftHistoryItem>(_history);
         _session = sessions?.Current ?? UnauthenticatedSession;
         _statusMessage = IsConfigured
@@ -102,6 +109,14 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
 
         RefreshCommand = new AsyncRelayCommand(() => RefreshAsync(), () => CanRefresh);
         NewDraftCommand = new RelayCommand(_ => CreateNewDraft(), _ => CanCreateDraft);
+        AddCalibrationRequirementCommand = new RelayCommand(_ => AddCalibrationRequirement(),
+            _ => CanAddCalibrationRequirement);
+        RemoveCalibrationRequirementCommand = new RelayCommand(parameter =>
+        {
+            if (parameter is RecipeDraftCalibrationRequirementViewModel row)
+                RemoveCalibrationRequirement(row);
+        }, parameter => parameter is RecipeDraftCalibrationRequirementViewModel &&
+            CanRemoveCalibrationRequirement);
         OpenSelectedCommand = new AsyncRelayCommand(() => OpenSelectedAsync(), () => CanOpenSelected);
         NextHistoryCommand = new AsyncRelayCommand(() => NextHistoryAsync(), () => CanNextHistory);
         ValidateCommand = new AsyncRelayCommand(() => ValidateAsync(), () => CanValidate);
@@ -112,6 +127,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
 
     public AsyncRelayCommand RefreshCommand { get; }
     public RelayCommand NewDraftCommand { get; }
+    public RelayCommand AddCalibrationRequirementCommand { get; }
+    public RelayCommand RemoveCalibrationRequirementCommand { get; }
     public AsyncRelayCommand OpenSelectedCommand { get; }
     public AsyncRelayCommand NextHistoryCommand { get; }
     public AsyncRelayCommand ValidateCommand { get; }
@@ -127,9 +144,11 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public IReadOnlyList<int?> ValidBitsOptions => ValidBitsOptionsValue;
     public IReadOnlyList<RecipeAssetKind> AssetKinds => AssetKindsValue;
     public IReadOnlyList<RecipePolicyKind> PolicyKinds => PolicyKindsValue;
+    public IReadOnlyList<CalibrationKind> CalibrationKinds => CalibrationKindsValue;
     public ReadOnlyObservableCollection<RecipeDraftFieldViewModel> Fields => _readOnlyFields;
     public ReadOnlyObservableCollection<RecipeDraftAssetRequirementViewModel> AssetRequirements => _readOnlyAssets;
     public ReadOnlyObservableCollection<RecipeDraftPolicyRequirementViewModel> PolicyRequirements => _readOnlyPolicies;
+    public ReadOnlyObservableCollection<RecipeDraftCalibrationRequirementViewModel> CalibrationRequirements => _readOnlyCalibrations;
     public ReadOnlyObservableCollection<RecipeDraftHistoryItem> History => _readOnlyHistory;
     public int HistoryPage => _historyPage;
     public long? HistoryThroughPosition => _historyThroughPosition;
@@ -187,7 +206,18 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public string CameraRole
     {
         get => _cameraRole;
-        set { SetBoundedProperty(ref _cameraRole, value, RecipeDraftInputBounds.IdentifierCharacters, RecipeDraftInputBounds.IdentifierBytes, nameof(CameraRole)); RecomputeLocalValidation(); }
+        set
+        {
+            var previous = _cameraRole;
+            SetBoundedProperty(ref _cameraRole, value, RecipeDraftInputBounds.IdentifierCharacters,
+                RecipeDraftInputBounds.IdentifierBytes, nameof(CameraRole));
+            if (!StringComparer.Ordinal.Equals(previous, _cameraRole))
+            {
+                foreach (var row in _calibrations)
+                    row.NotifyCameraRoleChanged();
+            }
+            RecomputeLocalValidation();
+        }
     }
     public string AlgorithmExecutionTimeoutText
     {
@@ -243,6 +273,10 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public bool CanOpenSelected => IsConfigured && SelectedHistory is not null && !IsBusy && !_disposed;
     public bool CanNextHistory => IsConfigured && _historyNextAfterPosition is not null && !IsBusy && !_disposed;
     public bool CanValidate => IsConfigured && HasDraft && !IsBusy && !_disposed;
+    public bool CanEditCalibrationRequirements => IsConfigured && HasDraft && !IsBusy && !_disposed;
+    public bool CanRemoveCalibrationRequirement => CanEditCalibrationRequirements;
+    public bool CanAddCalibrationRequirement => CanEditCalibrationRequirements &&
+        _calibrations.Count < MaximumCalibrationRequirements;
     public bool CanSave => IsConfigured && HasDraft && IsValid && !IsBusy && !_disposed &&
         IsAuthenticated && _access?.CanSave == true && !_access.RequiresStepUp &&
         IsUsableSession(CurrentSession);
@@ -312,7 +346,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
                 new RecipePolicyRequirement(RecipePolicyKind.AlgorithmExecution,
                     new RecipeContractReference(_executionPolicy.Id, _executionPolicy.Version,
                         _executionPolicy.ContentHash))
-            });
+            }, Array.Empty<CalibrationRequirement>());
         _changeReason = "编辑配方草稿";
         _access = null;
         _errorCode = null;
@@ -352,6 +386,23 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         RecomputeLocalValidation();
     }
     public void RemovePolicyRequirement(RecipeDraftPolicyRequirementViewModel row) { if (_policies.Remove(row)) RecomputeLocalValidation(); }
+    public void AddCalibrationRequirement()
+    {
+        if (!CanAddCalibrationRequirement) return;
+        var row = new RecipeDraftCalibrationRequirementViewModel(() => CameraRole);
+        row.PropertyChanged += RequirementChanged;
+        _calibrations.Add(row);
+        RecomputeLocalValidation();
+    }
+    public void RemoveCalibrationRequirement(RecipeDraftCalibrationRequirementViewModel row)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        if (_calibrations.Remove(row))
+        {
+            row.PropertyChanged -= RequirementChanged;
+            RecomputeLocalValidation();
+        }
+    }
 
     public async Task RefreshAsync(CancellationToken cancellationToken = default)
     {
@@ -423,7 +474,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         {
             if (!TryBuildContent(out var content, out var issues))
             {
-                await ApplyValidationAsync(new RecipeDraftValidationResult(false, "RecipeDraftInputInvalid", issues), start.Value).ConfigureAwait(true);
+                await ApplyValidationAsync(new RecipeDraftValidationResult(false,
+                    LocalValidationReason(issues), issues), start.Value).ConfigureAwait(true);
                 return;
             }
             var result = await _editor.ValidateAsync(content!, start.Value.Cancellation.Token).ConfigureAwait(true);
@@ -472,7 +524,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             }
             if (!TryBuildContent(out var content, out var issues))
             {
-                await ApplyValidationAsync(new RecipeDraftValidationResult(false, "RecipeDraftInputInvalid", issues), start.Value).ConfigureAwait(true);
+                await ApplyValidationAsync(new RecipeDraftValidationResult(false,
+                    LocalValidationReason(issues), issues), start.Value).ConfigureAwait(true);
                 return null;
             }
             var validation = await _editor.ValidateAsync(content!, start.Value.Cancellation.Token).ConfigureAwait(true);
@@ -601,6 +654,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         _fields.Clear();
         _assets.Clear();
         _policies.Clear();
+        _calibrations.Clear();
         _recipeKey = string.Empty;
         _displayName = string.Empty;
         _cameraRole = string.Empty;
@@ -812,7 +866,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         _whiteBalanceGreenText = content.Camera.WhiteBalanceRgb is null ? string.Empty : Number(content.Camera.WhiteBalanceRgb.Green);
         _whiteBalanceBlueText = content.Camera.WhiteBalanceRgb is null ? string.Empty : Number(content.Camera.WhiteBalanceRgb.Blue);
         SetFields(content.Algorithm.ConfigurationSchema, content.Configuration, null);
-        SetRequirements(content.AssetRequirements, content.PolicyRequirements);
+        SetRequirements(content.AssetRequirements, content.PolicyRequirements,
+            content.CalibrationRequirements);
         RecomputeLocalValidation();
         OnPropertyChanged(string.Empty);
     }
@@ -848,11 +903,13 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     }
 
     private void SetRequirements(IEnumerable<RecipeAssetRequirement> assets,
-        IEnumerable<RecipePolicyRequirement> policies)
+        IEnumerable<RecipePolicyRequirement> policies,
+        IEnumerable<CalibrationRequirement> calibrations)
     {
         foreach (var row in _assets) row.PropertyChanged -= RequirementChanged;
         foreach (var row in _policies) row.PropertyChanged -= RequirementChanged;
-        _assets.Clear(); _policies.Clear();
+        foreach (var row in _calibrations) row.PropertyChanged -= RequirementChanged;
+        _assets.Clear(); _policies.Clear(); _calibrations.Clear();
         foreach (var asset in assets)
         {
             var row = RecipeDraftAssetRequirementViewModel.From(asset);
@@ -864,6 +921,13 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             var row = RecipeDraftPolicyRequirementViewModel.From(policy);
             row.PropertyChanged += RequirementChanged;
             _policies.Add(row);
+        }
+        foreach (var calibration in calibrations)
+        {
+            var row = RecipeDraftCalibrationRequirementViewModel.From(calibration,
+                () => CameraRole);
+            row.PropertyChanged += RequirementChanged;
+            _calibrations.Add(row);
         }
     }
 
@@ -921,14 +985,33 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         var assets = new List<RecipeAssetRequirement>();
         foreach (var row in _assets)
         {
+            if (row.Kind == RecipeAssetKind.Calibration)
+            {
+                output.Add(new("RecipeLegacyCalibrationRequirementNeedsExplicitConversion",
+                    "AssetRequirements"));
+                continue;
+            }
             if (!row.TryBuild(out var value, out var reason)) output.Add(new(reason, "AssetRequirements"));
             else assets.Add(value!);
         }
         var policies = new List<RecipePolicyRequirement>();
         foreach (var row in _policies)
         {
+            if (row.Kind == RecipePolicyKind.CalibrationAcceptance)
+            {
+                output.Add(new("RecipeLegacyCalibrationPolicyNeedsExplicitConversion",
+                    "PolicyRequirements"));
+                continue;
+            }
             if (!row.TryBuild(out var value, out var reason)) output.Add(new(reason, "PolicyRequirements"));
             else policies.Add(value!);
+        }
+        var calibrations = new List<CalibrationRequirement>();
+        foreach (var row in _calibrations)
+        {
+            if (!row.TryBuild(_cameraRole, out var value, out var reason))
+                output.Add(new(reason, "CalibrationRequirements"));
+            else calibrations.Add(value!);
         }
         if (!IsValidChangeReason(_changeReason)) output.Add(new("RecipeDraftChangeReasonInvalid"));
 
@@ -938,7 +1021,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             {
                 content = new RecipeDraftContent(_recipeKey, _displayName,
                     RecipeAlgorithmBinding.FromDescriptor(algorithm), configuration!, _cameraRole, camera!, timeout,
-                    assets, policies, origins, CameraProviderExtension);
+                    assets, policies, origins, CameraProviderExtension, calibrations);
             }
             catch { output.Add(new("RecipeDraftContentInvalid")); }
         }
@@ -1178,6 +1261,8 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         ValidateCommand.RaiseCanExecuteChanged();
         SaveCommand.RaiseCanExecuteChanged();
         NewDraftCommand.RaiseCanExecuteChanged();
+        AddCalibrationRequirementCommand.RaiseCanExecuteChanged();
+        RemoveCalibrationRequirementCommand.RaiseCanExecuteChanged();
         OnPropertyChanged(nameof(CanRefresh));
         OnPropertyChanged(nameof(CanCreateDraft));
         OnPropertyChanged(nameof(CanOpenSelected));
@@ -1189,6 +1274,9 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanSaveWithStepUp));
         OnPropertyChanged(nameof(RequiresStepUp));
+        OnPropertyChanged(nameof(CanEditCalibrationRequirements));
+        OnPropertyChanged(nameof(CanRemoveCalibrationRequirement));
+        OnPropertyChanged(nameof(CanAddCalibrationRequirement));
     }
 
     private InteractiveSession ReadSession() { lock (_sync) return _session; }
@@ -1225,9 +1313,19 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             "RecipeDraftValidationFailed", "RecipeDraftInputInvalid", "RecipeDraftCancelled",
             "RecipeDraftSessionChanged", "RecipeDraftNotFound", "RecipeDraftContentInvalid",
             "RecipeExecutionPolicyUnavailable", "AlgorithmExecutionTimeoutInvalid",
-            "AlgorithmExecutionTimeoutOutsidePolicy", "RecipeDraftAccessDenied", "RecipeDraftValid"
+            "AlgorithmExecutionTimeoutOutsidePolicy", "RecipeDraftAccessDenied", "RecipeDraftValid",
+            "RecipeLegacyCalibrationRequirementNeedsExplicitConversion",
+            "RecipeLegacyCalibrationPolicyNeedsExplicitConversion"
         };
         return value is not null && known.Contains(value) ? value : fallback;
+    }
+
+    private static string LocalValidationReason(IReadOnlyList<AlgorithmValidationIssue> issues)
+    {
+        var conversionIssue = issues.FirstOrDefault(issue =>
+            issue.Code is "RecipeLegacyCalibrationRequirementNeedsExplicitConversion" or
+                "RecipeLegacyCalibrationPolicyNeedsExplicitConversion");
+        return conversionIssue?.Code ?? "RecipeDraftInputInvalid";
     }
 }
 
@@ -1304,14 +1402,33 @@ internal static class RecipeDraftInputBounds
             }
         }
 
-        if (dataContext is RecipeDraftAssetRequirementViewModel or RecipeDraftPolicyRequirementViewModel)
+        if (dataContext is RecipeDraftAssetRequirementViewModel or RecipeDraftPolicyRequirementViewModel or
+            RecipeDraftCalibrationRequirementViewModel)
         {
             maximumCharacters = IdentifierCharacters;
             maximumBytes = IdentifierBytes;
             return propertyName is nameof(RecipeDraftAssetRequirementViewModel.Role) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.Role) or
                 nameof(RecipeDraftAssetRequirementViewModel.ContractId) or
                 nameof(RecipeDraftAssetRequirementViewModel.ContractVersion) or
-                nameof(RecipeDraftAssetRequirementViewModel.ContractHash);
+                nameof(RecipeDraftAssetRequirementViewModel.ContractHash) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.LogicalPurpose) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.Purpose) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientContractId) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientContractVersion) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientContractHash) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientId) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientVersion) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.CoefficientHash) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.AcceptancePolicyId) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.AcceptancePolicyVersion) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.AcceptancePolicyHash) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.ContractId) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.ContractVersion) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.ContractHash) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.PolicyId) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.PolicyVersion) or
+                nameof(RecipeDraftCalibrationRequirementViewModel.PolicyHash);
         }
 
         return false;
@@ -1588,12 +1705,20 @@ public sealed class RecipeDraftFieldViewModel : ObservableObject
 
 public sealed class RecipeDraftAssetRequirementViewModel : ObservableObject
 {
-    private RecipeAssetKind _kind = RecipeAssetKind.Calibration;
+    private RecipeAssetKind _kind = RecipeAssetKind.AlgorithmModel;
     private string _role = "Primary";
     private string _id = string.Empty;
     private string _version = string.Empty;
     private string _hash = string.Empty;
-    public RecipeAssetKind Kind { get => _kind; set => SetProperty(ref _kind, value); }
+    public RecipeAssetKind Kind
+    {
+        get => _kind;
+        set
+        {
+            if (SetProperty(ref _kind, value)) OnPropertyChanged(nameof(IsLegacyCalibration));
+        }
+    }
+    public bool IsLegacyCalibration => Kind == RecipeAssetKind.Calibration;
     public string Role { get => _role; set => SetProperty(ref _role, RecipeDraftInputBounds.Identifier(value)); }
     public string ContractId { get => _id; set => SetProperty(ref _id, RecipeDraftInputBounds.Identifier(value)); }
     public string ContractVersion { get => _version; set => SetProperty(ref _version, RecipeDraftInputBounds.Identifier(value)); }
@@ -1624,7 +1749,15 @@ public sealed class RecipeDraftPolicyRequirementViewModel : ObservableObject
     private string _id = string.Empty;
     private string _version = string.Empty;
     private string _hash = string.Empty;
-    public RecipePolicyKind Kind { get => _kind; set => SetProperty(ref _kind, value); }
+    public RecipePolicyKind Kind
+    {
+        get => _kind;
+        set
+        {
+            if (SetProperty(ref _kind, value)) OnPropertyChanged(nameof(IsLegacyCalibrationAcceptance));
+        }
+    }
+    public bool IsLegacyCalibrationAcceptance => Kind == RecipePolicyKind.CalibrationAcceptance;
     public string ContractId { get => _id; set => SetProperty(ref _id, RecipeDraftInputBounds.Identifier(value)); }
     public string ContractVersion { get => _version; set => SetProperty(ref _version, RecipeDraftInputBounds.Identifier(value)); }
     public string ContractHash { get => _hash; set => SetProperty(ref _hash, RecipeDraftInputBounds.Hash(value)); }
@@ -1646,4 +1779,146 @@ public sealed class RecipeDraftPolicyRequirementViewModel : ObservableObject
     internal static RecipeDraftPolicyRequirementViewModel From(RecipePolicyRequirement value) => new()
     { Kind = value.Kind, ContractId = value.Contract.Id, ContractVersion = value.Contract.Version, ContractHash = value.Contract.ContentHash };
 
+}
+
+/// <summary>
+/// Typed calibration dependency authoring row.  The logical camera role is
+/// always taken from the enclosing draft; coefficients and acceptance are
+/// separate explicit contract identities and are never inferred.
+/// </summary>
+public sealed class RecipeDraftCalibrationRequirementViewModel : ObservableObject
+{
+    private readonly Func<string> _cameraRole;
+    private CalibrationKind _kind = CalibrationKind.Intrinsic;
+    private string _logicalPurpose = string.Empty;
+    private string _coefficientContractId = string.Empty;
+    private string _coefficientContractVersion = string.Empty;
+    private string _coefficientContractHash = string.Empty;
+    private string _acceptancePolicyId = string.Empty;
+    private string _acceptancePolicyVersion = string.Empty;
+    private string _acceptancePolicyHash = string.Empty;
+
+    internal RecipeDraftCalibrationRequirementViewModel(Func<string> cameraRole)
+    {
+        _cameraRole = cameraRole ?? throw new ArgumentNullException(nameof(cameraRole));
+    }
+
+    public CalibrationKind Kind { get => _kind; set => SetProperty(ref _kind, value); }
+    public string LogicalCameraRole => _cameraRole();
+    public string Role => LogicalCameraRole;
+    public string LogicalPurpose
+    {
+        get => _logicalPurpose;
+        set => SetProperty(ref _logicalPurpose, RecipeDraftInputBounds.Identifier(value));
+    }
+    public string Purpose { get => LogicalPurpose; set => LogicalPurpose = value; }
+
+    public string CoefficientContractId
+    {
+        get => _coefficientContractId;
+        set => SetProperty(ref _coefficientContractId, RecipeDraftInputBounds.Identifier(value));
+    }
+    public string CoefficientContractVersion
+    {
+        get => _coefficientContractVersion;
+        set => SetProperty(ref _coefficientContractVersion, RecipeDraftInputBounds.Identifier(value));
+    }
+    public string CoefficientContractHash
+    {
+        get => _coefficientContractHash;
+        set => SetProperty(ref _coefficientContractHash, RecipeDraftInputBounds.Hash(value));
+    }
+
+    public string AcceptancePolicyId
+    {
+        get => _acceptancePolicyId;
+        set => SetProperty(ref _acceptancePolicyId, RecipeDraftInputBounds.Identifier(value));
+    }
+    public string AcceptancePolicyVersion
+    {
+        get => _acceptancePolicyVersion;
+        set => SetProperty(ref _acceptancePolicyVersion, RecipeDraftInputBounds.Identifier(value));
+    }
+    public string AcceptancePolicyHash
+    {
+        get => _acceptancePolicyHash;
+        set => SetProperty(ref _acceptancePolicyHash, RecipeDraftInputBounds.Hash(value));
+    }
+
+    // Short aliases keep the row consistent with the existing asset/policy
+    // editors while the typed names above make the two contract roles clear.
+    public string CoefficientId { get => CoefficientContractId; set => CoefficientContractId = value; }
+    public string CoefficientVersion { get => CoefficientContractVersion; set => CoefficientContractVersion = value; }
+    public string CoefficientHash { get => CoefficientContractHash; set => CoefficientContractHash = value; }
+    public string PolicyId { get => AcceptancePolicyId; set => AcceptancePolicyId = value; }
+    public string PolicyVersion { get => AcceptancePolicyVersion; set => AcceptancePolicyVersion = value; }
+    public string PolicyHash { get => AcceptancePolicyHash; set => AcceptancePolicyHash = value; }
+    public string ContractId { get => AcceptancePolicyId; set => AcceptancePolicyId = value; }
+    public string ContractVersion { get => AcceptancePolicyVersion; set => AcceptancePolicyVersion = value; }
+    public string ContractHash { get => AcceptancePolicyHash; set => AcceptancePolicyHash = value; }
+
+    internal void NotifyCameraRoleChanged()
+    {
+        OnPropertyChanged(nameof(LogicalCameraRole));
+        OnPropertyChanged(nameof(Role));
+    }
+
+    internal void RejectPastedInput(string propertyName)
+    {
+        switch (propertyName)
+        {
+            case nameof(LogicalPurpose): LogicalPurpose = string.Empty; break;
+            case nameof(CoefficientContractId): CoefficientContractId = string.Empty; break;
+            case nameof(CoefficientContractVersion): CoefficientContractVersion = string.Empty; break;
+            case nameof(CoefficientContractHash): CoefficientContractHash = string.Empty; break;
+            case nameof(AcceptancePolicyId): AcceptancePolicyId = string.Empty; break;
+            case nameof(AcceptancePolicyVersion): AcceptancePolicyVersion = string.Empty; break;
+            case nameof(AcceptancePolicyHash): AcceptancePolicyHash = string.Empty; break;
+            case nameof(Purpose): Purpose = string.Empty; break;
+            case nameof(CoefficientId): CoefficientId = string.Empty; break;
+            case nameof(CoefficientVersion): CoefficientVersion = string.Empty; break;
+            case nameof(CoefficientHash): CoefficientHash = string.Empty; break;
+            case nameof(PolicyId): PolicyId = string.Empty; break;
+            case nameof(PolicyVersion): PolicyVersion = string.Empty; break;
+            case nameof(PolicyHash): PolicyHash = string.Empty; break;
+            case nameof(ContractId): ContractId = string.Empty; break;
+            case nameof(ContractVersion): ContractVersion = string.Empty; break;
+            case nameof(ContractHash): ContractHash = string.Empty; break;
+        }
+    }
+
+    internal bool TryBuild(string cameraRole, out CalibrationRequirement? value, out string reason)
+    {
+        value = null;
+        reason = "RecipeCalibrationRequirementInvalid";
+        try
+        {
+            value = new CalibrationRequirement(cameraRole, Kind, LogicalPurpose,
+                new RecipeContractReference(CoefficientContractId, CoefficientContractVersion,
+                    CoefficientContractHash),
+                new RecipeContractReference(AcceptancePolicyId, AcceptancePolicyVersion,
+                    AcceptancePolicyHash));
+            reason = string.Empty;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    internal static RecipeDraftCalibrationRequirementViewModel From(CalibrationRequirement value,
+        Func<string> cameraRole)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var row = new RecipeDraftCalibrationRequirementViewModel(cameraRole)
+        {
+            Kind = value.Kind,
+            LogicalPurpose = value.LogicalPurpose,
+            CoefficientContractId = value.CoefficientContract.Id,
+            CoefficientContractVersion = value.CoefficientContract.Version,
+            CoefficientContractHash = value.CoefficientContract.ContentHash,
+            AcceptancePolicyId = value.AcceptancePolicy.Id,
+            AcceptancePolicyVersion = value.AcceptancePolicy.Version,
+            AcceptancePolicyHash = value.AcceptancePolicy.ContentHash
+        };
+        return row;
+    }
 }

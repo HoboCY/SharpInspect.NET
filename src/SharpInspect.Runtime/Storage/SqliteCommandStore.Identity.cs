@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
 using SQLitePCL;
@@ -70,13 +71,15 @@ internal sealed partial class SqliteCommandStore
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
+            var imagingStore = _options.ImagingSetup is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
+                imagingSetupOptions: _options.ImagingSetup);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -88,6 +91,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraRecovery);
             if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
                 _options.CameraNetwork);
+            if (imagingStore) AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                _options.ImagingSetup);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -117,13 +122,15 @@ internal sealed partial class SqliteCommandStore
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
+            var imagingStore = _options.ImagingSetup is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
+                imagingSetupOptions: _options.ImagingSetup);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -135,6 +142,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraRecovery);
             if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
                 _options.CameraNetwork);
+            if (imagingStore) AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                _options.ImagingSetup);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -248,13 +257,15 @@ internal sealed partial class SqliteCommandStore
             var cameraStore = _options.CameraSetup is not null;
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
+            var imagingStore = _options.ImagingSetup is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
-                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork);
+                cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
+                imagingSetupOptions: _options.ImagingSetup);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -266,6 +277,8 @@ internal sealed partial class SqliteCommandStore
                 _options.CameraRecovery);
             if (networkStore) AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline,
                 _options.CameraNetwork);
+            if (imagingStore) AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
+                _options.ImagingSetup);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&
@@ -273,8 +286,11 @@ internal sealed partial class SqliteCommandStore
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
                 ReadRecoveryOperation(database, work.RecoveryOperationId!.Value, deadline);
-            var cameraState = work.CameraSetupUpdate is null ? null :
-                ReadCameraSetupState(database, work.CameraSetupLogicalRole!, deadline);
+            var cameraRole = work.CameraSetupLogicalRole ?? work.ImagingSetupLogicalRole;
+            var cameraState = cameraRole is null ? null :
+                ReadCameraSetupState(database, cameraRole, deadline);
+            var imagingState = work.ImagingSetupUpdate is null ? null :
+                ReadImagingSetupState(database, work.ImagingSetupLogicalRole!, deadline);
             // A Rebind admission has no camera stream row until hardware work
             // finishes.  The verified read projection therefore carries its
             // operation id separately.  Refuse a different operation at the
@@ -294,6 +310,8 @@ internal sealed partial class SqliteCommandStore
                 return new(false, "CameraSetupPendingCapacityExceeded");
             var duplicateCameraOperation = work.CameraSetupUpdate is not null &&
                 ReadCameraSetupOperation(database, work.CameraSetupOperationId!.Value, deadline);
+            var duplicateImagingOperation = work.ImagingSetupUpdate is not null &&
+                ReadImagingSetupOperation(database, work.ImagingSetupOperationId!.Value, deadline);
             var persistedAlarmPolicy = work.AlarmCommandUpdate is null
                 ? null
                 : AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
@@ -303,9 +321,19 @@ internal sealed partial class SqliteCommandStore
                 AlarmStorageCodec.BuildState(persistedAlarmPolicy,
                     AlarmStorageCodec.ReadEvents(database, deadline), work.RuntimeEpoch);
             var evaluated = work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
-                cameraState, duplicateCameraOperation);
+                cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation);
             decision = evaluated;
             guard = evaluated.CommitGuard;
+            if (evaluated.NoMutation)
+            {
+                AuditChainDatabase.Require(evaluated.Events.Count == 0 && evaluated.CommandFacts is null &&
+                    evaluated.CameraEvents is null && evaluated.ImagingRevision is null && guard is null,
+                    "IdentityNoMutationInvalid");
+                Rollback(database);
+                committed = true;
+                work.Result = evaluated.Result;
+                return new(true, "IdentityTransactionAlreadyPersisted");
+            }
             AuditChainDatabase.Require(evaluated.Events.Count is > 0 and <= 8, "IdentityAuditEventRequired");
             long identitySequence = 0;
             long recoveryIdentitySequence = 0;
@@ -338,6 +366,17 @@ internal sealed partial class SqliteCommandStore
                 AppendAlarmEvents(database, alarmEvents, work.RuntimeEpoch, work.CommandCorrelationId, deadline);
             if (evaluated.CameraEvents is { Count: > 0 } cameraEvents)
                 AppendCameraSetupEvents(database, cameraEvents, deadline);
+            ImagingSetupRevision? imagingRevision = null;
+            if (evaluated.ImagingRevision is { } imagingMutation)
+            {
+                AuditChainDatabase.EnsureNextSequenceAvailable(database, _policy!, deadline,
+                    archiveData: false, cameraSetupData: false, cameraNetworkData: false,
+                    imagingData: true);
+                imagingRevision = InsertImagingSetupRevision(database, imagingMutation,
+                    imagingState!, deadline);
+                AuditChainDatabase.AppendImagingSetupRevision(database, _policy!, _signingKey!,
+                    _options.ImagingSetup!, imagingRevision.Position, deadline);
+            }
             var identityTail = AuditChainDatabase.LastIdentityEntry(database, deadline);
             if (identityTail is null || identityTail.Value.Sequence != identitySequence)
                 throw new InvalidOperationException("IdentityAuthorityAuditMismatch");
@@ -352,7 +391,8 @@ internal sealed partial class SqliteCommandStore
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
-            work.Result = evaluated.Result;
+            work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
+                ? commit with { Revision = imagingRevision } : evaluated.Result;
             try { guard?.Commit(); }
             catch (Exception) { /* The transaction is durable; the internal guard contract is no-throw. */ }
             Interlocked.Exchange(ref _lastCommittedAuditSequence, committedAuditSequence);
@@ -644,6 +684,16 @@ internal sealed partial class SqliteCommandStore
             CameraSetupUpdate = cameraSetupUpdate;
         }
 
+        internal IdentityWork(Guid operationId, string logicalRole,
+            Func<IdentityAuthorityState, CameraSetupStoreSnapshot, ImagingSetupStoreSnapshot, bool,
+                IdentityUpdate> imagingSetupUpdate)
+        {
+            CommandCorrelationId = operationId;
+            ImagingSetupOperationId = operationId;
+            ImagingSetupLogicalRole = logicalRole;
+            ImagingSetupUpdate = imagingSetupUpdate;
+        }
+
         internal Func<IdentityAuthorityState, IdentityUpdate>? Update { get; }
         internal Guid? CommandCorrelationId { get; }
         internal Func<IdentityAuthorityState, bool, IdentityUpdate>? CommandUpdate { get; }
@@ -654,15 +704,21 @@ internal sealed partial class SqliteCommandStore
         internal Guid? CameraSetupOperationId { get; }
         internal string? CameraSetupLogicalRole { get; }
         internal Func<IdentityAuthorityState, CameraSetupStoreSnapshot, bool, IdentityUpdate>? CameraSetupUpdate { get; }
+        internal Guid? ImagingSetupOperationId { get; }
+        internal string? ImagingSetupLogicalRole { get; }
+        internal Func<IdentityAuthorityState, CameraSetupStoreSnapshot, ImagingSetupStoreSnapshot, bool,
+            IdentityUpdate>? ImagingSetupUpdate { get; }
         internal object? Result { get; set; }
 
         internal IdentityUpdate Evaluate(IdentityAuthorityState state, AlarmStateSnapshot? alarmState,
             bool duplicateCorrelation, RecoveryOperationState? existingRecoveryOperation,
-            CameraSetupStoreSnapshot? cameraSetupState, bool duplicateCameraOperation) =>
+            CameraSetupStoreSnapshot? cameraSetupState, bool duplicateCameraOperation,
+            ImagingSetupStoreSnapshot? imagingSetupState = null, bool duplicateImagingOperation = false) =>
             AlarmCommandUpdate is not null ? AlarmCommandUpdate(state, alarmState!, duplicateCorrelation) :
             CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
             RecoveryOperationUpdate is not null ? RecoveryOperationUpdate(state, existingRecoveryOperation) :
             CameraSetupUpdate is not null ? CameraSetupUpdate(state, cameraSetupState!, duplicateCameraOperation) :
+            ImagingSetupUpdate is not null ? ImagingSetupUpdate(state, cameraSetupState!, imagingSetupState!, duplicateImagingOperation) :
             Update!(state);
     }
 }
@@ -679,5 +735,7 @@ internal sealed record IdentityUpdate(
     IIdentityTransactionGuard? CommitGuard = null,
     RecoveryOperationState? CompletedRecoveryOperation = null,
     IReadOnlyList<AlarmHistoryRecord>? AlarmEvents = null,
-    IReadOnlyList<CameraSetupEvent>? CameraEvents = null);
+    IReadOnlyList<CameraSetupEvent>? CameraEvents = null,
+    ImagingSetupRevisionMutation? ImagingRevision = null,
+    bool NoMutation = false);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

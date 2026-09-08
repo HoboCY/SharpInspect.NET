@@ -32,6 +32,7 @@ pwsh -File tools/Test-Ticket19.ps1
 pwsh -File tools/Test-Ticket20.ps1
 pwsh -File tools/Test-Ticket21.ps1
 pwsh -File tools/Test-Ticket22.ps1
+pwsh -File tools/Test-Ticket23.ps1
 ```
 
 脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticketNN/<run>/`（NN 为票号），
@@ -50,6 +51,18 @@ pwsh -File tools/Test-Ticket22.ps1
 | SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
 | SharpInspect.Cameras.Hikrobot | SharpInspect.NET.Cameras.Hikrobot | 独立 MVS 适配、只读依赖诊断与受控单帧开发验证 |
 | SharpInspect.Cameras.Conformance | SharpInspect.NET.Cameras.Conformance | 可复用公共相机契约场景、冻结映射及开发验证证据 |
+
+## 成像修订与标定需求
+
+Recipe 的 `CalibrationRequirements` 只声明逻辑角色、种类、用途及精确系数格式／验收政策契约；
+系数保存在独立不可变的 `CalibrationProfileContent`。当前 `CalibrationRequirementResolver` 使用显式隔离夹具，
+按 Profile ID、版本、内容哈希及当前设备、成像修订、Requested／Effective 几何逐项检查。
+兼容结果仍是开发诊断，不能授权依赖该标定的调试或生产激活；无需求时不会生成默认系数。
+
+启用 `ProductionStoreOptions.ImagingSetup` 后，`IImagingSetupRuntime` 与 `ImagingSetupPanel` 可登记经授权确认的
+镜头、调焦、支架、距离和传感器方向变化，并查询不可变历史。此扩展要求相机绑定与签名身份审计存储，
+重连和网络维护扩展各自可选。旧数据库保持原格式；启用新账本需要显式迁移流程。
+完整边界与验证映射见 [V1-23 记录](docs/verification/v1-23.md)。
 
 ## Camera Provider 契约验证
 

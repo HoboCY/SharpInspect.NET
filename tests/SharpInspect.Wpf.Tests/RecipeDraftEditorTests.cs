@@ -39,6 +39,152 @@ public sealed class RecipeDraftEditorTests
     }
 
     [Fact]
+    public async Task V123_W01_TypedCalibrationRequirementEditSaveReloadPreservesExactContracts()
+    {
+        var descriptor = Descriptor(includeEmptyChoice: false);
+        var editor = new FakeEditor(descriptor, Defaults(descriptor));
+        var sessions = new FakeSessions(Authenticated());
+        await using var model = NewModel(editor, sessions, descriptor);
+        model.AlgorithmExecutionTimeoutText = "250";
+        await model.RefreshAsync();
+
+        model.AddCalibrationRequirement();
+        var row = Assert.Single(model.CalibrationRequirements);
+        row.Kind = CalibrationKind.PlanarHomography;
+        row.LogicalPurpose = "PartPose";
+        row.CoefficientContractId = "Calibration.Coefficients";
+        row.CoefficientContractVersion = "2";
+        row.CoefficientContractHash = new string('B', 64);
+        row.AcceptancePolicyId = "Calibration.Acceptance";
+        row.AcceptancePolicyVersion = "3";
+        row.AcceptancePolicyHash = new string('C', 64);
+
+        Assert.True(model.IsValid);
+        var result = await model.SaveAsync();
+
+        Assert.NotNull(result);
+        Assert.True(result!.Saved);
+        var saved = Assert.Single(editor.LastSaveRequest!.Content.CalibrationRequirements);
+        Assert.Equal("Primary", saved.LogicalCameraRole);
+        Assert.Equal(CalibrationKind.PlanarHomography, saved.Kind);
+        Assert.Equal("PartPose", saved.LogicalPurpose);
+        Assert.Equal("Calibration.Coefficients", saved.CoefficientContract.Id);
+        Assert.Equal("2", saved.CoefficientContract.Version);
+        Assert.Equal(new string('B', 64), saved.CoefficientContract.ContentHash);
+        Assert.Equal("Calibration.Acceptance", saved.AcceptancePolicy.Id);
+        Assert.Equal("3", saved.AcceptancePolicy.Version);
+        Assert.Equal(new string('C', 64), saved.AcceptancePolicy.ContentHash);
+        var reloaded = Assert.Single(model.CalibrationRequirements);
+        Assert.Equal(saved.LogicalCameraRole, reloaded.LogicalCameraRole);
+        Assert.Equal(saved.Kind, reloaded.Kind);
+        Assert.Equal(saved.LogicalPurpose, reloaded.LogicalPurpose);
+        Assert.Equal(saved.CoefficientContract.Id, reloaded.CoefficientContractId);
+        Assert.Equal(saved.CoefficientContract.Version, reloaded.CoefficientContractVersion);
+        Assert.Equal(saved.CoefficientContract.ContentHash, reloaded.CoefficientContractHash);
+        Assert.Equal(saved.AcceptancePolicy.Id, reloaded.AcceptancePolicyId);
+        Assert.Equal(saved.AcceptancePolicy.Version, reloaded.AcceptancePolicyVersion);
+        Assert.Equal(saved.AcceptancePolicy.ContentHash, reloaded.AcceptancePolicyHash);
+    }
+
+    [Fact]
+    public async Task V123_W02_ChangingCameraRoleKeepsTypedCalibrationRequirement()
+    {
+        var descriptor = Descriptor(includeEmptyChoice: false);
+        var editor = new FakeEditor(descriptor, Defaults(descriptor));
+        var sessions = new FakeSessions(Authenticated());
+        await using var model = NewModel(editor, sessions, descriptor);
+        model.AlgorithmExecutionTimeoutText = "250";
+        await model.RefreshAsync();
+
+        model.AddCalibrationRequirement();
+        var row = Assert.Single(model.CalibrationRequirements);
+        row.LogicalPurpose = "LensModel";
+        row.CoefficientContractId = "Calibration.Coefficients";
+        row.CoefficientContractVersion = "1";
+        row.CoefficientContractHash = new string('D', 64);
+        row.AcceptancePolicyId = "Calibration.Acceptance";
+        row.AcceptancePolicyVersion = "1";
+        row.AcceptancePolicyHash = new string('E', 64);
+
+        model.CameraRole = "TopCamera";
+
+        Assert.Single(model.CalibrationRequirements);
+        Assert.Equal("TopCamera", row.LogicalCameraRole);
+        Assert.True(model.IsValid);
+        await model.ValidateAsync();
+
+        var validated = Assert.Single(editor.LastValidatedContent!.CalibrationRequirements);
+        Assert.Equal("TopCamera", validated.LogicalCameraRole);
+        Assert.Equal("LensModel", validated.LogicalPurpose);
+        Assert.Equal("Calibration.Coefficients", validated.CoefficientContract.Id);
+        Assert.Equal("Calibration.Acceptance", validated.AcceptancePolicy.Id);
+    }
+
+    [Fact]
+    public async Task V123_W03_LegacyCalibrationRequirementsRemainVisibleUntilExplicitConversion()
+    {
+        var descriptor = Descriptor(includeEmptyChoice: false);
+        var source = Content(descriptor);
+        var legacyAsset = new RecipeAssetRequirement(RecipeAssetKind.Calibration, "Primary",
+            new RecipeContractReference("Legacy.Calibration", "1", new string('F', 64)));
+        var legacyPolicy = new RecipePolicyRequirement(RecipePolicyKind.CalibrationAcceptance,
+            new RecipeContractReference("Legacy.Acceptance", "1", new string('A', 64)));
+        var legacy = new RecipeDraftContent(source.RecipeKey, source.DisplayName, source.Algorithm,
+            source.Configuration, source.CameraRole, source.Camera, source.AlgorithmExecutionTimeout,
+            source.AssetRequirements.Append(legacyAsset), source.PolicyRequirements.Append(legacyPolicy),
+            source.ValueOrigins);
+        var editor = new FakeEditor(descriptor, Defaults(descriptor));
+        var sessions = new FakeSessions(Authenticated());
+        var session = sessions.Current;
+        await editor.SaveAsync(new(Guid.NewGuid(), Guid.NewGuid(), 0, null, legacy, "seed",
+            new(CommandSource.PhysicalConsole, session.PrincipalId, session.SessionId)));
+
+        await using var model = NewModel(editor, sessions, descriptor);
+        await model.RefreshAsync();
+        model.SelectedHistory = Assert.Single(model.History);
+        await model.OpenSelectedAsync();
+
+        Assert.DoesNotContain(RecipeAssetKind.Calibration, model.AssetKinds);
+        Assert.DoesNotContain(RecipePolicyKind.CalibrationAcceptance, model.PolicyKinds);
+        Assert.Single(model.AssetRequirements);
+        Assert.Single(model.PolicyRequirements);
+        Assert.Empty(model.CalibrationRequirements);
+        Assert.False(model.IsValid);
+        Assert.Contains(model.ValidationIssues,
+            issue => issue.Code == "RecipeLegacyCalibrationRequirementNeedsExplicitConversion");
+        Assert.Contains(model.ValidationIssues,
+            issue => issue.Code == "RecipeLegacyCalibrationPolicyNeedsExplicitConversion");
+
+        Assert.Null(await model.SaveAsync());
+        Assert.Equal("RecipeLegacyCalibrationRequirementNeedsExplicitConversion", model.ErrorCode);
+
+        model.RemoveAssetRequirement(Assert.Single(model.AssetRequirements));
+        model.RemovePolicyRequirement(Assert.Single(model.PolicyRequirements));
+        model.AddCalibrationRequirement();
+        var typed = Assert.Single(model.CalibrationRequirements);
+        typed.LogicalPurpose = "ConvertedIntrinsic";
+        typed.CoefficientContractId = "Calibration.Coefficients";
+        typed.CoefficientContractVersion = "1";
+        typed.CoefficientContractHash = new string('1', 64);
+        typed.AcceptancePolicyId = "Calibration.Acceptance";
+        typed.AcceptancePolicyVersion = "1";
+        typed.AcceptancePolicyHash = new string('2', 64);
+
+        Assert.True(model.IsValid);
+        var result = await model.SaveAsync();
+
+        Assert.NotNull(result);
+        Assert.True(result!.Saved);
+        var savedRequest = editor.LastSaveRequest!;
+        Assert.DoesNotContain(savedRequest.Content.AssetRequirements,
+            item => item.Kind == RecipeAssetKind.Calibration);
+        Assert.DoesNotContain(savedRequest.Content.PolicyRequirements,
+            item => item.Kind == RecipePolicyKind.CalibrationAcceptance);
+        Assert.Single(savedRequest.Content.CalibrationRequirements);
+        Assert.Single(model.CalibrationRequirements);
+    }
+
+    [Fact]
     public async Task V115_W01_TypedFieldsPreserveOriginsAndOptionalPresence()
     {
         var descriptor = Descriptor(includeEmptyChoice: false);

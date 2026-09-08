@@ -121,7 +121,8 @@ public sealed class RecipeDraftContent
         TimeSpan algorithmExecutionTimeout, IEnumerable<RecipeAssetRequirement>? assetRequirements,
         IEnumerable<RecipePolicyRequirement>? policyRequirements,
         IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
-        CameraProviderExtensionRequirement? cameraProviderExtension = null)
+        CameraProviderExtensionRequirement? cameraProviderExtension = null,
+        IEnumerable<CalibrationRequirement>? calibrationRequirements = null)
     {
         RecipeKey = AlgorithmConfigurationValidation.Identifier(recipeKey, nameof(recipeKey));
         DisplayName = AlgorithmContractValidation.BoundedText(displayName, nameof(displayName), 128);
@@ -135,6 +136,12 @@ public sealed class RecipeDraftContent
         AlgorithmExecutionTimeout = algorithmExecutionTimeout;
         AssetRequirements = AlgorithmContractValidation.Copy(assetRequirements, nameof(assetRequirements), 32);
         PolicyRequirements = AlgorithmContractValidation.Copy(policyRequirements, nameof(policyRequirements), 16);
+        CalibrationRequirements = AlgorithmContractValidation.Copy(calibrationRequirements,
+            nameof(calibrationRequirements), 8);
+        if (CalibrationRequirements.Any(item => item.LogicalCameraRole != CameraRole) ||
+            CalibrationRequirements.Select(item => (item.LogicalCameraRole, item.Kind, item.LogicalPurpose))
+                .Distinct().Count() != CalibrationRequirements.Count)
+            throw new ArgumentException("RecipeCalibrationRequirementInvalid", nameof(calibrationRequirements));
         ValueOrigins = AlgorithmContractValidation.Copy(valueOrigins ?? configuration.Values.Select(
             entry => new RecipeDraftFieldOrigin(entry.Key, RecipeDraftValueOrigin.Explicit)), nameof(valueOrigins), 256);
         var valueKeys = configuration.Values.Select(entry => entry.Key).ToHashSet(StringComparer.Ordinal);
@@ -166,6 +173,7 @@ public sealed class RecipeDraftContent
     public TimeSpan AlgorithmExecutionTimeout { get; }
     public ReadOnlyCollection<RecipeAssetRequirement> AssetRequirements { get; }
     public ReadOnlyCollection<RecipePolicyRequirement> PolicyRequirements { get; }
+    public ReadOnlyCollection<CalibrationRequirement> CalibrationRequirements { get; }
     public ReadOnlyCollection<RecipeDraftFieldOrigin> ValueOrigins { get; }
     public string ContentHash { get; }
 
@@ -200,6 +208,15 @@ public sealed class RecipeDraftContent
             parts.AddRange(new[] { "sharpinspect-camera-provider-extension-v1", extension.Provider.Id,
                 extension.Provider.Version, extension.Provider.AdapterPackageId, extension.Provider.AdapterVersion,
                 extension.ContractId, extension.ContractVersion, extension.ConfigurationContentHash });
+        if (CalibrationRequirements.Count != 0)
+        {
+            parts.Add("sharpinspect-calibration-requirements-v1");
+            parts.Add(Number(CalibrationRequirements.Count));
+            foreach (var requirement in CalibrationRequirements.OrderBy(item => item.LogicalCameraRole,
+                         StringComparer.Ordinal).ThenBy(item => item.Kind)
+                         .ThenBy(item => item.LogicalPurpose, StringComparer.Ordinal))
+                parts.Add(requirement.ContentHash);
+        }
         return AlgorithmContractValidation.HashParts(parts);
     }
     private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);

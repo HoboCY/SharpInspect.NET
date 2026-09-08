@@ -13,7 +13,8 @@ namespace SharpInspect.Runtime.Cameras;
 /// authorized maintenance operation, but it never supplies a production lease or
 /// changes ActiveRecipe/Ready.
 /// </summary>
-internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime, IAsyncDisposable
+internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime,
+    IImagingSetupRuntime, IAsyncDisposable
 {
     private const int MaximumLogicalRoles = 16;
     private const int MaximumProviders = 4;
@@ -31,6 +32,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
     private readonly IIdentityAdministrationQuery? _identityQuery;
     private readonly ICameraSetupAuthorizer? _cameraAuthorizer;
     private readonly ICameraSetupPersistence? _persistence;
+    private readonly IImagingSetupRevisionPersistence? _imagingPersistence;
     private readonly Func<CameraStationContext> _readStation;
     private readonly Action<string, CameraSetupSnapshot> _publishSetup;
     private readonly CameraSetupOptions _options;
@@ -62,7 +64,8 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         Action<string, CameraSetupSnapshot> publishSetup,
         ICameraSetupAuthorizer? cameraAuthorizer = null,
         ICameraSetupPersistence? persistence = null,
-        ICameraNetworkPersistence? networkPersistence = null)
+        ICameraNetworkPersistence? networkPersistence = null,
+        IImagingSetupRevisionPersistence? imagingPersistence = null)
     {
         ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(options);
@@ -75,6 +78,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         _identityQuery = identityQuery;
         _cameraAuthorizer = cameraAuthorizer;
         _persistence = persistence;
+        _imagingPersistence = imagingPersistence;
         _networkPersistence = networkPersistence ?? CameraNetworkPersistenceFactory.Create(audit);
         _readStation = readStation;
         _publishSetup = publishSetup;
