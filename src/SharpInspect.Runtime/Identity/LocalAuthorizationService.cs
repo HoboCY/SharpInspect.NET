@@ -145,6 +145,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AcknowledgeAlarmCommand => Permission.AcknowledgeAlarm,
         ResetAlarmCommand => Permission.ResetAlarm,
         StartCameraRecoveryCycleCommand => Permission.ManageCameraBindings,
+        StartCalibrationSessionCommand or CalibrationSessionCommand => Permission.RunCalibration,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -162,6 +163,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             AcknowledgeAlarmCommand acknowledge => acknowledge.AlarmInstanceId.ToString("D"),
             ResetAlarmCommand reset => reset.AlarmInstanceId.ToString("D"),
             StartCameraRecoveryCycleCommand recovery => recovery.LogicalRole,
+            StartCalibrationSessionCommand calibration => calibration.AuthorizationTarget,
+            CalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -184,6 +187,9 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             AuditedCommandKind.ChangeCameraNetworkConfiguration or AuditedCommandKind.DeclareImagingSetup =>
             Permission.ManageCameraBindings,
         AuditedCommandKind.StartCameraRecoveryCycle => Permission.ManageCameraBindings,
+        AuditedCommandKind.StartCalibrationSession or AuditedCommandKind.CaptureCalibrationFrame or
+            AuditedCommandKind.ExcludeCalibrationFrame or AuditedCommandKind.ComputeCalibrationCandidate or
+            AuditedCommandKind.ExitCalibrationSession => Permission.RunCalibration,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
@@ -202,6 +208,11 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AcknowledgeAlarmCommand => AuditedCommandKind.AcknowledgeAlarm,
         ResetAlarmCommand => AuditedCommandKind.ResetAlarm,
         StartCameraRecoveryCycleCommand => AuditedCommandKind.StartCameraRecoveryCycle,
+        StartCalibrationSessionCommand => AuditedCommandKind.StartCalibrationSession,
+        CaptureCalibrationFrameCommand => AuditedCommandKind.CaptureCalibrationFrame,
+        ExcludeCalibrationFrameCommand => AuditedCommandKind.ExcludeCalibrationFrame,
+        ComputeCalibrationCandidateCommand => AuditedCommandKind.ComputeCalibrationCandidate,
+        ExitCalibrationSessionCommand => AuditedCommandKind.ExitCalibrationSession,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

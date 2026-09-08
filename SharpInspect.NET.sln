@@ -43,6 +43,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.CameraConforma
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Conformance.Tests", "tests\SharpInspect.Cameras.Conformance.Tests\SharpInspect.Cameras.Conformance.Tests.csproj", "{9907913C-BD30-4AF8-B644-9BCC3009FF20}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.CalibrationConsumer", "samples\SharpInspect.CalibrationConsumer\SharpInspect.CalibrationConsumer.csproj", "{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -120,6 +122,10 @@ Global
 		{9907913C-BD30-4AF8-B644-9BCC3009FF20}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9907913C-BD30-4AF8-B644-9BCC3009FF20}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9907913C-BD30-4AF8-B644-9BCC3009FF20}.Release|Any CPU.Build.0 = Release|Any CPU
+		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E99BBDB8-638E-4212-B4AD-B53ACD1132BE} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
@@ -139,5 +145,6 @@ Global
 		{88ACB1B9-796B-409A-8F2C-D045CBC7B234} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
 		{FB3F5BAE-C8FE-49D7-B8C0-0434AA66FB4D} = {6D788117-615D-402D-845B-2C93729654A6}
 		{9907913C-BD30-4AF8-B644-9BCC3009FF20} = {D54536D5-B62E-4964-938E-3937B4DB9749}
+		{449ADBF2-8C08-41C0-88C4-E8BE7EA7A7BE} = {6D788117-615D-402D-845B-2C93729654A6}
 	EndGlobalSection
 EndGlobal

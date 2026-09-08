@@ -5,6 +5,8 @@ using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
+using SharpInspect.Runtime.Calibration;
+using SharpInspect.Runtime.Storage;
 
 namespace SharpInspect.Runtime;
 
@@ -13,7 +15,7 @@ namespace SharpInspect.Runtime;
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
 public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime,
-    IImagingSetupRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+    IImagingSetupRuntime, ICalibrationSessionQuery, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -50,7 +52,10 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null,
         IEnumerable<ICameraProvider>? cameraProviders = null, CameraSetupOptions? cameraSetupOptions = null,
         CameraAcquisitionService? cameraAcquisitionService = null,
-        CameraRecoveryService? cameraRecoveryService = null)
+        CameraRecoveryService? cameraRecoveryService = null,
+        CalibrationSessionOptions? calibrationSessionOptions = null,
+        CalibrationProcedureRegistry? calibrationProcedures = null,
+        ProductionStoreOptions? productionStoreOptions = null)
     {
         _audit = audit;
         _sessions = sessions;
@@ -111,6 +116,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     _snapshot = _snapshot with { Session = initialSession };
             }
         }
+        ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
         _storeInitialization = InitializeStoreAsync();
         _heartbeat = PublishHeartbeatAsync(interval);
     }
@@ -138,6 +144,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             if (_sessionProjectionVersion != observedVersion) return;
             // Interactive identity is a separate axis. No arm/Ready/PLC/background work is changed.
             PublishLocked(_snapshot with { Session = current });
+            ScheduleCalibrationSessionExitLocked(current);
         }
     }
 
@@ -150,6 +157,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_snapshot.Session == current) return;
         _sessionProjectionVersion = checked(_sessionProjectionVersion + 1);
         PublishLocked(_snapshot with { Session = current });
+        ScheduleCalibrationSessionExitLocked(current);
     }
 
     public async IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(
@@ -219,8 +227,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             LocalAuthorizationService.PreparedManagement? prepared = null;
             var alarmCommand = command is AcknowledgeAlarmCommand or ResetAlarmCommand;
             var cameraRecoveryCommand = command is StartCameraRecoveryCycleCommand;
+            var calibrationCommand = command is StartCalibrationSessionCommand or CalibrationSessionCommand;
             var governedCommand = _authorization is not null && (alarmCommand ||
-                cameraRecoveryCommand ||
+                cameraRecoveryCommand || calibrationCommand ||
                 command is IdentityManagementCommand or ArmProductionCommand or GovernedAuditChangeCommand);
             if (governedCommand)
             {
@@ -288,9 +297,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                         ? "OperationInProgress" : null);
                     if (command is ArmProductionCommand && _cameraNetworkMaintenanceActive)
                         forced = "CameraNetworkMaintenanceInProgress";
+                    if (!calibrationCommand && _snapshot.Mode == ExclusiveMode.Calibration)
+                        forced = "CalibrationExclusiveWorkInProgress";
                     epoch = _snapshot.RuntimeEpoch;
                 }
-                var governed = cameraRecoveryCommand
+                var governed = calibrationCommand
+                    ? await HandleCalibrationCommandAsync(command, epoch, attempt, deadline, cancellationToken).ConfigureAwait(false)
+                    : cameraRecoveryCommand
                     ? await HandleCameraRecoveryCommandAsync((StartCameraRecoveryCycleCommand)command,
                         epoch, attempt, forced, deadline, cancellationToken).ConfigureAwait(false)
                     : alarmCommand
@@ -298,7 +311,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                         alarms => EvaluateAlarmCommand(alarms, command), deadline, cancellationToken).ConfigureAwait(false)
                     : await _authorization!.HandleCommandAsync(command, epoch, attempt, prepared!, forced, deadline, cancellationToken).ConfigureAwait(false);
                 if (governed.Audit == AuditPersistence.Unavailable) MarkAuditFault("TraceAuditUnavailable");
-                if (governed.Disposition == CommandDisposition.Accepted && !cameraRecoveryCommand)
+                if (governed.Disposition == CommandDisposition.Accepted && !cameraRecoveryCommand && !calibrationCommand)
                 {
                     if (alarmCommand) await RefreshAlarmsAsync(CancellationToken.None).ConfigureAwait(false);
                     lock (_sync)
@@ -375,6 +388,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         {
             AcknowledgeAlarmCommand or ResetAlarmCommand => Reject("AuthorizationUnavailable"),
             GovernedAuditChangeCommand => Reject("AuthorizationUnavailable"),
+            StartCalibrationSessionCommand or CalibrationSessionCommand => Reject("AuthorizationUnavailable"),
             ArmProductionCommand => Reject(_snapshot.AdmissionBlockers[0]),
             GracefulProductionStopCommand when command.Invocation.Source != CommandSource.PhysicalConsole => Reject("LocalConsoleRequired"),
             GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Pending => Reject("OperationInProgress"),
@@ -387,6 +401,11 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private CommandAuditFact CreateFact(RuntimeCommand command, Guid attempt, RuntimeCommandOutcome outcome) =>
         new(Guid.NewGuid(), attempt, command.CorrelationId, _snapshot.RuntimeEpoch, DateTimeOffset.UtcNow,
             command switch { ArmProductionCommand => AuditedCommandKind.ArmProduction,
+                StartCalibrationSessionCommand => AuditedCommandKind.StartCalibrationSession,
+                CaptureCalibrationFrameCommand => AuditedCommandKind.CaptureCalibrationFrame,
+                ExcludeCalibrationFrameCommand => AuditedCommandKind.ExcludeCalibrationFrame,
+                ComputeCalibrationCandidateCommand => AuditedCommandKind.ComputeCalibrationCandidate,
+                ExitCalibrationSessionCommand => AuditedCommandKind.ExitCalibrationSession,
                 GracefulProductionStopCommand => AuditedCommandKind.GracefulProductionStop,
                 GovernedAuditChangeCommand change when _audit?.Integrity is { State: not AuditIntegrityState.NotConfigured } => change.Change switch
                 {
@@ -411,9 +430,10 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     {
         if (_audit is null) return;
         var result = await _audit.Initialization.ConfigureAwait(false);
+        if (result.Committed) await InitializeCalibrationSessionsAsync().ConfigureAwait(false);
         lock (_sync)
         {
-            _storeReady = result.Committed;
+            _storeReady = result.Committed && !_calibrationStartupBlocked;
             if (_disposed) return;
             var blockers = _snapshot.AdmissionBlockers.Where(x => x != "TraceStoreMissing").ToList();
             if (!result.Committed) blockers.Add(result.ReasonCode);
@@ -547,10 +567,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancelCameraSetupOperations();
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
-        await _cameraSetupRuntime.DisposeAsync().ConfigureAwait(false);
         await _commandGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            // Admission owns the same gate through durable acceptance and coordinator
+            // publication. Closing it first prevents shutdown missing a late session.
+            await ShutdownCalibrationAsync().ConfigureAwait(false);
+            await _cameraSetupRuntime.DisposeAsync().ConfigureAwait(false);
             if (_pendingAudit is { } pending)
             {
                 var result = await _audit!.AppendAsync(pending with { EventId = Guid.NewGuid(), OccurredAtUtc = DateTimeOffset.UtcNow,

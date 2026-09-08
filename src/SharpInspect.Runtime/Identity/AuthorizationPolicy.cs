@@ -33,7 +33,7 @@ public sealed class AuthorizationPolicy
 
     private static readonly Permission[] MandatoryStepUpPermissions = AllPermissions
         .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe and
-            not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft)
+            not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft and not Permission.RunCalibration)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -71,6 +71,8 @@ public sealed class AuthorizationPolicy
         var requestedStepUp = MaterializePermissions(
             stepUpPermissions ?? Array.Empty<Permission>(), nameof(stepUpPermissions));
         var allStepUp = MandatoryStepUpPermissions
+            .Concat(copiedRoles.Values.Any(permissions => permissions.Contains(Permission.RunCalibration))
+                ? new[] { Permission.RunCalibration } : Array.Empty<Permission>())
             .Concat(requestedStepUp)
             .Distinct()
             .OrderBy(permission => permission)
@@ -121,7 +123,9 @@ public sealed class AuthorizationPolicy
     public bool RequiresStepUp(Permission permission)
     {
         ValidatePermission(permission, nameof(permission));
-        return _stepUpPermissions.Contains(permission);
+        // A newly assigned Calibration permission always requires Step-Up, even
+        // under an older explicit role policy. Do not rewrite that policy's bytes.
+        return permission == Permission.RunCalibration || _stepUpPermissions.Contains(permission);
     }
 
     /// <summary>Validates the immutable policy boundary and all enum values.</summary>
@@ -173,7 +177,7 @@ public sealed class AuthorizationPolicy
         // policy choice and must not silently change an existing store's
         // role bundles or content hash.
         var developmentAdministratorPermissions = AllPermissions
-            .Where(permission => permission is not Permission.EditRecipeDraft)
+            .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

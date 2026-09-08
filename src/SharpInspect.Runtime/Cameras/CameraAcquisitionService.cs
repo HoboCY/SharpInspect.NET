@@ -31,6 +31,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     private bool _admissionInProgress;
     private TaskCompletionSource<bool>? _admissionCompletion;
     private long _nextProtocolSequence = 1;
+    private bool _calibrationEnabled;
 
     public CameraAcquisitionService(IControlledCameraDevice device,
         EffectiveCameraConfiguration effectiveConfiguration, IFrameAcquisitionClock clock,
@@ -93,7 +94,30 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     /// </summary>
     public ValueTask<CameraAcquisitionAttempt> AcquireAsync(ExecutionKind kind,
         string logicalCameraRole, CancellationToken cancellationToken = default) =>
-        new(AcquireCoreAsync(kind, logicalCameraRole, cancellationToken));
+        new(AcquireCoreAsync(kind, logicalCameraRole, cancellationToken, null));
+
+    /// <summary>
+    /// Internal acquisition path reserved for a Recovery-owned calibration lease.
+    /// The caller supplies the Runtime-generated frame identifier as the
+    /// calibration correlation value; it cannot select a production or manual
+    /// correlation through this seam.
+    /// </summary>
+    internal ValueTask<CameraAcquisitionAttempt> AcquireCalibrationAsync(
+        ExecutionCorrelationId correlation, string logicalCameraRole,
+        CancellationToken cancellationToken = default) =>
+        new(AcquireCoreAsync(ExecutionKind.Calibration, logicalCameraRole,
+            cancellationToken, correlation));
+
+    /// <summary>Enables the calibration-only correlation path for one temporary owner.</summary>
+    internal void EnableCalibrationAcquisition()
+    {
+        lock (_sync)
+        {
+            if (_disposed || _attempt is not null || _admissionInProgress)
+                throw new InvalidOperationException("CameraCalibrationAcquisitionUnavailable");
+            _calibrationEnabled = true;
+        }
+    }
 
     /// <summary>
     /// Reads the service-owned bounded protocol ring. This method never calls the
@@ -224,12 +248,18 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     }
 
     private async Task<CameraAcquisitionAttempt> AcquireCoreAsync(ExecutionKind kind,
-        string logicalCameraRole, CancellationToken cancellationToken)
+        string logicalCameraRole, CancellationToken cancellationToken,
+        ExecutionCorrelationId? suppliedCorrelation)
     {
         if (!Enum.IsDefined(typeof(ExecutionKind), kind))
             return Rejected("CameraAcquisitionExecutionKindInvalid");
-        if (kind != ExecutionKind.Qualification)
+        if (suppliedCorrelation is null && kind != ExecutionKind.Qualification)
             return Rejected("ProductionAcquisitionUnavailable");
+        if (suppliedCorrelation is not null &&
+            (kind != ExecutionKind.Calibration ||
+             suppliedCorrelation.Kind != ExecutionKind.Calibration ||
+             suppliedCorrelation.Value == Guid.Empty))
+            return Rejected("CameraCalibrationCorrelationInvalid");
         if (cancellationToken.IsCancellationRequested)
             return Rejected("CameraAcquisitionCancelledBeforeStart");
 
@@ -250,6 +280,10 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         lock (_sync)
         {
             if (_disposed) return Rejected("CameraAcquisitionServiceDisposed");
+            if (kind == ExecutionKind.Calibration && !_calibrationEnabled)
+                return Rejected("CameraCalibrationLeaseRequired");
+            if (kind == ExecutionKind.Qualification && _calibrationEnabled)
+                return Rejected("CameraCalibrationControlledOnly");
             if (_attempt is not null || _admissionInProgress || HasPendingHealthReadLocked())
             {
                 AppendProtocolLocked(CameraProtocolViolationKind.TriggerWhileBusy,
@@ -289,8 +323,8 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
                     return Rejected("CameraAcquisitionBusy");
                 }
 
-                var correlation = new ExecutionCorrelationId(ExecutionKind.Qualification,
-                    NewCorrelation());
+                var correlation = suppliedCorrelation ?? new ExecutionCorrelationId(
+                    ExecutionKind.Qualification, NewCorrelation());
                 FrameAcquisitionRequest request;
                 try
                 {

@@ -8,6 +8,7 @@ using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Recipes;
+using SharpInspect.Runtime.Calibration;
 
 namespace SharpInspect.Runtime;
 
@@ -116,6 +117,19 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
+    public static IServiceCollection AddSharpInspectCalibrationSessions(this IServiceCollection services,
+        CalibrationSessionOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        if (services.Any(item => item.ServiceType == typeof(CalibrationSessionOptions)))
+            throw new ArgumentException("CalibrationSessionsAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        return services;
+    }
+
+    /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
     {
@@ -126,7 +140,10 @@ public static class ServiceCollectionExtensions
             cameraProviders: p.GetServices<ICameraProvider>(),
             cameraSetupOptions: p.GetService<CameraSetupOptions>(),
             cameraAcquisitionService: p.GetService<CameraAcquisitionService>(),
-            cameraRecoveryService: p.GetService<CameraRecoveryService>()));
+            cameraRecoveryService: p.GetService<CameraRecoveryService>(),
+            calibrationSessionOptions: p.GetService<CalibrationSessionOptions>(),
+            calibrationProcedures: p.GetService<CalibrationProcedureRegistry>(),
+            productionStoreOptions: p.GetService<ProductionStoreOptions>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -136,6 +153,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IImagingSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as IImagingSetupRuntime ??
             throw new InvalidOperationException("ImagingSetupRuntimeUnavailable"));
+        services.TryAddSingleton<ICalibrationSessionQuery>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationSessionQuery ??
+            throw new InvalidOperationException("CalibrationSessionQueryUnavailable"));
         return services;
     }
 
@@ -189,7 +209,8 @@ public static class ServiceCollectionExtensions
             p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
             p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
-            p.GetService<CameraRecoveryService>()));
+            p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
+            p.GetService<CalibrationProcedureRegistry>(), options));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -199,6 +220,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IImagingSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as IImagingSetupRuntime ??
             throw new InvalidOperationException("ImagingSetupRuntimeUnavailable"));
+        services.TryAddSingleton<ICalibrationSessionQuery>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationSessionQuery ??
+            throw new InvalidOperationException("CalibrationSessionQueryUnavailable"));
         return services;
     }
 }

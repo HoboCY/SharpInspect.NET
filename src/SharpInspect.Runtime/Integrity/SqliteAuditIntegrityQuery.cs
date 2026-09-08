@@ -53,6 +53,10 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
                 SqliteNative.ConfigureSqliteLimit(db, _options, schema);
+                if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
+                if (_options.CalibrationSessions is null && schema == CalibrationSessionStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CalibrationConfigurationRequired");
                 if (_options.LocalIdentity is not null && schema < 7)
                 {
                     var migrationReason = schema switch
@@ -89,28 +93,33 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
                 if (_options.ImagingSetup is null && schema == ImagingSetupStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("ImagingSetupConfigurationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13,
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14,
                     "AuditGovernedMigrationRequired");
                 var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
-                var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion ||
+                    var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion ||
                     (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-                        CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) &&
+                        CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                        CalibrationSessionStoreOptions.SchemaVersion) &&
                         _options.RecipeDrafts is not null;
                 var cameraSchema = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-                    CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion;
+                    CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                    CalibrationSessionStoreOptions.SchemaVersion;
                 var recoverySchema = schema == CameraRecoveryStoreOptions.SchemaVersion ||
-                    (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) &&
+                    (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                        CalibrationSessionStoreOptions.SchemaVersion) &&
                     _options.CameraRecovery is not null;
-                var networkSchema = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) &&
+                var networkSchema = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                    CalibrationSessionStoreOptions.SchemaVersion) &&
                     _options.CameraNetwork is not null;
-                var imagingSchema = schema == ImagingSetupStoreOptions.SchemaVersion;
+                var imagingSchema = schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion;
+                var calibrationSchema = schema == CalibrationSessionStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
                 var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
                 var networkVerification = networkSchema;
                 var fullVerification = archiveVerification || draftVerification || cameraSchema || recoverySchema || networkVerification ||
-                    imagingSchema || alarmStartup;
+                    imagingSchema || calibrationSchema || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
@@ -121,7 +130,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     cameraSetupOptions: cameraSchema ? _options.CameraSetup : null,
                     cameraRecoveryOptions: recoverySchema ? _options.CameraRecovery : null,
                     cameraNetworkOptions: networkSchema ? _options.CameraNetwork : null,
-                    imagingSetupOptions: imagingSchema ? _options.ImagingSetup : null);
+                    imagingSetupOptions: imagingSchema ? _options.ImagingSetup : null,
+                    calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
@@ -174,6 +184,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
         if (exception is InvalidOperationException { Message: var imagingReason } &&
             imagingReason.StartsWith("ImagingSetup", StringComparison.Ordinal))
             return imagingReason;
+        if (exception is InvalidOperationException { Message: var calibrationReason } &&
+            calibrationReason.StartsWith("Calibration", StringComparison.Ordinal))
+            return calibrationReason;
         if (exception is InvalidOperationException { Message: "IdentityAuthenticationGovernedMigrationRequired" })
             return "IdentityAuthenticationGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "IdentityAuthorizationGovernedMigrationRequired" })

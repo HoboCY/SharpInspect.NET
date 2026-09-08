@@ -71,6 +71,7 @@ public sealed partial class StationRuntime
     private void ScheduleCameraRecoveryObservationsLocked()
     {
         if (_cameraRecoveryService is null || _disposed || _shutdownRequested ||
+            _snapshot.Mode == ExclusiveMode.Calibration ||
             _cameraRecoveryObservationFault || !_storeInitialization.IsCompletedSuccessfully ||
             _cameraRecoveryObservation is { IsCompleted: false } ||
             !IsCameraRecoveryAlarmMappingValid(ConfiguredAlarmPolicy) ||
@@ -83,6 +84,7 @@ public sealed partial class StationRuntime
         try
         {
             await _cameraRecoveryService!.RefreshAsync(_lifetime.Token).ConfigureAwait(false);
+            lock (_sync) if (_snapshot.Mode == ExclusiveMode.Calibration) return;
             var page = _cameraRecoveryService.ReadEvents(_cameraRecoveryEventCursor, 64);
             if ((_cameraRecoveryEventEpoch.HasValue && _cameraRecoveryEventEpoch != page.RecoveryEpoch) ||
                 page.Overflowed || page.ThroughSequence < _cameraRecoveryEventCursor)

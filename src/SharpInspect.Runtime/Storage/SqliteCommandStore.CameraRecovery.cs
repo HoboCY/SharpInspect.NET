@@ -249,7 +249,8 @@ internal sealed partial class SqliteCommandStore
                 cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
                 cameraRecoveryOptions: _options.CameraRecovery,
                  cameraNetworkOptions: networkStore ? _options.CameraNetwork : null,
-                 imagingSetupOptions: _options.ImagingSetup);
+                 imagingSetupOptions: _options.ImagingSetup,
+                 calibrationSessionOptions: _options.CalibrationSessions);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,

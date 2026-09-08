@@ -1,0 +1,266 @@
+<UserControl x:Class="SharpInspect.Wpf.CalibrationSessionPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="700">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <ScrollViewer x:Name="CalibrationScrollViewer" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="标定会话 · 采集并保留候选证据" Foreground="#172B42"
+                           FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="页面只通过 Runtime 读取状态和提交类型化命令。进入标定需要安全停线、Step-Up 和 Runtime 接受；页面不会打开设备、控制 PLC、修改观测坐标、发布或激活 Profile。"
+                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12"
+                           TextWrapping="Wrap" />
+
+                <StackPanel x:Name="UnavailablePanel" Background="#FFF7E7" Visibility="Visible">
+                    <TextBlock x:Name="UnavailableText"
+                               Text="标定会话不可用：Runtime、会话、绑定、成像或证据查询服务未完整配置。"
+                               Foreground="#75531A" TextWrapping="Wrap" Margin="10" />
+                </StackPanel>
+
+                <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="当前状态：" Foreground="#556679" VerticalAlignment="Center" />
+                        <TextBlock x:Name="StatusLabel" Foreground="#334E68" VerticalAlignment="Center" />
+                        <Button x:Name="RefreshButton" Content="刷新授权状态"
+                                Click="RefreshClick" Margin="18,0,0,0" Padding="10,4"
+                                AutomationProperties.Name="刷新标定授权状态" />
+                        <Button x:Name="CancelButton" Content="取消当前请求"
+                                Click="CancelClick" Margin="8,0,0,0" Padding="10,4"
+                                AutomationProperties.Name="取消当前标定请求" />
+                    </WrapPanel>
+                    <TextBlock x:Name="StatusText" Foreground="#334E68" TextWrapping="Wrap" />
+                    <TextBlock x:Name="ErrorText" Foreground="#9B3430" Margin="0,4,0,10"
+                               TextWrapping="Wrap" />
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="Host 配置的不可变标定方案" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="过程输入和临时采集设置由 Host 生成；本页仅精确展示，不编辑观察坐标或类型化输入。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <TextBlock x:Name="RequirementText" Text="{Binding RequirementSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <TextBlock x:Name="ProcedureText" Text="{Binding ProcedureSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <TextBlock x:Name="InputText" Text="{Binding InputSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <TextBlock x:Name="SelectionPolicyText" Text="{Binding SelectionPolicySummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <TextBlock x:Name="TemporaryConfigurationText" Text="{Binding TemporaryConfigurationSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" />
+                            <TextBlock x:Name="TemporaryReadbackText" Text="{Binding TemporaryReadbackSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="开始独占标定会话" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="请先刷新实际相机绑定、当前成像修订和工位快照。开始按钮使用新的关联号，并把完整授权目标交给 Step-Up；Accepted 只表示 Runtime 接受命令。"
+                                       Foreground="#75531A" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="逻辑相机角色" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock x:Name="RoleText" Grid.Column="1" Text="{Binding LogicalCameraRole}"
+                                           Foreground="#334E68" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="1" Text="当前绑定" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock x:Name="BindingText" Grid.Row="1" Grid.Column="1"
+                                           Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="2" Text="当前成像修订" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock x:Name="ImagingText" Grid.Row="2" Grid.Column="1"
+                                           Foreground="#334E68" TextWrapping="Wrap" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="3" Text="开始理由" Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox x:Name="StartReasonBox" Grid.Row="3" Grid.Column="1"
+                                         Text="{Binding StartReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="512" Margin="0,0,0,7"
+                                         AutomationProperties.Name="开始标定会话理由" />
+                                <TextBlock Grid.Row="4" Text="当前密码" Foreground="#556679" Margin="0,0,8,0" />
+                                <WrapPanel Grid.Row="4" Grid.Column="1">
+                                    <PasswordBox x:Name="StartPasswordBox" Width="230"
+                                                 AutomationProperties.Name="标定会话 Step-Up 当前密码" />
+                                    <Button x:Name="StartButton" Content="Step-Up 并开始"
+                                            Click="StartClick" Margin="10,0,0,0" Padding="10,4"
+                                            AutomationProperties.Name="Step-Up 并开始独占标定会话" />
+                                </WrapPanel>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Runtime 工位与会话状态" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock x:Name="StationGateText" Text="{Binding StationGateSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" Margin="0,5,0,4" />
+                            <TextBlock x:Name="SessionHeaderText" Text="{Binding SessionHeaderSummary}"
+                                       Foreground="#556679" TextWrapping="Wrap" Margin="0,0,0,4" />
+                            <TextBlock x:Name="CalibrationStateText" Text="{Binding CalibrationStateSummary}"
+                                       Foreground="#334E68" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="会话动作" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="采集、整帧排除、计算候选和退出均由 Runtime 复查。候选出现或计算中后，页面会关闭排除和继续采集入口。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <WrapPanel>
+                                <Button x:Name="CaptureButton" Content="采集一帧"
+                                        Click="CaptureClick" Padding="10,4" Margin="0,0,8,0"
+                                        AutomationProperties.Name="提交采集标定帧命令" />
+                                <Button x:Name="ComputeButton" Content="计算候选"
+                                        Click="ComputeClick" Padding="10,4" Margin="0,0,8,0"
+                                        AutomationProperties.Name="提交计算标定候选命令" />
+                                <Button x:Name="ExitButton" Content="退出会话"
+                                        Click="ExitClick" Padding="10,4"
+                                        AutomationProperties.Name="提交退出标定会话命令" />
+                            </WrapPanel>
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="125" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="当前选中帧的排除理由" Foreground="#556679" VerticalAlignment="Center" />
+                                <TextBox x:Name="ExcludeReasonBox" Grid.Column="1"
+                                         Text="{Binding ExcludeReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="512" Margin="0,0,8,0"
+                                         AutomationProperties.Name="整帧排除理由" />
+                                <Button x:Name="ExcludeButton" Grid.Column="2" Content="排除整帧"
+                                        Click="ExcludeClick" Padding="10,4"
+                                        AutomationProperties.Name="提交整帧排除命令" />
+                            </Grid>
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="退出理由" Foreground="#556679" VerticalAlignment="Center" />
+                                <TextBox x:Name="ExitReasonBox" Grid.Column="1"
+                                         Text="{Binding ExitReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="512" AutomationProperties.Name="退出标定会话理由" />
+                            </Grid>
+                            <TextBlock Text="{Binding ValidationSummary}" Foreground="#75531A"
+                                       FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="保留的原始帧（只读）" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="Source FrameId、来源哈希、像素格式和排除理由来自证据查询。选择一帧后只能读取原始图像副本。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <DataGrid x:Name="FramesGrid" ItemsSource="{Binding FrameRows}"
+                                      SelectedItem="{Binding SelectedFrameRow, Mode=TwoWay}"
+                                      AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                                      HeadersVisibility="Column" MinHeight="120" MaxHeight="260"
+                                      AutomationProperties.Name="标定原始帧只读列表">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="FrameId" Binding="{Binding FrameId}" Width="180" />
+                                    <DataGridTextColumn Header="SourceHash" Binding="{Binding SourceHash}" Width="220" />
+                                    <DataGridTextColumn Header="格式" Binding="{Binding PixelFormat}" Width="75" />
+                                    <DataGridTextColumn Header="尺寸" Binding="{Binding Width}" Width="55" />
+                                    <DataGridTextColumn Header="特征数" Binding="{Binding FeatureCount}" Width="65" />
+                                    <DataGridTextColumn Header="排除理由" Binding="{Binding ExclusionReason}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <WrapPanel Margin="0,8,0,0">
+                                <Button x:Name="ReadFrameButton" Content="读取选中原始图像"
+                                        Click="ReadFrameClick" Padding="10,4"
+                                        AutomationProperties.Name="读取选中标定原始图像" />
+                                <TextBlock Text="{Binding NoCoordinateEditingNotice}" Foreground="#75531A"
+                                           FontSize="11" TextWrapping="Wrap" Margin="12,4,0,0" />
+                            </WrapPanel>
+                            <Border Background="#101820" Margin="0,8,0,0" Padding="5">
+                                <Image x:Name="SelectedFrameImage" Source="{Binding SelectedFrameImage}"
+                                       Stretch="Uniform" MaxHeight="360"
+                                       AutomationProperties.Name="选中标定原始图像只读预览" />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="自动观测与排除记录（只读）" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <DataGrid x:Name="ObservationsGrid" ItemsSource="{Binding ObservationRows}"
+                                      AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                                      HeadersVisibility="Column" MinHeight="100" MaxHeight="260"
+                                      AutomationProperties.Name="自动标定观测只读列表">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="ObservationId" Binding="{Binding ObservationId}" Width="180" />
+                                    <DataGridTextColumn Header="FrameId" Binding="{Binding FrameId}" Width="180" />
+                                    <DataGridTextColumn Header="来源哈希" Binding="{Binding SourceHash}" Width="220" />
+                                    <DataGridTextColumn Header="特征数" Binding="{Binding FeatureCount}" Width="65" />
+                                    <DataGridTextColumn Header="自动像素坐标" Binding="{Binding FeatureSummary}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <DataGrid x:Name="ExclusionsGrid" ItemsSource="{Binding ExclusionRows}"
+                                      AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False"
+                                      HeadersVisibility="Column" MinHeight="70" MaxHeight="180" Margin="0,8,0,0"
+                                      AutomationProperties.Name="标定整帧排除只读列表">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="FrameId" Binding="{Binding FrameId}" Width="180" />
+                                    <DataGridTextColumn Header="理由" Binding="{Binding Reason}" Width="*" />
+                                    <DataGridTextColumn Header="记录时间" Binding="{Binding RecordedAtUtc}" Width="180" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Text="{Binding SelectionSummary}" Foreground="#334E68"
+                                       TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="候选结果（开发审阅）" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding CandidateSummary}" Foreground="#334E68"
+                                       TextWrapping="Wrap" Margin="0,5,0,8" />
+                            <TextBlock Text="{Binding CandidateDiagnosticSummary}" Foreground="#556679"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,5" />
+                            <ItemsControl ItemsSource="{Binding CandidateMetricRows}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Foreground="#334E68" Margin="0,1,0,1">
+                                            <Run Text="{Binding Key}" /><Run Text=" = " />
+                                            <Run Text="{Binding Value}" /><Run Text=" " /><Run Text="{Binding Unit}" />
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="{Binding NoProductionAuthorityNotice}" Foreground="#75531A"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0" />
+                            <TextBlock Text="{Binding NoAutomaticPhysicalDetectionNotice}" Foreground="#75531A"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,4,0,0" />
+                            <TextBlock Text="{Binding LastCommandSummary}" Foreground="#556679"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Border>
+</UserControl>

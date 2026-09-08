@@ -79,9 +79,14 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
              }, cancellationToken);
         SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (options.CalibrationSessions is not null && schemaVersion < CalibrationSessionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
+        if (options.CalibrationSessions is null && schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("CalibrationConfigurationRequired");
         if ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) && options.CameraSetup is null)
+            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+            CalibrationSessionStoreOptions.SchemaVersion) && options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
             throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
@@ -107,6 +112,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
         if (schemaVersion == ImagingSetupStoreOptions.SchemaVersion)
             RequireImagingSchemaConfiguration(database, options, deadline, cancellationToken);
+        if (schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
+            RequireCalibrationSchemaConfiguration(database, options, deadline, cancellationToken);
 
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>
@@ -182,12 +189,40 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             options.CameraRecovery is not null, "CameraRecoveryConfigurationRequired");
         RequireOptionalLedger("camera_network_store_config", "camera_network_events",
             options.CameraNetwork is not null, "CameraNetworkConfigurationRequired");
+        RequireOptionalLedger("algorithm_result_archive_config", "development_algorithm_results",
+            options.AlgorithmResultArchive is not null, "AlgorithmResultArchiveConfigurationRequired");
+        RequireOptionalLedger("recipe_draft_store_config", "recipe_draft_revisions",
+            options.RecipeDrafts is not null, "RecipeDraftConfigurationRequired");
         SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup!, deadline);
         SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup!, deadline);
         if (options.CameraRecovery is not null)
             SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
         if (options.CameraNetwork is not null)
             SqliteCommandStore.RequireConfiguredCameraNetwork(database, options.CameraNetwork, deadline);
+        if (options.AlgorithmResultArchive is not null)
+            SqliteCommandStore.RequireConfiguredArchive(database, options.AlgorithmResultArchive, deadline);
+        if (options.RecipeDrafts is not null)
+            SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts, deadline);
+    }
+
+    private static void RequireCalibrationSchemaConfiguration(SQLitePCL.sqlite3 database,
+        ProductionStoreOptions options, StoreDeadline deadline, CancellationToken cancellationToken)
+    {
+        var count = SqliteNative.WithStatement(database,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (?,?);",
+            deadline, statement =>
+            {
+                SqliteNative.BindText(database, statement, 1, "camera_recovery_store_config");
+                SqliteNative.BindText(database, statement, 2, "camera_recovery_terminal_events");
+                SqliteNative.Step(database, statement, deadline, cancellationToken);
+                return SqliteNative.ColumnInt64(statement, 0);
+            }, cancellationToken);
+        if (count != 2 || options.CameraRecovery is null)
+            throw new InvalidOperationException("CameraRecoveryConfigurationRequired");
+        SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup!, deadline);
+        SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
+        SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup!, deadline);
+        SqliteCommandStore.RequireConfiguredCalibrationSessions(database, options.CalibrationSessions!, deadline);
     }
 
     private static CommandTraceRecord ReadRecord(SQLitePCL.sqlite3_stmt statement)

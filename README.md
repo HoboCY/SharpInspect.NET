@@ -64,6 +64,18 @@ Recipe 的 `CalibrationRequirements` 只声明逻辑角色、种类、用途及�
 重连和网络维护扩展各自可选。旧数据库保持原格式；启用新账本需要显式迁移流程。
 完整边界与验证映射见 [V1-23 记录](docs/verification/v1-23.md)。
 
+## 标定会话与候选证据
+
+`AddSharpInspectCalibrationSessions` 注册独占会话协调器，强类型 `ICalibrationProcedure<TInput>`
+通过显式 DI 注册消费借用帧与不可变输入。`CalibrationSessionPanel` 提交开始、采集、整帧排除、
+计算与退出命令，并读取原始图像、自动观测和候选；坐标不可编辑，候选不能发布或激活。
+
+Schema 14 显式启用标定证据扩展，依赖签名身份审计、Camera Setup、Recovery 与 Imaging Setup。
+临时设置、原配置、源图像哈希及会话结局共同保留；退出恢复并读回基线后才结束独占。
+当前真实安全停线与 Released Recipe 准入仍缺证，普通入口返回 `SafetyStopUnverified`。
+隔离 Virtual 开发夹具可验证流程，始终保持 `Ready=false`，不构成生产或数学过程合格。
+验证范围与异常关闭边界见 [V1-24 记录](docs/verification/v1-24.md)。
+
 ## Camera Provider 契约验证
 
 Provider 维护者实现 `ICameraConformanceFixtureFactory`，提供固定身份、成像配置、规范像素摘要、

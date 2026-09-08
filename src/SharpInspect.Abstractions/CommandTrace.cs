@@ -24,7 +24,12 @@ public enum AuditedCommandKind
     ApplyCameraDebugConfiguration = 16,
     StartCameraRecoveryCycle = 17,
     ChangeCameraNetworkConfiguration = 18,
-    DeclareImagingSetup = 19
+    DeclareImagingSetup = 19,
+    StartCalibrationSession = 20,
+    CaptureCalibrationFrame = 21,
+    ExcludeCalibrationFrame = 22,
+    ComputeCalibrationCandidate = 23,
+    ExitCalibrationSession = 24
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

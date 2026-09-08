@@ -72,14 +72,16 @@ internal sealed partial class SqliteCommandStore
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
             var imagingStore = _options.ImagingSetup is not null;
+            var calibrationStore = _options.CalibrationSessions is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
-                imagingSetupOptions: _options.ImagingSetup);
+                imagingSetupOptions: _options.ImagingSetup,
+                calibrationSessionOptions: _options.CalibrationSessions);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -123,14 +125,16 @@ internal sealed partial class SqliteCommandStore
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
             var imagingStore = _options.ImagingSetup is not null;
+            var calibrationStore = _options.CalibrationSessions is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
-                imagingSetupOptions: _options.ImagingSetup);
+                imagingSetupOptions: _options.ImagingSetup,
+                calibrationSessionOptions: _options.CalibrationSessions);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -258,14 +262,16 @@ internal sealed partial class SqliteCommandStore
             var recoveryStore = _options.CameraRecovery is not null;
             var networkStore = _options.CameraNetwork is not null;
             var imagingStore = _options.ImagingSetup is not null;
+            var calibrationStore = _options.CalibrationSessions is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
-                imagingSetupOptions: _options.ImagingSetup);
+                imagingSetupOptions: _options.ImagingSetup,
+                calibrationSessionOptions: _options.CalibrationSessions);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -327,7 +333,8 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.NoMutation)
             {
                 AuditChainDatabase.Require(evaluated.Events.Count == 0 && evaluated.CommandFacts is null &&
-                    evaluated.CameraEvents is null && evaluated.ImagingRevision is null && guard is null,
+                    evaluated.CameraEvents is null && evaluated.ImagingRevision is null &&
+                    evaluated.CalibrationAdmission is null && guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
                 committed = true;
@@ -377,6 +384,8 @@ internal sealed partial class SqliteCommandStore
                 AuditChainDatabase.AppendImagingSetupRevision(database, _policy!, _signingKey!,
                     _options.ImagingSetup!, imagingRevision.Position, deadline);
             }
+            if (evaluated.CalibrationAdmission is { } calibrationHeader)
+                AppendCalibrationAdmission(database, calibrationHeader, identitySequence, deadline);
             var identityTail = AuditChainDatabase.LastIdentityEntry(database, deadline);
             if (identityTail is null || identityTail.Value.Sequence != identitySequence)
                 throw new InvalidOperationException("IdentityAuthorityAuditMismatch");
@@ -737,5 +746,6 @@ internal sealed record IdentityUpdate(
     IReadOnlyList<AlarmHistoryRecord>? AlarmEvents = null,
     IReadOnlyList<CameraSetupEvent>? CameraEvents = null,
     ImagingSetupRevisionMutation? ImagingRevision = null,
+    CalibrationSessionHeader? CalibrationAdmission = null,
     bool NoMutation = false);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

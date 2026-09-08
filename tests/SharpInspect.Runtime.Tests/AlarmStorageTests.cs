@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Alarms;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Storage;
@@ -15,6 +16,42 @@ namespace SharpInspect.Runtime.Tests;
 
 public sealed class AlarmStorageTests
 {
+    [Fact]
+    public async Task V124_A01_HealthySourceBeforeAnyFaultPersistsWithoutCreatingAnAlarmInstance()
+    {
+        var fixture = CreateFixture("V124-A01");
+        try
+        {
+            await using (var store = new SqliteCommandStore(fixture.Options))
+            {
+                Assert.True((await store.Initialization).Committed);
+                await WaitForVerifiedAsync(store);
+                var now = DateTimeOffset.UtcNow;
+                var written = await store.UpdateAlarmObservationAsync(fixture.RuntimeEpoch, state =>
+                {
+                    var decision = AlarmTransitions.Observe(state, new AlarmObservation(fixture.RuntimeEpoch,
+                        1, "CAMERA_DISCONNECTED", "Camera", true, now), fixture.RuntimeEpoch, now);
+                    Assert.True(decision.Succeeded, decision.ReasonCode);
+                    return new AlarmObservationUpdate(decision, decision.Events);
+                }, CancellationToken.None);
+                Assert.True(written.Committed, written.ReasonCode);
+                await WaitForVerifiedAsync(store);
+            }
+            await using var reopened = new SqliteCommandStore(fixture.Options);
+            Assert.True((await reopened.Initialization).Committed);
+            await WaitForVerifiedAsync(reopened);
+            var history = await new SqliteAlarmHistoryQuery(fixture.Options)
+                .QueryAsync(new AlarmHistoryFilter(code: "CAMERA_DISCONNECTED"));
+            Assert.True(history.Available, history.ReasonCode);
+            var observed = Assert.Single(history.Records);
+            Assert.Equal(AlarmTransitionKind.Observed, observed.Transition);
+            Assert.Null(observed.Instance);
+            Assert.Null(observed.InstanceId);
+            Assert.Equal("Camera", observed.Source);
+        }
+        finally { DeleteMachineKey(fixture.PolicyIntegrity); }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

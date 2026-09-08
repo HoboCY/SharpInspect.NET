@@ -106,8 +106,13 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
+            if (_options.CalibrationSessions is null && schema == CalibrationSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationConfigurationRequired");
             if (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-                CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion)
+                CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                CalibrationSessionStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
             else if (schema < CameraSetupStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
@@ -125,7 +130,8 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                 throw new InvalidOperationException("ImagingSetupConfigurationRequired");
             AuditChainDatabase.Require(schema is RecipeDraftStoreOptions.SchemaVersion or
                 CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-                CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion,
+                CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                CalibrationSessionStoreOptions.SchemaVersion,
                 schema < RecipeDraftStoreOptions.SchemaVersion
                     ? "RecipeDraftGovernedMigrationRequired"
                     : schema > RecipeDraftStoreOptions.SchemaVersion
@@ -136,7 +142,8 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
-                imagingSetupOptions: _options.ImagingSetup);
+                imagingSetupOptions: _options.ImagingSetup,
+                calibrationSessionOptions: _options.CalibrationSessions);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,

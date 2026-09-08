@@ -8,7 +8,7 @@ public enum HandshakePhase { Idle, AwaitingResultAck, AwaitingAckReset, Unknown 
 public enum RecoveryState { None, Required, InProgress }
 public enum QualificationMatch { Missing, Matches, Mismatch, Expired }
 public enum InteractiveSessionState { Unauthenticated, Authenticated, Locked }
-public enum ExecutionKind { Production, Manual, Qualification }
+public enum ExecutionKind { Production, Manual, Qualification, Calibration }
 public enum OperationState { Pending, Completed, Failed }
 
 public sealed record ExecutionCorrelationId(ExecutionKind Kind, Guid Value);
@@ -52,7 +52,8 @@ public sealed record StationStateSnapshot(
     AuditIntegrityReport? AuditIntegrity = null,
     AlarmStateSnapshot? AlarmState = null,
     CameraSetupState? CameraSetup = null,
-    CameraRecoverySnapshot? CameraRecovery = null);
+    CameraRecoverySnapshot? CameraRecovery = null,
+    CalibrationSessionState? CalibrationSession = null);
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>
 public sealed class AdmissionBlockers : System.Collections.ObjectModel.ReadOnlyCollection<string>

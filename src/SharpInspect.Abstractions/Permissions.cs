@@ -41,7 +41,9 @@ public enum Permission : ushort
     AcknowledgeAlarm = 29,
     ResetAlarm = 30,
     /// <summary>Author and persist a bounded Recipe Draft revision.</summary>
-    EditRecipeDraft = 31
+    EditRecipeDraft = 31,
+    /// <summary>Run an exclusive calibration session without publishing its candidate.</summary>
+    RunCalibration = 32
 }
 
 /// <summary>

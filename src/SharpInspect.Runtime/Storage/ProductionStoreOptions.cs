@@ -44,4 +44,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 13 immutable imaging setup declaration ledger.</summary>
     public ImagingSetupStoreOptions? ImagingSetup { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 14 governed calibration-session evidence store.</summary>
+    public CalibrationSessionStoreOptions? CalibrationSessions { get; init; }
 }

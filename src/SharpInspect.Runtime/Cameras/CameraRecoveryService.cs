@@ -9,7 +9,7 @@ namespace SharpInspect.Runtime.Cameras;
 /// caller-owned. This service is qualification-only and never grants production
 /// readiness.
 /// </summary>
-public sealed class CameraRecoveryService : IAsyncDisposable
+public sealed partial class CameraRecoveryService : IAsyncDisposable
 {
     private const int MaximumProtocolReadCount = 64;
 
@@ -164,7 +164,11 @@ public sealed class CameraRecoveryService : IAsyncDisposable
     /// <summary>Read-only Busy/cleanup milestone of the currently owned acquisition service.</summary>
     public CameraAcquisitionBusySnapshot? Busy
     {
-        get { lock (_sync) return _current.Busy; }
+        get
+        {
+            lock (_sync)
+                return _calibrationAcquisition?.Busy ?? _current.Busy;
+        }
     }
 
     /// <summary>
@@ -218,7 +222,8 @@ public sealed class CameraRecoveryService : IAsyncDisposable
         lock (_sync)
         {
             if (_disposed || _state is CameraRecoveryState.Recovering or
-                CameraRecoveryState.Exhausted)
+                CameraRecoveryState.Exhausted || _calibrationSessionId is not null ||
+                _calibrationAdmissionHold is not null)
                 return;
             if (_protocolFaulted)
             {
@@ -237,7 +242,7 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             lock (_sync)
             {
                 if (_disposed || _state is CameraRecoveryState.Recovering or
-                    CameraRecoveryState.Exhausted)
+                    CameraRecoveryState.Exhausted || _calibrationAdmissionHold is not null)
                     return;
                 current = _current;
             }
@@ -358,7 +363,12 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             return Rejected("CameraRecoveryLogicalRoleMismatch");
 
         CameraRecoverySnapshot snapshot;
-        lock (_sync) snapshot = BuildSnapshotLocked();
+        lock (_sync)
+        {
+            if (_calibrationSessionId is not null || _calibrationAdmissionHold is not null)
+                return Rejected("CameraCalibrationActive");
+            snapshot = BuildSnapshotLocked();
+        }
         if (snapshot.State == CameraRecoveryState.Unknown || !snapshot.SourceHealthy)
         {
             try { await RefreshAsync(cancellationToken).ConfigureAwait(false); }
@@ -375,6 +385,8 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             lock (_sync)
             {
                 if (_disposed) return Rejected(ReasonDisposed);
+                if (_calibrationSessionId is not null || _calibrationAdmissionHold is not null)
+                    return Rejected("CameraCalibrationActive");
                 if (_protocolFaulted) return Rejected(ReasonProtocolUnavailable);
                 if (_state != CameraRecoveryState.Healthy || !_sourceHealthy ||
                     _cycleId is not null && _state == CameraRecoveryState.Recovering)
@@ -388,6 +400,8 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             lock (_sync)
             {
                 if (_disposed) return Rejected(ReasonDisposed);
+                if (_calibrationSessionId is not null || _calibrationAdmissionHold is not null)
+                    return Rejected("CameraCalibrationActive");
                 if (_protocolFaulted || _state != CameraRecoveryState.Healthy ||
                     !_sourceHealthy || !ReferenceEquals(_current, current))
                     return Rejected("CameraRecoverySourceUnavailable");
@@ -439,7 +453,7 @@ public sealed class CameraRecoveryService : IAsyncDisposable
         lock (_sync)
         {
             current = _current;
-            if (_protocolFaulted)
+            if (_protocolFaulted || _calibrationAdmissionHold is not null)
                 return ReadProtocolObservationsLocked(0, MaximumProtocolReadCount);
         }
 
@@ -447,6 +461,11 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             return ReadProtocolObservations(0, MaximumProtocolReadCount);
         try
         {
+            lock (_sync)
+            {
+                if (_disposed || _protocolFaulted || _calibrationAdmissionHold is not null)
+                    return ReadProtocolObservationsLocked(0, MaximumProtocolReadCount);
+            }
             await PullProtocolAsync(current, cancellationToken).ConfigureAwait(false);
             return ReadProtocolObservations(0, MaximumProtocolReadCount);
         }
@@ -479,6 +498,11 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             if (_disposed)
             {
                 reason = ReasonDisposed;
+                return null;
+            }
+            if (_calibrationSessionId is not null || _calibrationAdmissionHold is not null)
+            {
+                reason = ReasonBusy;
                 return null;
             }
             if (_state != CameraRecoveryState.Exhausted)
@@ -584,6 +608,9 @@ public sealed class CameraRecoveryService : IAsyncDisposable
                     candidateRetired = (await CleanupCandidateAsync(bounded: false).ConfigureAwait(false))
                         .SafeToReplace;
 
+                var calibrationRetired = await RetireCalibrationForShutdownAsync()
+                    .ConfigureAwait(false);
+
                 var currentRetired = true;
                 try { await PullProtocolAsync(current, CancellationToken.None).ConfigureAwait(false); }
                 catch (Exception exception) when (exception is not OutOfMemoryException) { }
@@ -604,7 +631,7 @@ public sealed class CameraRecoveryService : IAsyncDisposable
                     currentRetired = false;
                 }
 
-                if (!candidateRetired || !currentRetired)
+                if (!candidateRetired || !calibrationRetired || !currentRetired)
                     return;
 
                 await DisposeProviderAsync().ConfigureAwait(false);
@@ -913,7 +940,9 @@ public sealed class CameraRecoveryService : IAsyncDisposable
         {
             ReconcileLateOpenedDeviceLocked();
             ReconcileCompletedCandidateRetirementLocked();
-            if (_disposed || _protocolFaulted || _state != CameraRecoveryState.RecoveryRequired ||
+            if (_disposed || _calibrationSessionId is not null ||
+                _calibrationAdmissionHold is not null || _protocolFaulted ||
+                _state != CameraRecoveryState.RecoveryRequired ||
                 _cycleId is not { } cycleId || !_sourceRetired ||
                 _candidateRetirementFailed || _candidateRetirementTask is not null ||
                 _lateOpenTask is not null ||
@@ -1473,6 +1502,7 @@ public sealed class CameraRecoveryService : IAsyncDisposable
     private void BeginAutomaticCycleLocked(string reason)
     {
         if (_disposed || _protocolFaulted || _state == CameraRecoveryState.Exhausted ||
+            _calibrationSessionId is not null || _calibrationAdmissionHold is not null ||
             _cycleId is not null && _state == CameraRecoveryState.Recovering)
             return;
 
@@ -1497,6 +1527,11 @@ public sealed class CameraRecoveryService : IAsyncDisposable
             if (_disposed)
             {
                 reason = ReasonDisposed;
+                return false;
+            }
+            if (_calibrationSessionId is not null || _calibrationAdmissionHold is not null)
+            {
+                reason = ReasonBusy;
                 return false;
             }
             if (!ReferenceEquals(_restartReservation, reservation) ||
@@ -1598,7 +1633,8 @@ public sealed class CameraRecoveryService : IAsyncDisposable
     }
 
     private bool IsCurrentCycleLocked(Guid cycleId) =>
-        !_disposed && _cycleId == cycleId && _state == CameraRecoveryState.Recovering;
+        !_disposed && _calibrationAdmissionHold is null && _cycleId == cycleId &&
+        _state == CameraRecoveryState.Recovering;
 
     private void SetStateLocked(CameraRecoveryState state, bool sourceHealthy,
         string reason)

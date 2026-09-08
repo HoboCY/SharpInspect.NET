@@ -45,7 +45,9 @@ internal enum IdentityEventKind
     CameraSetupOperationCompleted,
     CameraRecoveryCycleStartAuthorized,
     CameraRecoveryCycleStartCompleted,
-    CameraRecoveryCycleStartFailed
+    CameraRecoveryCycleStartFailed,
+    CalibrationSessionStartAuthorized,
+    CalibrationSessionActionAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -124,14 +126,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > ImagingSetupStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CalibrationSessionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > ImagingSetupStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > CalibrationSessionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -156,7 +158,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 or 13 => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 or 13 or 14 => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -190,6 +192,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion < 5 || schemaVersion >= ImagingSetupStoreOptions.SchemaVersion ||
                     fields[39] != AuditedCommandKind.DeclareImagingSetup.ToString(),
+                    "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion ||
+                    legacyKind is not IdentityEventKind.CalibrationSessionStartAuthorized and
+                    not IdentityEventKind.CalibrationSessionActionAuthorized,
                     "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
@@ -261,13 +267,15 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         actionKind != AuditedCommandKind.ChangeCameraNetworkConfiguration) &&
                     (schemaVersion >= ImagingSetupStoreOptions.SchemaVersion ||
                         actionKind != AuditedCommandKind.DeclareImagingSetup) &&
+                    (schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion ||
+                        (int)actionKind < (int)AuditedCommandKind.StartCalibrationSession) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= 7 ? 31 : 28;
+                var maximumPermissions = schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
                 AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
                     IsPermissionSet(fields[41], maximumPermissions),
                     "AuditAuthorizationPayloadInvalid");
@@ -336,6 +344,37 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
         { return false; }
+    }
+
+    /// <summary>Matches a schema-14 calibration authorization to its immutable session and exact command target.</summary>
+    internal static bool MatchesCalibrationAuthorization(byte[] payload, long ordinal, string stationId,
+        CalibrationSessionHeader header, AuditedCommandKind commandKind, Guid correlationId,
+        string? actionTarget = null)
+    {
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, CalibrationSessionStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            var start = commandKind == AuditedCommandKind.StartCalibrationSession;
+            return (!start || correlationId == header.Command.CorrelationId) &&
+                fields.Length == 49 && commandKind is >= AuditedCommandKind.StartCalibrationSession and
+                <= AuditedCommandKind.ExitCalibrationSession &&
+                fields[0] == ordinal.ToString(CultureInfo.InvariantCulture) && fields[4] == stationId &&
+                fields[2] == (start ? IdentityEventKind.CalibrationSessionStartAuthorized :
+                    IdentityEventKind.CalibrationSessionActionAuthorized).ToString() &&
+                fields[5] == header.ActorPrincipalId.ToString("D") &&
+                fields[25] == header.InteractiveSessionId.ToString("D") &&
+                fields[30] == header.ActorPrincipalId.ToString("D") &&
+                fields[31] == correlationId.ToString("D") && fields[38] == correlationId.ToString("D") &&
+                fields[32] == (start ? header.Command.Invocation.StepUpGrantId?.ToString("D") : null) &&
+                fields[33] == Permission.RunCalibration.ToString() &&
+                fields[35] == header.AuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == (start ? header.Command.AuthorizationTarget : actionTarget) &&
+                fields[39] == commandKind.ToString() && fields[42] == header.SessionId.ToString("D") &&
+                fields[9] == (start ? "CalibrationSessionStartAuthorized" : "CalibrationSessionActionAuthorized");
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException) { return false; }
     }
 
     /// <summary>Reads the dedicated schema-11 camera recovery authorization envelope.</summary>

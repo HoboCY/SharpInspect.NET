@@ -702,6 +702,9 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_IMAGING_CALIBRATION_EVIDENCE_ROOT',$taskImagingCalibrationEvidence,'Process')
         }
     }
+    if ($Ticket -ge 24) {
+        & (Join-Path $PSScriptRoot 'Test-CalibrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

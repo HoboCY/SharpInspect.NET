@@ -379,7 +379,6 @@ internal static class CameraRecoveryDemo
         VirtualCameraClock clock, CameraRecoveryState expectedState,
         RecoveryEvidenceCollector evidence, string label)
     {
-        var drivenTimestamp = long.MinValue;
         while (true)
         {
             var snapshot = recovery.GetSnapshot();
@@ -392,17 +391,15 @@ internal static class CameraRecoveryDemo
             {
                 if (next.MonotonicTimestamp > clock.Timestamp)
                     clock.AdvanceTo(next.MonotonicTimestamp);
-                else if (next.MonotonicTimestamp == clock.Timestamp &&
-                    drivenTimestamp != next.MonotonicTimestamp && clock.PendingEventCount > 0)
+                else if (next.MonotonicTimestamp == clock.Timestamp && clock.PendingEventCount > 0)
                 {
-                    drivenTimestamp = next.MonotonicTimestamp;
+                    // A worker may register another first-attempt callback at the same
+                    // timestamp after an earlier callback has already been driven.
                     clock.AdvanceBy(TimeSpan.Zero);
                 }
             }
-            else
-            {
-                await Task.Delay(1).ConfigureAwait(false);
-            }
+            // Let scheduled recovery and physical retirement continuations settle.
+            await Task.Delay(1).ConfigureAwait(false);
 
             if (snapshot.AttemptCount > 0)
                 evidence.ObserveCycle(snapshot, label);

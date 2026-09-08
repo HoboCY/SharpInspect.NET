@@ -20,6 +20,22 @@ public sealed partial class CameraAcquisitionService
     internal CameraAcquisitionOptions Options => _options;
     internal IFrameAcquisitionClock Clock => _clock;
 
+    internal bool HasOutstandingLeases
+    {
+        get { lock (_sync) return _outstandingLeases.Count != 0; }
+    }
+
+    internal bool HasPendingActualWork
+    {
+        get
+        {
+            lock (_sync)
+                return _attempt is not null || _admissionInProgress ||
+                    _protocolReadTask is not null || _healthReadTask is not null ||
+                    _protocolRefreshQueued || _retirementTask is { IsCompleted: false };
+        }
+    }
+
     /// <summary>
     /// Closes admission and waits for actual acquisition, lease, stop and device disposal completion.
     /// Unlike bounded DisposeAsync, this task remains pending while a physical owner remains active.
