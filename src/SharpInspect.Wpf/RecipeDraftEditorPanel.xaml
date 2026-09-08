@@ -178,6 +178,177 @@
                     <TextBlock x:Name="StatusText" TextWrapping="Wrap" Foreground="#334E68" />
                     <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="#9B3430" Margin="0,4,0,10" />
 
+                    <Border Background="#F4F8FC" BorderBrush="#9FB7CC" BorderThickness="1"
+                            Padding="12" Margin="0,0,0,12">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasMigrationService}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <StackPanel>
+                            <TextBlock Text="算法配置迁移（仅本地草稿）" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="迁移只读取当前选定的本地 Draft 修订，生成新的 Draft；不会发布、激活或改变 Ready。"
+                                       Foreground="#556679" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,8" />
+                            <StackPanel Margin="0,0,0,6">
+                                <TextBlock Text="本次迁移选择来源（下一跳计划）" Foreground="#556679" />
+                                <WrapPanel>
+                                    <TextBlock Text="Draft：" Foreground="#556679" />
+                                    <TextBlock Text="{Binding MigrationSelectionSourceDraftId}" Foreground="#334E68"
+                                               TextTrimming="CharacterEllipsis" Margin="0,0,14,0" />
+                                    <TextBlock Text="修订：" Foreground="#556679" />
+                                    <TextBlock Text="{Binding MigrationSelectionSourceRevision}" Foreground="#334E68" />
+                                </WrapPanel>
+                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="本次来源 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Column="1" Text="{Binding MigrationSelectionSourceRevisionHash}" Foreground="#334E68"
+                                           TextTrimming="CharacterEllipsis" Margin="0,0,12,6" />
+                                <TextBlock Grid.Column="2" Text="本次来源配置 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Column="3" Text="{Binding MigrationSelectionSourceConfigurationHash}" Foreground="#334E68"
+                                           TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+
+                                <TextBlock Grid.Row="1" Text="目标算法" Foreground="#556679" Margin="0,0,6,6" />
+                                <ComboBox x:Name="MigrationTargetAlgorithmBox" Grid.Row="1" Grid.Column="1"
+                                          ItemsSource="{Binding MigrationTargetAlgorithms}"
+                                          SelectedItem="{Binding SelectedMigrationTargetAlgorithm, Mode=TwoWay}"
+                                          DisplayMemberPath="Identity.Id" Margin="0,0,12,6">
+                                    <ComboBox.Style>
+                                        <Style TargetType="ComboBox">
+                                            <Setter Property="IsEnabled" Value="True" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMigrationBusy}" Value="True">
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ComboBox.Style>
+                                </ComboBox>
+                                <TextBlock Grid.Column="2" Grid.Row="1" Text="目标 Schema" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Column="3" Grid.Row="1" Text="{Binding MigrationTargetSchemaText}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+
+                                <TextBlock Grid.Row="2" Text="迁移器" Foreground="#556679" Margin="0,0,6,6" />
+                                <ComboBox x:Name="MigrationMigratorBox" Grid.Row="2" Grid.Column="1"
+                                          ItemsSource="{Binding MigrationMigrators}"
+                                          SelectedItem="{Binding SelectedMigrationMigrator, Mode=TwoWay}"
+                                          Margin="0,0,12,6">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Migrator.Id}" TextTrimming="CharacterEllipsis" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                    <ComboBox.Style>
+                                        <Style TargetType="ComboBox">
+                                            <Setter Property="IsEnabled" Value="True" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMigrationBusy}" Value="True">
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ComboBox.Style>
+                                </ComboBox>
+                                <TextBlock Grid.Column="2" Grid.Row="2" Text="迁移器 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Column="3" Grid.Row="2" Text="{Binding MigrationMigratorText}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+
+                                <TextBlock Grid.Row="3" Text="输入配置 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding MigrationInputConfigurationHash}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,12,6" />
+                                <TextBlock Grid.Row="3" Grid.Column="2" Text="初始输出 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Row="3" Grid.Column="3" Text="{Binding MigrationOutputConfigurationHash}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+
+                                <TextBlock Grid.Row="4" Text="迁移谱系 SHA-256" Foreground="#556679" Margin="0,0,6,6" />
+                                <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding MigrationLineageHash}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+                                <TextBlock Grid.Row="5" Text="变更原因" Foreground="#556679" VerticalAlignment="Center" Margin="0,0,6,6" />
+                                <TextBox x:Name="MigrationChangeReasonBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="3"
+                                         Text="{Binding MigrationChangeReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="128" Margin="0,0,0,6">
+                                    <TextBox.Style>
+                                        <Style TargetType="TextBox">
+                                            <Setter Property="IsEnabled" Value="True" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsMigrationBusy}" Value="True">
+                                                    <Setter Property="IsEnabled" Value="False" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBox.Style>
+                                </TextBox>
+                                <TextBlock Grid.Row="6" Grid.ColumnSpan="4" Text="{Binding MigrationWarnings.Count, StringFormat='警告数：{0}'}"
+                                           Foreground="#75531A" TextWrapping="Wrap" />
+                            </Grid>
+                            <Border Background="#FFFFFF" BorderBrush="#C7D4E0" BorderThickness="1"
+                                    Padding="8" Margin="0,0,0,6">
+                                <StackPanel>
+                                    <TextBlock Text="已加载迁移谱系来源（只读）" Foreground="#556679" />
+                                    <WrapPanel>
+                                        <TextBlock Text="SourceDraftId：" Foreground="#556679" />
+                                        <TextBlock Text="{Binding MigrationLineageSourceDraftId}" Foreground="#334E68"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+                                        <TextBlock Text="Revision：" Foreground="#556679" />
+                                        <TextBlock Text="{Binding MigrationLineageSourceRevision}" Foreground="#334E68" />
+                                    </WrapPanel>
+                                    <WrapPanel>
+                                        <TextBlock Text="Revision SHA-256：" Foreground="#556679" />
+                                        <TextBlock Text="{Binding MigrationLineageSourceRevisionHash}" Foreground="#334E68"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+                                        <TextBlock Text="Input SHA-256：" Foreground="#556679" />
+                                        <TextBlock Text="{Binding MigrationLineageSourceInputConfigurationHash}" Foreground="#334E68"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </WrapPanel>
+                                    <TextBlock Text="原始算法 / Schema：" Foreground="#556679" />
+                                    <TextBlock Text="{Binding MigrationLineageSourceDescriptorText}" Foreground="#334E68"
+                                               TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Border>
+                            <ItemsControl ItemsSource="{Binding MigrationWarnings}" Margin="0,2,0,6">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Foreground="#75531A" TextWrapping="Wrap">
+                                            <Run Text="警告：" />
+                                            <Run Text="{Binding Code}" />
+                                            <Run Text=" · " />
+                                            <Run Text="{Binding FieldKey}" />
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <WrapPanel>
+                                <Button Content="执行迁移" Command="{Binding MigrateCommand}" Margin="0,0,6,0"
+                                        Background="#245B88" Foreground="White" />
+                                <PasswordBox x:Name="MigrationStepUpPasswordBox" Width="170" Margin="0,0,6,0"
+                                             ToolTip="仅本次迁移使用；提交后立即清除。" />
+                                <Button x:Name="MigrationStepUpButton" Content="确认并迁移" Click="MigrationStepUpClick"
+                                        Background="#6B4E16" Foreground="White" Margin="0,0,6,0" />
+                                <Button Content="取消迁移" Command="{Binding CancelMigrationCommand}" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Border>
+
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="250" />

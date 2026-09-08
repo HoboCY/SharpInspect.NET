@@ -30,6 +30,16 @@ internal sealed partial class LocalAuthorizationService
 
     internal ValueTask<RecipeDraftSaveResult> SaveRecipeDraftAsync(RecipeDraftSaveRequest request,
         RecipeDraftDocument document, StoreDeadline deadline, CancellationToken cancellationToken = default)
+        => SaveRecipeDraftCoreAsync(request, document, deadline, cancellationToken, null);
+
+    internal ValueTask<RecipeDraftSaveResult> SaveRecipeDraftMigrationAsync(RecipeDraftSaveRequest request,
+        RecipeDraftDocument document, RecipeDraftMigrationPlan plan, StoreDeadline deadline,
+        CancellationToken cancellationToken = default)
+        => SaveRecipeDraftCoreAsync(request, document, deadline, cancellationToken, plan);
+
+    private ValueTask<RecipeDraftSaveResult> SaveRecipeDraftCoreAsync(RecipeDraftSaveRequest request,
+        RecipeDraftDocument document, StoreDeadline deadline, CancellationToken cancellationToken,
+        RecipeDraftMigrationPlan? migrationPlan)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(document);
@@ -38,11 +48,11 @@ internal sealed partial class LocalAuthorizationService
                 Array.Empty<AlgorithmValidationIssue>()));
 
         return _store.SaveRecipeDraftAsync(request, document, (state, head, replay) =>
-            EvaluateRecipeDraftSave(state, head, request, replay), deadline, cancellationToken);
+            EvaluateRecipeDraftSave(state, head, request, replay, migrationPlan), deadline, cancellationToken, migrationPlan);
     }
 
     private RecipeDraftEvaluation EvaluateRecipeDraftSave(IdentityAuthorityState state,
-        RecipeDraftHead? head, RecipeDraftSaveRequest request, bool replay)
+        RecipeDraftHead? head, RecipeDraftSaveRequest request, bool replay, RecipeDraftMigrationPlan? migrationPlan)
     {
         SessionAuthorizationLease? lease = null;
         StepUpGrant? reserved = null;
@@ -77,11 +87,11 @@ internal sealed partial class LocalAuthorizationService
                 reason = "StepUpInvalid";
             if (reason == "Authorized" && !replay)
                 reason = CheckRecipeDraftGrant(request, actor!, lease!.SessionId, reserve: false, out _,
-                    allowConsumed: false);
+                    allowConsumed: false, migrationPlan: migrationPlan);
 
             if (reason != "Authorized")
                 return replay ? ReplayDecision(request, reason) :
-                    Decision(state, request, actor, lease?.SessionId, reason, accepted: false);
+                    Decision(state, request, actor, lease?.SessionId, reason, accepted: false, migrationPlan);
 
             if (replay)
             {
@@ -94,11 +104,12 @@ internal sealed partial class LocalAuthorizationService
                         actor.AuthorizationRevision, request.ChangeReason), Array.Empty<IdentityAuditEvent>());
             }
 
-            reason = CheckRecipeDraftGrant(request, actor!, lease!.SessionId, reserve: true, out reserved);
+            reason = CheckRecipeDraftGrant(request, actor!, lease!.SessionId, reserve: true, out reserved,
+                migrationPlan: migrationPlan);
             if (reason != "Authorized")
-                return Decision(state, request, actor, lease.SessionId, reason, accepted: false);
+                return Decision(state, request, actor, lease.SessionId, reason, accepted: false, migrationPlan);
 
-            var binding = RecipeDraftBinding(request);
+            var binding = RecipeDraftBinding(request, migrationPlan);
             var guard = new AuthorizationCommitGuard(lease, () =>
             {
                 lock (_grantSync) if (reserved is not null) reserved.State = GrantState.Consumed;
@@ -108,12 +119,13 @@ internal sealed partial class LocalAuthorizationService
             });
             transferred = true;
             var eventFact = AuthorizationEvent(state, IdentityEventKind.RecipeDraftSaved,
-                "RecipeDraftAuthorized", binding, actor!.PrincipalId, lease!.SessionId,
+                migrationPlan is null ? "RecipeDraftAuthorized" : "RecipeDraftMigrationAuthorized", binding, actor!.PrincipalId, lease!.SessionId,
                 request.Invocation!.StepUpGrantId, request.OperationId, actor.AuthorizationRevision,
                 targetPrincipalId: null) with
-            { ActionTargetId = request.DraftId.ToString("D"),
+            { ActionTargetId = binding.TargetId,
                 BoundCommandCorrelationId = request.OperationId,
-                ActionCommandKind = AuditedCommandKind.SaveRecipeDraft.ToString() };
+                ActionCommandKind = (migrationPlan is null ? AuditedCommandKind.SaveRecipeDraft :
+                    AuditedCommandKind.MigrateAlgorithmConfiguration).ToString() };
             return new RecipeDraftEvaluation(
                 new RecipeDraftSaveResult(true, "RecipeDraftAuthorized", null,
                     Array.Empty<AlgorithmValidationIssue>()),
@@ -131,15 +143,17 @@ internal sealed partial class LocalAuthorizationService
     }
 
     private RecipeDraftEvaluation Decision(IdentityAuthorityState state, RecipeDraftSaveRequest request,
-        LocalAdministratorState? actor, Guid? sessionId, string reason, bool accepted)
+        LocalAdministratorState? actor, Guid? sessionId, string reason, bool accepted,
+        RecipeDraftMigrationPlan? migrationPlan)
     {
-        var binding = RecipeDraftBinding(request);
+        var binding = RecipeDraftBinding(request, migrationPlan);
         var eventFact = AuthorizationEvent(state, IdentityEventKind.ManagementRejected, reason, binding,
             actor?.PrincipalId, sessionId, request.Invocation.StepUpGrantId, request.OperationId,
             actor?.AuthorizationRevision ?? 0) with
-        { ActionTargetId = request.DraftId.ToString("D"),
+        { ActionTargetId = binding.TargetId,
             BoundCommandCorrelationId = request.OperationId,
-            ActionCommandKind = AuditedCommandKind.SaveRecipeDraft.ToString() };
+            ActionCommandKind = (migrationPlan is null ? AuditedCommandKind.SaveRecipeDraft :
+                AuditedCommandKind.MigrateAlgorithmConfiguration).ToString() };
         return new RecipeDraftEvaluation(new RecipeDraftSaveResult(accepted, reason, null,
             Array.Empty<AlgorithmValidationIssue>()), null, new[] { eventFact });
     }
@@ -149,13 +163,14 @@ internal sealed partial class LocalAuthorizationService
             null, Array.Empty<IdentityAuditEvent>());
 
     private string CheckRecipeDraftGrant(RecipeDraftSaveRequest request, LocalAdministratorState actor,
-        Guid sessionId, bool reserve, out StepUpGrant? grant, bool allowConsumed = false)
+        Guid sessionId, bool reserve, out StepUpGrant? grant, bool allowConsumed = false,
+        RecipeDraftMigrationPlan? migrationPlan = null)
     {
         grant = null;
         if (!RequiresRecipeDraftStepUp()) return "Authorized";
         if (request.StepUpGrantId is not { } requestGrant || request.Invocation?.StepUpGrantId != requestGrant)
             return request.Invocation?.StepUpGrantId is null ? "StepUpRequired" : "StepUpInvalid";
-        var binding = RecipeDraftBinding(request);
+        var binding = RecipeDraftBinding(request, migrationPlan);
         lock (_grantSync)
         {
             PurgeGrantsLocked();
@@ -174,7 +189,8 @@ internal sealed partial class LocalAuthorizationService
     private bool RequiresRecipeDraftStepUp() => _store.RecipeDraftOptions?.RequireStepUp == true ||
         _options.AuthorizationPolicy.RequiresStepUp(Permission.EditRecipeDraft);
 
-    private static StepUpBinding RecipeDraftBinding(RecipeDraftSaveRequest request) =>
-        new(Permission.EditRecipeDraft, request.OperationId, request.DraftId.ToString("D"),
-            AuditedCommandKind.SaveRecipeDraft);
+    private static StepUpBinding RecipeDraftBinding(RecipeDraftSaveRequest request,
+        RecipeDraftMigrationPlan? migrationPlan) =>
+        new(Permission.EditRecipeDraft, request.OperationId, migrationPlan?.ContentHash ?? request.DraftId.ToString("D"),
+            migrationPlan is null ? AuditedCommandKind.SaveRecipeDraft : AuditedCommandKind.MigrateAlgorithmConfiguration);
 }

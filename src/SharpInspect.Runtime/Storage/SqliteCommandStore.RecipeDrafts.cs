@@ -23,15 +23,17 @@ internal sealed class RecipeDraftWork
 {
     internal RecipeDraftWork(RecipeDraftSaveRequest request, RecipeDraftDocument document,
         Func<IdentityAuthorityState, RecipeDraftHead?, bool, RecipeDraftEvaluation> evaluate,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RecipeDraftMigrationPlan? migrationPlan = null)
     {
         Request = request; Document = document; Evaluate = evaluate; CancellationToken = cancellationToken;
+        MigrationPlan = migrationPlan;
     }
 
     internal RecipeDraftSaveRequest Request { get; }
     internal RecipeDraftDocument Document { get; }
     internal Func<IdentityAuthorityState, RecipeDraftHead?, bool, RecipeDraftEvaluation> Evaluate { get; }
     internal CancellationToken CancellationToken { get; }
+    internal RecipeDraftMigrationPlan? MigrationPlan { get; }
     internal object? Result { get; set; }
 }
 
@@ -82,13 +84,20 @@ internal sealed partial class SqliteCommandStore
         RecipeDraftDocument document,
         Func<IdentityAuthorityState, RecipeDraftHead?, bool, RecipeDraftEvaluation> evaluate,
         StoreDeadline deadline, CancellationToken cancellationToken)
+        => SaveRecipeDraftAsync(request, document, evaluate, deadline, cancellationToken, null);
+
+    internal ValueTask<RecipeDraftSaveResult> SaveRecipeDraftAsync(RecipeDraftSaveRequest request,
+        RecipeDraftDocument document,
+        Func<IdentityAuthorityState, RecipeDraftHead?, bool, RecipeDraftEvaluation> evaluate,
+        StoreDeadline deadline, CancellationToken cancellationToken, RecipeDraftMigrationPlan? migrationPlan)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(evaluate);
         if (!RecipeDraftEnabled) return ValueTask.FromResult(new RecipeDraftSaveResult(false,
             "RecipeDraftUnavailable", null, Array.Empty<AlgorithmValidationIssue>()));
-        return SaveRecipeDraftQueuedAsync(new RecipeDraftWork(request, document, evaluate, cancellationToken),
+        return SaveRecipeDraftQueuedAsync(new RecipeDraftWork(request, document, evaluate, cancellationToken,
+            migrationPlan),
             deadline, cancellationToken);
     }
 
@@ -115,7 +124,8 @@ internal sealed partial class SqliteCommandStore
         try
         {
             EnsureRecipeDraftNotCancelled(work);
-            ValidateRecipeDraftDocument(work.Document, _options.RecipeDrafts!, _options.CameraSetup is not null);
+            ValidateRecipeDraftDocument(work.Document, _options.RecipeDrafts!, _options.CameraSetup is not null,
+                work.MigrationPlan);
         }
         catch (InvalidOperationException ex) { return new StoreWriteResult(false, ex.Message); }
 
@@ -175,8 +185,9 @@ internal sealed partial class SqliteCommandStore
                 // the real session and returns no audit mutation on this path.
                 var replay = work.Evaluate(state, existing, true);
                 if (replay.Result.Saved && replay.Mutation is not null &&
-                    ReplayMatches(existing, work.Request, work.Document, replay.Mutation) &&
-                    HasRecipeDraftAuthorization(database, existing, work.Request, replay.Mutation, deadline))
+                    ReplayMatches(existing, work.Request, work.Document, replay.Mutation, work.MigrationPlan) &&
+                    HasRecipeDraftAuthorization(database, existing, work.Request, replay.Mutation, deadline,
+                        work.MigrationPlan))
                 {
                     work.Result = new RecipeDraftSaveResult(true, "RecipeDraftAlreadyPersisted",
                         ToPublicRevision(database, existing, deadline), Array.Empty<AlgorithmValidationIssue>());
@@ -196,6 +207,7 @@ internal sealed partial class SqliteCommandStore
             }
 
             var head = ReadRecipeDraftHead(database, work.Request.DraftId, deadline);
+            ValidateRecipeDraftLineageForSave(database, work, head, deadline);
             state.Revision = checked(state.Revision + 1);
             EnsureRecipeDraftNotCancelled(work);
             var evaluated = work.Evaluate(state, head, false);
@@ -290,21 +302,26 @@ internal sealed partial class SqliteCommandStore
     }
 
     private static bool ReplayMatches(RecipeDraftHead existing, RecipeDraftSaveRequest request,
-        RecipeDraftDocument document, RecipeDraftMutation mutation)
+        RecipeDraftDocument document, RecipeDraftMutation mutation, RecipeDraftMigrationPlan? migrationPlan)
     {
         var expectedRevision = request.ExpectedRevision == long.MaxValue
             ? long.MinValue : request.ExpectedRevision + 1;
+        var lineageMatches = migrationPlan is null
+            ? true
+            : existing.Revision == 1 && document.Content.MigrationLineage is { } lineage &&
+                MigrationPlanMatches(lineage, migrationPlan, request);
         return existing.DraftId == request.DraftId && existing.Revision == expectedRevision &&
             string.Equals(existing.PreviousRevisionContentHash, request.ExpectedRevisionContentHash,
                 StringComparison.Ordinal) && string.Equals(existing.PayloadHash, document.PayloadHash,
                 StringComparison.Ordinal) && string.Equals(existing.ChangeReason, request.ChangeReason,
                 StringComparison.Ordinal) && existing.AuthorPrincipalId == mutation.AuthorPrincipalId &&
             existing.AuthorSessionId == mutation.AuthorSessionId &&
-            existing.AuthorAuthorizationRevision == mutation.AuthorAuthorizationRevision;
+            existing.AuthorAuthorizationRevision == mutation.AuthorAuthorizationRevision && lineageMatches;
     }
 
     private bool HasRecipeDraftAuthorization(sqlite3 database, RecipeDraftHead existing,
-        RecipeDraftSaveRequest request, RecipeDraftMutation mutation, StoreDeadline deadline)
+        RecipeDraftSaveRequest request, RecipeDraftMutation mutation, StoreDeadline deadline,
+        RecipeDraftMigrationPlan? migrationPlan)
     {
         var events = AuditChainDatabase.Read(database,
             "SELECT IdentityPosition,Payload FROM audit_entries WHERE Kind='IdentityEvent' " +
@@ -314,7 +331,7 @@ internal sealed partial class SqliteCommandStore
         return events.Any(item => IdentityAuditEvent.MatchesRecipeDraftAuthorization(item.Payload,
             item.Ordinal, _policy!.StationId, mutation.AuthorPrincipalId, mutation.AuthorSessionId,
             mutation.AuthorAuthorizationRevision, existing.OperationId, existing.DraftId,
-            request.StepUpGrantId));
+            request.StepUpGrantId, migrationPlan));
     }
 
     private void InitializeRecipeDraftSchema(sqlite3 database, RecipeDraftStoreOptions options, StoreDeadline deadline)
@@ -395,11 +412,13 @@ internal sealed partial class SqliteCommandStore
             distinctPositions == count, "RecipeDraftPositionGap");
         var cameraSetupEnabled = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion;
+            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
         // would multiply memory usage across concurrent read requests.
+        var migrations = new List<RecipeDraftMigrationHistoryEntry>();
         SqliteNative.WithStatement(database, @"SELECT Position,DraftId,Revision,OperationId,
             PreviousRevisionContentHash,RevisionContentHash,PayloadHash,PayloadJson,
             AuthorPrincipalId,AuthorSessionId,AuthorAuthorizationRevision,ChangeReason,RecordedAtUtc
@@ -408,6 +427,7 @@ internal sealed partial class SqliteCommandStore
             var currentDraft = Guid.Empty;
             string? previousHash = null;
             long expectedRevision = 1;
+            RecipeDraftMigrationLineage? currentLineage = null;
             while (SqliteNative.Step(database, statement, deadline) == raw.SQLITE_ROW)
             {
                 var row = ReadRecipeDraftRow(statement);
@@ -416,11 +436,13 @@ internal sealed partial class SqliteCommandStore
                     currentDraft = row.DraftId;
                     previousHash = null;
                     expectedRevision = 1;
+                    currentLineage = null;
                 }
                 AuditChainDatabase.Require(row.Revision == expectedRevision++, "RecipeDraftRevisionGap");
                 AuditChainDatabase.Require(string.Equals(row.PreviousRevisionContentHash, previousHash,
                     StringComparison.Ordinal), "RecipeDraftPreviousRevisionMismatch");
                 var content = DecodeAndValidateRecipeDraftRow(row, options, cameraSetupEnabled);
+                currentLineage = ValidateRecipeDraftLineageHistory(row, content, currentLineage, migrations);
                 var expectedHash = ComputeRevisionHash(row.DraftId, row.Revision, row.OperationId,
                     row.PreviousRevisionContentHash, content.ContentHash, row.PayloadHash,
                     row.AuthorPrincipalId, row.AuthorSessionId, row.AuthorAuthorizationRevision,
@@ -431,6 +453,8 @@ internal sealed partial class SqliteCommandStore
             }
             return 0;
         });
+        foreach (var migration in migrations)
+            ValidateRecipeDraftMigrationSource(database, migration, options, cameraSetupEnabled, deadline);
     }
 
     internal static byte[] ReadAndValidateRecipeDraft(sqlite3 database, long position, byte[] auditPayload,
@@ -443,7 +467,8 @@ internal sealed partial class SqliteCommandStore
         _ = DecodeAndValidateRecipeDraftRow(found, options,
             cameraSetupEnabled: AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
-            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion);
+            CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion);
         return auditPayload;
     }
 
@@ -480,7 +505,7 @@ internal sealed partial class SqliteCommandStore
     }
 
     private static void ValidateRecipeDraftDocument(RecipeDraftDocument document, RecipeDraftStoreOptions options,
-        bool cameraSetupEnabled)
+        bool cameraSetupEnabled, RecipeDraftMigrationPlan? migrationPlan)
     {
         if (document.Content is null || string.IsNullOrWhiteSpace(document.PayloadJson) ||
             document.PayloadHash is null || document.PayloadHash.Length != 64)
@@ -494,6 +519,14 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException(reason.Length == 0 ? "RecipeDraftPayloadInvalid" : reason);
         if (!string.Equals(decoded.ContentHash, document.Content.ContentHash, StringComparison.Ordinal))
             throw new InvalidOperationException("RecipeDraftContentMismatch");
+        if (migrationPlan is not null)
+        {
+            var lineage = decoded.MigrationLineage ??
+                throw new InvalidOperationException("RecipeDraftMigrationLineageRequired");
+            if (!MigrationPlanMatches(lineage, migrationPlan))
+                throw new InvalidOperationException("RecipeDraftMigrationPlanMismatch");
+            ValidateMigrationLineageTarget(decoded, lineage);
+        }
         if (document.Content.AssetRequirements.Any(item => item.Kind == RecipeAssetKind.Calibration))
             throw new InvalidOperationException("RecipeLegacyCalibrationRequirementNeedsExplicitConversion");
         if (document.Content.PolicyRequirements.Any(item => item.Kind == RecipePolicyKind.CalibrationAcceptance))

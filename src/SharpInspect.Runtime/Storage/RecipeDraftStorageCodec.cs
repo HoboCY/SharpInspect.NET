@@ -18,6 +18,7 @@ internal static class RecipeDraftStorageCodec
     private const int FormatVersion = 1;
     private const int ProviderExtensionFormatVersion = 2;
     private const int CalibrationRequirementFormatVersion = 3;
+    private const int MigrationLineageFormatVersion = 4;
     private const int CanonicalizationVersion = 1;
     private const int MaximumDepth = 32;
 
@@ -150,7 +151,7 @@ internal static class RecipeDraftStorageCodec
         if (!seenOrigins.SetEquals(entries.Keys))
             throw Invalid("RecipeDraftValueOriginsMismatch");
 
-        var rebuilt = new RecipeDraftContent(content.RecipeKey, content.DisplayName, content.Algorithm,
+        var rebuilt = new RecipeDraftContent(content.MigrationLineage, content.RecipeKey, content.DisplayName, content.Algorithm,
             content.Configuration, content.CameraRole, content.Camera, content.AlgorithmExecutionTimeout,
             content.AssetRequirements, content.PolicyRequirements, content.ValueOrigins,
             content.CameraProviderExtension, content.CalibrationRequirements);
@@ -161,7 +162,8 @@ internal static class RecipeDraftStorageCodec
     private static void WriteContent(Utf8JsonWriter writer, RecipeDraftContent content)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("FormatVersion", content.CalibrationRequirements.Count != 0
+        writer.WriteNumber("FormatVersion", content.MigrationLineage is not null
+            ? MigrationLineageFormatVersion : content.CalibrationRequirements.Count != 0
             ? CalibrationRequirementFormatVersion : content.CameraProviderExtension is null
                 ? FormatVersion : ProviderExtensionFormatVersion);
         writer.WriteNumber("CanonicalizationVersion", CanonicalizationVersion);
@@ -190,9 +192,9 @@ internal static class RecipeDraftStorageCodec
             writer.WriteString("ConfigurationContentHash", extension.ConfigurationContentHash);
             writer.WriteEndObject();
         }
-        else if (content.CalibrationRequirements.Count != 0)
+        else if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null)
             writer.WriteNull("CameraProviderExtension");
-        if (content.CalibrationRequirements.Count != 0)
+        if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null)
         {
             writer.WritePropertyName("CalibrationRequirements");
             writer.WriteStartArray();
@@ -211,6 +213,11 @@ internal static class RecipeDraftStorageCodec
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+        }
+        if (content.MigrationLineage is { } migration)
+        {
+            writer.WritePropertyName("MigrationLineage");
+            WriteMigrationLineage(writer, migration);
         }
         writer.WriteNumber("AlgorithmExecutionTimeoutTicks", content.AlgorithmExecutionTimeout.Ticks);
         writer.WritePropertyName("AssetRequirements");
@@ -435,11 +442,13 @@ internal static class RecipeDraftStorageCodec
     {
         if (root.ValueKind != JsonValueKind.Object) throw Invalid("RecipeDraftPayloadObjectInvalid");
         var format = Int32(root, "FormatVersion");
-        EnsureObject(root, format == CalibrationRequirementFormatVersion ? CalibrationTopProperties :
+        EnsureObject(root, format == MigrationLineageFormatVersion ? MigrationTopProperties :
+            format == CalibrationRequirementFormatVersion ? CalibrationTopProperties :
             format == ProviderExtensionFormatVersion ? ExtendedTopProperties : TopProperties,
             "RecipeDraftPayload");
         var canonical = Int32(root, "CanonicalizationVersion");
-        if (format is not (FormatVersion or ProviderExtensionFormatVersion or CalibrationRequirementFormatVersion) ||
+        if (format is not (FormatVersion or ProviderExtensionFormatVersion or CalibrationRequirementFormatVersion or
+            MigrationLineageFormatVersion) ||
             canonical != CanonicalizationVersion)
             throw Invalid("RecipeDraftPayloadVersionUnsupported");
         var binding = ReadBinding(RequiredObject(root, "Algorithm"));
@@ -449,8 +458,10 @@ internal static class RecipeDraftStorageCodec
             !string.Equals(configuration.SchemaContentHash, binding.ConfigurationSchema.ContentHash,
                 StringComparison.Ordinal))
             throw Invalid("RecipeDraftConfigurationSchemaBindingMismatch");
+        var migration = format == MigrationLineageFormatVersion
+            ? ReadMigrationLineage(RequiredObject(root, "MigrationLineage")) : null;
         var content = new RecipeDraftContent(
-            RequiredString(root, "RecipeKey"), RequiredString(root, "DisplayName"), binding, configuration,
+            migration, RequiredString(root, "RecipeKey"), RequiredString(root, "DisplayName"), binding, configuration,
             RequiredString(root, "CameraRole"), ReadCamera(RequiredObject(root, "Camera")),
             TimeSpan.FromTicks(Int64(root, "AlgorithmExecutionTimeoutTicks")),
             ReadAssets(RequiredArray(root, "AssetRequirements")),
@@ -459,8 +470,8 @@ internal static class RecipeDraftStorageCodec
             format >= ProviderExtensionFormatVersion &&
                 RequiredValue(root, "CameraProviderExtension").ValueKind != JsonValueKind.Null
                 ? ReadCameraExtension(RequiredObject(root, "CameraProviderExtension")) : null,
-            format == CalibrationRequirementFormatVersion
-                ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements")) : null);
+            format is CalibrationRequirementFormatVersion or MigrationLineageFormatVersion
+                ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements"), format == MigrationLineageFormatVersion) : null);
         var suppliedHash = RequiredString(root, "ContentHash");
         if (!string.Equals(suppliedHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
@@ -634,9 +645,10 @@ internal static class RecipeDraftStorageCodec
         }).ToArray();
     }
 
-    private static IReadOnlyList<CalibrationRequirement> ReadCalibrations(JsonElement element)
+    private static IReadOnlyList<CalibrationRequirement> ReadCalibrations(JsonElement element, bool allowEmpty = false)
     {
-        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() is < 1 or > 8)
+        if (element.ValueKind != JsonValueKind.Array ||
+            (!allowEmpty && element.GetArrayLength() < 1) || element.GetArrayLength() > 8)
             throw Invalid("RecipeCalibrationRequirementCapacityExceeded");
         return element.EnumerateArray().Select(item =>
         {
@@ -679,6 +691,148 @@ internal static class RecipeDraftStorageCodec
         EnsureObject(element, ContractProperties, "RecipeDraftContractReference");
         return new RecipeContractReference(RequiredString(element, "Id"),
             RequiredString(element, "Version"), RequiredString(element, "ContentHash"));
+    }
+
+    private static void WriteMigrationLineage(Utf8JsonWriter writer, RecipeDraftMigrationLineage lineage)
+    {
+        writer.WriteStartObject();
+        writer.WritePropertyName("Plan");
+        WriteMigrationPlan(writer, lineage.Plan);
+        writer.WritePropertyName("Descriptor");
+        WriteMigrationDescriptor(writer, lineage.Descriptor);
+        writer.WriteString("InputConfigurationContentHash", lineage.InputConfigurationContentHash);
+        writer.WriteString("InitialOutputConfigurationContentHash", lineage.InitialOutputConfigurationContentHash);
+        writer.WritePropertyName("Warnings");
+        writer.WriteStartArray();
+        foreach (var warning in lineage.Warnings)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("Code", warning.Code);
+            if (warning.FieldKey is null) writer.WriteNull("FieldKey");
+            else writer.WriteString("FieldKey", warning.FieldKey);
+            writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
+        writer.WriteString("ContentHash", lineage.ContentHash);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteMigrationPlan(Utf8JsonWriter writer, RecipeDraftMigrationPlan plan)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("OperationId", plan.OperationId.ToString("D"));
+        writer.WritePropertyName("Source");
+        writer.WriteStartObject();
+        writer.WriteString("DraftId", plan.Source.DraftId.ToString("D"));
+        writer.WriteNumber("Revision", plan.Source.Revision);
+        writer.WriteString("RevisionContentHash", plan.Source.RevisionContentHash);
+        writer.WriteEndObject();
+        writer.WriteString("TargetDraftId", plan.TargetDraftId.ToString("D"));
+        writer.WritePropertyName("TargetAlgorithm");
+        WriteAlgorithmIdentity(writer, plan.TargetAlgorithm);
+        writer.WritePropertyName("TargetSchema");
+        WriteContractReference(writer, plan.TargetSchema);
+        writer.WritePropertyName("Migrator");
+        WriteContractReference(writer, plan.Migrator);
+        writer.WriteString("ChangeReason", plan.ChangeReason);
+        writer.WriteString("ContentHash", plan.ContentHash);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteMigrationDescriptor(Utf8JsonWriter writer,
+        AlgorithmConfigurationMigrationDescriptor descriptor)
+    {
+        writer.WriteStartObject();
+        writer.WritePropertyName("Migrator");
+        WriteContractReference(writer, descriptor.Migrator);
+        writer.WritePropertyName("SourceAlgorithm");
+        WriteAlgorithmIdentity(writer, descriptor.SourceAlgorithm);
+        writer.WritePropertyName("SourceSchema");
+        WriteContractReference(writer, descriptor.SourceSchema);
+        writer.WritePropertyName("TargetAlgorithm");
+        WriteAlgorithmIdentity(writer, descriptor.TargetAlgorithm);
+        writer.WritePropertyName("TargetSchema");
+        WriteContractReference(writer, descriptor.TargetSchema);
+        writer.WriteString("ContentHash", descriptor.ContentHash);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteAlgorithmIdentity(Utf8JsonWriter writer, AlgorithmIdentity identity)
+    {
+        writer.WriteStartObject();
+        writer.WriteString("Id", identity.Id);
+        writer.WriteString("Version", identity.Version);
+        writer.WriteEndObject();
+    }
+
+    private static RecipeDraftMigrationLineage ReadMigrationLineage(JsonElement element)
+    {
+        EnsureObject(element, MigrationLineageProperties, "RecipeDraftMigrationLineage");
+        var plan = ReadMigrationPlan(RequiredObject(element, "Plan"));
+        var descriptor = ReadMigrationDescriptor(RequiredObject(element, "Descriptor"));
+        var lineage = new RecipeDraftMigrationLineage(plan, descriptor,
+            RequiredString(element, "InputConfigurationContentHash"),
+            RequiredString(element, "InitialOutputConfigurationContentHash"),
+            ReadMigrationWarnings(RequiredArray(element, "Warnings")));
+        if (!string.Equals(lineage.ContentHash, RequiredString(element, "ContentHash"), StringComparison.Ordinal))
+            throw Invalid("RecipeDraftMigrationLineageHashMismatch");
+        return lineage;
+    }
+
+    private static RecipeDraftMigrationPlan ReadMigrationPlan(JsonElement element)
+    {
+        EnsureObject(element, MigrationPlanProperties, "RecipeDraftMigrationPlan");
+        var sourceElement = RequiredObject(element, "Source");
+        EnsureObject(sourceElement, MigrationSourceProperties, "RecipeDraftMigrationSource");
+        var source = new RecipeDraftRevisionReference(
+            ParseGuid(RequiredString(sourceElement, "DraftId"), "RecipeDraftMigrationSourceInvalid"),
+            Int64(sourceElement, "Revision"), RequiredString(sourceElement, "RevisionContentHash"));
+        var plan = new RecipeDraftMigrationPlan(
+            ParseGuid(RequiredString(element, "OperationId"), "RecipeDraftMigrationPlanInvalid"), source,
+            ParseGuid(RequiredString(element, "TargetDraftId"), "RecipeDraftMigrationPlanInvalid"),
+            ReadAlgorithmIdentity(RequiredObject(element, "TargetAlgorithm")),
+            ReadContractReference(RequiredObject(element, "TargetSchema")),
+            ReadContractReference(RequiredObject(element, "Migrator")),
+            RequiredString(element, "ChangeReason"));
+        if (!string.Equals(plan.ContentHash, RequiredString(element, "ContentHash"), StringComparison.Ordinal))
+            throw Invalid("RecipeDraftMigrationPlanHashMismatch");
+        return plan;
+    }
+
+    private static AlgorithmConfigurationMigrationDescriptor ReadMigrationDescriptor(JsonElement element)
+    {
+        EnsureObject(element, MigrationDescriptorProperties, "RecipeDraftMigrationDescriptor");
+        var descriptor = new AlgorithmConfigurationMigrationDescriptor(
+            ReadContractReference(RequiredObject(element, "Migrator")),
+            ReadAlgorithmIdentity(RequiredObject(element, "SourceAlgorithm")),
+            ReadContractReference(RequiredObject(element, "SourceSchema")),
+            ReadAlgorithmIdentity(RequiredObject(element, "TargetAlgorithm")),
+            ReadContractReference(RequiredObject(element, "TargetSchema")));
+        if (!string.Equals(descriptor.ContentHash, RequiredString(element, "ContentHash"), StringComparison.Ordinal))
+            throw Invalid("RecipeDraftMigrationDescriptorHashMismatch");
+        return descriptor;
+    }
+
+    private static AlgorithmIdentity ReadAlgorithmIdentity(JsonElement element)
+    {
+        EnsureObject(element, AlgorithmProperties, "RecipeDraftAlgorithmIdentity");
+        return new AlgorithmIdentity(RequiredString(element, "Id"), RequiredString(element, "Version"));
+    }
+
+    private static IReadOnlyList<AlgorithmValidationIssue> ReadMigrationWarnings(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() > 32)
+            throw Invalid("RecipeDraftMigrationWarningCapacityExceeded");
+        return element.EnumerateArray().Select(item =>
+        {
+            EnsureObject(item, WarningProperties, "RecipeDraftMigrationWarning");
+            return new AlgorithmValidationIssue(RequiredString(item, "Code"), NullableString(item, "FieldKey"));
+        }).ToArray();
+    }
+
+    private static Guid ParseGuid(string value, string reason)
+    {
+        return Guid.TryParseExact(value, "D", out var parsed) ? parsed : throw Invalid(reason);
     }
 
     private static void EnsureObject(JsonElement element, string[] expected, string reasonPrefix)
@@ -836,6 +990,7 @@ internal static class RecipeDraftStorageCodec
     private static readonly string[] BindingProperties = { "Algorithm", "ConfigurationSchema", "ResultSchema", "OverlayContract" };
     private static readonly string[] ExtendedTopProperties = TopProperties.Concat(new[] { "CameraProviderExtension" }).ToArray();
     private static readonly string[] CalibrationTopProperties = ExtendedTopProperties.Concat(new[] { "CalibrationRequirements" }).ToArray();
+    private static readonly string[] MigrationTopProperties = CalibrationTopProperties.Concat(new[] { "MigrationLineage" }).ToArray();
     private static readonly string[] CalibrationProperties = { "LogicalCameraRole", "Kind", "LogicalPurpose", "CoefficientContract", "AcceptancePolicy" };
     private static readonly string[] CameraExtensionProperties = { "Provider", "ContractId", "ContractVersion", "ConfigurationContentHash" };
     private static readonly string[] CameraProviderProperties = { "Id", "Version", "AdapterPackageId", "AdapterVersion" };
@@ -853,6 +1008,14 @@ internal static class RecipeDraftStorageCodec
     private static readonly string[] AssetProperties = { "Kind", "Role", "Contract" };
     private static readonly string[] PolicyProperties = { "Kind", "Contract" };
     private static readonly string[] OriginProperties = { "Key", "Origin" };
+    private static readonly string[] MigrationLineageProperties = { "Plan", "Descriptor",
+        "InputConfigurationContentHash", "InitialOutputConfigurationContentHash", "Warnings", "ContentHash" };
+    private static readonly string[] MigrationPlanProperties = { "OperationId", "Source", "TargetDraftId",
+        "TargetAlgorithm", "TargetSchema", "Migrator", "ChangeReason", "ContentHash" };
+    private static readonly string[] MigrationSourceProperties = { "DraftId", "Revision", "RevisionContentHash" };
+    private static readonly string[] MigrationDescriptorProperties = { "Migrator", "SourceAlgorithm", "SourceSchema",
+        "TargetAlgorithm", "TargetSchema", "ContentHash" };
+    private static readonly string[] WarningProperties = { "Code", "FieldKey" };
 
     private sealed class PayloadCapacityExceededException : IOException { }
 

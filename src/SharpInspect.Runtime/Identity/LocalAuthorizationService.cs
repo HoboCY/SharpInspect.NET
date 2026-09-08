@@ -199,6 +199,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             Permission.PublishCalibration,
         AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
+        AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,

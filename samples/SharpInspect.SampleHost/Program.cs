@@ -87,9 +87,17 @@ internal static class Program
             }
         };
         if (draftCheckDirectory is not null)
+        {
+            if (args.Contains("--configuration-migration", StringComparer.OrdinalIgnoreCase))
+                return RecipeDraftDemo.RunMigration(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
             return RecipeDraftDemo.Run(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
+        }
         if (draftQueryDirectory is not null)
+        {
+            if (args.Contains("--configuration-migration", StringComparer.OrdinalIgnoreCase))
+                return RecipeDraftDemo.QueryMigration(storeOptions, draftQueryDirectory);
             return RecipeDraftDemo.Query(storeOptions, draftQueryDirectory);
+        }
         if (cameraSetupDirectory is not null)
             return CameraSetupDemo.Run(storeOptions, cameraSetupDirectory, Option("--user-name"), Option("--expected-principal"));
         if (cameraSetupQueryDirectory is not null)
@@ -143,7 +151,8 @@ internal static class Program
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new RecipeDraftEditorViewModel(p.GetService<IRecipeDraftEditor>(),
             p.GetService<IInteractiveSessionService>(), new DispatcherUiDispatcher(app.Dispatcher),
-            storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>()));
+            storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>(),
+            p.GetService<IAlgorithmConfigurationMigrationService>()));
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
             p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
             new DispatcherUiDispatcher(app.Dispatcher)));

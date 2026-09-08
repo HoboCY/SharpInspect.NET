@@ -123,7 +123,20 @@ public sealed class RecipeDraftContent
         IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
         CameraProviderExtensionRequirement? cameraProviderExtension = null,
         IEnumerable<CalibrationRequirement>? calibrationRequirements = null)
+        : this(null, recipeKey, displayName, algorithm, configuration, cameraRole, camera,
+            algorithmExecutionTimeout, assetRequirements, policyRequirements, valueOrigins,
+            cameraProviderExtension, calibrationRequirements) { }
+
+    /// <summary>Preserves an existing immutable migration origin during ordinary draft revision authoring.</summary>
+    public RecipeDraftContent(RecipeDraftMigrationLineage? migrationLineage, string recipeKey, string displayName,
+        RecipeAlgorithmBinding algorithm, AlgorithmConfigurationSnapshot configuration, string cameraRole,
+        RequestedCameraConfiguration camera, TimeSpan algorithmExecutionTimeout,
+        IEnumerable<RecipeAssetRequirement>? assetRequirements, IEnumerable<RecipePolicyRequirement>? policyRequirements,
+        IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
+        CameraProviderExtensionRequirement? cameraProviderExtension = null,
+        IEnumerable<CalibrationRequirement>? calibrationRequirements = null)
     {
+        MigrationLineage = migrationLineage;
         RecipeKey = AlgorithmConfigurationValidation.Identifier(recipeKey, nameof(recipeKey));
         DisplayName = AlgorithmContractValidation.BoundedText(displayName, nameof(displayName), 128);
         Algorithm = algorithm ?? throw new ArgumentNullException(nameof(algorithm));
@@ -162,6 +175,7 @@ public sealed class RecipeDraftContent
         ContentHash = ComputeHash();
     }
     public string RecipeKey { get; }
+    public RecipeDraftMigrationLineage? MigrationLineage { get; }
     public string DisplayName { get; }
     public RecipeAlgorithmBinding Algorithm { get; }
     public AlgorithmConfigurationSnapshot Configuration { get; }
@@ -217,6 +231,8 @@ public sealed class RecipeDraftContent
                          .ThenBy(item => item.LogicalPurpose, StringComparer.Ordinal))
                 parts.Add(requirement.ContentHash);
         }
+        if (MigrationLineage is { } migration)
+            parts.AddRange(new[] { "sharpinspect-recipe-draft-migration-lineage-v1", migration.ContentHash });
         return AlgorithmContractValidation.HashParts(parts);
     }
     private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);

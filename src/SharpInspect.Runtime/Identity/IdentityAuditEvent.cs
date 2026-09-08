@@ -262,7 +262,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (Enum.TryParse<AuditedCommandKind>(fields[39], out var actionKind) &&
                      Enum.IsDefined(actionKind) && actionKind is not AuditedCommandKind.Unsupported and
                      not AuditedCommandKind.GracefulProductionStop &&
-                     (schemaVersion >= 9 || actionKind != AuditedCommandKind.SaveRecipeDraft) &&
+                     (schemaVersion >= 9 || actionKind is not (AuditedCommandKind.SaveRecipeDraft or
+                         AuditedCommandKind.MigrateAlgorithmConfiguration)) &&
                      (schemaVersion >= 10 || (actionKind != AuditedCommandKind.RebindCamera &&
                         actionKind != AuditedCommandKind.ApplyCameraDebugConfiguration)) &&
                     (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion ||
@@ -272,9 +273,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= ImagingSetupStoreOptions.SchemaVersion ||
                         actionKind != AuditedCommandKind.DeclareImagingSetup) &&
                     (schemaVersion >= CalibrationSessionStoreOptions.SchemaVersion ||
-                        (int)actionKind < (int)AuditedCommandKind.StartCalibrationSession) &&
+                        actionKind is not (>= AuditedCommandKind.StartCalibrationSession and <= AuditedCommandKind.ExitCalibrationSession)) &&
                     (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
-                        (int)actionKind < (int)AuditedCommandKind.PublishCalibrationAcceptancePolicy) &&
+                        actionKind is not (>= AuditedCommandKind.PublishCalibrationAcceptancePolicy and <= AuditedCommandKind.RecordPhysicalCalibrationVerification)) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -329,7 +330,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     /// </summary>
     internal static bool MatchesRecipeDraftAuthorization(byte[] payload, long ordinal, string stationId,
         Guid principalId, Guid sessionId, long authorizationRevision, Guid operationId, Guid draftId,
-        Guid? stepUpGrantId)
+        Guid? stepUpGrantId, RecipeDraftMigrationPlan? migrationPlan = null)
     {
         try
         {
@@ -343,9 +344,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[31] == operationId.ToString("D") && fields[32] == grant &&
                 fields[33] == Permission.EditRecipeDraft.ToString() &&
                 fields[35] == authorizationRevision.ToString(CultureInfo.InvariantCulture) &&
-                fields[37] == draftId.ToString("D") && fields[38] == operationId.ToString("D") &&
-                fields[39] == AuditedCommandKind.SaveRecipeDraft.ToString() &&
-                fields[9] == "RecipeDraftAuthorized";
+                fields[37] == (migrationPlan?.ContentHash ?? draftId.ToString("D")) && fields[38] == operationId.ToString("D") &&
+                fields[39] == (migrationPlan is null ? AuditedCommandKind.SaveRecipeDraft :
+                    AuditedCommandKind.MigrateAlgorithmConfiguration).ToString() &&
+                fields[9] == (migrationPlan is null ? "RecipeDraftAuthorized" : "RecipeDraftMigrationAuthorized");
         }
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)

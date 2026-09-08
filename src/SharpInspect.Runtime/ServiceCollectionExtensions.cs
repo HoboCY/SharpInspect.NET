@@ -211,6 +211,13 @@ public static class ServiceCollectionExtensions
                     p.GetRequiredService<LocalAuthorizationService>(),
                     p.GetRequiredService<IRecipeDraftHistoryQuery>()));
                 services.TryAddSingleton<IRecipeDraftEditor>(p => p.GetRequiredService<RecipeDraftService>());
+                services.TryAddSingleton<AlgorithmConfigurationMigrationRegistry>(p =>
+                    new AlgorithmConfigurationMigrationRegistry(p.GetServices<IAlgorithmConfigurationMigrator>(),
+                        options.CommitTimeout));
+                services.TryAddSingleton<IAlgorithmConfigurationMigrationService>(p =>
+                    new AlgorithmConfigurationMigrationService(p.GetRequiredService<RecipeDraftService>(),
+                        p.GetRequiredService<LocalAuthorizationService>(),
+                        p.GetRequiredService<AlgorithmConfigurationMigrationRegistry>(), options));
             }
             services.TryAddSingleton<ILocalAdministratorRecovery>(p => new LocalAdministratorRecoveryService(
                 p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity,

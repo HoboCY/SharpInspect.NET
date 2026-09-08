@@ -30,10 +30,12 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             .Where(kind => kind != RecipePolicyKind.CalibrationAcceptance).ToArray());
     private static readonly ReadOnlyCollection<CalibrationKind> CalibrationKindsValue =
         new(Enum.GetValues<CalibrationKind>());
+    private static readonly TimeSpan MigrationRereadTimeout = TimeSpan.FromSeconds(10);
 
     private readonly IRecipeDraftEditor? _editor;
     private readonly IInteractiveSessionService? _sessions;
     private readonly IStepUpAuthentication? _stepUp;
+    private readonly IAlgorithmConfigurationMigrationService? _migrationService;
     private readonly IUiDispatcher _dispatcher;
     private readonly AlgorithmExecutionPolicy? _executionPolicy;
     private readonly object _sync = new();
@@ -53,10 +55,20 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     private AlgorithmDescriptor? _selectedAlgorithm;
     private RecipeDraftRevision? _revision;
     private RecipeDraftHistoryItem? _selectedHistory;
+    private RecipeDraftHistoryItem? _selectedMigrationSource;
+    private AlgorithmDescriptor? _selectedMigrationTargetAlgorithm;
+    private AlgorithmConfigurationMigrationDescriptor? _selectedMigrationMigrator;
+    private RecipeDraftMigrationLineage? _migrationLineage;
+    private ReadOnlyCollection<AlgorithmValidationIssue> _migrationWarnings =
+        new(Array.Empty<AlgorithmValidationIssue>());
+    private string _migrationChangeReason = "迁移算法配置";
+    private bool _migrationInProgress;
+    private bool _migrationCancelRequested;
     private long? _historyThroughPosition;
     private long? _historyNextAfterPosition;
     private int _historyPage;
     private RecipeDraftAccess? _access;
+    private RecipeDraftAccess? _migrationAccess;
     private ReadOnlyCollection<AlgorithmValidationIssue> _validationIssues =
         new(Array.Empty<AlgorithmValidationIssue>());
     private bool _localValidationValid;
@@ -91,10 +103,20 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         IInteractiveSessionService? sessions, IUiDispatcher? dispatcher = null,
         AlgorithmExecutionPolicy? executionPolicy = null,
         IStepUpAuthentication? stepUpAuthentication = null)
+        : this(editor, sessions, dispatcher, executionPolicy, stepUpAuthentication, null)
+    {
+    }
+
+    public RecipeDraftEditorViewModel(IRecipeDraftEditor? editor,
+        IInteractiveSessionService? sessions, IUiDispatcher? dispatcher,
+        AlgorithmExecutionPolicy? executionPolicy,
+        IStepUpAuthentication? stepUpAuthentication,
+        IAlgorithmConfigurationMigrationService? migrationService)
     {
         _editor = editor;
         _sessions = sessions;
         _stepUp = stepUpAuthentication;
+        _migrationService = migrationService;
         _dispatcher = dispatcher ?? new DispatcherUiDispatcher();
         _executionPolicy = executionPolicy;
         _readOnlyFields = new ReadOnlyObservableCollection<RecipeDraftFieldViewModel>(_fields);
@@ -121,6 +143,14 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         NextHistoryCommand = new AsyncRelayCommand(() => NextHistoryAsync(), () => CanNextHistory);
         ValidateCommand = new AsyncRelayCommand(() => ValidateAsync(), () => CanValidate);
         SaveCommand = new AsyncRelayCommand(() => SaveAsync(), () => CanSave);
+        MigrateCommand = new AsyncRelayCommand(async () => { await MigrateAsync().ConfigureAwait(true); },
+            () => CanMigrate);
+        StepUpMigrateCommand = new RelayCommand(parameter =>
+        {
+            var password = parameter as string ?? string.Empty;
+            _ = MigrateWithStepUpAsync(password);
+        }, _ => CanStepUpMigrate);
+        CancelMigrationCommand = new RelayCommand(_ => CancelMigration(), _ => CanCancelMigration);
         if (_sessions is not null) _sessions.Changed += SessionChanged;
         RecomputeLocalValidation();
     }
@@ -133,6 +163,9 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public AsyncRelayCommand NextHistoryCommand { get; }
     public AsyncRelayCommand ValidateCommand { get; }
     public AsyncRelayCommand SaveCommand { get; }
+    public AsyncRelayCommand MigrateCommand { get; }
+    public RelayCommand StepUpMigrateCommand { get; }
+    public RelayCommand CancelMigrationCommand { get; }
 
     public bool IsConfigured => _editor is not null;
     public bool IsBusy { get { lock (_sync) return _isBusy; } }
@@ -145,6 +178,10 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public IReadOnlyList<RecipeAssetKind> AssetKinds => AssetKindsValue;
     public IReadOnlyList<RecipePolicyKind> PolicyKinds => PolicyKindsValue;
     public IReadOnlyList<CalibrationKind> CalibrationKinds => CalibrationKindsValue;
+    public IReadOnlyList<AlgorithmDescriptor> MigrationTargetAlgorithms =>
+        GetMigrationTargetAlgorithms();
+    public IReadOnlyList<AlgorithmConfigurationMigrationDescriptor> MigrationMigrators =>
+        GetMigrationMigrators();
     public ReadOnlyObservableCollection<RecipeDraftFieldViewModel> Fields => _readOnlyFields;
     public ReadOnlyObservableCollection<RecipeDraftAssetRequirementViewModel> AssetRequirements => _readOnlyAssets;
     public ReadOnlyObservableCollection<RecipeDraftPolicyRequirementViewModel> PolicyRequirements => _readOnlyPolicies;
@@ -174,8 +211,55 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         {
             if (ReferenceEquals(_selectedHistory, value)) return;
             _selectedHistory = value;
+            // History selection chooses the source for the next migration.
+            // Loading a revision updates this independently so a loaded target
+            // can retain its lineage source while becoming the next source.
+            _selectedMigrationSource = value;
+            _selectedMigrationTargetAlgorithm = null;
+            _selectedMigrationMigrator = null;
             OnPropertyChanged();
+            NotifyMigrationProperties();
             OpenSelectedCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(CanOpenSelected));
+        }
+    }
+
+    /// <summary>
+    /// Exact local revision selected as the source of the next migration.
+    /// This is intentionally separate from the source recorded by a loaded
+    /// migration lineage.
+    /// </summary>
+    public RecipeDraftHistoryItem? SelectedMigrationSource => _selectedMigrationSource;
+    public RecipeDraftRevision? SelectedMigrationSourceRevision => _selectedMigrationSource?.Revision;
+
+    /// <summary>Target algorithm selection for migration; unlike SelectedAlgorithm it never creates a Draft.</summary>
+    public AlgorithmDescriptor? SelectedMigrationTargetAlgorithm
+    {
+        get => _selectedMigrationTargetAlgorithm;
+        set
+        {
+            if (ReferenceEquals(_selectedMigrationTargetAlgorithm, value)) return;
+            _selectedMigrationTargetAlgorithm = value;
+            if (_selectedMigrationMigrator is not null &&
+                !GetMigrationMigrators().Contains(_selectedMigrationMigrator))
+                _selectedMigrationMigrator = null;
+            NotifyMigrationProperties();
+        }
+    }
+
+    /// <summary>Registered migrator for the selected source and target schema.</summary>
+    public AlgorithmConfigurationMigrationDescriptor? SelectedMigrationMigrator
+    {
+        get => _selectedMigrationMigrator;
+        set
+        {
+            if (ReferenceEquals(_selectedMigrationMigrator, value)) return;
+            _selectedMigrationMigrator = value;
+            if (value is not null && SelectedMigrationTargetAlgorithm is null)
+            {
+                _selectedMigrationTargetAlgorithm = FindTargetAlgorithm(value);
+            }
+            NotifyMigrationProperties();
         }
     }
 
@@ -188,6 +272,76 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public string? DraftContentHash => _localContent?.ContentHash;
     public RecipeDraftRevision? CurrentRevision => _revision;
     public CameraProviderExtensionRequirement? CameraProviderExtension => _revision?.Content.CameraProviderExtension;
+    public RecipeDraftMigrationLineage? MigrationLineage => _migrationLineage;
+    public ReadOnlyCollection<AlgorithmValidationIssue> MigrationWarnings => _migrationWarnings;
+    public string MigrationSourceRevisionHash =>
+        _migrationLineage?.Plan.Source.RevisionContentHash ?? string.Empty;
+    public string MigrationSourceConfigurationHash =>
+        _migrationLineage?.InputConfigurationContentHash ?? string.Empty;
+    public Guid? MigrationSelectionSourceDraftId => _selectedMigrationSource?.Revision.DraftId;
+    public long? MigrationSelectionSourceRevision => _selectedMigrationSource?.Revision.Revision;
+    public string MigrationSelectionSourceRevisionHash =>
+        _selectedMigrationSource?.Revision.RevisionContentHash ?? string.Empty;
+    public string MigrationSelectionSourceConfigurationHash =>
+        _selectedMigrationSource?.Revision.Content.Configuration.ContentHash ?? string.Empty;
+    public Guid? MigrationLineageSourceDraftId => _migrationLineage?.Plan.Source.DraftId;
+    public long? MigrationLineageSourceRevision => _migrationLineage?.Plan.Source.Revision;
+    public string MigrationLineageSourceRevisionHash =>
+        _migrationLineage?.Plan.Source.RevisionContentHash ?? string.Empty;
+    public string MigrationLineageSourceInputConfigurationHash =>
+        _migrationLineage?.InputConfigurationContentHash ?? string.Empty;
+    public string MigrationLineageSourceDescriptorText
+    {
+        get
+        {
+            if (_migrationLineage is not { } lineage) return string.Empty;
+            var algorithm = lineage.Descriptor.SourceAlgorithm;
+            var schema = lineage.Descriptor.SourceSchema;
+            return $"{algorithm.Id} v{algorithm.Version} · {schema.Id} v{schema.Version} · {schema.ContentHash}";
+        }
+    }
+    public string MigrationTargetAlgorithmText => _selectedMigrationTargetAlgorithm is null
+        ? string.Empty
+        : $"{_selectedMigrationTargetAlgorithm.Identity.Id} v{_selectedMigrationTargetAlgorithm.Identity.Version}";
+    public string MigrationTargetSchemaText
+    {
+        get
+        {
+            var schema = _selectedMigrationMigrator?.TargetSchema;
+            if (schema is not null) return $"{schema.Id} v{schema.Version} · {schema.ContentHash}";
+            var candidate = _selectedMigrationTargetAlgorithm?.ConfigurationSchema;
+            return candidate is null ? string.Empty :
+                $"{candidate.Id} v{candidate.Version} · {candidate.ContentHash}";
+        }
+    }
+    public string MigrationMigratorText => _selectedMigrationMigrator is null
+        ? string.Empty
+        : $"{_selectedMigrationMigrator.Migrator.Id} v{_selectedMigrationMigrator.Migrator.Version} · {_selectedMigrationMigrator.Migrator.ContentHash}";
+    public string MigrationInputConfigurationHash =>
+        _migrationLineage?.InputConfigurationContentHash ?? string.Empty;
+    public string MigrationOutputConfigurationHash =>
+        _migrationLineage?.InitialOutputConfigurationContentHash ?? string.Empty;
+    public string MigrationLineageHash => _migrationLineage?.ContentHash ?? string.Empty;
+    public string MigrationChangeReason
+    {
+        get => _migrationChangeReason;
+        set
+        {
+            SetBoundedProperty(ref _migrationChangeReason, value,
+                RecipeDraftInputBounds.DisplayNameCharacters, RecipeDraftInputBounds.SafeTextBytes,
+                nameof(MigrationChangeReason));
+            NotifyMigrationCommands();
+        }
+    }
+    public bool HasMigrationService => _migrationService is not null;
+    public bool IsMigrationBusy { get { lock (_sync) return _migrationInProgress && _isBusy; } }
+    private bool CanPrepareMigration => HasMigrationService && IsConfigured && IsAuthenticated &&
+        SelectedMigrationSource is not null && SelectedMigrationTargetAlgorithm is not null &&
+        SelectedMigrationMigrator is not null && IsValidMigrationReason && !IsBusy && !_disposed &&
+        _migrationAccess?.CanSave == true && IsUsableSession(CurrentSession);
+    public bool CanMigrate => CanPrepareMigration && _migrationAccess?.RequiresStepUp == false;
+    public bool CanStepUpMigrate => CanPrepareMigration && _migrationAccess?.RequiresStepUp == true && _stepUp is not null;
+    public bool CanCancelMigration => IsMigrationBusy;
     public string CameraPortabilityText => CameraProviderExtension is null
         ? "公共相机配置，可在能力兼容的设备间使用。"
         : "此草稿声明了指定 Provider 的扩展依赖；通用字段编辑会保留该依赖，不能直接移植到其他 Provider。";
@@ -299,6 +453,11 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         if (_editor is null || _selectedAlgorithm is null || _disposed) return;
         CancelPendingOperations();
         _revision = null;
+        _migrationLineage = null;
+        _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
+        _selectedMigrationSource = null;
+        _selectedMigrationTargetAlgorithm = null;
+        _selectedMigrationMigrator = null;
         _draftId = Guid.NewGuid();
         _expectedRevision = 0;
         _expectedRevisionContentHash = null;
@@ -331,7 +490,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         catch
         {
             SetFields(_selectedAlgorithm.ConfigurationSchema, null, null);
-            _access = null;
+            _access = null; _migrationAccess = null;
             _errorCode = "RecipeDraftEditorUnavailable";
             _statusMessage = "Schema 默认值暂不可用；未写入任何草稿内容。";
             OnPropertyChanged(string.Empty);
@@ -348,7 +507,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
                         _executionPolicy.ContentHash))
             }, Array.Empty<CalibrationRequirement>());
         _changeReason = "编辑配方草稿";
-        _access = null;
+        _access = null; _migrationAccess = null;
         _errorCode = null;
         _statusMessage = "新草稿已建立；Schema 默认值仅用于本次新建，不会在重开时自动补入。";
         OnPropertyChanged(string.Empty);
@@ -419,10 +578,13 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             var access = await _editor.GetAccessAsync(CreateInvocation(session), start.Value.Cancellation.Token)
                 .ConfigureAwait(true);
             start.Value.Cancellation.Token.ThrowIfCancellationRequested();
+            var migrationAccess = _migrationService is null ? null :
+                await _migrationService.GetAccessAsync(CreateInvocation(session), start.Value.Cancellation.Token).ConfigureAwait(true);
+            start.Value.Cancellation.Token.ThrowIfCancellationRequested();
             var page = await _editor.QueryAsync(new RecipeDraftFilter(PageSize: 50), start.Value.Cancellation.Token)
                 .ConfigureAwait(true);
             start.Value.Cancellation.Token.ThrowIfCancellationRequested();
-            await ApplyRefreshAsync(session, access, page, start.Value).ConfigureAwait(true);
+            await ApplyRefreshAsync(session, access, migrationAccess, page, start.Value).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested) { }
         catch { await ApplyUnavailableAsync("RecipeDraftQueryFailed", start).ConfigureAwait(true); }
@@ -463,6 +625,424 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested) { }
         catch { await ApplyUnavailableAsync("RecipeDraftReadFailed", start).ConfigureAwait(true); }
         finally { Complete(start.Value); }
+    }
+
+    public Task<RecipeDraftMigrationResult?> MigrateAsync(CancellationToken cancellationToken = default) =>
+        MigrateCoreAsync(null, cancellationToken);
+
+    /// <summary>
+    /// Executes one explicit configuration migration with a one-shot Step-Up.
+    /// The password is held only by this call and is cleared before returning.
+    /// </summary>
+    public Task<RecipeDraftMigrationResult?> MigrateWithStepUpAsync(string password,
+        CancellationToken cancellationToken = default) =>
+        MigrateCoreAsync(password ?? string.Empty, cancellationToken);
+
+    public void CancelMigration()
+    {
+        CancellationTokenSource? cancellation = null;
+        lock (_sync)
+        {
+            if (_migrationInProgress && _isBusy)
+            {
+                _migrationCancelRequested = true;
+                cancellation = _activeCancellation;
+            }
+        }
+        // A migration may already have committed a new Draft when the UI
+        // cancellation arrives.  Keep the admission lock and operation
+        // identity until MigrateCoreAsync observes that result and returns.
+        cancellation?.Cancel();
+        if (cancellation is not null) NotifyStateChangedOnUi();
+    }
+
+    private async Task<RecipeDraftMigrationResult?> MigrateCoreAsync(string? stepUpPassword,
+        CancellationToken cancellationToken)
+    {
+        if (_migrationService is null)
+        {
+            await ApplyMigrationFailureAsync("RecipeDraftMigrationUnavailable").ConfigureAwait(true);
+            return null;
+        }
+        if (!TryBuildMigrationPlan(out var plan, out var planReason))
+        {
+            await ApplyMigrationFailureAsync(planReason).ConfigureAwait(true);
+            return null;
+        }
+        var migrationPlan = plan!;
+        var start = Begin(cancellationToken);
+        if (!start.HasValue) return null;
+        lock (_sync)
+        {
+            _migrationInProgress = true;
+            _migrationCancelRequested = false;
+        }
+        NotifyStateChangedOnUi();
+        try
+        {
+            var session = _sessions?.Current ?? UnauthenticatedSession;
+            if (!IsUsableSession(session))
+            {
+                await ApplyMigrationFailureAsync("RecipeDraftUnauthenticated", start).ConfigureAwait(true);
+                return null;
+            }
+
+            var access = await _migrationService.GetAccessAsync(CreateInvocation(session),
+                start.Value.Cancellation.Token).ConfigureAwait(true);
+            start.Value.Cancellation.Token.ThrowIfCancellationRequested();
+            if (!access.CanSave)
+            {
+                await ApplyMigrationFailureAsync(SafeReason(access.ReasonCode,
+                    "RecipeDraftMigrationAccessDenied"), start).ConfigureAwait(true);
+                return null;
+            }
+
+            Guid? grantId = null;
+            if (access.RequiresStepUp)
+            {
+                if (string.IsNullOrEmpty(stepUpPassword))
+                {
+                    await ApplyMigrationFailureAsync("RecipeDraftMigrationStepUpRequired", start).ConfigureAwait(true);
+                    return null;
+                }
+                if (_stepUp is null)
+                {
+                    await ApplyMigrationFailureAsync("RecipeDraftMigrationStepUpUnavailable", start).ConfigureAwait(true);
+                    return null;
+                }
+
+                var binding = new StepUpBinding(Permission.EditRecipeDraft, migrationPlan.OperationId,
+                    migrationPlan.ContentHash, AuditedCommandKind.MigrateAlgorithmConfiguration);
+                lock (_sync) _lastStepUpBinding = binding;
+                StepUpResult stepUpResult;
+                try
+                {
+                    stepUpResult = await _stepUp.ReauthenticateAsync(
+                        new StepUpRequest(migrationPlan.OperationId, CreateInvocation(session), binding, stepUpPassword),
+                        start.Value.Cancellation.Token).ConfigureAwait(true);
+                }
+                finally
+                {
+                    stepUpPassword = string.Empty;
+                }
+
+                start.Value.Cancellation.Token.ThrowIfCancellationRequested();
+                if (!stepUpResult.Succeeded || stepUpResult.GrantId is not { } grant)
+                {
+                    await ApplyMigrationFailureAsync("StepUpAuthenticationRejected", start).ConfigureAwait(true);
+                    return null;
+                }
+                grantId = grant;
+                var currentSession = _sessions?.Current ?? session;
+                if (!SameSession(session, currentSession))
+                {
+                    await ApplyMigrationFailureAsync("RecipeDraftSessionChanged", start).ConfigureAwait(true);
+                    return null;
+                }
+                session = currentSession;
+            }
+
+            var result = await _migrationService.MigrateAsync(
+                new RecipeDraftMigrationRequest(migrationPlan, CreateInvocation(session, grantId), grantId),
+                start.Value.Cancellation.Token).ConfigureAwait(true);
+            if (!result.Created)
+            {
+                await ApplyMigrationResultFailureAsync(result, start.Value).ConfigureAwait(true);
+                return result;
+            }
+            var createdRevision = result.Revision;
+            if (createdRevision is null || createdRevision.DraftId != migrationPlan.TargetDraftId)
+            {
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+                return result;
+            }
+
+            RecipeDraftReadResult reread;
+            try
+            {
+                using var rereadCancellation = new CancellationTokenSource(MigrationRereadTimeout);
+                reread = await _editor!.ReadAsync(migrationPlan.TargetDraftId, createdRevision.Revision,
+                    rereadCancellation.Token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+                return result;
+            }
+            catch
+            {
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+                return result;
+            }
+            var rereadRevision = reread.Revision;
+            if (!reread.Available || rereadRevision is null ||
+                rereadRevision.DraftId != migrationPlan.TargetDraftId ||
+                rereadRevision.Revision != createdRevision.Revision ||
+                !string.Equals(rereadRevision.RevisionContentHash,
+                    createdRevision.RevisionContentHash, StringComparison.Ordinal))
+            {
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+                return result;
+            }
+            if (MigrationCancellationRequested(start.Value))
+            {
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+                return result;
+            }
+            bool loaded;
+            try
+            {
+                loaded = await ApplyMigrationSuccessAsync(rereadRevision, migrationPlan, start.Value)
+                    .ConfigureAwait(true);
+            }
+            catch
+            {
+                loaded = false;
+            }
+            if (!loaded)
+                await ApplyMigrationCommittedPendingRefreshAsync(start.Value).ConfigureAwait(true);
+            return result;
+        }
+        catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested)
+        {
+            await ApplyMigrationFailureAsync("RecipeDraftMigrationCancelled", start).ConfigureAwait(true);
+            return null;
+        }
+        catch
+        {
+            await ApplyMigrationFailureAsync("RecipeDraftMigrationFailed", start).ConfigureAwait(true);
+            return null;
+        }
+        finally
+        {
+            stepUpPassword = string.Empty;
+            lock (_sync)
+            {
+                if (ReferenceEquals(_activeCancellation, start.Value.Cancellation))
+                {
+                    _migrationInProgress = false;
+                    _migrationCancelRequested = false;
+                }
+            }
+            Complete(start.Value);
+            NotifyStateChangedOnUi();
+        }
+    }
+
+    private bool TryBuildMigrationPlan(out RecipeDraftMigrationPlan? plan, out string reason)
+    {
+        plan = null;
+        reason = "RecipeDraftMigrationInvalid";
+        var selected = SelectedMigrationSource;
+        if (selected is null)
+        {
+            reason = "RecipeDraftMigrationSourceRequired";
+            return false;
+        }
+        var target = SelectedMigrationTargetAlgorithm;
+        if (target is null)
+        {
+            reason = "RecipeDraftMigrationTargetRequired";
+            return false;
+        }
+        var migrator = SelectedMigrationMigrator;
+        if (migrator is null)
+        {
+            reason = "RecipeDraftMigrationMigratorRequired";
+            return false;
+        }
+        var revision = selected.Revision;
+        if (revision is null || revision.DraftId == Guid.Empty || revision.Revision < 1 ||
+            revision.Content is null || !IsSourceMatch(migrator, revision.Content))
+        {
+            reason = "RecipeDraftMigrationSourceInvalid";
+            return false;
+        }
+        if (!IsTargetMatch(migrator, target))
+        {
+            reason = "RecipeDraftMigrationTargetInvalid";
+            return false;
+        }
+        if (!IsValidMigrationReason)
+        {
+            reason = "RecipeDraftMigrationChangeReasonInvalid";
+            return false;
+        }
+        try
+        {
+            var source = new RecipeDraftRevisionReference(revision.DraftId, revision.Revision,
+                revision.RevisionContentHash);
+            plan = new RecipeDraftMigrationPlan(Guid.NewGuid(), source, Guid.NewGuid(),
+                target.Identity, new RecipeContractReference(target.ConfigurationSchema.Id,
+                    target.ConfigurationSchema.Version, target.ConfigurationSchema.ContentHash),
+                migrator.Migrator,
+                MigrationChangeReason);
+            return true;
+        }
+        catch
+        {
+            reason = "RecipeDraftMigrationSourceInvalid";
+            return false;
+        }
+    }
+
+    private IReadOnlyList<AlgorithmDescriptor> GetMigrationTargetAlgorithms()
+    {
+        var source = SelectedMigrationSource?.Revision.Content;
+        if (_migrationService is null || source is null || _editor is null)
+            return Array.Empty<AlgorithmDescriptor>();
+        var migrations = _migrationService.Migrations ?? Array.Empty<AlgorithmConfigurationMigrationDescriptor>();
+        return _editor.Algorithms.Where(candidate => migrations.Any(migration =>
+            IsSourceMatch(migration, source) && IsTargetMatch(migration, candidate)))
+            .ToArray();
+    }
+
+    private IReadOnlyList<AlgorithmConfigurationMigrationDescriptor> GetMigrationMigrators()
+    {
+        var source = SelectedMigrationSource?.Revision.Content;
+        if (_migrationService is null || source is null)
+            return Array.Empty<AlgorithmConfigurationMigrationDescriptor>();
+        var migrations = _migrationService.Migrations ?? Array.Empty<AlgorithmConfigurationMigrationDescriptor>();
+        return migrations.Where(migration => IsSourceMatch(migration, source) &&
+            (SelectedMigrationTargetAlgorithm is null ||
+                IsTargetMatch(migration, SelectedMigrationTargetAlgorithm)))
+            .ToArray();
+    }
+
+    private AlgorithmDescriptor? FindTargetAlgorithm(AlgorithmConfigurationMigrationDescriptor migration)
+    {
+        if (_editor is null) return null;
+        return _editor.Algorithms.FirstOrDefault(candidate => IsTargetMatch(migration, candidate));
+    }
+
+    private bool IsValidMigrationReason => !string.IsNullOrWhiteSpace(MigrationChangeReason) &&
+        MigrationChangeReason.Length <= 128 && !MigrationChangeReason.Any(char.IsControl);
+
+    private static bool IsSourceMatch(AlgorithmConfigurationMigrationDescriptor migration,
+        RecipeDraftContent content) =>
+        migration.SourceAlgorithm.Id == content.Algorithm.Algorithm.Id &&
+        migration.SourceAlgorithm.Version == content.Algorithm.Algorithm.Version &&
+        migration.SourceSchema.Id == content.Algorithm.ConfigurationSchema.Id &&
+        migration.SourceSchema.Version == content.Algorithm.ConfigurationSchema.Version &&
+        migration.SourceSchema.ContentHash == content.Algorithm.ConfigurationSchema.ContentHash;
+
+    private static bool IsTargetMatch(AlgorithmConfigurationMigrationDescriptor migration,
+        AlgorithmDescriptor target) =>
+        migration.TargetAlgorithm.Id == target.Identity.Id &&
+        migration.TargetAlgorithm.Version == target.Identity.Version &&
+        migration.TargetSchema.Id == target.ConfigurationSchema.Id &&
+        migration.TargetSchema.Version == target.ConfigurationSchema.Version &&
+        migration.TargetSchema.ContentHash == target.ConfigurationSchema.ContentHash;
+
+    private async Task<bool> ApplyMigrationSuccessAsync(RecipeDraftRevision revision,
+        RecipeDraftMigrationPlan plan, OperationStart start)
+    {
+        var handled = false;
+        await _dispatcher.InvokeAsync(() =>
+        {
+            lock (_sync)
+            {
+                if (!IsCurrentLocked(start) || _migrationCancelRequested) return;
+            }
+            handled = true;
+            var lineage = revision.Content.MigrationLineage;
+            if (lineage is null || lineage.Plan.ContentHash != plan.ContentHash ||
+                lineage.Plan.TargetDraftId != plan.TargetDraftId ||
+                lineage.Plan.Source != plan.Source)
+            {
+                _errorCode = "RecipeDraftMigrationLineageInvalid";
+                _statusMessage = "算法配置迁移结果无有效谱系，当前源草稿未被替换。";
+                NotifyStateChanged();
+                return;
+            }
+            LoadRevision(revision);
+            _errorCode = null;
+            _statusMessage = "算法配置迁移已完成并重新读取；新草稿仍需普通校验与治理。";
+            NotifyMigrationProperties();
+            NotifyStateChanged();
+        }).ConfigureAwait(true);
+        return handled;
+    }
+
+    private async Task ApplyMigrationCommittedPendingRefreshAsync(OperationStart start)
+    {
+        await _dispatcher.InvokeAsync(() =>
+        {
+            lock (_sync) if (!IsCurrentLocked(start)) return;
+            _errorCode = "RecipeDraftMigrationCommittedRefreshRequired";
+            _statusMessage = "算法配置迁移已创建新草稿，但当前页面未能安全重新读取；请刷新历史后打开目标草稿。";
+            NotifyMigrationProperties();
+            NotifyStateChanged();
+        }).ConfigureAwait(true);
+    }
+
+    private async Task ApplyMigrationResultFailureAsync(RecipeDraftMigrationResult result,
+        OperationStart start)
+    {
+        await _dispatcher.InvokeAsync(() =>
+        {
+            lock (_sync) if (!IsCurrentLocked(start)) return;
+            _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(
+                (result.Issues ?? Array.Empty<AlgorithmValidationIssue>()).Take(32).ToArray());
+            _errorCode = SafeReason(result.ReasonCode, "RecipeDraftMigrationRejected");
+            _statusMessage = "算法配置迁移未完成，当前源草稿未被替换。";
+            NotifyMigrationProperties();
+            NotifyStateChanged();
+        }).ConfigureAwait(true);
+    }
+
+    private async Task ApplyMigrationFailureAsync(string errorCode, OperationStart? start = null)
+    {
+        await _dispatcher.InvokeAsync(() =>
+        {
+            if (start.HasValue) lock (_sync) if (!IsCurrentLocked(start.Value)) return;
+            _errorCode = SafeReason(errorCode, "RecipeDraftMigrationFailed");
+            _statusMessage = "算法配置迁移未完成，当前源草稿未被替换。";
+            NotifyMigrationProperties();
+            NotifyStateChanged();
+        }).ConfigureAwait(true);
+    }
+
+    private void NotifyMigrationProperties()
+    {
+        OnPropertyChanged(nameof(SelectedMigrationSource));
+        OnPropertyChanged(nameof(SelectedMigrationSourceRevision));
+        OnPropertyChanged(nameof(SelectedMigrationTargetAlgorithm));
+        OnPropertyChanged(nameof(SelectedMigrationMigrator));
+        OnPropertyChanged(nameof(MigrationTargetAlgorithms));
+        OnPropertyChanged(nameof(MigrationMigrators));
+        OnPropertyChanged(nameof(MigrationSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationSourceConfigurationHash));
+        OnPropertyChanged(nameof(MigrationSelectionSourceDraftId));
+        OnPropertyChanged(nameof(MigrationSelectionSourceRevision));
+        OnPropertyChanged(nameof(MigrationSelectionSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationSelectionSourceConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceDraftId));
+        OnPropertyChanged(nameof(MigrationLineageSourceRevision));
+        OnPropertyChanged(nameof(MigrationLineageSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceInputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceDescriptorText));
+        OnPropertyChanged(nameof(MigrationTargetAlgorithmText));
+        OnPropertyChanged(nameof(MigrationTargetSchemaText));
+        OnPropertyChanged(nameof(MigrationMigratorText));
+        OnPropertyChanged(nameof(MigrationInputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationOutputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageHash));
+        OnPropertyChanged(nameof(MigrationWarnings));
+        OnPropertyChanged(nameof(MigrationLineage));
+        NotifyMigrationCommands();
+    }
+
+    private void NotifyMigrationCommands()
+    {
+        MigrateCommand.RaiseCanExecuteChanged();
+        StepUpMigrateCommand.RaiseCanExecuteChanged();
+        CancelMigrationCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(CanMigrate));
+        OnPropertyChanged(nameof(CanStepUpMigrate));
+        OnPropertyChanged(nameof(CanCancelMigration));
+        OnPropertyChanged(nameof(IsMigrationBusy));
+        OnPropertyChanged(nameof(HasMigrationService));
     }
 
     public async Task ValidateAsync(CancellationToken cancellationToken = default)
@@ -636,8 +1216,11 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         {
             _operationVersion++;
             cancellation = _activeCancellation;
-            _activeCancellation = null;
-            _isBusy = false;
+            // Keep admission busy until the operation's finally block returns.
+            // The version bump invalidates its UI writes, while retaining the
+            // active CTS lets Complete release the gate exactly once.
+            if (cancellation is null) _isBusy = false;
+            else if (_migrationInProgress) _migrationCancelRequested = true;
         }
         cancellation?.Cancel();
         NotifyStateChangedOnUi();
@@ -649,6 +1232,11 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         CancelPendingOperations();
         if (!_dispatcher.CheckAccess) { _ = _dispatcher.InvokeAsync(ClearTransientState); return; }
         _revision = null;
+        _migrationLineage = null;
+        _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
+        _selectedMigrationSource = null;
+        _selectedMigrationTargetAlgorithm = null;
+        _selectedMigrationMigrator = null;
         _selectedAlgorithm = null;
         _selectedHistory = null;
         _fields.Clear();
@@ -680,7 +1268,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         _historyNextAfterPosition = null;
         _historyPage = 0;
         _localContent = null;
-        _access = null;
+        _access = null; _migrationAccess = null;
         lock (_sync) _lastStepUpBinding = null;
         _draftId = Guid.NewGuid();
         _expectedRevision = 0;
@@ -707,7 +1295,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         await Task.CompletedTask;
     }
 
-    private async Task ApplyRefreshAsync(InteractiveSession session, RecipeDraftAccess access,
+    private async Task ApplyRefreshAsync(InteractiveSession session, RecipeDraftAccess access, RecipeDraftAccess? migrationAccess,
         RecipeDraftPage page, OperationStart start)
     {
         await _dispatcher.InvokeAsync(() =>
@@ -715,6 +1303,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             lock (_sync) if (!IsCurrentLocked(start)) return;
             _session = session;
             _access = access;
+            _migrationAccess = migrationAccess;
             _history.Clear();
             var validPage = IsHistoryPageValid(page, 0, null);
             _historyThroughPosition = validPage ? page.ThroughPosition : null;
@@ -835,6 +1424,25 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         }).ConfigureAwait(true);
     }
 
+    private RecipeDraftHistoryItem FindMigrationSource(RecipeDraftRevision revision)
+    {
+        var historyItem = _history.FirstOrDefault(item =>
+            item.Revision.DraftId == revision.DraftId &&
+            item.Revision.Revision == revision.Revision &&
+            string.Equals(item.Revision.RevisionContentHash,
+                revision.RevisionContentHash, StringComparison.Ordinal));
+        if (historyItem is not null) return historyItem;
+
+        if (_selectedHistory is { } selected &&
+            selected.Revision.DraftId == revision.DraftId &&
+            selected.Revision.Revision == revision.Revision &&
+            string.Equals(selected.Revision.RevisionContentHash,
+                revision.RevisionContentHash, StringComparison.Ordinal))
+            return selected;
+
+        return new RecipeDraftHistoryItem(revision);
+    }
+
     private void LoadRevision(RecipeDraftRevision revision)
     {
         _revision = revision;
@@ -842,6 +1450,16 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         _expectedRevision = revision.Revision;
         _expectedRevisionContentHash = revision.RevisionContentHash;
         var content = revision.Content;
+        _migrationLineage = content.MigrationLineage;
+        _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(
+            content.MigrationLineage?.Warnings.ToArray() ?? Array.Empty<AlgorithmValidationIssue>());
+        // A loaded revision is the source of a possible next hop.  Its prior
+        // migration descriptor belongs to the immutable lineage display and
+        // must never be reused as the next target or migrator selection.
+        _selectedMigrationSource = FindMigrationSource(revision);
+        _selectedMigrationTargetAlgorithm = null;
+        _selectedMigrationMigrator = null;
+        _migrationChangeReason = "迁移算法配置";
         _selectedAlgorithm = Algorithms.FirstOrDefault(item =>
             item.Identity.Id == content.Algorithm.Algorithm.Id &&
             item.Identity.Version == content.Algorithm.Algorithm.Version &&
@@ -1019,7 +1637,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         {
             try
             {
-                content = new RecipeDraftContent(_recipeKey, _displayName,
+                content = new RecipeDraftContent(_migrationLineage, _recipeKey, _displayName,
                     RecipeAlgorithmBinding.FromDescriptor(algorithm), configuration!, _cameraRole, camera!, timeout,
                     assets, policies, origins, CameraProviderExtension, calibrations);
             }
@@ -1183,7 +1801,12 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         var changed = false;
         lock (_sync)
         {
-            if (IsCurrentLocked(start)) { _activeCancellation = null; _isBusy = false; changed = true; }
+            if (ReferenceEquals(_activeCancellation, start.Cancellation))
+            {
+                _activeCancellation = null;
+                _isBusy = false;
+                changed = true;
+            }
         }
         start.Cancellation.Dispose();
         if (changed) NotifyStateChangedOnUi();
@@ -1191,6 +1814,12 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
 
     private bool IsCurrentLocked(OperationStart start) => !_disposed && _operationVersion == start.Version &&
         ReferenceEquals(_activeCancellation, start.Cancellation);
+
+    private bool MigrationCancellationRequested(OperationStart start)
+    {
+        lock (_sync)
+            return IsCurrentLocked(start) && _migrationCancelRequested;
+    }
 
     private void SessionChanged(object? sender, InteractiveSessionChangedEventArgs args)
     {
@@ -1211,7 +1840,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         await _dispatcher.InvokeAsync(() =>
         {
             if (start.HasValue) lock (_sync) if (!IsCurrentLocked(start.Value)) return;
-            _access = null;
+            _access = null; _migrationAccess = null;
             ErrorCode = SafeReason(errorCode, "RecipeDraftUnavailable");
             StatusMessage = "配方草稿服务暂不可用，当前内容未写入。";
             NotifyStateChanged();
@@ -1250,6 +1879,25 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         OnPropertyChanged(nameof(CurrentRevision));
         OnPropertyChanged(nameof(DraftId));
         OnPropertyChanged(nameof(ExpectedRevision));
+        OnPropertyChanged(nameof(MigrationLineage));
+        OnPropertyChanged(nameof(MigrationWarnings));
+        OnPropertyChanged(nameof(SelectedMigrationSource));
+        OnPropertyChanged(nameof(SelectedMigrationSourceRevision));
+        OnPropertyChanged(nameof(MigrationSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationSourceConfigurationHash));
+        OnPropertyChanged(nameof(MigrationSelectionSourceDraftId));
+        OnPropertyChanged(nameof(MigrationSelectionSourceRevision));
+        OnPropertyChanged(nameof(MigrationSelectionSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationSelectionSourceConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceDraftId));
+        OnPropertyChanged(nameof(MigrationLineageSourceRevision));
+        OnPropertyChanged(nameof(MigrationLineageSourceRevisionHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceInputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageSourceDescriptorText));
+        OnPropertyChanged(nameof(MigrationInputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationOutputConfigurationHash));
+        OnPropertyChanged(nameof(MigrationLineageHash));
+        OnPropertyChanged(nameof(IsMigrationBusy));
         NotifyCommands();
     }
 
@@ -1260,6 +1908,9 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         NextHistoryCommand.RaiseCanExecuteChanged();
         ValidateCommand.RaiseCanExecuteChanged();
         SaveCommand.RaiseCanExecuteChanged();
+        MigrateCommand.RaiseCanExecuteChanged();
+        StepUpMigrateCommand.RaiseCanExecuteChanged();
+        CancelMigrationCommand.RaiseCanExecuteChanged();
         NewDraftCommand.RaiseCanExecuteChanged();
         AddCalibrationRequirementCommand.RaiseCanExecuteChanged();
         RemoveCalibrationRequirementCommand.RaiseCanExecuteChanged();
@@ -1273,6 +1924,10 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         OnPropertyChanged(nameof(CanValidate));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanSaveWithStepUp));
+        OnPropertyChanged(nameof(CanMigrate));
+        OnPropertyChanged(nameof(CanStepUpMigrate));
+        OnPropertyChanged(nameof(CanCancelMigration));
+        OnPropertyChanged(nameof(IsMigrationBusy));
         OnPropertyChanged(nameof(RequiresStepUp));
         OnPropertyChanged(nameof(CanEditCalibrationRequirements));
         OnPropertyChanged(nameof(CanRemoveCalibrationRequirement));
@@ -1315,7 +1970,26 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             "RecipeExecutionPolicyUnavailable", "AlgorithmExecutionTimeoutInvalid",
             "AlgorithmExecutionTimeoutOutsidePolicy", "RecipeDraftAccessDenied", "RecipeDraftValid",
             "RecipeLegacyCalibrationRequirementNeedsExplicitConversion",
-            "RecipeLegacyCalibrationPolicyNeedsExplicitConversion"
+            "RecipeLegacyCalibrationPolicyNeedsExplicitConversion",
+            "RecipeDraftMigrationUnavailable", "RecipeDraftMigrationSourceRequired",
+            "RecipeDraftMigrationTargetRequired", "RecipeDraftMigrationMigratorRequired",
+            "RecipeDraftMigrationSourceInvalid", "RecipeDraftMigrationTargetInvalid",
+            "RecipeDraftMigrationSourceMismatch", "RecipeDraftMigrationTargetNotRegistered",
+            "RecipeDraftMigrationTargetSchemaMismatch", "RecipeDraftMigrationMigratorUnavailable",
+            "RecipeDraftMigrationChangeReasonInvalid", "RecipeDraftMigrationCancelled",
+            "RecipeDraftMigrationStepUpRequired", "RecipeDraftMigrationStepUpUnavailable",
+            "RecipeDraftMigrationTargetExists", "RecipeDraftMigrationDescriptorChanged",
+            "RecipeDraftMigrationOperationConflict",
+            "RecipeDraftMigrationTargetUnchanged", "RecipeDraftMigrationBusy",
+            "RecipeDraftMigrationTimedOut", "RecipeDraftMigrationDeadlineExceeded",
+            "RecipeDraftMigrationCapacityExceeded", "RecipeDraftMigrationServiceDisposed",
+            "RecipeDraftMigrationRegistryDisposed", "RecipeDraftMigrationRequestRequired",
+            "RecipeDraftMigrationInputInvalid", "RecipeDraftMigrationResultMissing",
+            "RecipeDraftMigrationFailed", "RecipeDraftMigrationAccessDenied",
+            "RecipeDraftMigrationRejected", "RecipeDraftAlgorithmSemanticInvalid",
+            "RecipeDraftConfigurationInvalid", "RecipeDraftValidationCancelled",
+            "RecipeDraftSemanticValidationTimedOut", "RecipeDraftSemanticValidationFailed",
+            "PermissionDenied", "StepUpRequired", "StepUpInvalid"
         };
         return value is not null && known.Contains(value) ? value : fallback;
     }

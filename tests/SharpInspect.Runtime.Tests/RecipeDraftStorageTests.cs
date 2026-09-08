@@ -461,7 +461,7 @@ public sealed class RecipeDraftStorageTests
         }
     }
 
-    private static async Task TamperFirstDraftPayloadAndBindingAsync(string databasePath,
+    internal static async Task TamperFirstDraftPayloadAndBindingAsync(string databasePath,
         RecipeDraftDocument replacement)
     {
         await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -501,7 +501,7 @@ public sealed class RecipeDraftStorageTests
         return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 
-    private sealed class Fixture : IAsyncDisposable
+    internal sealed class Fixture : IAsyncDisposable
     {
         private readonly string _directory;
         private readonly AuditIntegrityPolicy _auditPolicy;

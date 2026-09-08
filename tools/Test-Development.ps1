@@ -166,6 +166,13 @@ try {
                     throw "Draft consumer evidence is missing or empty: $taskDraftFile"
                 }
             }
+            foreach ($taskDraftMigrationFile in @('evidence.json','draft-migration-editor.png','draft-migration-evidence.json','draft-migration-restart.json','process.log','restart.log')) {
+                $taskDraftMigrationArtifact = Join-Path $taskRun ('draft-demo/migration/' + $taskDraftMigrationFile)
+                if (-not (Test-Path -LiteralPath $taskDraftMigrationArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskDraftMigrationArtifact).Length -eq 0) {
+                    throw "Draft migration consumer evidence is missing or empty: $taskDraftMigrationFile"
+                }
+            }
         }
         finally {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_CONSUMER',$taskPreviousDraftConsumer,'Process')

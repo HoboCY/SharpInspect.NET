@@ -36,6 +36,7 @@ public partial class RecipeDraftEditorPanel : UserControl
     public void ClearSensitiveInputs()
     {
         StepUpPasswordBox.Clear();
+        MigrationStepUpPasswordBox.Clear();
         ViewModel.CancelPendingOperations();
         ViewModel.ClearTransientState();
         EditorScrollViewer.ScrollToHome();
@@ -139,6 +140,10 @@ public partial class RecipeDraftEditorPanel : UserControl
         ValidateButton.IsEnabled = configured && viewModel.CanValidate;
         SaveButton.IsEnabled = configured && viewModel.CanSave;
         SaveWithStepUpButton.IsEnabled = configured && viewModel.CanSaveWithStepUp;
+        MigrationStepUpPasswordBox.IsEnabled = configured && !viewModel.IsBusy;
+        MigrationStepUpButton.IsEnabled = configured && viewModel.CanStepUpMigrate;
+        if (!configured || !viewModel.IsAuthenticated)
+            MigrationStepUpPasswordBox.Clear();
         UnavailableText.Text = configured
             ? "请选择算法并新建草稿，或打开已有草稿。"
             : "配方草稿编辑不可用：未配置受限编辑服务。";
@@ -168,6 +173,21 @@ public partial class RecipeDraftEditorPanel : UserControl
         finally
         {
             StepUpPasswordBox.Clear();
+            ApplyState();
+        }
+    }
+
+    private async void MigrationStepUpClick(object sender, RoutedEventArgs args)
+    {
+        var password = MigrationStepUpPasswordBox.Password;
+        MigrationStepUpPasswordBox.Clear();
+        try
+        {
+            await ViewModel.MigrateWithStepUpAsync(password);
+        }
+        finally
+        {
+            MigrationStepUpPasswordBox.Clear();
             ApplyState();
         }
     }

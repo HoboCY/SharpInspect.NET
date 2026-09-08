@@ -13,6 +13,13 @@ public sealed class RecipeDraftConsumerAcceptanceTests
 {
     [Fact]
     public async Task V115_N01_RealWpfConsumerWritesDraftsAndIndependentProcessReopensOriginalSchema()
+        => await RunCase(false);
+
+    [Fact]
+    public async Task V128_N01_RealWpfMigrationAndOrdinaryEditRetainSignedLineageAcrossIndependentRestart()
+        => await RunCase(true);
+
+    private static async Task RunCase(bool migration)
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, "SharpInspect.NET.sln"))) root = root.Parent;
@@ -23,6 +30,7 @@ public sealed class RecipeDraftConsumerAcceptanceTests
         Assert.True(File.Exists(consumer), "Build the solution before the Draft process acceptance test.");
         var directory = Environment.GetEnvironmentVariable("SHARPINSPECT_DRAFT_EVIDENCE_ROOT") ??
             Path.Combine(root!.FullName, "artifacts", "ticket15-process-smoke", Guid.NewGuid().ToString("N"));
+        if (migration) directory = Path.Combine(directory, "migration");
         Directory.CreateDirectory(directory);
         var blocklist = PasswordBlocklist.Create("draft-process-development-fixture", "1", new[] { "passwordpassword" });
         var policy = new LocalPasswordPolicy { Blocklist = blocklist };
@@ -68,27 +76,30 @@ public sealed class RecipeDraftConsumerAcceptanceTests
                     authorizationPolicy.RoleBundles, authorizationPolicy.StepUpPermissions } }));
             var common = new[] { "--trace-db", options.DatabasePath, "--audit-key", audit.SigningKeyName,
                 "--audit-key-directory", audit.KeyDirectory, "--identity-policy", policyPath };
+            if (migration) common = common.Concat(new[] { "--configuration-migration" }).ToArray();
             var process = await Run(consumer, root!.FullName,
                 new[] { "--recipe-draft-check", directory, "--user-name", "draft.author", "--expected-principal", principal.ToString("D") }
                     .Concat(common), password);
             Assert.DoesNotContain(password, process.Output);
             await File.WriteAllTextAsync(Path.Combine(directory, "process.log"), process.Output);
             Assert.True(process.ExitCode == 0, "Draft WPF consumer failed; inspect process.log in " + directory);
-            Assert.Contains("V115-N01 draft-editor PASS revisions=2 exactSchema=true invalidRejected=true unauthorizedRejected=true activeUnchanged=true ready=false", process.Output);
-            Assert.True(new FileInfo(Path.Combine(directory, "draft-editor.png")).Length > 0);
-            Assert.True(new FileInfo(Path.Combine(directory, "draft-editor-dependencies.png")).Length > 0);
+            Assert.Contains(migration ? "V128-N01 draft-migration PASS revisions=3 sourceUnchanged=true lineageRetained=true activeUnchanged=true ready=false" :
+                "V115-N01 draft-editor PASS revisions=2 exactSchema=true invalidRejected=true unauthorizedRejected=true activeUnchanged=true ready=false", process.Output);
+            Assert.True(new FileInfo(Path.Combine(directory, migration ? "draft-migration-editor.png" : "draft-editor.png")).Length > 0);
+            if (!migration) Assert.True(new FileInfo(Path.Combine(directory, "draft-editor-dependencies.png")).Length > 0);
             var before = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(options.DatabasePath)));
             var restarted = await Run(consumer, root.FullName,
                 new[] { "--recipe-draft-query", directory }.Concat(common), null);
             Assert.DoesNotContain(password, restarted.Output);
             await File.WriteAllTextAsync(Path.Combine(directory, "restart.log"), restarted.Output);
             Assert.True(restarted.ExitCode == 0, "Draft restart consumer failed; inspect restart.log in " + directory);
-            Assert.Contains("V115-N02 draft-restart PASS revisions=2 originalSchema=true factoryRegistered=false canRelease=false", restarted.Output);
+            Assert.Contains(migration ? "V128-N02 draft-migration-restart PASS revisions=3 sourceUnchanged=true lineageRetained=true canRelease=false" :
+                "V115-N02 draft-restart PASS revisions=2 originalSchema=true factoryRegistered=false canRelease=false", restarted.Output);
             Assert.Equal(before, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(options.DatabasePath))));
             var query = new SqliteRecipeDraftQuery(options);
             var page = await query.QueryAsync(new(PageSize: 20));
             Assert.True(page.Available, page.ReasonCode);
-            Assert.Equal(2, page.Revisions.Count);
+            Assert.Equal(migration ? 3 : 2, page.Revisions.Count);
             Assert.All(page.Revisions, revision =>
             {
                 Assert.Equal(principal, revision.AuthorPrincipalId);
@@ -96,14 +107,22 @@ public sealed class RecipeDraftConsumerAcceptanceTests
                 Assert.Equal("NotRun", revision.DependencyValidation);
                 Assert.Empty(revision.Content.Configuration.Validate(revision.Content.Algorithm.ConfigurationSchema));
             });
-            Assert.Equal(page.Revisions[0].RevisionContentHash, page.Revisions[1].PreviousRevisionContentHash);
+            if (migration)
+            {
+                Assert.Equal(page.Revisions[1].RevisionContentHash, page.Revisions[2].PreviousRevisionContentHash);
+                Assert.Equal(page.Revisions[0].RevisionContentHash,
+                    page.Revisions[1].Content.MigrationLineage!.Plan.Source.RevisionContentHash);
+                Assert.Equal(page.Revisions[1].Content.MigrationLineage!.ContentHash,
+                    page.Revisions[2].Content.MigrationLineage!.ContentHash);
+            }
+            else Assert.Equal(page.Revisions[0].RevisionContentHash, page.Revisions[1].PreviousRevisionContentHash);
             await File.WriteAllTextAsync(Path.Combine(directory, "evidence.json"), JsonSerializer.Serialize(new
             { Result = "Pass", Consumer = consumer,
                 ConsumerSha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(consumer))),
-                Revisions = 2, principal, IndependentRestart = true, DatabaseUnchangedByRestart = true,
+                Revisions = migration ? 3 : 2, principal, IndependentRestart = true, DatabaseUnchangedByRestart = true,
                 PhysicalBootstrapAuthority = "DevelopmentFixture", ProductionReady = false,
-                DependencyValidation = "NotRun", Screenshot = "draft-editor.png",
-                DependenciesScreenshot = "draft-editor-dependencies.png" }));
+                DependencyValidation = "NotRun", Screenshot = migration ? "draft-migration-editor.png" : "draft-editor.png",
+                DependenciesScreenshot = migration ? null : "draft-editor-dependencies.png" }));
         }
         finally
         {

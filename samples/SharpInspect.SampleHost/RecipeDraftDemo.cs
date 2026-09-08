@@ -237,7 +237,7 @@ internal static partial class RecipeDraftDemo
 
     private static void InvokeButton(Button button)
     {
-        Require(button.IsEnabled, "DraftConsumerButtonUnavailable");
+        Require(button.IsEnabled, "DraftConsumerButtonUnavailable_" + button.Name);
         ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     }
 
