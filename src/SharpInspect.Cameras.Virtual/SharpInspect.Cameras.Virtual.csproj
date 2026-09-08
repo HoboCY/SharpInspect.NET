@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.Cameras.Virtual</PackageId>
+    <Description>Deterministic development camera scenarios for SharpInspect.NET.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+  </ItemGroup>
+</Project>

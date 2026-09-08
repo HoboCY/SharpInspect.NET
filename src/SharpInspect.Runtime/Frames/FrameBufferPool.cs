@@ -303,7 +303,7 @@ public sealed class FrameBufferPool : IDisposable
 }
 
 /// <summary>Framework/adapter ownership token. Never pass this token to an algorithm.</summary>
-public sealed class FrameBufferLease : IDisposable
+public sealed class FrameBufferLease : IFrameBufferLease
 {
     private readonly FrameBufferPool.FrameOwner _owner;
     private int _transferredOrClosed;

@@ -27,11 +27,13 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket15.ps1
+pwsh -File tools/Test-Ticket16.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket15/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket16/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
+空间不足时可添加 `-ArtifactRoot E:\SharpInspectEvidence\artifacts`，把验证产物与隔离包缓存
+放到另一个本地卷；源码、锁文件和验证步骤保持相同。
 
 ## 包边界
 
@@ -41,6 +43,29 @@ pwsh -File tools/Test-Ticket15.ps1
 | SharpInspect.Runtime | SharpInspect.NET.Runtime | 无 UI 的工位权威、SQLite 单写协调器及独立只读查询 |
 | SharpInspect.Wpf | SharpInspect.NET.Wpf | Dispatcher、快照时效、MVVM、状态及追溯窗口 |
 | SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
+| SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
+
+## Virtual Camera 开发入口
+
+```powershell
+dotnet run --project samples/SharpInspect.SampleHost -c Release -- --virtual-camera-check D:\SharpInspectEvidence\virtual-camera
+```
+
+示例显式构造 `VirtualCameraScenario` 和 `VirtualCameraClock`，经 `ICameraProvider` 只读发现、
+按稳定设备身份打开，再经 `ICameraDevice` 完整配置、启动并请求一帧。成功的
+`FrameAcquisitionResult.Lease` 由调用方持有和释放；`VisionFrame` 是借用视图，
+`FrameProvenance` 单独记录来源。停止设备或释放 Provider 不会提前回收已交付的租约。
+
+图像可由固定种子合成，也可用 `VirtualCameraImage.LoadRecordedRaw` 从显式文件路径、
+行布局及预期 SHA-256 加载。场景冻结图像、能力、身份、版本、种子和有序故障脚本，
+不自动枚举目录或循环重放。Mono16 支持 10/12/16 有效位；其奇数源步长由共用帧池对齐。
+调用方推进虚拟时间以触发采集结果，UTC 调整不会改变单调时间的截止点。
+帧池仍使用真实 CPU 复制预算，基础设施失败会使验证失败。
+
+`Test-Ticket16.ps1` 在两个独立进程中执行相同输入，比较 `replay-evidence.json` 的完整字节哈希。
+证据列出帧、时间、健康状态和失败结果，另在 `summary.json` 保留执行范围。
+该开发入口尚未接入 Runtime 的生产受理、相机改绑或硬触发 Busy 门控，也不产生真实设备资格。
+本票的验证映射见 [V1-16 记录](docs/verification/v1-16.md)。
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，

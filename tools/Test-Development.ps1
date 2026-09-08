@@ -1,7 +1,12 @@
-param([ValidateRange(1,76)][int]$Ticket = 1)
+param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot)
 $ErrorActionPreference = 'Stop'
 $taskRepo = Split-Path -Parent $PSScriptRoot
-$taskRun = Join-Path $taskRepo (('artifacts\ticket{0:D2}\' -f $Ticket) + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+$taskArtifactBase = Join-Path $taskRepo 'artifacts'
+if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
+    if (-not [IO.Path]::IsPathFullyQualified($ArtifactRoot)) { throw 'ArtifactRoot must be an absolute path.' }
+    $taskArtifactBase = [IO.Path]::GetFullPath($ArtifactRoot)
+}
+$taskRun = Join-Path $taskArtifactBase (('ticket{0:D2}\' -f $Ticket) + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 $taskOverlayDirectory = $null
 [void][IO.Directory]::CreateDirectory($taskRun)
 
@@ -105,7 +110,7 @@ try {
         '--logger','trx','--results-directory',(Join-Path $taskRun 'tests'))
 
     $taskFeed = Join-Path $taskRun 'packages'
-    foreach ($taskName in @('Abstractions','Runtime','Wpf','OpenCvSharp')) {
+    foreach ($taskName in @('Abstractions','Runtime','Wpf','OpenCvSharp','Cameras.Virtual')) {
         Invoke-TaskDotnet ('pack-' + $taskName + '.log') @('pack',"src/SharpInspect.$taskName/SharpInspect.$taskName.csproj",
             '-c','Release','--no-build','--no-restore','--output',$taskFeed)
     }
@@ -300,6 +305,49 @@ try {
                 throw "Overlay verification artifact is missing or empty: $taskOverlayFile"
             }
         }
+    }
+    if ($Ticket -ge 16) {
+        $taskVirtualRuns = @()
+        foreach ($taskReplayIndex in @(1,2)) {
+            $taskVirtualDirectory = Join-Path $taskRun ('virtual-camera/replay-' + $taskReplayIndex)
+            $taskVirtualLog = 'virtual-camera-replay-' + $taskReplayIndex + '.log'
+            Invoke-TaskDotnet $taskVirtualLog @($taskConsumerDll,'--virtual-camera-check',$taskVirtualDirectory)
+            $taskVirtualOutput = Get-Content -LiteralPath (Join-Path $taskRun $taskVirtualLog) -Raw
+            if ($taskVirtualOutput -notmatch 'V116-N01 virtual-camera-consumer PASS formats=5 replay=true leasesReturned=true productionReady=false') {
+                throw 'The independent virtual-camera consumer did not prove its closed public-interface path.'
+            }
+            foreach ($taskVirtualFile in @('replay-evidence.json','summary.json')) {
+                $taskVirtualArtifact = Join-Path $taskVirtualDirectory $taskVirtualFile
+                if (-not (Test-Path -LiteralPath $taskVirtualArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskVirtualArtifact).Length -eq 0) {
+                    throw "Virtual-camera evidence is missing or empty: $taskVirtualFile"
+                }
+            }
+            $taskVirtualSummary = Get-Content -LiteralPath (Join-Path $taskVirtualDirectory 'summary.json') -Raw | ConvertFrom-Json
+            if ($taskVirtualSummary.result -cne 'Pass' -or $taskVirtualSummary.productionReady -cne $false -or
+                $taskVirtualSummary.physicalDevices -cne 'NotRun' -or
+                $taskVirtualSummary.realCamera -cne 'NotRun' -or
+                $taskVirtualSummary.runtimeAcceptance -cne 'NotRun' -or
+                $taskVirtualSummary.runtimeProductionAcceptance -cne 'NotRun' -or
+                $taskVirtualSummary.providerQualification -cne 'NotRun' -or
+                $taskVirtualSummary.formalQualification -cne 'NotRun' -or
+                $taskVirtualSummary.leasesReturned -cne $true -or $taskVirtualSummary.replay -cne $true -or
+                $taskVirtualSummary.outstandingLeases -cne 0 -or
+                $taskVirtualSummary.infrastructureFailures -cne 0 -or $taskVirtualSummary.formats -cne 5) {
+                throw 'Virtual-camera consumer evidence failed its measured result or applicability contract.'
+            }
+            $taskVirtualRuns += [ordered]@{
+                run=$taskReplayIndex
+                evidenceSha256=(Get-FileHash -LiteralPath (Join-Path $taskVirtualDirectory 'replay-evidence.json') -Algorithm SHA256).Hash
+                summarySha256=(Get-FileHash -LiteralPath (Join-Path $taskVirtualDirectory 'summary.json') -Algorithm SHA256).Hash
+            }
+        }
+        if ($taskVirtualRuns[0].evidenceSha256 -cne $taskVirtualRuns[1].evidenceSha256) {
+            throw 'Two independent virtual-camera processes produced different deterministic replay evidence.'
+        }
+        [ordered]@{ verificationId='V116-N02'; result='Pass'; independentProcesses=2; runs=$taskVirtualRuns } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $taskRun 'virtual-camera/replay-comparison.json') -Encoding utf8
+        Write-Output 'V116-N02 independent-process virtual-camera replay PASS processes=2 evidenceBytesEqual=true'
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

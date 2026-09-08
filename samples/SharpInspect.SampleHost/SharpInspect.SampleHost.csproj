@@ -13,12 +13,14 @@
     <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
     <ProjectReference Include="../../src/SharpInspect.Wpf/SharpInspect.Wpf.csproj" />
     <ProjectReference Include="../../src/SharpInspect.OpenCvSharp/SharpInspect.OpenCvSharp.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Cameras.Virtual/SharpInspect.Cameras.Virtual.csproj" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseLocalPackages)' == 'true'">
     <PackageReference Include="SharpInspect.NET.Abstractions" Version="0.1.0-dev.1" />
     <PackageReference Include="SharpInspect.NET.Runtime" Version="0.1.0-dev.1" />
     <PackageReference Include="SharpInspect.NET.Wpf" Version="0.1.0-dev.1" />
     <PackageReference Include="SharpInspect.NET.OpenCvSharp" Version="0.1.0-dev.1" />
+    <PackageReference Include="SharpInspect.NET.Cameras.Virtual" Version="0.1.0-dev.1" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />

@@ -33,6 +33,8 @@ internal static class Program
             return AlgorithmPreparationDemo.Run();
         if (args.Contains("--frame-consumer-check", StringComparer.OrdinalIgnoreCase))
             return FrameConsumerDemo.Run();
+        if (Option("--virtual-camera-check") is { } virtualCameraDirectory)
+            return VirtualCameraDemo.Run(virtualCameraDirectory);
         if (args.Contains("--algorithm-execution-check", StringComparer.OrdinalIgnoreCase))
             return AlgorithmExecutionDemo.Run();
         if (Option("--overlay-check") is { } overlayDirectory)
