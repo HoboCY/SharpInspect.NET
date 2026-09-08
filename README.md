@@ -30,6 +30,7 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 pwsh -File tools/Test-Ticket18.ps1
 pwsh -File tools/Test-Ticket19.ps1
 pwsh -File tools/Test-Ticket20.ps1
+pwsh -File tools/Test-Ticket21.ps1
 ```
 
 脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticketNN/<run>/`（NN 为票号），
@@ -46,6 +47,26 @@ pwsh -File tools/Test-Ticket20.ps1
 | SharpInspect.Wpf | SharpInspect.NET.Wpf | Dispatcher、快照时效、MVVM、状态及追溯窗口 |
 | SharpInspect.OpenCvSharp | SharpInspect.NET.OpenCvSharp | 受控范围内的零拷贝 Mat 视图与显式独立副本 |
 | SharpInspect.Cameras.Virtual | SharpInspect.NET.Cameras.Virtual | 使用显式场景与虚拟时间的开发相机模拟器 |
+| SharpInspect.Cameras.Hikrobot | SharpInspect.NET.Cameras.Hikrobot | 独立 MVS 适配、只读依赖诊断与受控单帧开发验证 |
+
+## Hikrobot 适配器开发入口
+
+Hikrobot 包仅包含托管适配器，MVS Runtime、相机驱动及厂商服务由设备集成方另行安装。
+当前生产兼容清单为空，公开 Provider 的发现与打开均拒绝，不能进入 Ready。
+不安装 MVS 也能使用默认诊断入口，输出安全的版本、架构、组件存在性和稳定失败原因；
+它不会加载 SDK 或访问设备。
+
+```powershell
+dotnet run --project samples/SharpInspect.Hikrobot.DeviceProbe -c Release -- --diagnose
+```
+
+独立设备探针只在显式设备测试授权后运行，要求本机 Runtime 文件哈希、稳定设备身份、型号和完整配置。
+候选 native backend 限定 Windows x64 / Runtime 4.8.1.2、SoftwareTrigger，以及设备实际支持的 Mono8 与 unpacked Mono10/12/16。
+硬触发尚未鉴定，探针在 SDK 加载前明确拒绝。
+当前并未验证该 Runtime 的真机兼容性；托管测试、头文件布局和静态 DLL 导出检查不等同于生产资格。
+工程候选每个物理句柄仅采集一次；再次采集需完整 Dispose 后重新 Open，同一句柄重复采集尚不支持。
+安装边界、受限测试命令和验证映射见 [V1-21 记录](docs/verification/v1-21.md)，
+具体 SDK 来源与版本差异见 [SDK 来源证据](docs/verification/hikrobot-sdk-sources.md)。
 
 ## Virtual Camera 开发入口
 

@@ -31,6 +31,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Virtua
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Virtual.Tests", "tests\SharpInspect.Cameras.Virtual.Tests\SharpInspect.Cameras.Virtual.Tests.csproj", "{5447D23F-5829-4EE9-83CC-DCE8407168CB}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Hikrobot", "src\SharpInspect.Cameras.Hikrobot\SharpInspect.Cameras.Hikrobot.csproj", "{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Cameras.Hikrobot.Tests", "tests\SharpInspect.Cameras.Hikrobot.Tests\SharpInspect.Cameras.Hikrobot.Tests.csproj", "{D2163590-C716-40CF-9068-846D57DD65BE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpInspect.Hikrobot.DeviceProbe", "samples\SharpInspect.Hikrobot.DeviceProbe\SharpInspect.Hikrobot.DeviceProbe.csproj", "{C529C621-DE33-4B50-B1FC-19FBF33CFBA1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -84,6 +90,18 @@ Global
 		{5447D23F-5829-4EE9-83CC-DCE8407168CB}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5447D23F-5829-4EE9-83CC-DCE8407168CB}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5447D23F-5829-4EE9-83CC-DCE8407168CB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D2163590-C716-40CF-9068-846D57DD65BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D2163590-C716-40CF-9068-846D57DD65BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D2163590-C716-40CF-9068-846D57DD65BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D2163590-C716-40CF-9068-846D57DD65BE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C529C621-DE33-4B50-B1FC-19FBF33CFBA1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C529C621-DE33-4B50-B1FC-19FBF33CFBA1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C529C621-DE33-4B50-B1FC-19FBF33CFBA1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C529C621-DE33-4B50-B1FC-19FBF33CFBA1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E99BBDB8-638E-4212-B4AD-B53ACD1132BE} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
@@ -97,5 +115,8 @@ Global
 		{57B2BBDC-C618-4A29-A444-E3295267909E} = {D54536D5-B62E-4964-938E-3937B4DB9749}
 		{C2CA8A9C-F7B5-4754-948F-661E0264BAAF} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
 		{5447D23F-5829-4EE9-83CC-DCE8407168CB} = {D54536D5-B62E-4964-938E-3937B4DB9749}
+		{F3EFE890-A0EF-4C50-AF8F-EE8DDE62F7E8} = {B0F686A8-A9B5-410D-A0AE-BA659DEE1707}
+		{D2163590-C716-40CF-9068-846D57DD65BE} = {D54536D5-B62E-4964-938E-3937B4DB9749}
+		{C529C621-DE33-4B50-B1FC-19FBF33CFBA1} = {6D788117-615D-402D-845B-2C93729654A6}
 	EndGlobalSection
 EndGlobal

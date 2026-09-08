@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SharpInspect.NET.Cameras.Hikrobot</PackageId>
+    <Description>Managed Hikrobot adapter for separately installed Windows x64 MVS runtime. Development candidate: 4.8.1.2. No production-qualified runtime versions.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="/" />
+    <ProjectReference Include="../SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+  </ItemGroup>
+</Project>

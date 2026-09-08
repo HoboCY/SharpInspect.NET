@@ -253,7 +253,15 @@ internal static class Program
                             locked.Ready == signedIn.Ready && locked.ArmState == signedIn.ArmState && locked.Plc == signedIn.Plc &&
                             locked.Lifecycle == RuntimeLifecycle.Running, "session lock preserves independent production axes");
                         window.RevealPage();
-                        Require(window.IsPrivacyLocked && !vm.CanArmProduction && vm.CanStopProduction, "old session cannot reveal privileged UI");
+                        Require(window.IsPrivacyLocked, "old session cannot reveal privileged UI");
+                        // The privacy gate reads the authoritative session above.
+                        // Command presentation arrives through a separate bounded
+                        // snapshot feed, so inspect it only after the locked revision.
+                        await WaitAsync(() => vm.CurrentSnapshot is { } projected &&
+                            projected.RuntimeEpoch == locked.RuntimeEpoch && projected.Revision >= locked.Revision &&
+                            projected.Session.State == InteractiveSessionState.Locked);
+                        Require(!vm.CanArmProduction && vm.CanStopProduction,
+                            "locked session projection disables Arm and preserves Stop");
                         if (screenshot is not null) RenderScreenshot(window, Path.Combine(Path.GetDirectoryName(screenshot)!, "identity-locked.png"));
                         var sessions = provider.GetRequiredService<IInteractiveSessionService>();
                         var oldActivity = await sessions.ReportActivityAsync(signedIn.Session.SessionId!.Value);

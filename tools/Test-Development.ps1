@@ -110,7 +110,9 @@ try {
         '--logger','trx','--results-directory',(Join-Path $taskRun 'tests'))
 
     $taskFeed = Join-Path $taskRun 'packages'
-    foreach ($taskName in @('Abstractions','Runtime','Wpf','OpenCvSharp','Cameras.Virtual')) {
+    $taskPackages = @('Abstractions','Runtime','Wpf','OpenCvSharp','Cameras.Virtual')
+    if ($Ticket -ge 21) { $taskPackages += 'Cameras.Hikrobot' }
+    foreach ($taskName in $taskPackages) {
         Invoke-TaskDotnet ('pack-' + $taskName + '.log') @('pack',"src/SharpInspect.$taskName/SharpInspect.$taskName.csproj",
             '-c','Release','--no-build','--no-restore','--output',$taskFeed)
     }
@@ -517,6 +519,102 @@ try {
         [ordered]@{ verificationId='V118-N02'; result='Pass'; independentProcesses=2; runs=$taskAcquisitionRuns } |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $taskRun 'camera-acquisition/replay-comparison.json') -Encoding utf8
         Write-Output 'V118-N02 independent-process controlled acquisition replay PASS processes=2 productionReady=false'
+    }
+    if ($Ticket -ge 21) {
+        $taskHikrobotConsumer = Join-Path $taskRun 'hikrobot-consumer'
+        [void][IO.Directory]::CreateDirectory($taskHikrobotConsumer)
+        foreach ($taskFile in @('Program.cs','SharpInspect.Hikrobot.DeviceProbe.csproj')) {
+            Copy-Item -LiteralPath (Join-Path $taskRepo ('samples/SharpInspect.Hikrobot.DeviceProbe/' + $taskFile)) -Destination $taskHikrobotConsumer
+        }
+        Copy-Item -LiteralPath (Join-Path $taskRepo 'Directory.Build.props') -Destination $taskHikrobotConsumer
+        $taskHikrobotProject = Join-Path $taskHikrobotConsumer 'SharpInspect.Hikrobot.DeviceProbe.csproj'
+        Invoke-TaskDotnet 'hikrobot-consumer-restore.log' @('restore',$taskHikrobotProject,'-p:UseLocalPackages=true',
+            '--configfile',$taskNugetConfig,'--packages',(Join-Path $taskRun 'hikrobot-consumer-cache'))
+        Invoke-TaskDotnet 'hikrobot-consumer-build.log' @('build',$taskHikrobotProject,'-c','Release','-p:UseLocalPackages=true','--no-restore')
+        $taskHikrobotDll = Join-Path $taskHikrobotConsumer 'bin/Release/net6.0-windows/SharpInspect.Hikrobot.DeviceProbe.dll'
+        Invoke-TaskDotnet 'hikrobot-dependency.json' @($taskHikrobotDll,'--diagnose')
+        $taskHikrobotDiagnosis = Get-Content -LiteralPath (Join-Path $taskRun 'hikrobot-dependency.json') -Raw | ConvertFrom-Json
+        if ($taskHikrobotDiagnosis.result -cne 'Pass' -or $taskHikrobotDiagnosis.nativeSdkLoaded -cne $false -or
+            $taskHikrobotDiagnosis.productionReady -cne $false -or $taskHikrobotDiagnosis.productionOpenSucceeded -cne $false -or
+            $taskHikrobotDiagnosis.hardwareQualification -cne 'NotRun' -or $taskHikrobotDiagnosis.deviceAccess -cne 'NotRun' -or
+            $taskHikrobotDiagnosis.dependency.productionCompatible -cne $false) {
+            throw 'Hikrobot isolated NuGet consumer failed its qualification boundary.'
+        }
+        $taskProbeFixture = Join-Path $taskRun 'hikrobot-probe-inputs'
+        [void][IO.Directory]::CreateDirectory($taskProbeFixture)
+        $taskOversizedRuntime = Join-Path $taskProbeFixture 'oversized-runtime.dll'
+        $taskOversizedStream = [IO.File]::Create($taskOversizedRuntime)
+        try { $taskOversizedStream.SetLength(64MB + 1) }
+        finally { $taskOversizedStream.Dispose() }
+        $taskProbeConfiguration = Join-Path $taskProbeFixture 'configuration.json'
+        '{}' | Set-Content -LiteralPath $taskProbeConfiguration -Encoding utf8
+        $taskOversizedConfiguration = Join-Path $taskProbeFixture 'oversized-configuration.json'
+        [IO.File]::WriteAllText($taskOversizedConfiguration, (' ' * 8193))
+        $taskHardwareConfiguration = Join-Path $taskProbeFixture 'hardware-configuration.json'
+        [ordered]@{productionAcquisitionMode='HardwareTrigger'; exposureTimeUs=1000; gainDb=0;
+            regionOfInterest=[ordered]@{offsetX=0;offsetY=0;width=640;height=480}; pixelFormat='Mono8';
+            validBits=$null; acquisitionTimeoutMs=1000; triggerDelayUs=0; whiteBalanceRgb=$null} |
+            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $taskHardwareConfiguration -Encoding utf8
+        $taskProbeCases = @(
+            @{name='rejection'; reason='HikrobotProbeExplicitDeviceAccessAndAllBindingsRequired'; arguments=@('--allow-device-access')},
+            @{name='runtime-size'; reason='HikrobotProbeRuntimeSizeInvalid'; arguments=@('--allow-device-access',
+                '--runtime',$taskOversizedRuntime,'--runtime-sha256',('0' * 64),'--device','fixture',
+                '--model','fixture','--configuration',$taskProbeConfiguration,'--output',(Join-Path $taskProbeFixture 'size-output'))},
+            @{name='runtime-hash'; reason='HikrobotProbeRuntimeHashMismatch'; arguments=@('--allow-device-access',
+                '--runtime',$taskHikrobotDll,'--runtime-sha256',('0' * 64),'--device','fixture',
+                '--model','fixture','--configuration',$taskProbeConfiguration,'--output',(Join-Path $taskProbeFixture 'hash-output'))},
+            @{name='configuration-size'; reason='HikrobotProbeConfigurationSizeInvalid'; arguments=@('--allow-device-access',
+                '--runtime',$taskHikrobotDll,'--runtime-sha256',(Get-FileHash -LiteralPath $taskHikrobotDll -Algorithm SHA256).Hash,
+                '--device','fixture','--model','fixture','--configuration',$taskOversizedConfiguration,
+                '--output',(Join-Path $taskProbeFixture 'configuration-output'))},
+            @{name='hardware-trigger'; reason='HikrobotHardwareTriggerNotQualified'; arguments=@('--allow-device-access',
+                '--runtime',$taskHikrobotDll,'--runtime-sha256',(Get-FileHash -LiteralPath $taskHikrobotDll -Algorithm SHA256).Hash,
+                '--device','fixture','--model','fixture','--configuration',$taskHardwareConfiguration,
+                '--output',(Join-Path $taskProbeFixture 'hardware-output'))}
+        )
+        foreach ($taskProbeCase in $taskProbeCases) {
+            $taskProbeStart = [Diagnostics.ProcessStartInfo]::new('dotnet')
+            $taskProbeStart.UseShellExecute = $false
+            $taskProbeStart.CreateNoWindow = $true
+            $taskProbeStart.RedirectStandardOutput = $true
+            $taskProbeStart.RedirectStandardError = $true
+            $taskProbeStart.ArgumentList.Add($taskHikrobotDll)
+            foreach ($taskProbeArgument in $taskProbeCase.arguments) { $taskProbeStart.ArgumentList.Add($taskProbeArgument) }
+            $taskProbeProcess = [Diagnostics.Process]::Start($taskProbeStart)
+            try {
+                $taskProbeOutput = $taskProbeProcess.StandardOutput.ReadToEndAsync()
+                $taskProbeError = $taskProbeProcess.StandardError.ReadToEndAsync()
+                if (-not $taskProbeProcess.WaitForExit(15000)) {
+                    $taskProbeProcess.Kill($true)
+                    throw "Hikrobot negative probe failed to reject promptly: $($taskProbeCase.name)"
+                }
+                $taskProbeErrorText = $taskProbeError.GetAwaiter().GetResult()
+                $taskProbeErrorText | Set-Content -LiteralPath (Join-Path $taskRun ('hikrobot-probe-' + $taskProbeCase.name + '.json')) -Encoding utf8
+                $taskProbeRejection = $taskProbeErrorText | ConvertFrom-Json
+                if ($taskProbeProcess.ExitCode -ne 1 -or $taskProbeOutput.GetAwaiter().GetResult().Length -ne 0 -or
+                    $taskProbeRejection.reasonCode -cne $taskProbeCase.reason -or
+                    $taskProbeRejection.nativeSdkLoadAttempted -cne $false -or $taskProbeRejection.productionReady -cne $false) {
+                    throw "Hikrobot negative request failed its native access boundary: $($taskProbeCase.name)"
+                }
+            }
+            finally { $taskProbeProcess.Dispose() }
+        }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $taskHikrobotPackage = Join-Path $taskFeed 'SharpInspect.NET.Cameras.Hikrobot.0.1.0-dev.1.nupkg'
+        $taskHikrobotArchive = [IO.Compression.ZipFile]::OpenRead($taskHikrobotPackage)
+        try {
+            $taskPayload = @($taskHikrobotArchive.Entries | Where-Object { $_.FullName -match '\.(dll|exe|sys|cti|h|lib)$' })
+            if ($taskPayload.Count -ne 1 -or $taskPayload[0].FullName -cne 'lib/net6.0/SharpInspect.Cameras.Hikrobot.dll') {
+                throw 'Hikrobot NuGet unexpectedly contains vendor/native payloads.'
+            }
+        }
+        finally { $taskHikrobotArchive.Dispose() }
+        [ordered]@{ verificationId='V121-N01'; result='Pass'; nativeSdkLoaded=$false; deviceAccess='NotRun';
+            hardwareQualification='NotRun'; productionReady=$false; nativeVendorPayloads=0;
+            consumerSha256=(Get-FileHash -LiteralPath $taskHikrobotDll -Algorithm SHA256).Hash;
+            packageSha256=(Get-FileHash -LiteralPath $taskHikrobotPackage -Algorithm SHA256).Hash } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $taskRun 'hikrobot-consumer-summary.json') -Encoding utf8
+        Write-Output 'V121-N01 isolated Hikrobot NuGet consumer PASS nativeSdkLoaded=false hardwareQualification=NotRun'
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

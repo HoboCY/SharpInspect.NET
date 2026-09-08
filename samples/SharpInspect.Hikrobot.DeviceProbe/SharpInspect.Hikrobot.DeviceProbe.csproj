@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>SharpInspect.Hikrobot.DeviceProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' != 'true'">
+    <ProjectReference Include="../../src/SharpInspect.Cameras.Hikrobot/SharpInspect.Cameras.Hikrobot.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' == 'true'">
+    <PackageReference Include="SharpInspect.NET.Cameras.Hikrobot" Version="0.1.0-dev.1" />
+  </ItemGroup>
+</Project>
