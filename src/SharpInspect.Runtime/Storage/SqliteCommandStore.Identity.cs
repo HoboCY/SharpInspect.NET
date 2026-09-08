@@ -61,20 +61,26 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            if (_options.AlgorithmResultArchive is not null) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
+            if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(database);
+            else if (_options.AlgorithmResultArchive is not null)
+                AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
             else AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
             var archiveStore = _options.AlgorithmResultArchive is not null;
+            var draftStore = _options.RecipeDrafts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
-                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
+                alarmStore || archiveStore || draftStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
+                recipeDraftOptions: _options.RecipeDrafts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+            if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                _options.RecipeDrafts);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -95,20 +101,26 @@ internal sealed partial class SqliteCommandStore
         {
             using var connection = SqliteNative.Open(_databasePath!, true);
             var database = connection.Handle!;
-            if (_options.AlgorithmResultArchive is not null) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
+            if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(database);
+            else if (_options.AlgorithmResultArchive is not null)
+                AlgorithmResultArchiveOptions.ConfigureSqliteLimit(database);
             else AlarmStorageCodec.ConfigureSqliteLimit(database);
             var deadline = new StoreDeadline(_options.QueryTimeout);
             SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
             var alarmStore = _options.AlarmPolicy is not null;
             var archiveStore = _options.AlgorithmResultArchive is not null;
+            var draftStore = _options.RecipeDrafts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
-                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
+                alarmStore || archiveStore || draftStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
+                recipeDraftOptions: _options.RecipeDrafts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+            if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                _options.RecipeDrafts);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -218,14 +230,18 @@ internal sealed partial class SqliteCommandStore
         {
             var alarmStore = _options.AlarmPolicy is not null;
             var archiveStore = _options.AlgorithmResultArchive is not null;
+            var draftStore = _options.RecipeDrafts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore, deadline,
-                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
+                alarmStore || archiveStore || draftStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore, deadline,
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
+                recipeDraftOptions: _options.RecipeDrafts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+            if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                _options.RecipeDrafts);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null) &&

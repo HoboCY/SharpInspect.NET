@@ -72,6 +72,8 @@ public sealed record AlgorithmResultSchema
             throw new ArgumentException("AlgorithmMeasurementSchemaDuplicate", nameof(measurements));
         if (copiedMeasurements.Any(item => item.AuthoringDefault is not null))
             throw new ArgumentException("AlgorithmResultDefaultsForbidden", nameof(measurements));
+        if (copiedMeasurements.Any(item => item.HelpText is not null))
+            throw new ArgumentException("AlgorithmResultAuthoringHelpForbidden", nameof(measurements));
 
         var copiedReasons = AlgorithmContractValidation.Copy(reasonCodes, nameof(reasonCodes), maximumCount: 256);
         foreach (var reason in copiedReasons)

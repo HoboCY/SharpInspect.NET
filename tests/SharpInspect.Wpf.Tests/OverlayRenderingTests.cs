@@ -272,8 +272,14 @@ public sealed class OverlayRenderingTests
         });
         var lineFirst = InkBounds(lineRenders.first.BitmapSource);
         var lineSecond = InkBounds(lineRenders.second.BitmapSource);
-        Assert.True(lineSecond.Height >= lineFirst.Height * 2 - 1,
-            $"stroke did not scale: {lineFirst.Height}->{lineSecond.Height}");
+        var firstCenterColumn = lineRenders.first.BitmapSource.PixelWidth / 2;
+        var secondCenterColumn = lineRenders.second.BitmapSource.PixelWidth / 2;
+        var firstAlphaCoverage = AlphaCoverage(lineRenders.first.BitmapSource, firstCenterColumn);
+        var secondAlphaCoverage = AlphaCoverage(lineRenders.second.BitmapSource, secondCenterColumn);
+        Assert.True(firstAlphaCoverage > 0 && secondAlphaCoverage > firstAlphaCoverage,
+            $"stroke coverage disappeared at center: {firstAlphaCoverage}->{secondAlphaCoverage}");
+        var coverageRatio = secondAlphaCoverage / (double)firstAlphaCoverage;
+        Assert.InRange(coverageRatio, 1.75, 2.25);
         Assert.True(lineSecond.Width >= lineFirst.Width * 2 - 2,
             $"stroke extent did not scale: {lineFirst.Width}->{lineSecond.Width}");
 
@@ -397,11 +403,11 @@ public sealed class OverlayRenderingTests
         }, metadata);
 
         var rendered = RunSta(() => new FrameOverlayPresenter { Snapshot = snapshot }.RenderPreview());
-        var edge = PixelAt(rendered.BitmapSource, 1, 1);
+        var edge = PixelAt(rendered.BitmapSource, 0, 0);
         var center = PixelAt(rendered.BitmapSource,
             rendered.BitmapSource.PixelWidth / 2, rendered.BitmapSource.PixelHeight / 2);
-        Assert.True(edge.A > 0 && edge.R > edge.B + 50,
-            $"outer fill was not preserved at edge: {edge}");
+        Assert.True(edge.A > 0 && edge.R >= 200 && edge.G <= 80 && edge.B <= 80,
+            $"outer fill or edge stroke was wrong at frame boundary: {edge}");
         Assert.True(center.A > 0 && center.B > center.R + 50,
             $"painter order did not preserve inner fill: {center}");
     }
@@ -442,11 +448,30 @@ public sealed class OverlayRenderingTests
         }, metadata);
         var rendered = RunSta(() => new FrameOverlayPresenter { Snapshot = snapshot }.RenderPreview());
 
-        var joinPixel = (int)Math.Round((2 + 0.5) * rendered.DpiScaleX,
-            MidpointRounding.AwayFromZero);
-        Assert.Equal(0, CountInk(rendered.BitmapSource, joinPixel - 1, joinPixel));
-        Assert.True(CountInk(rendered.BitmapSource, joinPixel + 1, joinPixel + 5) > 0,
-            "the second continuous figure should resume after the dash gap");
+        var equivalentStraightLine = Snapshot(new OverlayPrimitive[]
+        {
+            new OverlayLineSegment(new(0, 1), new(5, 1), style)
+        }, metadata);
+        var straightRendered = RunSta(() =>
+            new FrameOverlayPresenter { Snapshot = equivalentStraightLine }.RenderPreview());
+        Assert.Equal(ReadPixels(rendered.BitmapSource), ReadPixels(straightRendered.BitmapSource));
+
+        var inkColumns = InkColumns(rendered.BitmapSource);
+        var firstInk = Array.FindIndex(inkColumns, value => value);
+        var lastInk = Array.FindLastIndex(inkColumns, value => value);
+        Assert.True(firstInk >= 0 && lastInk > firstInk, "expected dashed line ink");
+        var gapStart = -1;
+        for (var index = firstInk + 1; index < lastInk; index++)
+        {
+            if (!inkColumns[index] && inkColumns[..index].Any(value => value) &&
+                inkColumns[(index + 1)..].Any(value => value))
+            {
+                gapStart = index;
+                break;
+            }
+        }
+        Assert.True(gapStart >= 0,
+            $"expected a transparent dash gap between solid runs: {string.Join(string.Empty, inkColumns.Select(value => value ? '#' : '.'))}");
 
         var splitSnapshot = Snapshot(new OverlayPrimitive[]
         {
@@ -541,18 +566,41 @@ public sealed class OverlayRenderingTests
         return new PixelColor(pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]);
     }
 
-    private static int CountInk(BitmapSource bitmap, int firstX, int lastX)
+    private static int AlphaCoverage(BitmapSource bitmap, int column)
     {
         var stride = checked(bitmap.PixelWidth * 4);
         var pixels = new byte[checked(stride * bitmap.PixelHeight)];
         bitmap.CopyPixels(pixels, stride, 0);
-        var count = 0;
+        var coverage = 0;
         for (var y = 0; y < bitmap.PixelHeight; y++)
+            coverage += pixels[y * stride + column * 4 + 3];
+        return coverage;
+    }
+
+    private static bool[] InkColumns(BitmapSource bitmap)
+    {
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        var columns = new bool[bitmap.PixelWidth];
+        for (var x = 0; x < bitmap.PixelWidth; x++)
         {
-            for (var x = Math.Max(0, firstX); x <= Math.Min(bitmap.PixelWidth - 1, lastX); x++)
-                if (pixels[y * stride + x * 4 + 3] >= 16) count++;
+            for (var y = 0; y < bitmap.PixelHeight; y++)
+            {
+                if (pixels[y * stride + x * 4 + 3] < 16) continue;
+                columns[x] = true;
+                break;
+            }
         }
-        return count;
+        return columns;
+    }
+
+    private static byte[] ReadPixels(BitmapSource bitmap)
+    {
+        var stride = checked(bitmap.PixelWidth * 4);
+        var pixels = new byte[checked(stride * bitmap.PixelHeight)];
+        bitmap.CopyPixels(pixels, stride, 0);
+        return pixels;
     }
 
     private static RenderedOverlayPreview RenderHidden(FrameOverlayPresenter presenter)

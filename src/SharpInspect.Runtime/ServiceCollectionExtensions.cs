@@ -6,6 +6,7 @@ using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Frames;
+using SharpInspect.Runtime.Recipes;
 
 namespace SharpInspect.Runtime;
 
@@ -93,6 +94,17 @@ public static class ServiceCollectionExtensions
                 options.LocalIdentity, p.GetRequiredService<IIdentityProvider>(), p.GetRequiredService<IInteractiveSessionService>()));
             services.TryAddSingleton<IStepUpAuthentication>(p => p.GetRequiredService<LocalAuthorizationService>());
             services.TryAddSingleton<IIdentityAdministrationQuery>(p => p.GetRequiredService<LocalAuthorizationService>());
+            if (options.RecipeDrafts is not null)
+            {
+                // The history capability is an independent read-only connection; resolving it
+                // never initializes or opens the command writer.
+                services.TryAddSingleton<IRecipeDraftHistoryQuery>(_ => new SqliteRecipeDraftQuery(options));
+                services.TryAddSingleton<RecipeDraftService>(p => new RecipeDraftService(
+                    p.GetServices<IVisionAlgorithmFactory>(), options,
+                    p.GetRequiredService<LocalAuthorizationService>(),
+                    p.GetRequiredService<IRecipeDraftHistoryQuery>()));
+                services.TryAddSingleton<IRecipeDraftEditor>(p => p.GetRequiredService<RecipeDraftService>());
+            }
             services.TryAddSingleton<ILocalAdministratorRecovery>(p => new LocalAdministratorRecoveryService(
                 p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity,
                 p.GetRequiredService<LocalIdentityService>(), p.GetService<IInteractiveSessionService>(),

@@ -1,0 +1,225 @@
+<UserControl x:Class="SharpInspect.Wpf.RecipeDraftEditorPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:SharpInspect.Wpf"
+             MinHeight="760">
+    <UserControl.Resources>
+        <DataTemplate x:Key="FieldTextTemplate">
+            <TextBox Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                     MinWidth="180" MaxLength="{Binding InputMaxLength}" ToolTip="按 Schema 字面值输入，不会自动修剪或转换。" />
+        </DataTemplate>
+        <DataTemplate x:Key="FieldChoiceTemplate">
+            <ComboBox ItemsSource="{Binding AllowedValues}"
+                      SelectedItem="{Binding ChoiceValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                      MinWidth="180" IsEditable="False"
+                      ToolTip="选择 Schema 允许的字面值。空集合表示当前没有可用选择。" />
+        </DataTemplate>
+        <DataTemplate x:Key="FieldBooleanTemplate">
+            <CheckBox IsThreeState="True"
+                      IsChecked="{Binding BooleanInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                      Content="true / false；清除表示缺失"
+                      VerticalAlignment="Center" />
+        </DataTemplate>
+        <local:RecipeDraftFieldTemplateSelector x:Key="FieldTemplateSelector"
+            TextTemplate="{StaticResource FieldTextTemplate}"
+            ChoiceTemplate="{StaticResource FieldChoiceTemplate}"
+            BooleanTemplate="{StaticResource FieldBooleanTemplate}" />
+
+        <DataTemplate x:Key="AssetTemplate">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="140" />
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="140" />
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ComboBox Grid.Column="0" ItemsSource="{Binding AssetKinds, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
+                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0" />
+                <TextBox Grid.Column="1" Text="{Binding Role, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产角色" />
+                <TextBox Grid.Column="2" Text="{Binding ContractId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产契约 ID" />
+                <TextBox Grid.Column="3" Text="{Binding ContractVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产契约版本" />
+                <TextBox Grid.Column="4" Text="{Binding ContractHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="资产内容 SHA-256" />
+                <Button Grid.Column="5" Content="移除" Tag="Asset" Click="RemoveRequirementClick" Padding="10,4" />
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="PolicyTemplate">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="160" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <ComboBox Grid.Column="0" ItemsSource="{Binding PolicyKinds, RelativeSource={RelativeSource AncestorType={x:Type local:RecipeDraftEditorPanel}}}"
+                          SelectedItem="{Binding Kind, Mode=TwoWay}" Margin="0,0,6,0" />
+                <TextBox Grid.Column="1" Text="{Binding ContractId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策契约 ID" />
+                <TextBox Grid.Column="2" Text="{Binding ContractVersion, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策契约版本" />
+                <TextBox Grid.Column="3" Text="{Binding ContractHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,6,0" ToolTip="政策内容 SHA-256" />
+                <Button Grid.Column="4" Content="移除" Tag="Policy" Click="RemoveRequirementClick" Padding="10,4" />
+            </Grid>
+        </DataTemplate>
+    </UserControl.Resources>
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <ScrollViewer x:Name="EditorScrollViewer" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="配方草稿编辑 · 受限配置入口" Foreground="#172B42" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="这里仅建立可追溯的非生产草稿。保存不会激活配方、改变相机或改变 Ready；结果以保存后的重新读取为准。"
+                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12" TextWrapping="Wrap" />
+
+                <Border x:Name="UnavailablePanel" Background="#FFF7E7" Padding="12" Visibility="Visible">
+                    <TextBlock x:Name="UnavailableText" Text="配方草稿编辑不可用：未配置受限编辑服务。" Foreground="#75531A" TextWrapping="Wrap" />
+                </Border>
+
+                <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="编辑状态：" Foreground="#556679" VerticalAlignment="Center" />
+                        <TextBlock x:Name="StateLabel" Foreground="#334E68" VerticalAlignment="Center" />
+                        <Button x:Name="RefreshButton" Content="刷新历史" Command="{Binding RefreshCommand}" Margin="18,0,6,0" />
+                        <Button x:Name="NewDraftButton" Content="新建草稿" Command="{Binding NewDraftCommand}" Margin="0,0,6,0" />
+                        <Button x:Name="OpenButton" Content="打开选定修订" Command="{Binding OpenSelectedCommand}" />
+                        <Button x:Name="NextHistoryButton" Content="下一页" Command="{Binding NextHistoryCommand}" Margin="6,0,0,0" />
+                        <TextBlock Text="页码：" Foreground="#556679" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        <TextBlock Text="{Binding HistoryPage}" Foreground="#334E68" VerticalAlignment="Center" />
+                    </WrapPanel>
+                    <TextBlock x:Name="StatusText" TextWrapping="Wrap" Foreground="#334E68" />
+                    <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Foreground="#9B3430" Margin="0,4,0,10" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="250" />
+                            <ColumnDefinition Width="18" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12">
+                            <StackPanel>
+                                <TextBlock Text="草稿历史" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                                <ListBox x:Name="HistoryListBox" ItemsSource="{Binding History}"
+                                         SelectedItem="{Binding SelectedHistory, Mode=TwoWay}"
+                                         DisplayMemberPath="Label" Height="360" Margin="0,8,0,0" />
+                                <TextBlock Text="重开按已保存内容恢复；不会自动补入当前 Schema 默认值。"
+                                           Foreground="#6B7888" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel x:Name="DraftPanel" Grid.Column="2">
+                            <TextBlock Text="算法与草稿标识" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="算法" Foreground="#556679" Margin="0,0,6,7" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding Algorithms}" SelectedItem="{Binding SelectedAlgorithm, Mode=TwoWay}"
+                                          DisplayMemberPath="Identity.Id" Margin="0,0,12,7" />
+                                <TextBlock Grid.Column="2" Text="Schema" Foreground="#556679" Margin="0,0,6,7" />
+                                <TextBlock Grid.Column="3" Text="{Binding SelectedAlgorithm.ConfigurationSchema.ContentHash, TargetNullValue=未选择}"
+                                           Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="1" Text="Recipe Key" Foreground="#556679" Margin="0,0,6,7" />
+                                <TextBox x:Name="RecipeKeyBox" Grid.Row="1" Grid.Column="1" Text="{Binding RecipeKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,12,7" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="显示名" Foreground="#556679" Margin="0,0,6,7" />
+                                <TextBox x:Name="DisplayNameBox" Grid.Row="1" Grid.Column="3" Text="{Binding DisplayName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="128" Margin="0,0,0,7" />
+                                <TextBlock Grid.Row="2" Text="相机角色" Foreground="#556679" Margin="0,0,6,7" />
+                                <TextBox x:Name="CameraRoleBox" Grid.Row="2" Grid.Column="1" Text="{Binding CameraRole, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,12,7" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="执行超时 ms" Foreground="#556679" Margin="0,0,6,7" />
+                                <TextBox x:Name="ExecutionTimeoutBox" Grid.Row="2" Grid.Column="3" Text="{Binding AlgorithmExecutionTimeoutText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" ToolTip="必须由外部执行政策或明确输入提供，不会猜测部署默认值。" />
+                            </Grid>
+
+                            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="算法配置（严格按 Schema 类型）" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                                    <ItemsControl x:Name="FieldsItemsControl" ItemsSource="{Binding Fields}" Margin="0,8,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,5">
+                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="125" /><ColumnDefinition Width="70" /><ColumnDefinition Width="*" /><ColumnDefinition Width="110" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                                    <StackPanel Grid.Column="0">
+                                                        <TextBlock Text="{Binding Key}" Foreground="#172B42" />
+                                                        <TextBlock Text="{Binding HelpText}" Foreground="#6B7888" FontSize="10" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Type}" Foreground="#556679" />
+                                                        <TextBlock Text="{Binding Unit}" Foreground="#6B7888" FontSize="10" />
+                                                        <TextBlock Text="{Binding Required, StringFormat='必填={0}'}" Foreground="#6B7888" FontSize="10" />
+                                                    </StackPanel>
+                                                    <ContentControl Grid.Column="2" Content="{Binding}" ContentTemplateSelector="{StaticResource FieldTemplateSelector}" />
+                                                    <TextBlock Grid.Column="3" Text="{Binding OriginLabel}" Foreground="#75531A" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                    <StackPanel Grid.Column="4" Orientation="Horizontal">
+                                                        <Button Content="默认" Tag="Default" Click="FieldActionClick" Padding="8,4" ToolTip="仅使用 Schema authoring default" />
+                                                        <Button Content="清除" Tag="Clear" Click="FieldActionClick" Padding="8,4" />
+                                                    </StackPanel>
+                                                    <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5" Text="{Binding ConstraintSummary}" Foreground="#6B7888" FontSize="10" TextWrapping="Wrap" />
+                                                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="5" Text="{Binding ValidationIssue}" Foreground="#9B3430" FontSize="11" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="请求相机配置（仅草稿意图）" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /><ColumnDefinition Width="120" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="采集模式" Foreground="#556679" Margin="0,0,6,7" /><ComboBox Grid.Column="1" ItemsSource="{Binding AcquisitionModes}" SelectedItem="{Binding AcquisitionMode, Mode=TwoWay}" Margin="0,0,12,7" />
+                                        <TextBlock Grid.Column="2" Text="像素格式" Foreground="#556679" Margin="0,0,6,7" /><ComboBox Grid.Column="3" ItemsSource="{Binding PixelFormats}" SelectedItem="{Binding PixelFormat, Mode=TwoWay}" Margin="0,0,0,7" />
+                                        <TextBlock Grid.Row="1" Text="有效位数" Foreground="#556679" Margin="0,0,6,7" /><ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding ValidBitsOptions}" SelectedItem="{Binding ValidBits, Mode=TwoWay}" Margin="0,0,12,7" />
+                                        <TextBlock Grid.Row="1" Grid.Column="2" Text="曝光 μs" Foreground="#556679" Margin="0,0,6,7" /><TextBox Grid.Row="1" Grid.Column="3" Text="{Binding ExposureTimeUsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,0,7" />
+                                        <TextBlock Grid.Row="2" Text="增益 dB" Foreground="#556679" Margin="0,0,6,7" /><TextBox Grid.Row="2" Grid.Column="1" Text="{Binding GainDbText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,12,7" />
+                                        <TextBlock Grid.Row="2" Grid.Column="2" Text="采集超时 ms" Foreground="#556679" Margin="0,0,6,7" /><TextBox Grid.Row="2" Grid.Column="3" Text="{Binding AcquisitionTimeoutMsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,0,7" />
+                                        <TextBlock Grid.Row="3" Text="ROI X / Y" Foreground="#556679" Margin="0,0,6,7" /><StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,12,7"><TextBox Width="70" MaxLength="64" Text="{Binding RoiOffsetXText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /><TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" /><TextBox Width="70" MaxLength="64" Text="{Binding RoiOffsetYText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /></StackPanel>
+                                        <TextBlock Grid.Row="3" Grid.Column="2" Text="ROI W / H" Foreground="#556679" Margin="0,0,6,7" /><StackPanel Grid.Row="3" Grid.Column="3" Orientation="Horizontal" Margin="0,0,0,7"><TextBox Width="70" MaxLength="64" Text="{Binding RoiWidthText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /><TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" /><TextBox Width="70" MaxLength="64" Text="{Binding RoiHeightText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /></StackPanel>
+                                        <TextBlock Grid.Row="4" Text="触发延迟 μs" Foreground="#556679" Margin="0,0,6,7" /><TextBox Grid.Row="4" Grid.Column="1" Text="{Binding TriggerDelayUsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,12,7" />
+                                        <TextBlock Grid.Row="4" Grid.Column="2" Text="白平衡 R / G" Foreground="#556679" Margin="0,0,6,7" /><StackPanel Grid.Row="4" Grid.Column="3" Orientation="Horizontal" Margin="0,0,0,7"><TextBox Width="64" MaxLength="64" Text="{Binding WhiteBalanceRedText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /><TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" /><TextBox Width="64" MaxLength="64" Text="{Binding WhiteBalanceGreenText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" /></StackPanel>
+                                        <TextBlock Grid.Row="5" Text="白平衡 B" Foreground="#556679" Margin="0,0,6,7" /><TextBox Grid.Row="5" Grid.Column="1" Text="{Binding WhiteBalanceBlueText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" Margin="0,0,12,7" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <WrapPanel>
+                                        <TextBlock Text="资产依赖" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <Button Content="添加资产" Click="AddAssetClick" Margin="16,0,0,0" Padding="10,4" />
+                                    </WrapPanel>
+                                    <ItemsControl ItemsSource="{Binding AssetRequirements}" ItemTemplate="{StaticResource AssetTemplate}" Margin="0,6,0,0" />
+                                    <WrapPanel Margin="0,14,0,0">
+                                        <TextBlock Text="政策依赖" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <Button Content="添加政策" Click="AddPolicyClick" Margin="16,0,0,0" Padding="10,4" />
+                                    </WrapPanel>
+                                    <ItemsControl ItemsSource="{Binding PolicyRequirements}" ItemTemplate="{StaticResource PolicyTemplate}" Margin="0,6,0,0" />
+                                    <TextBlock Text="请声明所需资产与政策；保存草稿不会授予发布资格。依赖状态保持 NotRun。"
+                                               Foreground="#75531A" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <Grid Margin="0,12,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="140" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="变更原因" Foreground="#556679" VerticalAlignment="Center" />
+                                <TextBox Grid.Column="1" Text="{Binding ChangeReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="128" />
+                            </Grid>
+                            <TextBlock Text="{Binding ValidationSummary}" Foreground="#75531A" TextWrapping="Wrap" Margin="0,10,0,0" />
+                            <TextBlock x:Name="DependencyLabel" Foreground="#556679" TextWrapping="Wrap" Margin="0,4,0,0" />
+                            <WrapPanel Margin="0,12,0,0">
+                                <Button x:Name="ValidateButton" Content="校验草稿" Command="{Binding ValidateCommand}" />
+                                <Button x:Name="SaveButton" Content="保存草稿" Command="{Binding SaveCommand}" Background="#245B88" Foreground="White" />
+                                <PasswordBox x:Name="StepUpPasswordBox" Width="170" Margin="8,0,6,0"
+                                             ToolTip="仅本次保存使用，提交后立即清除。" />
+                                <Button x:Name="SaveWithStepUpButton" Content="确认并保存" Click="SaveWithStepUpClick"
+                                        Background="#6B4E16" Foreground="White" />
+                                <TextBlock x:Name="StepUpLabel" TextWrapping="Wrap" Foreground="#75531A" VerticalAlignment="Center" Margin="8,0,0,0" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Border>
+</UserControl>

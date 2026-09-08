@@ -15,8 +15,10 @@ namespace SharpInspect.Runtime.Storage;
 internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDisposable
 {
     internal const string SystemPrincipal = "SharpInspect.Runtime";
+    private bool RecipeDraftEnabled => _options.RecipeDrafts is not null;
     private bool AlgorithmArchiveEnabled => _options.AlgorithmResultArchive is not null;
-    private int SchemaVersion => AlgorithmArchiveEnabled ? AlgorithmResultArchiveOptions.SchemaVersion :
+    private int SchemaVersion => RecipeDraftEnabled ? RecipeDraftStoreOptions.SchemaVersion :
+        AlgorithmArchiveEnabled ? AlgorithmResultArchiveOptions.SchemaVersion :
         _options.LocalIdentity is not null ? 7 : _policy is null ? 1 : 2;
     private const int EventVersion = 1;
     private const int MaximumReasonLength = 256;
@@ -39,6 +41,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     private int _disposed;
 
     internal VerifiedSqliteProfile? VerifiedProfile { get; private set; }
+    internal RecipeDraftStoreOptions? RecipeDraftOptions => _options.RecipeDrafts;
 
     public SqliteCommandStore(ProductionStoreOptions options) : this(options, ReadFileLength) { }
 
@@ -49,9 +52,13 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         _policy = options.AuditIntegrityPolicy;
         _policy?.Validate();
         options.AlgorithmResultArchive?.Validate();
+        options.RecipeDrafts?.Validate();
         if (options.AlgorithmResultArchive is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("AlgorithmResultArchiveRequiresIdentityAndAudit", nameof(options));
+        if (options.RecipeDrafts is not null &&
+            (options.LocalIdentity is null || _policy is null))
+            throw new ArgumentException("RecipeDraftRequiresIdentityAndAudit", nameof(options));
         if (options.AlarmPolicy is not null)
         {
             options.AlarmPolicy.Validate();
@@ -195,7 +202,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 PreflightAuditVersion();
                 lease = AcquireLease();
                 connection = SqliteNative.Open(_databasePath!, readOnly: false);
-                if (SchemaVersion >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+                if (RecipeDraftEnabled) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
+                else if (SchemaVersion >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
                 else if (SchemaVersion >= 7) AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
                 initializationResult = InitializeDatabase(connection);
                 initialized = initializationResult.Committed;
@@ -231,6 +239,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     ex.Message.StartsWith("RecoveryOperation", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("Alarm", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("AlgorithmResultArchive", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("RecipeDraft", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("GovernedAlarm", StringComparison.Ordinal))
                     ? ex.Message : "TraceStoreUnavailable";
                 SetIntegrityFault(reason);
@@ -261,6 +270,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     try
                     {
                         result = request.AlgorithmResult is { } algorithm ? AppendAlgorithmResultCore(connection.Handle!, algorithm, request.Deadline) :
+                            request.RecipeDraft is { } draft ? SaveRecipeDraftCore(connection.Handle!, draft, request.Deadline) :
                             request.Identity is { } identity ? UpdateIdentityCore(connection.Handle!, identity, request.Deadline) :
                             request.AlarmObservation is { } observation ? UpdateAlarmObservationCore(connection.Handle!, observation, request.Deadline) :
                             request.Receipt is { } receipt ? AppendReceiptCore(connection, receipt, request.Deadline) :
@@ -333,7 +343,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
-    private string MigrationReason(int existingVersion) => AlgorithmArchiveEnabled
+    private string MigrationReason(int existingVersion) => RecipeDraftEnabled
+        ? "RecipeDraftGovernedMigrationRequired"
+        : AlgorithmArchiveEnabled
         ? "AlgorithmResultArchiveGovernedMigrationRequired"
         : SchemaVersion == 7
         ? existingVersion switch
@@ -362,8 +374,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         var objects = ReadSchemaObjects(database, deadline, includeInternalObjects: version == 0);
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion)
-            return new StoreWriteResult(false, !AlgorithmArchiveEnabled && version == AlgorithmResultArchiveOptions.SchemaVersion
-                ? "AlgorithmResultArchiveConfigurationRequired" : "StoreSchemaTooNew");
+            return new StoreWriteResult(false,
+                !RecipeDraftEnabled && version == RecipeDraftStoreOptions.SchemaVersion
+                    ? "RecipeDraftConfigurationRequired"
+                    : !RecipeDraftEnabled && !AlgorithmArchiveEnabled && version == AlgorithmResultArchiveOptions.SchemaVersion
+                        ? "AlgorithmResultArchiveConfigurationRequired" : "StoreSchemaTooNew");
         if (version > 0 && version < SchemaVersion)
             return new StoreWriteResult(false, MigrationReason(version));
         if (version == 0 && objects.Count != 0) return new StoreWriteResult(false, "StoreForeignSchema");
@@ -375,15 +390,19 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             _signingKey = WindowsMachineAuditKey.Open(_policy, version == 0, out _);
             if (version >= 2)
             {
-                var archiveSchema = version == AlgorithmResultArchiveOptions.SchemaVersion && AlgorithmArchiveEnabled;
+                var archiveSchema = AlgorithmArchiveEnabled && version == SchemaVersion;
                 var alarmSchema = version >= 7 && _options.AlarmPolicy is not null;
+                var draftSchema = RecipeDraftEnabled && version == RecipeDraftStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                    archiveSchema || alarmSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                        new AuditVerificationRequest(), !archiveSchema && !alarmSchema, deadline,
-                    validateAnchorReceipt: false, archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null);
+                    archiveSchema || alarmSchema || draftSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                        new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema, deadline,
+                    validateAnchorReceipt: false, archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
+                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null);
                 if (alarmSchema) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+                if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                    _options.RecipeDrafts);
             }
             if (version >= 7) _ = ReadIdentityState(database, deadline);
         }
@@ -393,8 +412,13 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             var persistedAlarmPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AlarmStorageCodec.RequireConfiguredPolicy(persistedAlarmPolicy, _options.AlarmPolicy);
         }
-        if (version == AlgorithmResultArchiveOptions.SchemaVersion)
-            SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
+        if (version == AlgorithmResultArchiveOptions.SchemaVersion || version == RecipeDraftStoreOptions.SchemaVersion)
+        {
+            if (AlgorithmArchiveEnabled)
+                SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
+        }
+        if (version == RecipeDraftStoreOptions.SchemaVersion)
+            SqliteCommandStore.RequireConfiguredRecipeDrafts(database, _options.RecipeDrafts!, deadline);
 
         if (!ConfigureProductionProfile(database, deadline))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
@@ -422,6 +446,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             {
                 SqliteNative.Execute(database, AlgorithmResultSchemaSql, deadline);
                 InitializeAlgorithmResultSchema(database, _options.AlgorithmResultArchive!, deadline);
+            }
+            if (RecipeDraftEnabled)
+            {
+                SqliteNative.Execute(database, RecipeDraftSchemaSql, deadline);
+                InitializeRecipeDraftSchema(database, _options.RecipeDrafts!, deadline);
             }
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -484,16 +513,21 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     // lock. A previous background observation cannot authorize a changed tail.
                     var alarmStore = _options.AlarmPolicy is not null;
                     var archiveStore = _options.AlgorithmResultArchive is not null;
+                    var draftStore = _options.RecipeDrafts is not null;
                     var verification = AuditChainDatabase.Verify(database, _policy, _signingKey!.KeyId,
                         _signingKey.PublicKeyBase64,
-                        archiveStore || alarmStore ?
+                        archiveStore || alarmStore || draftStore ?
                             new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                            new AuditVerificationRequest(), !archiveStore && !alarmStore, deadline,
-                        validateAnchorReceipt: false, archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null);
+                            new AuditVerificationRequest(), !archiveStore && !alarmStore && !draftStore, deadline,
+                        validateAnchorReceipt: false, archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
+                        recipeDraftOptions: draftStore ? _options.RecipeDrafts : null);
                     if (alarmStore)
                         AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                     if (archiveStore)
                         AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+                    if (draftStore)
+                        AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                            _options.RecipeDrafts);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -762,6 +796,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (_options.LocalIdentity is not null) SqliteNative.Execute(canonicalDatabase, IdentitySchemaSql, deadline);
         if (SchemaVersion >= 7) SqliteNative.Execute(canonicalDatabase, AlarmSchemaSql, deadline);
         if (AlgorithmArchiveEnabled) SqliteNative.Execute(canonicalDatabase, AlgorithmResultSchemaSql, deadline);
+        if (RecipeDraftEnabled) SqliteNative.Execute(canonicalDatabase, RecipeDraftSchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;
@@ -847,7 +882,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
 
     private sealed record WriteRequest(CommandAuditFact? Fact, StoreDeadline Deadline, AuditAnchorReceipt? Receipt = null,
         IdentityWork? Identity = null, AlarmObservationWork? AlarmObservation = null,
-        AlgorithmResultArchiveDocument? AlgorithmResult = null)
+        AlgorithmResultArchiveDocument? AlgorithmResult = null, RecipeDraftWork? RecipeDraft = null)
     {
         public TaskCompletionSource<StoreWriteResult> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -867,6 +902,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (SchemaVersion >= 5)
             {
                 sql = sql.Replace("CHECK(CommandKind IN (0,1,2,3,4,5,6))",
+                    SchemaVersion >= 9 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14))" :
                     SchemaVersion >= 7 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13))" :
                         "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11))", StringComparison.Ordinal)
                     .Replace("AuthenticatedHumanPrincipalId TEXT NULL CHECK(AuthenticatedHumanPrincipalId IS NULL)",

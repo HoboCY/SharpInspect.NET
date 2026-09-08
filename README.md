@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket14.ps1
+pwsh -File tools/Test-Ticket15.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket14/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket15/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 
 ## 包边界
@@ -63,6 +63,7 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 数据库必须位于固定本地 NTFS，路径验证会拒绝共享、已知云同步根、可移动盘和 reparse 路径。
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
 新空库显式启用审计政策时为 2，同时启用本地身份时为 7；再启用开发结果归档时为 8。
+显式启用 Recipe Draft 历史时使用 schema 9，同时仍可选择是否启用开发结果归档。
 启用归档时旧库统一只读 preflight 拒绝 `AlgorithmResultArchiveGovernedMigrationRequired`。
 未启用归档的身份路径对 schema6/5/4/3 分别要求报警、恢复、授权、认证治理迁移；
 schema1/2 及未知版本也不开放身份治理写入。迁移随专票提供，不自动补链或升级。
@@ -245,6 +246,30 @@ Production 类型被明确拒绝。版本化时限、Cancellation Grace 与进�
 dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-execution-check
 ```
 
+## 通用配方草稿编辑
+
+为新空库显式配置 `ProductionStoreOptions.RecipeDrafts = new RecipeDraftStoreOptions(executionPolicy)`，
+并提供本地身份与审计政策；授权策略必须显式授予 `EditRecipeDraft`，并使用自己的 Id/Version。
+原有 `AuthorizationPolicy.Development` 保留旧角色集合和 hash，不自动添加草稿权限。
+`IRecipeDraftEditor` 只提供算法目录、作者默认值、校验、保存和有界历史；
+独立 `IRecipeDraftHistoryQuery` 不创建写连接，也不需要算法 Factory。
+旧库不自动升级，保存只追加草稿修订，不修改活动配方、设备配置或 Ready。
+
+配方页面按 Schema 显示 Boolean、Int64、Float64、String、Enum，包括可选值、单位、界限和帮助文本。
+未声明候选集合的 Enum 仍可编辑；可选 false、空字符串与缺失分别保存。
+默认值只在显式新建或选择作者默认值时物化，并保留与显式编辑不同的来源。
+保存及重开使用完整配置和精确原 Schema，不借用当前默认值修复缺值。
+
+草稿包含一个原子算法、九类便携请求相机设置、执行超时，以及类型化资产和政策要求。
+设备地址、凭据和存储路径没有草稿字段。保存要求真实人员会话与独立 `EditRecipeDraft` Permission；
+存储再次核验权限、完整配置、规范 hash、修订前序与操作身份，冲突不会覆盖已有历史。
+语义验证调用注册 Factory 的验证方法，与准备流程共用 Factory 串行入口；不会创建或运行算法。
+
+`RecipeDraftEditorViewModel` / `RecipeDraftEditorPanel` 已接入配方页。开发宿主可用 `--recipe-drafts`
+选择草稿能力，并显式提供审计和身份参数；测试入口由 `Test-Ticket15.ps1` 建立隔离账号夹具，
+验证真实控件编辑、追加两条修订、锁定后拒绝，以及另一进程按原 Schema 只读重开。
+依赖满足、发布、激活和生产资格仍未提供；有效草稿不构成生产许可。
+
 ## 开发结果归档与 Frame Pixel 查看器
 
 新空库显式设置 `ProductionStoreOptions.AlgorithmResultArchive = new AlgorithmResultArchiveOptions()`，
@@ -346,7 +371,8 @@ SampleHost 提供 `--conformance-demo <absolute-directory> --conformance-source 
 [V1-11 帧池与 OpenCvSharp 借用验证映射](docs/verification/v1-11.md)、
 [V1-12 单帧执行与完整结果校验映射](docs/verification/v1-12.md)、
 [V1-13 时限、取消与 Hung 恢复映射](docs/verification/v1-13.md)、
-[V1-14 Frame Pixel 归档与查看器映射](docs/verification/v1-14.md)。
+[V1-14 Frame Pixel 归档与查看器映射](docs/verification/v1-14.md)、
+[V1-15 通用草稿编辑与历史映射](docs/verification/v1-15.md)。
 本机 Windows 11 Pro 的测试不构成 ADR-0004 中 Windows 10 22H2 三个版本的正式矩阵，
 也不构成 Framework / Provider Qualification 或 Station Production Acceptance。
 完整发行兼容矩阵、真实设备与现场验收保留在各自工单。

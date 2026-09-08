@@ -49,10 +49,15 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 using var key = _openKey(policy);
                 using var connection = SqliteNative.Open(path, readOnly: true);
                 var db = connection.Handle!;
-                if (schemaSupportsArchive(_options)) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
+                if (_options.RecipeDrafts is not null)
+                    RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
+                else if (schemaSupportsArchive(_options))
+                    AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
-                if (schema >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
+                if (schema == RecipeDraftStoreOptions.SchemaVersion)
+                    RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
+                else if (schema >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
                 else if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
                 if (_options.LocalIdentity is not null && schema < 7)
                 {
@@ -70,19 +75,30 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
                 if (_options.AlgorithmResultArchive is not null && schema < AlgorithmResultArchiveOptions.SchemaVersion)
                     throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8, "AuditGovernedMigrationRequired");
-                var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion;
+                if (_options.RecipeDrafts is not null && schema < RecipeDraftStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
+                if (_options.RecipeDrafts is null && schema == RecipeDraftStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("RecipeDraftConfigurationRequired");
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9,
+                    "AuditGovernedMigrationRequired");
+                var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
+                    schema == RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
+                var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
+                var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
-                var fullVerification = archiveVerification || alarmStartup;
+                var fullVerification = archiveVerification || draftVerification || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
                 var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64,
                     verificationRequest, fullVerification ? false : startup, deadline,
-                    archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null);
+                    archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
+                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
+                if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
+                    _options.RecipeDrafts);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -123,6 +139,15 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
             return "AlgorithmResultArchiveConfigurationRequired";
         if (exception is InvalidOperationException { Message: "AlgorithmResultArchiveGovernedMigrationRequired" })
             return "AlgorithmResultArchiveGovernedMigrationRequired";
+        if (exception is InvalidOperationException { Message: "RecipeDraftConfigurationRequired" })
+            return "RecipeDraftConfigurationRequired";
+        if (exception is InvalidOperationException { Message: "RecipeDraftGovernedMigrationRequired" })
+            return "RecipeDraftGovernedMigrationRequired";
+        if (exception is InvalidOperationException { Message: "RecipeDraftRequiresIdentityAndAudit" })
+            return "RecipeDraftRequiresIdentityAndAudit";
+        if (exception is InvalidOperationException { Message: var draftReason } &&
+            draftReason.StartsWith("RecipeDraft", StringComparison.Ordinal))
+            return draftReason;
         if (exception is InvalidOperationException { Message: var archiveReason } &&
             archiveReason.StartsWith("AlgorithmResult", StringComparison.Ordinal))
             return archiveReason;
@@ -149,5 +174,5 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
     }
 
     private static bool schemaSupportsArchive(ProductionStoreOptions options) =>
-        options.AlgorithmResultArchive is not null;
+        options.AlgorithmResultArchive is not null || options.RecipeDrafts is not null;
 }

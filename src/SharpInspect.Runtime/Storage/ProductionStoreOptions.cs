@@ -29,4 +29,7 @@ public sealed class ProductionStoreOptions
     public SharpInspect.Abstractions.IExternalAuditAnchor? ExternalAuditAnchor { get; init; }
     /// <summary>Explicit opt-in for the schema 8 DevelopmentComputation archive.</summary>
     public AlgorithmResultArchiveOptions? AlgorithmResultArchive { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 9 append-only Recipe Draft ledger.</summary>
+    public RecipeDraftStoreOptions? RecipeDrafts { get; init; }
 }

@@ -16,6 +16,24 @@ public partial class ShellWindow : Window
     internal Task<RuntimeCommandOutcome?> SubmitIdentityAdministrationCreateSmokeAsync(
         string userName, string displayName, string password, string stepUpPassword) =>
         IdentityAdministrationPanel.SubmitCreateSmokeAsync(userName, displayName, password, stepUpPassword);
+    internal Task RefreshRecipeDraftSmokeAsync() => RecipeDraftEditorPanel.ViewModel.RefreshAsync();
+    internal void BringRecipeDraftIntoViewForSmoke()
+    {
+        if (_viewModel.SelectedSection != "Recipes")
+            _viewModel.NavigateCommand.Execute("Recipes");
+        RecipeDraftEditorPanel.ScrollToEditorForSmoke();
+        MainScrollViewer.UpdateLayout();
+        RecipeDraftEditorPanel.BringIntoView();
+        MainScrollViewer.UpdateLayout();
+    }
+    internal void VerifyRecipeDraftLayoutForSmoke()
+    {
+        if (_viewModel.SelectedSection != "Recipes" || RecipeDraftEditorPanel.Visibility != Visibility.Visible)
+            throw new InvalidOperationException("RecipeDraftPanelNotReachable");
+        RecipeDraftEditorPanel.UpdateLayout();
+        if (RecipeDraftEditorPanel.ActualHeight <= 0)
+            throw new InvalidOperationException("RecipeDraftPanelHasNoLayout");
+    }
     internal Task WaitForSessionLockAsync() => _sessionLock;
     internal bool IsAdministratorRecoveryPrivacyVisible =>
         IsPrivacyLocked && PrivacyAdministratorRecoveryPanel.Visibility == Visibility.Visible;
@@ -41,6 +59,7 @@ public partial class ShellWindow : Window
     private readonly AdministratorRecoveryViewModel? _administratorRecoveryViewModel;
     private readonly AlarmViewModel? _alarmViewModel;
     private readonly AlgorithmResultHistoryViewModel? _algorithmResultViewModel;
+    private readonly RecipeDraftEditorViewModel? _recipeDraftViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -49,6 +68,7 @@ public partial class ShellWindow : Window
     private bool _identityAdministrationSelectionLoaded;
     private bool _administratorRecoverySelectionLoaded;
     private bool _alarmSelectionLoaded;
+    private bool _recipeDraftSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
@@ -57,7 +77,8 @@ public partial class ShellWindow : Window
         AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
         IdentityAdministrationViewModel? identityAdministrationViewModel = null,
         AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
-        AlarmViewModel? alarmViewModel = null, AlgorithmResultHistoryViewModel? algorithmResultViewModel = null)
+        AlarmViewModel? alarmViewModel = null, AlgorithmResultHistoryViewModel? algorithmResultViewModel = null,
+        RecipeDraftEditorViewModel? recipeDraftViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -68,6 +89,7 @@ public partial class ShellWindow : Window
         _administratorRecoveryViewModel = administratorRecoveryViewModel;
         _alarmViewModel = alarmViewModel;
         _algorithmResultViewModel = algorithmResultViewModel;
+        _recipeDraftViewModel = recipeDraftViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -77,6 +99,7 @@ public partial class ShellWindow : Window
         PrivacyAdministratorRecoveryPanel.DataContext = administratorRecoveryViewModel;
         AlarmPanel.DataContext = alarmViewModel;
         AlgorithmResultsPanel.DataContext = algorithmResultViewModel;
+        RecipeDraftEditorPanel.DataContext = recipeDraftViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -87,6 +110,7 @@ public partial class ShellWindow : Window
         if (administratorRecoveryViewModel is not null)
             administratorRecoveryViewModel.PropertyChanged += AdministratorRecoveryChanged;
         if (alarmViewModel is not null) alarmViewModel.PropertyChanged += AlarmChanged;
+        if (recipeDraftViewModel is not null) recipeDraftViewModel.PropertyChanged += RecipeDraftChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -171,6 +195,7 @@ public partial class ShellWindow : Window
         AdministratorRecoveryPanel.ClearSensitiveInputs();
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         AlarmPanel.ClearSensitiveInputs();
+        RecipeDraftEditorPanel.ClearSensitiveInputs();
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
         LockedSignInStatus.Text = "";
@@ -303,12 +328,14 @@ public partial class ShellWindow : Window
         if (_administratorRecoveryViewModel is not null)
             _administratorRecoveryViewModel.PropertyChanged -= AdministratorRecoveryChanged;
         if (_alarmViewModel is not null) _alarmViewModel.PropertyChanged -= AlarmChanged;
+        if (_recipeDraftViewModel is not null) _recipeDraftViewModel.PropertyChanged -= RecipeDraftChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
         AdministratorRecoveryPanel.ClearSensitiveInputs();
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         AlarmPanel.ClearSensitiveInputs();
+        RecipeDraftEditorPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
@@ -319,6 +346,7 @@ public partial class ShellWindow : Window
     private void IdentityAdministrationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void AdministratorRecoveryChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void AlarmChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void RecipeDraftChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -337,9 +365,11 @@ public partial class ShellWindow : Window
         var traceSelected = _viewModel.SelectedSection == "Trace";
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
         var alarmSelected = _viewModel.SelectedSection == "Alarms";
+        var recipeSelected = _viewModel.SelectedSection == "Recipes";
         if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导、账号授权与恢复";
-        SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
-        BlockersPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected ? Visibility.Collapsed : Visibility.Visible;
+        if (recipeSelected) SectionLabel.Text = "配方 · 受限草稿编辑";
+        SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected || recipeSelected ? Visibility.Collapsed : Visibility.Visible;
+        BlockersPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected || recipeSelected ? Visibility.Collapsed : Visibility.Visible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
         AlgorithmResultsPanel.Visibility = traceSelected && _algorithmResultViewModel is not null
             ? Visibility.Visible : Visibility.Collapsed;
@@ -350,6 +380,20 @@ public partial class ShellWindow : Window
             _ = _algorithmResultViewModel.RefreshAsync();
         }
         AlarmPanel.Visibility = alarmSelected ? Visibility.Visible : Visibility.Collapsed;
+        RecipeDraftEditorPanel.Visibility = recipeSelected ? Visibility.Visible : Visibility.Collapsed;
+        if (!recipeSelected)
+        {
+            if (_recipeDraftSelectionLoaded)
+            {
+                _recipeDraftSelectionLoaded = false;
+                RecipeDraftEditorPanel.ClearSensitiveInputs();
+            }
+        }
+        else if (_recipeDraftViewModel is not null && !_recipeDraftSelectionLoaded)
+        {
+            _recipeDraftSelectionLoaded = true;
+            _ = _recipeDraftViewModel.RefreshAsync();
+        }
         if (_traceViewModel is null)
         {
             TraceUnavailablePanel.Visibility = Visibility.Visible;

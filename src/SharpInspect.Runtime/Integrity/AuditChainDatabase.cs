@@ -65,14 +65,36 @@ internal static class AuditChainDatabase
             CREATE INDEX ix_audit_alarm_sequence ON audit_entries(Sequence) WHERE AlarmPosition IS NOT NULL;
             CREATE INDEX ix_audit_result_sequence ON audit_entries(Sequence) WHERE ResultPosition IS NOT NULL;
             PRAGMA user_version=8;", StringComparison.Ordinal);
+        if (version == RecipeDraftStoreOptions.SchemaVersion)
+            return SchemaSql
+                .Replace("FactPosition INTEGER UNIQUE,", "FactPosition INTEGER UNIQUE, IdentityPosition INTEGER UNIQUE, AlarmPosition INTEGER UNIQUE, ResultPosition INTEGER UNIQUE, DraftPosition INTEGER UNIQUE,", StringComparison.Ordinal)
+                .Replace("Hash TEXT NOT NULL);", @"Hash TEXT NOT NULL,
+            CHECK((Kind='SigningKeyCreated' AND Sequence=1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='CommandFact' AND Sequence>1 AND FactPosition IS NOT NULL AND FactPosition>0 AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='IdentityEvent' AND Sequence>1 AND IdentityPosition IS NOT NULL AND IdentityPosition>0 AND FactPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='AlarmEvent' AND Sequence>1 AND AlarmPosition IS NOT NULL AND AlarmPosition>0 AND FactPosition IS NULL AND IdentityPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='AlgorithmArchiveActivated' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='AlgorithmComputation' AND Sequence>1 AND ResultPosition IS NOT NULL AND ResultPosition>0 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='RecipeDraftStoreActivated' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL)
+                OR (Kind='RecipeDraftRevision' AND Sequence>1 AND DraftPosition IS NOT NULL AND DraftPosition>0 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL)));", StringComparison.Ordinal)
+                .Replace("PRAGMA user_version=2;", @"
+            CREATE INDEX ix_audit_command_sequence ON audit_entries(Sequence) WHERE FactPosition IS NOT NULL;
+            CREATE INDEX ix_audit_identity_sequence ON audit_entries(Sequence) WHERE IdentityPosition IS NOT NULL;
+            CREATE INDEX ix_audit_alarm_sequence ON audit_entries(Sequence) WHERE AlarmPosition IS NOT NULL;
+            CREATE INDEX ix_audit_result_sequence ON audit_entries(Sequence) WHERE ResultPosition IS NOT NULL;
+            CREATE INDEX ix_audit_draft_sequence ON audit_entries(Sequence) WHERE DraftPosition IS NOT NULL;
+            PRAGMA user_version=9;", StringComparison.Ordinal);
         throw new ArgumentOutOfRangeException(nameof(version));
     }
 
     internal static bool IsCapacityReason(string reason) => reason is
-        "AuditVerificationCapacityExceeded" or "AlgorithmResultArchiveCapacityExceeded";
+        "AuditVerificationCapacityExceeded" or "AlgorithmResultArchiveCapacityExceeded" or
+        "RecipeDraftCapacityExceeded" or "RecipeDraftArchiveCapacityExceeded" or
+        "RecipeDraftRevisionCapacityExceeded" or "RecipeDraftTotalCapacityExceeded";
 
     private static (long Sequence, string PreviousHash, int SchemaVersion) NextSequence(
-        sqlite3 db, AuditIntegrityPolicy policy, StoreDeadline deadline, bool archiveData)
+        sqlite3 db, AuditIntegrityPolicy policy, StoreDeadline deadline, bool archiveData,
+        bool recipeDraftData = false)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
         var previous = Tail(db, deadline);
@@ -80,17 +102,20 @@ internal static class AuditChainDatabase
         if (schemaVersion >= AlgorithmResultArchiveOptions.SchemaVersion)
         {
             var limit = archiveData
-                ? policy.MaximumVerificationEntries - AlgorithmResultArchiveOptions.ControlVerificationReserve
+                ? policy.MaximumVerificationEntries - (recipeDraftData
+                    ? RecipeDraftStoreOptions.SharedAuditControlReserve
+                    : AlgorithmResultArchiveOptions.ControlVerificationReserve)
                 : policy.MaximumVerificationEntries;
             Require(sequence <= limit, archiveData
-                ? "AlgorithmResultArchiveCapacityExceeded"
+                ? recipeDraftData ? "RecipeDraftArchiveCapacityExceeded" : "AlgorithmResultArchiveCapacityExceeded"
                 : "AuditVerificationCapacityExceeded");
         }
         return (sequence, previous.Hash, schemaVersion);
     }
 
     internal static void EnsureNextSequenceAvailable(sqlite3 db, AuditIntegrityPolicy policy,
-        StoreDeadline deadline, bool archiveData) => _ = NextSequence(db, policy, deadline, archiveData);
+        StoreDeadline deadline, bool archiveData, bool recipeDraftData = false) =>
+        _ = NextSequence(db, policy, deadline, archiveData, recipeDraftData);
 
     internal static void CreateGenesis(sqlite3 db, AuditIntegrityPolicy policy, IAuditSigningKey key, StoreDeadline deadline)
     {
@@ -117,7 +142,7 @@ internal static class AuditChainDatabase
 
     private static void AppendEntry(sqlite3 db, AuditIntegrityPolicy policy, string kind, long? position,
         byte[] payload, StoreDeadline deadline, long? identityPosition = null, long? alarmPosition = null,
-        long? resultPosition = null)
+        long? resultPosition = null, long? draftPosition = null)
     {
         var next = NextSequence(db, policy, deadline, archiveData: false);
         var sequence = next.Sequence;
@@ -127,8 +152,17 @@ internal static class AuditChainDatabase
             position is { } ordinal ? Number(ordinal) : null,
             identityPosition is { } identity ? Number(identity) : null,
             alarmPosition is { } alarm ? Number(alarm) : null,
-            resultPosition is { } result ? Number(result) : null, payload);
-        if (schemaVersion >= 8)
+            resultPosition is { } result ? Number(result) : null,
+            draftPosition is { } draft ? Number(draft) : null, payload);
+        if (schemaVersion >= RecipeDraftStoreOptions.SchemaVersion)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p9 ? Number(p9) : null,
+                identityPosition is { } i9 ? Number(i9) : null,
+                alarmPosition is { } a9 ? Number(a9) : null,
+                resultPosition is { } r9 ? Number(r9) : null,
+                draftPosition is { } d9 ? Number(d9) : null,
+                Convert.ToBase64String(payload), previousHash, hash);
+        else if (schemaVersion >= 8)
             Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?);", deadline,
                 Number(sequence), kind, position is { } p8 ? Number(p8) : null,
                 identityPosition is { } i8 ? Number(i8) : null,
@@ -156,7 +190,7 @@ internal static class AuditChainDatabase
         IdentityAuditEvent fact, StoreDeadline deadline)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9, "AuditSchemaInvalid");
         var next = NextSequence(db, policy, deadline, archiveData: false);
         var sequence = next.Sequence;
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
@@ -198,7 +232,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, AlgorithmResultArchiveOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion,
+            "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) == 0,
             "AlgorithmResultArchiveActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -217,7 +252,8 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, long position, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is AlgorithmResultArchiveOptions.SchemaVersion or RecipeDraftStoreOptions.SchemaVersion,
+            "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadAuditBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true);
         var sequence = next.Sequence;
@@ -228,6 +264,47 @@ internal static class AuditChainDatabase
         if (sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
             CreateCheckpoint(db, policy, key, deadline);
         return sequence;
+    }
+
+    internal static long AppendRecipeDraftStoreActivation(sqlite3 db, AuditIntegrityPolicy policy,
+        IAuditSigningKey key, RecipeDraftStoreOptions options, StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == RecipeDraftStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) == 0,
+            "RecipeDraftActivationConflict");
+        var payload = AuditCanonical.Encode("RecipeDraftStoreActivated", options.BindingHash,
+            options.ExecutionPolicy.Id, options.ExecutionPolicy.Version, options.ExecutionPolicy.ContentHash,
+            options.MaximumRecordBytes.ToString(CultureInfo.InvariantCulture),
+            options.MaximumPageBytes.ToString(CultureInfo.InvariantCulture),
+            options.MaximumTotalBytes.ToString(CultureInfo.InvariantCulture),
+            options.MaximumRevisionCount.ToString(CultureInfo.InvariantCulture), options.RequireStepUp ? "1" : "0");
+        var next = NextSequence(db, policy, deadline, archiveData: false);
+        var hash = EntryHash(schemaVersion, policy.StationId, next.Sequence, next.PreviousHash,
+            "RecipeDraftStoreActivated", null, null, null, null, payload);
+        Execute(db, "INSERT INTO audit_entries(Sequence,Kind,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?);",
+            deadline, Number(next.Sequence), "RecipeDraftStoreActivated", Convert.ToBase64String(payload),
+            next.PreviousHash, hash);
+        if (next.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return next.Sequence;
+    }
+
+    internal static long AppendRecipeDraftRevision(sqlite3 db, AuditIntegrityPolicy policy,
+        IAuditSigningKey key, long position, StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == RecipeDraftStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        var payload = SqliteCommandStore.ReadRecipeDraftBindingPayload(db, position, deadline);
+        var next = NextSequence(db, policy, deadline, archiveData: true, recipeDraftData: true);
+        var hash = EntryHash(schemaVersion, policy.StationId, next.Sequence, next.PreviousHash,
+            "RecipeDraftRevision", null, null, null, null, Number(position), payload);
+        Execute(db, "INSERT INTO audit_entries(Sequence,Kind,DraftPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?);",
+            deadline, Number(next.Sequence), "RecipeDraftRevision", Number(position), Convert.ToBase64String(payload),
+            next.PreviousHash, hash);
+        if (next.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return next.Sequence;
     }
 
     private static void CreateCheckpoint(sqlite3 db, AuditIntegrityPolicy policy, IAuditSigningKey key, StoreDeadline deadline)
@@ -288,13 +365,18 @@ internal static class AuditChainDatabase
 
     internal static AuditIntegrityReport Verify(sqlite3 db, AuditIntegrityPolicy policy, string trustedKeyId,
         string trustedPublicKey, AuditVerificationRequest request, bool startup, StoreDeadline deadline,
-        bool validateAnchorReceipt = true, AlgorithmResultArchiveOptions? archiveOptions = null)
+        bool validateAnchorReceipt = true, AlgorithmResultArchiveOptions? archiveOptions = null,
+        RecipeDraftStoreOptions? recipeDraftOptions = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9, "AuditSchemaInvalid");
         var hasIdentity = schemaVersion >= 3;
         var hasAlarm = schemaVersion >= 7;
-        var hasArchive = schemaVersion >= AlgorithmResultArchiveOptions.SchemaVersion;
+        var hasArchive = schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion ||
+            schemaVersion == RecipeDraftStoreOptions.SchemaVersion && archiveOptions is not null;
+        var hasDraft = schemaVersion == RecipeDraftStoreOptions.SchemaVersion && recipeDraftOptions is not null;
+        if (schemaVersion == RecipeDraftStoreOptions.SchemaVersion && !hasDraft)
+            throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if (archiveOptions is not null && !hasArchive)
             throw new InvalidOperationException("AlgorithmResultArchiveGovernedMigrationRequired");
         if (hasArchive)
@@ -303,15 +385,20 @@ internal static class AuditChainDatabase
             archiveOptions!.Validate();
             SqliteCommandStore.RequireConfiguredArchive(db, archiveOptions, deadline);
         }
+        if (hasDraft)
+        {
+            recipeDraftOptions!.Validate();
+            SqliteCommandStore.RequireConfiguredRecipeDrafts(db, recipeDraftOptions, deadline);
+        }
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");
-        var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + " FROM audit_entries WHERE Sequence=1;", deadline,
-            s => Enumerable.Range(0, 8).Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
+        var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + "," + (hasDraft ? "DraftPosition" : "NULL") + " FROM audit_entries WHERE Sequence=1;", deadline,
+            s => Enumerable.Range(0, 9).Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
         Require(genesis is not null && genesis[0] == "SigningKeyCreated" && genesis[2] == AuditCanonical.GenesisHash &&
-            genesis[4] is null && genesis[5] is null && genesis[6] is null && genesis[7] is null,
+            genesis[4] is null && genesis[5] is null && genesis[6] is null && genesis[7] is null && genesis[8] is null,
             "AuditGenesisMissingOrInvalid");
         Require(genesis![1]?.Length <= 24000 && EntryHash(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
-            genesis[0]!, genesis[4], genesis[5], genesis[6], genesis[7], Convert.FromBase64String(genesis[1]!)) == genesis[3], "AuditGenesisHashMismatch");
+            genesis[0]!, genesis[4], genesis[5], genesis[6], genesis[7], genesis[8], Convert.FromBase64String(genesis[1]!)) == genesis[3], "AuditGenesisHashMismatch");
         var genesisCheckpoint = ReadCheckpoint(db, "WHERE Sequence=1", deadline);
         Require(genesisCheckpoint is not null && genesisCheckpoint.HeadHash == genesis[3], "AuditGenesisCheckpointMissing");
         VerifyCheckpoint(policy, genesisCheckpoint!, trustedKeyId, trustedPublicKey);
@@ -332,12 +419,16 @@ internal static class AuditChainDatabase
         var maxIdentity = hasIdentity ? Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) : 0;
         var maxAlarm = hasAlarm ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM alarm_events;", deadline) : 0;
         var maxResult = hasArchive ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline) : 0;
+        var maxDraft = hasDraft ? Scalar(db, "SELECT COALESCE(MAX(Position),0) FROM recipe_draft_revisions;", deadline) : 0;
         var archiveActivations = hasArchive ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) : 0;
+        var draftActivations = hasDraft ? Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) : 0;
         Require(!hasArchive || archiveActivations == 1, "AlgorithmResultArchiveActivationMissing");
-        Require(checked(maxFact + maxIdentity + maxAlarm + maxResult + archiveActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
+        Require(!hasDraft || draftActivations == 1, "RecipeDraftActivationMissing");
+        Require(checked(maxFact + maxIdentity + maxAlarm + maxResult + maxDraft + archiveActivations + draftActivations) == tail.Sequence - 1 && maxFact == Scalar(db,
             "SELECT COALESCE(MAX(FactPosition),0) FROM audit_entries;", deadline) &&
             (!hasAlarm || maxAlarm == Scalar(db, "SELECT COALESCE(MAX(AlarmPosition),0) FROM audit_entries;", deadline)) &&
             (!hasArchive || maxResult == Scalar(db, "SELECT COALESCE(MAX(ResultPosition),0) FROM audit_entries;", deadline)) &&
+            (!hasDraft || maxDraft == Scalar(db, "SELECT COALESCE(MAX(DraftPosition),0) FROM audit_entries;", deadline)) &&
             Scalar(db, "SELECT COALESCE(MIN(Position),1) FROM command_facts;", deadline) == 1, "AuditUnchainedFact");
         long? anchored = null;
         if (policy.RequireExternalAnchor && validateAnchorReceipt)
@@ -349,7 +440,8 @@ internal static class AuditChainDatabase
         // A caller-selected cursor never supplies a trust root. Recheck from a signed
         // checkpoint at/before it (or genesis) within the policy's hard verification budget.
         var fullArchiveVerification = hasArchive && archiveOptions is not null;
-        var prefixCheckpoint = startup && !fullArchiveVerification ? checkpoint : ReadCheckpoint(db,
+        var fullDraftVerification = hasDraft && recipeDraftOptions is not null;
+        var prefixCheckpoint = startup && !fullArchiveVerification && !fullDraftVerification ? checkpoint : ReadCheckpoint(db,
             "WHERE Sequence<=? ORDER BY Sequence DESC LIMIT 1", deadline, Number(request.AfterSequence));
         if (prefixCheckpoint is not null) VerifyCheckpoint(policy, prefixCheckpoint, trustedKeyId, trustedPublicKey);
         var after = prefixCheckpoint is null ? 0 : prefixCheckpoint.Sequence - 1;
@@ -365,10 +457,11 @@ internal static class AuditChainDatabase
         var identityOrdinal = hasIdentity ? Scalar(db, "SELECT IdentityPosition FROM audit_entries WHERE IdentityPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var alarmOrdinal = hasAlarm ? Scalar(db, "SELECT AlarmPosition FROM audit_entries WHERE AlarmPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
         var resultOrdinal = hasArchive ? Scalar(db, "SELECT ResultPosition FROM audit_entries WHERE ResultPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
-        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
+        var draftOrdinal = hasDraft ? Scalar(db, "SELECT DraftPosition FROM audit_entries WHERE DraftPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;", deadline, Number(after)) : 0;
+        var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + (hasIdentity ? "IdentityPosition" : "NULL") + "," + (hasAlarm ? "AlarmPosition" : "NULL") + "," + (hasArchive ? "ResultPosition" : "NULL") + "," + (hasDraft ? "DraftPosition" : "NULL") + " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;",
             deadline, s => new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
                 SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
-                SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6), SqliteNative.ColumnText(s, 7), SqliteNative.ColumnText(s, 8)), Number(after), Number(count));
+                SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6), SqliteNative.ColumnText(s, 7), SqliteNative.ColumnText(s, 8), SqliteNative.ColumnText(s, 9)), Number(after), Number(count));
         var next = after + 1;
         foreach (var row in rows)
         {
@@ -378,7 +471,7 @@ internal static class AuditChainDatabase
             var payload = Convert.FromBase64String(row.Payload);
             Require(payload.Length <= (hasArchive ? AlgorithmResultArchiveOptions.MaximumBindingPayloadBytes : hasAlarm ? AlarmStorageCodec.MaximumPayloadBytes : 16384), "AuditPayloadOversize");
             Require(EntryHash(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
-                row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition, payload) == row.Hash, "AuditPayloadHashMismatch");
+                row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition, row.DraftPosition, payload) == row.Hash, "AuditPayloadHashMismatch");
             if (row.Kind == "CommandFact")
             {
                 Require(long.TryParse(row.FactPosition, NumberStyles.None, CultureInfo.InvariantCulture, out var position), "AuditFactLinkMissing");
@@ -422,7 +515,26 @@ internal static class AuditChainDatabase
                     archiveOptions);
                 Require(resultBinding.Length > 0, "AlgorithmResultBindingMismatch");
             }
-            else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null,
+            else if (hasDraft && row.Kind == "RecipeDraftStoreActivated")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null && row.DraftPosition is null,
+                    "RecipeDraftActivationBindingMismatch");
+                SqliteCommandStore.VerifyRecipeDraftActivationPayload(db, payload, recipeDraftOptions!, deadline);
+            }
+            else if (hasDraft && row.Kind == "RecipeDraftRevision")
+            {
+                Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                    row.ResultPosition is null,
+                    "RecipeDraftPositionGap");
+                if (!long.TryParse(row.DraftPosition, NumberStyles.None, CultureInfo.InvariantCulture, out var position))
+                    throw new InvalidOperationException("RecipeDraftPositionGap");
+                Require(position == ++draftOrdinal, "RecipeDraftPositionGap");
+                var draftBinding = SqliteCommandStore.ReadAndValidateRecipeDraft(db, position, payload, deadline,
+                    recipeDraftOptions!);
+                Require(draftBinding.Length > 0, "RecipeDraftBindingMismatch");
+            }
+            else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null,
                 "AuditEntryKindUnsupported");
             var cp = ReadCheckpoint(db, "WHERE Sequence=?", deadline, Number(row.Sequence));
             if ((row.Sequence - 1) % policy.CheckpointEveryEntries == 0)
@@ -458,6 +570,16 @@ internal static class AuditChainDatabase
     {
         Require(report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
             "AlgorithmResultVerificationBudgetExceeded");
+    }
+
+    internal static void RequireFullRecipeDraftVerification(sqlite3 db, AuditIntegrityReport report,
+        StoreDeadline deadline, RecipeDraftStoreOptions? options = null)
+    {
+        Require(report.VerifiedFromSequence == 1 &&
+            report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
+            "RecipeDraftVerificationBudgetExceeded");
+        if (options is not null)
+            SqliteCommandStore.ValidateRecipeDraftHistory(db, options, deadline);
     }
 
     internal static void VerifyCheckpoint(AuditIntegrityPolicy policy, AuditCheckpoint cp, string keyId, string publicKey)
@@ -536,13 +658,22 @@ internal static class AuditChainDatabase
     private static string Number(long value) => value.ToString(CultureInfo.InvariantCulture);
     private static string EntryHash(long schemaVersion, string stationId, long sequence, string previousHash,
         string kind, string? factPosition, string? identityPosition, string? alarmPosition, string? resultPosition, byte[] payload) =>
-        AuditCanonical.Hash(stationId, sequence, previousHash, schemaVersion >= 7
-            ? schemaVersion >= 8
-                ? AuditCanonical.Encode("AuditEntryEnvelopeV5", kind, factPosition, identityPosition, alarmPosition, resultPosition, Convert.ToBase64String(payload))
-                : AuditCanonical.Encode("AuditEntryEnvelopeV4", kind, factPosition, identityPosition, alarmPosition, Convert.ToBase64String(payload))
-            : schemaVersion >= 3
-                ? AuditCanonical.Encode("AuditEntryEnvelopeV3", kind, factPosition, identityPosition, Convert.ToBase64String(payload))
-                : payload);
+        EntryHash(schemaVersion, stationId, sequence, previousHash, kind, factPosition, identityPosition,
+            alarmPosition, resultPosition, null, payload);
+
+    private static string EntryHash(long schemaVersion, string stationId, long sequence, string previousHash,
+        string kind, string? factPosition, string? identityPosition, string? alarmPosition, string? resultPosition,
+        string? draftPosition, byte[] payload) =>
+        AuditCanonical.Hash(stationId, sequence, previousHash, schemaVersion >= RecipeDraftStoreOptions.SchemaVersion
+            ? AuditCanonical.Encode("AuditEntryEnvelopeV6", kind, factPosition, identityPosition, alarmPosition,
+                resultPosition, draftPosition, Convert.ToBase64String(payload))
+            : schemaVersion >= 7
+                ? schemaVersion >= 8
+                    ? AuditCanonical.Encode("AuditEntryEnvelopeV5", kind, factPosition, identityPosition, alarmPosition, resultPosition, Convert.ToBase64String(payload))
+                    : AuditCanonical.Encode("AuditEntryEnvelopeV4", kind, factPosition, identityPosition, alarmPosition, Convert.ToBase64String(payload))
+                : schemaVersion >= 3
+                    ? AuditCanonical.Encode("AuditEntryEnvelopeV3", kind, factPosition, identityPosition, Convert.ToBase64String(payload))
+                    : payload);
     internal static void Require(bool condition, string reason)
     {
         if (!condition) throw new InvalidOperationException(reason);
@@ -555,5 +686,5 @@ internal static class AuditChainDatabase
     }
 
     private sealed record ChainRow(long Sequence, string Kind, string? FactPosition, string Payload, string PreviousHash,
-        string Hash, string? IdentityPosition, string? AlarmPosition, string? ResultPosition);
+        string Hash, string? IdentityPosition, string? AlarmPosition, string? ResultPosition, string? DraftPosition);
 }

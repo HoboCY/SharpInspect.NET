@@ -32,7 +32,8 @@ public sealed class AuthorizationPolicy
         .ToArray();
 
     private static readonly Permission[] MandatoryStepUpPermissions = AllPermissions
-        .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe and not Permission.AcknowledgeAlarm)
+        .Where(permission => permission is not Permission.ArmProduction and not Permission.ActivateRecipe and
+            not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -167,11 +168,19 @@ public sealed class AuthorizationPolicy
             })
             .ToArray();
 
+        // Keep the original Development policy contract stable when new
+        // permissions are added. Draft authoring is an explicit schema-9
+        // policy choice and must not silently change an existing store's
+        // role bundles or content hash.
+        var developmentAdministratorPermissions = AllPermissions
+            .Where(permission => permission is not Permission.EditRecipeDraft)
+            .ToArray();
+
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>
         {
             [HumanRoleBundle.Operator] = operatorPermissions,
             [HumanRoleBundle.Technician] = technicianPermissions,
-            [HumanRoleBundle.Administrator] = AllPermissions.ToArray()
+            [HumanRoleBundle.Administrator] = developmentAdministratorPermissions
         };
         return new AuthorizationPolicy("development", "development-2026-09", roleBundles);
     }

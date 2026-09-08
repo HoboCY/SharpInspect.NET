@@ -141,6 +141,28 @@ try {
         }
         finally { [Environment]::SetEnvironmentVariable('SHARPINSPECT_IDENTITY_CONSUMER',$taskPreviousIdentityConsumer,'Process') }
     }
+    if ($Ticket -ge 15) {
+        $taskPreviousDraftConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_DRAFT_CONSUMER','Process')
+        $taskPreviousDraftEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT',(Join-Path $taskRun 'draft-demo'),'Process')
+            Invoke-TaskDotnet 'draft-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~RecipeDraftConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'draft-consumer-tests'))
+            foreach ($taskDraftFile in @('evidence.json','draft-editor.png','draft-editor-dependencies.png','draft-restart.json','process.log','restart.log')) {
+                $taskDraftArtifact = Join-Path $taskRun ('draft-demo/' + $taskDraftFile)
+                if (-not (Test-Path -LiteralPath $taskDraftArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskDraftArtifact).Length -eq 0) {
+                    throw "Draft consumer evidence is missing or empty: $taskDraftFile"
+                }
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_CONSUMER',$taskPreviousDraftConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT',$taskPreviousDraftEvidence,'Process')
+        }
+    }
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'

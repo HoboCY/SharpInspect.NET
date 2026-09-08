@@ -377,7 +377,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
 
     private sealed record Registration(IVisionAlgorithmFactory Factory, AlgorithmDescriptor Descriptor)
     {
-        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public SemaphoreSlim Gate { get; } = AlgorithmFactorySynchronization.For(Factory);
     }
 
     private sealed class Attempt : IDisposable

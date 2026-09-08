@@ -29,7 +29,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             filter.ThroughPosition < filter.AfterPosition || filter.PageSize is < 1 or > 200)
             throw new ArgumentOutOfRangeException(nameof(filter));
         if (_options.AlgorithmResultArchive is null)
-            return Empty(false, "AlgorithmResultArchiveUnavailable");
+            return Empty(false, "AlgorithmResultArchiveConfigurationRequired");
         if (_options.AuditIntegrityPolicy is null || _options.LocalIdentity is null)
             return Empty(false, "AlgorithmResultArchiveRequiresIdentityAndAudit");
         if (filter.Correlation is { Kind: ExecutionKind.Production })
@@ -92,7 +92,10 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             return new QueryResult(Empty(false, pathReason), null);
         using var key = WindowsMachineAuditKey.Open(_options.AuditIntegrityPolicy!, false, out _);
         using var connection = SqliteNative.Open(path, readOnly: true);
-        AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+        if (_options.RecipeDrafts is not null)
+            RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
+        else
+            AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
         var database = connection.Handle!;
         SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
         var committed = false;
@@ -103,14 +106,25 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 throw new InvalidOperationException(schema == AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveConfigurationRequired"
                     : "AlgorithmResultArchiveGovernedMigrationRequired");
-            AuditChainDatabase.Require(schema == AlgorithmResultArchiveOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is AlgorithmResultArchiveOptions.SchemaVersion or
+                RecipeDraftStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if (schema == RecipeDraftStoreOptions.SchemaVersion)
+                AuditChainDatabase.Require(_options.RecipeDrafts is not null,
+                    "RecipeDraftConfigurationRequired");
+            if (schema == AlgorithmResultArchiveOptions.SchemaVersion)
+                AuditChainDatabase.Require(_options.RecipeDrafts is null,
+                    "RecipeDraftGovernedMigrationRequired");
             var policy = _options.AuditIntegrityPolicy!;
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
                 new AuditVerificationRequest(0, policy.MaximumVerificationEntries), false, deadline,
-                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
+                validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
+                recipeDraftOptions: _options.RecipeDrafts);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+            if (_options.RecipeDrafts is not null)
+                AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                    _options.RecipeDrafts);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline);

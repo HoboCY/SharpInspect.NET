@@ -18,7 +18,8 @@ public enum AuditedCommandKind
     RebindHumanCredential = 10,
     SetHumanPermissions = 11,
     AcknowledgeAlarm = 12,
-    ResetAlarm = 13
+    ResetAlarm = 13,
+    SaveRecipeDraft = 14
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

@@ -38,7 +38,8 @@ internal enum IdentityEventKind
     RecoveryKitRotationRejected,
     RecoveryKitCustodyConfirmed,
     RecoveryKitCustodyRejected,
-    AlarmActionAuthorized
+    AlarmActionAuthorized,
+    RecipeDraftSaved
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -106,14 +107,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > 8)
+        if (schemaVersion is < 3 or > 9)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > 8)
+        if (schemaVersion is < 3 or > 9)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -138,7 +139,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 => 46, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 => 46, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -158,6 +159,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     : (int)legacyKind <= (int)IdentityEventKind.SessionSignInCancelled,
                     "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= 7 || legacyKind != IdentityEventKind.AlarmActionAuthorized,
+                    "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= 9 || legacyKind != IdentityEventKind.RecipeDraftSaved,
                     "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
@@ -219,10 +222,17 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(fields[39] is null ||
                     (Enum.TryParse<AuditedCommandKind>(fields[39], out var actionKind) &&
                      Enum.IsDefined(actionKind) && actionKind is not AuditedCommandKind.Unsupported and
-                     not AuditedCommandKind.GracefulProductionStop && fields[39] == actionKind.ToString()),
+                     not AuditedCommandKind.GracefulProductionStop &&
+                     (schemaVersion >= 9 || actionKind != AuditedCommandKind.SaveRecipeDraft) &&
+                     fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
-                AuditChainDatabase.Require(IsPermissionSet(fields[40], schemaVersion >= 7 ? 30 : 28) &&
-                    IsPermissionSet(fields[41], schemaVersion >= 7 ? 30 : 28),
+                // Permission 31 is part of the current default role bundle even
+                // for identity-only/alarm schema 7/8 stores. It is a capability
+                // carried by the signed permission list; the draft mutation/event
+                // itself remains schema-9 gated below and in the store dispatcher.
+                var maximumPermissions = schemaVersion >= 7 ? 31 : 28;
+                AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
+                    IsPermissionSet(fields[41], maximumPermissions),
                     "AuditAuthorizationPayloadInvalid");
             }
 
@@ -241,6 +251,77 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         {
             throw new InvalidOperationException("AuditIdentityPayloadInvalid");
         }
+    }
+
+    /// <summary>
+    /// Replays must be authorized by the durable, signed RecipeDraftSaved event.
+    /// The in-memory Step-Up grant is intentionally not consulted here: it may have
+    /// been consumed, purged, or lost across a restart. Audit verification has
+    /// already validated the complete envelope before this matcher is called.
+    /// </summary>
+    internal static bool MatchesRecipeDraftAuthorization(byte[] payload, long ordinal, string stationId,
+        Guid principalId, Guid sessionId, long authorizationRevision, Guid operationId, Guid draftId,
+        Guid? stepUpGrantId)
+    {
+        try
+        {
+            var fields = DecodeFields(payload);
+            var grant = stepUpGrantId?.ToString("D");
+            return fields.Length == 46 &&
+                fields[0] == ordinal.ToString(CultureInfo.InvariantCulture) &&
+                fields[2] == IdentityEventKind.RecipeDraftSaved.ToString() &&
+                fields[4] == stationId && fields[5] == principalId.ToString("D") &&
+                fields[25] == sessionId.ToString("D") && fields[30] == principalId.ToString("D") &&
+                fields[31] == operationId.ToString("D") && fields[32] == grant &&
+                fields[33] == Permission.EditRecipeDraft.ToString() &&
+                fields[35] == authorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == draftId.ToString("D") && fields[38] == operationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.SaveRecipeDraft.ToString() &&
+                fields[9] == "RecipeDraftAuthorized";
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    private static string?[] DecodeFields(byte[] payload)
+    {
+        using var input = new MemoryStream(payload, writable: false);
+        using var reader = new BinaryReader(input, new UTF8Encoding(false, true));
+        var versionBytes = reader.ReadBytes(4);
+        if (versionBytes.Length != 4 || BinaryPrimitives.ReadInt32BigEndian(versionBytes) !=
+            AuditCanonical.CanonicalizationVersion)
+            throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var marker = reader.ReadByte();
+        if (marker != 1) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var labelLengthBytes = reader.ReadBytes(4);
+        if (labelLengthBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var labelLength = BinaryPrimitives.ReadInt32BigEndian(labelLengthBytes);
+        if (labelLength is < 0 or > 1024) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var labelBytes = reader.ReadBytes(labelLength);
+        if (labelBytes.Length != labelLength) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        if (new UTF8Encoding(false, true).GetString(labelBytes) != "IdentityEvent")
+            throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var countBytes = reader.ReadBytes(4);
+        if (countBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var count = BinaryPrimitives.ReadInt32BigEndian(countBytes);
+        if (count != 46) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        var fields = new string?[count];
+        for (var index = 0; index < fields.Length; index++)
+        {
+            var valueMarker = reader.ReadByte();
+            if (valueMarker == 0) continue;
+            if (valueMarker != 1) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+            var lengthBytes = reader.ReadBytes(4);
+            if (lengthBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+            var length = BinaryPrimitives.ReadInt32BigEndian(lengthBytes);
+            if (length is < 0 or > 1024) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+            var bytes = reader.ReadBytes(length);
+            if (bytes.Length != length) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+            fields[index] = new UTF8Encoding(false, true).GetString(bytes);
+        }
+        if (input.Position != input.Length) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        return fields;
     }
 
     private static bool IsHash(string? value) => value is { Length: 64 } &&

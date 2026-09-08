@@ -229,7 +229,8 @@ public sealed class AlgorithmScalarConstraints
 public sealed class AlgorithmFieldDefinition
 {
     public AlgorithmFieldDefinition(string key, AlgorithmScalarType type, string unit, bool required,
-        AlgorithmScalarConstraints? constraints = null, AlgorithmScalarValue? authoringDefault = null)
+        AlgorithmScalarConstraints? constraints = null, AlgorithmScalarValue? authoringDefault = null,
+        string? helpText = null)
     {
         Key = AlgorithmConfigurationValidation.Identifier(key, nameof(key));
         Type = AlgorithmConfigurationValidation.Enum(type, nameof(type));
@@ -245,6 +246,8 @@ public sealed class AlgorithmFieldDefinition
                 throw new ArgumentException("AlgorithmFieldDefaultConstraintViolation", nameof(authoringDefault));
         }
         AuthoringDefault = authoringDefault;
+        HelpText = string.IsNullOrEmpty(helpText) ? null :
+            AlgorithmConfigurationValidation.Text(helpText, nameof(helpText), 4096);
     }
 
     public string Key { get; }
@@ -253,6 +256,8 @@ public sealed class AlgorithmFieldDefinition
     public bool Required { get; }
     public AlgorithmScalarConstraints? Constraints { get; }
     public AlgorithmScalarValue? AuthoringDefault { get; }
+    /// <summary>Optional literal authoring help, bound by the configuration schema hash.</summary>
+    public string? HelpText { get; }
 }
 
 /// <summary>Immutable versioned schema for algorithm configuration values.</summary>
@@ -477,6 +482,15 @@ internal static class AlgorithmConfigurationCanonical
             writer.Bool(field.Required);
             writer.Constraints(field.Constraints);
             writer.Scalar(field.AuthoringDefault);
+        }
+        // Preserve historical hashes when no authoring-help extension was declared.
+        var helpFields = schema.Fields.Where(field => field.HelpText is not null)
+            .OrderBy(field => field.Key, StringComparer.Ordinal).ToArray();
+        if (helpFields.Length != 0)
+        {
+            writer.String("sharpinspect-configuration-authoring-help-v1");
+            writer.Int32(helpFields.Length);
+            foreach (var field in helpFields) { writer.String(field.Key); writer.String(field.HelpText!); }
         }
         return Convert.ToHexString(SHA256.HashData(writer.ToArray()));
     }

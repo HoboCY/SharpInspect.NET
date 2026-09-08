@@ -46,12 +46,17 @@ internal static class Program
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
         if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         var auditKey = Option("--audit-key");
+        var draftCheckDirectory = Option("--recipe-draft-check");
+        var draftQueryDirectory = Option("--recipe-draft-query");
+        var draftEnabled = draftCheckDirectory is not null || draftQueryDirectory is not null ||
+            args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
             AlarmPolicy = Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
+            RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -59,6 +64,10 @@ internal static class Program
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
             }
         };
+        if (draftCheckDirectory is not null)
+            return RecipeDraftDemo.Run(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (draftQueryDirectory is not null)
+            return RecipeDraftDemo.Query(storeOptions, draftQueryDirectory);
         if (administratorRecoveryCheck)
             return AdministratorRecoveryDemo.Run(storeOptions);
         if (args.Contains("--alarm-check", StringComparer.OrdinalIgnoreCase))
@@ -73,6 +82,7 @@ internal static class Program
             ? Path.GetFullPath(args[screenshotIndex + 1]) : null;
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var services = new ServiceCollection();
+        if (draftEnabled) services.AddSingleton(RecipeDraftDemo.CreateFactory());
         services.AddSharpInspectSqliteRuntime(storeOptions, TimeSpan.FromMilliseconds(500));
         services.AddSingleton<StationShellViewModel>(p =>
         {
@@ -91,6 +101,9 @@ internal static class Program
         services.AddSingleton<AuditIntegrityViewModel>();
         services.AddSingleton(p => new AlgorithmResultHistoryViewModel(p.GetService<IAlgorithmResultQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new RecipeDraftEditorViewModel(p.GetService<IRecipeDraftEditor>(),
+            p.GetService<IInteractiveSessionService>(), new DispatcherUiDispatcher(app.Dispatcher),
+            storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>()));
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
             p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
@@ -116,7 +129,8 @@ internal static class Program
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
         var alarms = provider.GetRequiredService<AlarmViewModel>();
         var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms,
-            provider.GetRequiredService<AlgorithmResultHistoryViewModel>());
+            provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
+            provider.GetRequiredService<RecipeDraftEditorViewModel>());
         var exitCode = 0;
         if (smoke)
         {

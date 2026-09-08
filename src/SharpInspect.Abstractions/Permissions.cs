@@ -39,7 +39,9 @@ public enum Permission : ushort
     CorrectHistoricalFact = 27,
     DeleteEvidence = 28,
     AcknowledgeAlarm = 29,
-    ResetAlarm = 30
+    ResetAlarm = 30,
+    /// <summary>Author and persist a bounded Recipe Draft revision.</summary>
+    EditRecipeDraft = 31
 }
 
 /// <summary>

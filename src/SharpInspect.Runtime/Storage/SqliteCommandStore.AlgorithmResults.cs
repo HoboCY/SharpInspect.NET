@@ -280,15 +280,19 @@ internal sealed partial class SqliteCommandStore
             SqliteNative.Execute(database, "BEGIN IMMEDIATE;", deadline);
             started = true;
             var alarmStore = _options.AlarmPolicy is not null;
+            var draftStore = _options.RecipeDrafts is not null;
             AuditIntegrityReport verification;
             try
             {
                 verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                     _signingKey.PublicKeyBase64,
                     new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries),
-                    false, deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive);
+                    false, deadline, validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
+                    recipeDraftOptions: _options.RecipeDrafts);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+                if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                    _options.RecipeDrafts);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
