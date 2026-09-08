@@ -9,6 +9,56 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class RecipeDraftStorageCodecTests
 {
     [Fact]
+    public void V117_D20_CommonDraftRetainsPreExtensionCanonicalPayload()
+    {
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(CreateContent(), out var document, out var reason), reason);
+        // Measured from the pre-extension codec before this change; optional
+        // provider metadata must not rewrite existing format 1 payloads.
+        Assert.Equal("B08617404C7F03A62B65A9DA6714F2F84A823D0BC6B3C308FFADACAB666B842E", document!.PayloadHash);
+        Assert.DoesNotContain("CameraProviderExtension", document.PayloadJson);
+    }
+
+    [Fact]
+    public void V117_D21_ProviderBoundDraftRoundTripsAllExtensionIdentityFields()
+    {
+        var content = WithExtension();
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(content, out var document, out var reason), reason);
+        Assert.StartsWith("{\"FormatVersion\":2,", document!.PayloadJson, StringComparison.Ordinal);
+        Assert.True(RecipeDraftStorageCodec.TryDecodeContent(document.PayloadJson, document.PayloadHash,
+            out var decoded, out var decodeReason), decodeReason);
+        Assert.Equal(content.ContentHash, decoded!.ContentHash);
+        Assert.Equal(content.CameraProviderExtension, decoded.CameraProviderExtension);
+        Assert.False(decoded.IsCameraConfigurationPortable);
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(decoded, out var reencoded, out reason), reason);
+        Assert.Equal(document.PayloadJson, reencoded!.PayloadJson);
+        Assert.Equal(document.PayloadHash, reencoded.PayloadHash);
+    }
+
+    [Theory]
+    [InlineData("\"ContractVersion\":\"3\"", "\"ContractVersion\":\"4\"")]
+    [InlineData("\"AdapterVersion\":\"2\"", "\"AdapterVersion\":\"9\"")]
+    [InlineData("\"ContractId\":\"Camera.FixedGamma\",", "")]
+    [InlineData("\"ContractVersion\":\"3\"", "\"ContractVersion\":\"3\",\"Unknown\":true")]
+    [InlineData("\"FormatVersion\":2", "\"FormatVersion\":1")]
+    public void V117_D22_ExtensionMutationMissingFieldsAndFormatDowngradeAreRejected(string before, string after)
+    {
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(WithExtension(), out var document, out var reason), reason);
+        var changed = document!.PayloadJson.Replace(before, after, StringComparison.Ordinal);
+        Assert.NotEqual(document.PayloadJson, changed);
+        Assert.False(RecipeDraftStorageCodec.TryDecodeContent(changed, Hash(changed), out var decoded, out _));
+        Assert.Null(decoded);
+    }
+
+    private static RecipeDraftContent WithExtension()
+    {
+        var common = CreateContent();
+        return new(common.RecipeKey, common.DisplayName, common.Algorithm, common.Configuration,
+            common.CameraRole, common.Camera, common.AlgorithmExecutionTimeout, common.AssetRequirements,
+            common.PolicyRequirements, common.ValueOrigins,
+            new(new("Camera.Provider", "1", "Camera.Adapter", "2"), "Camera.FixedGamma", "3", new string('C', 64)));
+    }
+
+    [Fact]
     public void V115_C01_CompleteDraftRoundTripsWithHistoricalSchemaAndOrigins()
     {
         var content = CreateContent();

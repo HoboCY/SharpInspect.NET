@@ -115,7 +115,7 @@ internal sealed partial class SqliteCommandStore
         try
         {
             EnsureRecipeDraftNotCancelled(work);
-            ValidateRecipeDraftDocument(work.Document, _options.RecipeDrafts!);
+            ValidateRecipeDraftDocument(work.Document, _options.RecipeDrafts!, _options.CameraSetup is not null);
         }
         catch (InvalidOperationException ex) { return new StoreWriteResult(false, ex.Message); }
 
@@ -142,11 +142,15 @@ internal sealed partial class SqliteCommandStore
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64, new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries),
                 startup: false, deadline, validateAnchorReceipt: false,
-                archiveOptions: _options.AlgorithmResultArchive, recipeDraftOptions: _options.RecipeDrafts);
+                archiveOptions: _options.AlgorithmResultArchive, recipeDraftOptions: _options.RecipeDrafts,
+                cameraSetupOptions: _options.CameraSetup);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                 _options.RecipeDrafts);
+            if (_options.CameraSetup is not null)
+                AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                    _options.CameraSetup);
             recipeDraftHistoryVerificationActive = false;
 
             var state = ReadIdentityState(database, deadline);
@@ -376,6 +380,8 @@ internal sealed partial class SqliteCommandStore
             "SELECT COUNT(DISTINCT Position) FROM recipe_draft_revisions;", deadline);
         AuditChainDatabase.Require((count == 0 || (minimumPosition == 1 && maximumPosition == count)) &&
             distinctPositions == count, "RecipeDraftPositionGap");
+        var cameraSetupEnabled = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
+            CameraSetupStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
@@ -400,7 +406,7 @@ internal sealed partial class SqliteCommandStore
                 AuditChainDatabase.Require(row.Revision == expectedRevision++, "RecipeDraftRevisionGap");
                 AuditChainDatabase.Require(string.Equals(row.PreviousRevisionContentHash, previousHash,
                     StringComparison.Ordinal), "RecipeDraftPreviousRevisionMismatch");
-                var content = DecodeAndValidateRecipeDraftRow(row, options);
+                var content = DecodeAndValidateRecipeDraftRow(row, options, cameraSetupEnabled);
                 var expectedHash = ComputeRevisionHash(row.DraftId, row.Revision, row.OperationId,
                     row.PreviousRevisionContentHash, content.ContentHash, row.PayloadHash,
                     row.AuthorPrincipalId, row.AuthorSessionId, row.AuthorAuthorizationRevision,
@@ -420,7 +426,9 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(row is not null, "RecipeDraftRevisionMissing");
         AuditChainDatabase.Require(EncodeRecipeDraftBinding(row!).SequenceEqual(auditPayload), "RecipeDraftBindingMismatch");
         var found = row!;
-        _ = DecodeAndValidateRecipeDraftRow(found, options);
+        _ = DecodeAndValidateRecipeDraftRow(found, options,
+            cameraSetupEnabled: AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
+                CameraSetupStoreOptions.SchemaVersion);
         return auditPayload;
     }
 
@@ -439,7 +447,7 @@ internal sealed partial class SqliteCommandStore
     }
 
     private static RecipeDraftContent DecodeAndValidateRecipeDraftRow(RecipeDraftHead row,
-        RecipeDraftStoreOptions options)
+        RecipeDraftStoreOptions options, bool cameraSetupEnabled)
     {
         var payloadBytes = Encoding.UTF8.GetBytes(row.PayloadJson);
         AuditChainDatabase.Require(payloadBytes.Length <= options.MaximumRecordBytes,
@@ -451,10 +459,13 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(RecipeDraftStorageCodec.TryDecodeContent(row.PayloadJson, row.PayloadHash,
             out var decoded, out var reason) && decoded is not null && reason == "RecipeDraftContentDecoded",
             reason.Length == 0 ? "RecipeDraftPayloadInvalid" : reason);
+        AuditChainDatabase.Require(cameraSetupEnabled || decoded!.CameraProviderExtension is null,
+            "RecipeDraftCameraExtensionRequiresCameraSetup");
         return decoded!;
     }
 
-    private static void ValidateRecipeDraftDocument(RecipeDraftDocument document, RecipeDraftStoreOptions options)
+    private static void ValidateRecipeDraftDocument(RecipeDraftDocument document, RecipeDraftStoreOptions options,
+        bool cameraSetupEnabled)
     {
         if (document.Content is null || string.IsNullOrWhiteSpace(document.PayloadJson) ||
             document.PayloadHash is null || document.PayloadHash.Length != 64)
@@ -468,6 +479,8 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException(reason.Length == 0 ? "RecipeDraftPayloadInvalid" : reason);
         if (!string.Equals(decoded.ContentHash, document.Content.ContentHash, StringComparison.Ordinal))
             throw new InvalidOperationException("RecipeDraftContentMismatch");
+        if (!cameraSetupEnabled && decoded.CameraProviderExtension is not null)
+            throw new InvalidOperationException("RecipeDraftCameraExtensionRequiresCameraSetup");
         var policy = document.Content.PolicyRequirements.Where(item => item.Kind == RecipePolicyKind.AlgorithmExecution).ToArray();
         if (policy.Length != 1 || policy[0].Contract.Id != options.ExecutionPolicy.Id ||
             policy[0].Contract.Version != options.ExecutionPolicy.Version ||

@@ -53,10 +53,15 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
                 else if (schemaSupportsArchive(_options))
                     AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
+                else if (_options.CameraSetup is not null)
+                    CameraSetupStoreOptions.ConfigureSqliteLimit(db);
                 SqliteNative.Execute(db, "PRAGMA query_only=ON; BEGIN;", deadline, lifetime.Token);
                 var schema = AuditChainDatabase.Scalar(db, "PRAGMA user_version;", deadline);
-                if (schema == RecipeDraftStoreOptions.SchemaVersion)
+                if (schema == RecipeDraftStoreOptions.SchemaVersion ||
+                    schema == CameraSetupStoreOptions.SchemaVersion && _options.RecipeDrafts is not null)
                     RecipeDraftStoreOptions.ConfigureSqliteLimit(db);
+                else if (schema == CameraSetupStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is null)
+                    CameraSetupStoreOptions.ConfigureSqliteLimit(db);
                 else if (schema >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(db);
                 else if (schema >= 7) AlarmStorageCodec.ConfigureSqliteLimit(db);
                 if (_options.LocalIdentity is not null && schema < 7)
@@ -79,26 +84,35 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("RecipeDraftGovernedMigrationRequired");
                 if (_options.RecipeDrafts is null && schema == RecipeDraftStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("RecipeDraftConfigurationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9,
+                if (_options.CameraSetup is not null && schema < CameraSetupStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
+                if (_options.CameraSetup is null && schema == CameraSetupStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("CameraSetupConfigurationRequired");
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10,
                     "AuditGovernedMigrationRequired");
                 var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
-                    schema == RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
-                var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion;
+                    schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
+                var draftSchema = schema == RecipeDraftStoreOptions.SchemaVersion ||
+                    schema == CameraSetupStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
+                var cameraSchema = schema == CameraSetupStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
                 var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
-                var fullVerification = archiveVerification || draftVerification || alarmStartup;
+                var fullVerification = archiveVerification || draftVerification || cameraSchema || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
                 var report = AuditChainDatabase.Verify(db, policy, key.KeyId, key.PublicKeyBase64,
                     verificationRequest, fullVerification ? false : startup, deadline,
                     archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
-                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null);
+                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null,
+                    cameraSetupOptions: cameraSchema ? _options.CameraSetup : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
                     _options.RecipeDrafts);
+                if (cameraSchema) AuditChainDatabase.RequireFullCameraSetupVerification(db, report, deadline,
+                    _options.CameraSetup);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -127,6 +141,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
 
     internal static string FaultReason(Exception exception, string unavailable)
     {
+        if (exception is InvalidOperationException { Message: var cameraReason } &&
+            cameraReason.StartsWith("CameraSetup", StringComparison.Ordinal))
+            return cameraReason;
         if (exception is InvalidOperationException { Message: "IdentityAuthenticationGovernedMigrationRequired" })
             return "IdentityAuthenticationGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "IdentityAuthorizationGovernedMigrationRequired" })

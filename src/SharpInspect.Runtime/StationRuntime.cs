@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
+using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 
@@ -11,7 +12,7 @@ namespace SharpInspect.Runtime;
 /// The initial, deliberately unconfigured station authority. Later tickets supply governed
 /// capabilities; no host option can assert that a missing production gate passed.
 /// </summary>
-public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -23,6 +24,7 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private readonly IInteractiveSessionService? _sessions;
     private readonly LocalAuthorizationService? _authorization;
     private readonly FrameBufferPool? _frameBufferPool;
+    private readonly CameraSetupRuntime _cameraSetupRuntime;
     private readonly AlgorithmExecutionGuard _executionGuard;
     private readonly bool _algorithmExecutionRegistered;
     private readonly Task _storeInitialization;
@@ -38,11 +40,12 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
     private long _sessionProjectionVersion;
     private bool _disposed;
 
-    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval, null, null, null, null, null) { }
+    public StationRuntime(TimeSpan? heartbeatInterval = null) : this(null, heartbeatInterval, null, null, null, null, null, null, null) { }
 
     internal StationRuntime(ICommandAuditWriter? audit, TimeSpan? heartbeatInterval = null, IInteractiveSessionService? sessions = null,
         LocalAuthorizationService? authorization = null, FrameBufferPool? frameBufferPool = null,
-        AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null)
+        AlgorithmExecutionGuard? executionGuard = null, AlgorithmExecutionOptions? algorithmExecutionOptions = null,
+        IEnumerable<ICameraProvider>? cameraProviders = null, CameraSetupOptions? cameraSetupOptions = null)
     {
         _audit = audit;
         _sessions = sessions;
@@ -73,6 +76,13 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 "FrameworkQualificationMissing", "ProviderQualificationMissing", "PerformanceQualificationMissing",
                 "StationAcceptanceMissing", "ProductionCycleUnavailable"
             }));
+        var registeredProviders = cameraSetupOptions is { Providers.Count: > 0 }
+            ? cameraSetupOptions.Providers
+            : cameraProviders ?? Array.Empty<ICameraProvider>();
+        _cameraSetupRuntime = new CameraSetupRuntime(registeredProviders,
+            cameraSetupOptions ?? new CameraSetupOptions(), _audit, _sessions,
+            authorization, ReadCameraStationContext, PublishCameraSetupLocked,
+            authorization as ICameraSetupAuthorizer, CameraSetupPersistenceFactory.Create(_audit));
         _snapshot = ApplyAlgorithmExecutionStateLocked(_snapshot);
         if (_sessions is not null)
         {
@@ -412,6 +422,15 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
                 lock (_sync)
                 {
                     if (_shutdownRequested || _disposed) return;
+                }
+
+                // Camera health is sampled asynchronously by the camera setup
+                // coordinator. Check shutdown before scheduling the probe so a
+                // tick racing Dispose cannot start another provider call.
+                _cameraSetupRuntime.Heartbeat();
+                lock (_sync)
+                {
+                    if (_shutdownRequested || _disposed) return;
                     ReconcileAlgorithmExecutionLocked();
                     var integrity = _audit?.Integrity;
                     var integrityBlocked = integrity is { State: AuditIntegrityState.Faulted or AuditIntegrityState.Verifying };
@@ -482,8 +501,10 @@ public sealed partial class StationRuntime : IStationRuntime, IAsyncDisposable, 
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
+        CancelCameraSetupOperations();
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await _cameraSetupRuntime.DisposeAsync().ConfigureAwait(false);
         await _commandGate.WaitAsync().ConfigureAwait(false);
         try
         {

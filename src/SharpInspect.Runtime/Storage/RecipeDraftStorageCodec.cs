@@ -16,6 +16,7 @@ internal static class RecipeDraftStorageCodec
 {
     internal const int MaximumPayloadBytes = 2 * 1024 * 1024;
     private const int FormatVersion = 1;
+    private const int ProviderExtensionFormatVersion = 2;
     private const int CanonicalizationVersion = 1;
     private const int MaximumDepth = 32;
 
@@ -150,7 +151,8 @@ internal static class RecipeDraftStorageCodec
 
         var rebuilt = new RecipeDraftContent(content.RecipeKey, content.DisplayName, content.Algorithm,
             content.Configuration, content.CameraRole, content.Camera, content.AlgorithmExecutionTimeout,
-            content.AssetRequirements, content.PolicyRequirements, content.ValueOrigins);
+            content.AssetRequirements, content.PolicyRequirements, content.ValueOrigins,
+            content.CameraProviderExtension);
         if (!string.Equals(rebuilt.ContentHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
     }
@@ -158,7 +160,8 @@ internal static class RecipeDraftStorageCodec
     private static void WriteContent(Utf8JsonWriter writer, RecipeDraftContent content)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("FormatVersion", FormatVersion);
+        writer.WriteNumber("FormatVersion", content.CameraProviderExtension is null
+            ? FormatVersion : ProviderExtensionFormatVersion);
         writer.WriteNumber("CanonicalizationVersion", CanonicalizationVersion);
         writer.WriteString("RecipeKey", content.RecipeKey);
         writer.WriteString("DisplayName", content.DisplayName);
@@ -169,6 +172,22 @@ internal static class RecipeDraftStorageCodec
         writer.WriteString("CameraRole", content.CameraRole);
         writer.WritePropertyName("Camera");
         WriteCamera(writer, content.Camera);
+        if (content.CameraProviderExtension is { } extension)
+        {
+            writer.WritePropertyName("CameraProviderExtension");
+            writer.WriteStartObject();
+            writer.WritePropertyName("Provider");
+            writer.WriteStartObject();
+            writer.WriteString("Id", extension.Provider.Id);
+            writer.WriteString("Version", extension.Provider.Version);
+            writer.WriteString("AdapterPackageId", extension.Provider.AdapterPackageId);
+            writer.WriteString("AdapterVersion", extension.Provider.AdapterVersion);
+            writer.WriteEndObject();
+            writer.WriteString("ContractId", extension.ContractId);
+            writer.WriteString("ContractVersion", extension.ContractVersion);
+            writer.WriteString("ConfigurationContentHash", extension.ConfigurationContentHash);
+            writer.WriteEndObject();
+        }
         writer.WriteNumber("AlgorithmExecutionTimeoutTicks", content.AlgorithmExecutionTimeout.Ticks);
         writer.WritePropertyName("AssetRequirements");
         writer.WriteStartArray();
@@ -390,10 +409,12 @@ internal static class RecipeDraftStorageCodec
 
     private static RecipeDraftContent ReadContent(JsonElement root)
     {
-        EnsureObject(root, TopProperties, "RecipeDraftPayload");
+        if (root.ValueKind != JsonValueKind.Object) throw Invalid("RecipeDraftPayloadObjectInvalid");
         var format = Int32(root, "FormatVersion");
+        EnsureObject(root, format == ProviderExtensionFormatVersion ? ExtendedTopProperties : TopProperties,
+            "RecipeDraftPayload");
         var canonical = Int32(root, "CanonicalizationVersion");
-        if (format != FormatVersion || canonical != CanonicalizationVersion)
+        if (format is not (FormatVersion or ProviderExtensionFormatVersion) || canonical != CanonicalizationVersion)
             throw Invalid("RecipeDraftPayloadVersionUnsupported");
         var binding = ReadBinding(RequiredObject(root, "Algorithm"));
         var configuration = ReadConfiguration(RequiredObject(root, "Configuration"));
@@ -408,11 +429,24 @@ internal static class RecipeDraftStorageCodec
             TimeSpan.FromTicks(Int64(root, "AlgorithmExecutionTimeoutTicks")),
             ReadAssets(RequiredArray(root, "AssetRequirements")),
             ReadPolicies(RequiredArray(root, "PolicyRequirements")),
-            ReadOrigins(RequiredArray(root, "ValueOrigins")));
+            ReadOrigins(RequiredArray(root, "ValueOrigins")),
+            format == ProviderExtensionFormatVersion
+                ? ReadCameraExtension(RequiredObject(root, "CameraProviderExtension")) : null);
         var suppliedHash = RequiredString(root, "ContentHash");
         if (!string.Equals(suppliedHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
         return content;
+    }
+
+    private static CameraProviderExtensionRequirement ReadCameraExtension(JsonElement element)
+    {
+        EnsureObject(element, CameraExtensionProperties, "RecipeDraftCameraExtension");
+        var provider = RequiredObject(element, "Provider");
+        EnsureObject(provider, CameraProviderProperties, "RecipeDraftCameraProvider");
+        return new(new CameraProviderIdentity(RequiredString(provider, "Id"), RequiredString(provider, "Version"),
+                RequiredString(provider, "AdapterPackageId"), RequiredString(provider, "AdapterVersion")),
+            RequiredString(element, "ContractId"), RequiredString(element, "ContractVersion"),
+            RequiredString(element, "ConfigurationContentHash"));
     }
 
     private static RecipeAlgorithmBinding ReadBinding(JsonElement element)
@@ -756,6 +790,9 @@ internal static class RecipeDraftStorageCodec
         "PolicyRequirements", "ValueOrigins", "ContentHash"
     };
     private static readonly string[] BindingProperties = { "Algorithm", "ConfigurationSchema", "ResultSchema", "OverlayContract" };
+    private static readonly string[] ExtendedTopProperties = TopProperties.Concat(new[] { "CameraProviderExtension" }).ToArray();
+    private static readonly string[] CameraExtensionProperties = { "Provider", "ContractId", "ContractVersion", "ConfigurationContentHash" };
+    private static readonly string[] CameraProviderProperties = { "Id", "Version", "AdapterPackageId", "AdapterVersion" };
     private static readonly string[] AlgorithmProperties = { "Id", "Version" };
     private static readonly string[] SchemaProperties = { "Id", "Version", "ContentHash", "Fields" };
     private static readonly string[] FieldProperties = { "Key", "Type", "Unit", "Required", "Constraints", "AuthoringDefault", "HelpText" };

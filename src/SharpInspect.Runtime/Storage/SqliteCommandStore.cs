@@ -15,9 +15,11 @@ namespace SharpInspect.Runtime.Storage;
 internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDisposable
 {
     internal const string SystemPrincipal = "SharpInspect.Runtime";
+    private bool CameraSetupEnabled => _options.CameraSetup is not null;
     private bool RecipeDraftEnabled => _options.RecipeDrafts is not null;
     private bool AlgorithmArchiveEnabled => _options.AlgorithmResultArchive is not null;
-    private int SchemaVersion => RecipeDraftEnabled ? RecipeDraftStoreOptions.SchemaVersion :
+    private int SchemaVersion => CameraSetupEnabled ? CameraSetupStoreOptions.SchemaVersion :
+        RecipeDraftEnabled ? RecipeDraftStoreOptions.SchemaVersion :
         AlgorithmArchiveEnabled ? AlgorithmResultArchiveOptions.SchemaVersion :
         _options.LocalIdentity is not null ? 7 : _policy is null ? 1 : 2;
     private const int EventVersion = 1;
@@ -42,6 +44,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
 
     internal VerifiedSqliteProfile? VerifiedProfile { get; private set; }
     internal RecipeDraftStoreOptions? RecipeDraftOptions => _options.RecipeDrafts;
+    internal CameraSetupStoreOptions? CameraSetupOptions => _options.CameraSetup;
 
     public SqliteCommandStore(ProductionStoreOptions options) : this(options, ReadFileLength) { }
 
@@ -53,12 +56,16 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         _policy?.Validate();
         options.AlgorithmResultArchive?.Validate();
         options.RecipeDrafts?.Validate();
+        options.CameraSetup?.Validate();
         if (options.AlgorithmResultArchive is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("AlgorithmResultArchiveRequiresIdentityAndAudit", nameof(options));
         if (options.RecipeDrafts is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("RecipeDraftRequiresIdentityAndAudit", nameof(options));
+        if (options.CameraSetup is not null &&
+            (options.LocalIdentity is null || _policy is null))
+            throw new ArgumentException("CameraSetupRequiresIdentityAndAudit", nameof(options));
         if (options.AlarmPolicy is not null)
         {
             options.AlarmPolicy.Validate();
@@ -203,7 +210,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 lease = AcquireLease();
                 connection = SqliteNative.Open(_databasePath!, readOnly: false);
                 if (RecipeDraftEnabled) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
-                else if (SchemaVersion >= 8) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+                else if (AlgorithmArchiveEnabled) AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+                else if (CameraSetupEnabled) CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
                 else if (SchemaVersion >= 7) AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
                 initializationResult = InitializeDatabase(connection);
                 initialized = initializationResult.Committed;
@@ -240,6 +248,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     ex.Message.StartsWith("Alarm", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("AlgorithmResultArchive", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("RecipeDraft", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("CameraSetup", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("GovernedAlarm", StringComparison.Ordinal))
                     ? ex.Message : "TraceStoreUnavailable";
                 SetIntegrityFault(reason);
@@ -343,7 +352,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
-    private string MigrationReason(int existingVersion) => RecipeDraftEnabled
+    private string MigrationReason(int existingVersion) => CameraSetupEnabled
+        ? "CameraSetupGovernedMigrationRequired"
+        : RecipeDraftEnabled
         ? "RecipeDraftGovernedMigrationRequired"
         : AlgorithmArchiveEnabled
         ? "AlgorithmResultArchiveGovernedMigrationRequired"
@@ -375,10 +386,13 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion)
             return new StoreWriteResult(false,
-                !RecipeDraftEnabled && version == RecipeDraftStoreOptions.SchemaVersion
-                    ? "RecipeDraftConfigurationRequired"
-                    : !RecipeDraftEnabled && !AlgorithmArchiveEnabled && version == AlgorithmResultArchiveOptions.SchemaVersion
-                        ? "AlgorithmResultArchiveConfigurationRequired" : "StoreSchemaTooNew");
+                !CameraSetupEnabled && version == CameraSetupStoreOptions.SchemaVersion
+                    ? "CameraSetupConfigurationRequired"
+                    : !CameraSetupEnabled && !RecipeDraftEnabled && version == RecipeDraftStoreOptions.SchemaVersion
+                        ? "RecipeDraftConfigurationRequired"
+                        : !CameraSetupEnabled && !RecipeDraftEnabled && !AlgorithmArchiveEnabled &&
+                          version == AlgorithmResultArchiveOptions.SchemaVersion
+                            ? "AlgorithmResultArchiveConfigurationRequired" : "StoreSchemaTooNew");
         if (version > 0 && version < SchemaVersion)
             return new StoreWriteResult(false, MigrationReason(version));
         if (version == 0 && objects.Count != 0) return new StoreWriteResult(false, "StoreForeignSchema");
@@ -390,19 +404,25 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             _signingKey = WindowsMachineAuditKey.Open(_policy, version == 0, out _);
             if (version >= 2)
             {
-                var archiveSchema = AlgorithmArchiveEnabled && version == SchemaVersion;
+                var archiveSchema = AlgorithmArchiveEnabled &&
+                    (version == SchemaVersion || version == RecipeDraftStoreOptions.SchemaVersion);
                 var alarmSchema = version >= 7 && _options.AlarmPolicy is not null;
-                var draftSchema = RecipeDraftEnabled && version == RecipeDraftStoreOptions.SchemaVersion;
+                var draftSchema = RecipeDraftEnabled &&
+                    (version == RecipeDraftStoreOptions.SchemaVersion || version == CameraSetupStoreOptions.SchemaVersion);
+                var cameraSchema = CameraSetupEnabled && version == CameraSetupStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                    archiveSchema || alarmSchema || draftSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                        new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema, deadline,
+                    archiveSchema || alarmSchema || draftSchema || cameraSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                        new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema && !cameraSchema, deadline,
                     validateAnchorReceipt: false, archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
-                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null);
+                    recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null,
+                    cameraSetupOptions: cameraSchema ? _options.CameraSetup : null);
                 if (alarmSchema) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                     _options.RecipeDrafts);
+                if (cameraSchema) AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                    _options.CameraSetup);
             }
             if (version >= 7) _ = ReadIdentityState(database, deadline);
         }
@@ -412,13 +432,17 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             var persistedAlarmPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AlarmStorageCodec.RequireConfiguredPolicy(persistedAlarmPolicy, _options.AlarmPolicy);
         }
-        if (version == AlgorithmResultArchiveOptions.SchemaVersion || version == RecipeDraftStoreOptions.SchemaVersion)
+        if (version == AlgorithmResultArchiveOptions.SchemaVersion || version == RecipeDraftStoreOptions.SchemaVersion ||
+            version == CameraSetupStoreOptions.SchemaVersion)
         {
             if (AlgorithmArchiveEnabled)
                 SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
         }
-        if (version == RecipeDraftStoreOptions.SchemaVersion)
+        if ((version is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion) &&
+            RecipeDraftEnabled)
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, _options.RecipeDrafts!, deadline);
+        if (version == CameraSetupStoreOptions.SchemaVersion)
+            SqliteCommandStore.RequireConfiguredCameraSetup(database, _options.CameraSetup!, deadline);
 
         if (!ConfigureProductionProfile(database, deadline))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
@@ -451,6 +475,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             {
                 SqliteNative.Execute(database, RecipeDraftSchemaSql, deadline);
                 InitializeRecipeDraftSchema(database, _options.RecipeDrafts!, deadline);
+            }
+            if (CameraSetupEnabled)
+            {
+                SqliteNative.Execute(database, CameraSetupSchemaSql, deadline);
+                InitializeCameraSetupSchema(database, _options.CameraSetup!, deadline);
             }
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -514,13 +543,15 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     var alarmStore = _options.AlarmPolicy is not null;
                     var archiveStore = _options.AlgorithmResultArchive is not null;
                     var draftStore = _options.RecipeDrafts is not null;
+                    var cameraStore = _options.CameraSetup is not null;
                     var verification = AuditChainDatabase.Verify(database, _policy, _signingKey!.KeyId,
                         _signingKey.PublicKeyBase64,
-                        archiveStore || alarmStore || draftStore ?
+                        archiveStore || alarmStore || draftStore || cameraStore ?
                             new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                            new AuditVerificationRequest(), !archiveStore && !alarmStore && !draftStore, deadline,
+                            new AuditVerificationRequest(), !archiveStore && !alarmStore && !draftStore && !cameraStore, deadline,
                         validateAnchorReceipt: false, archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
-                        recipeDraftOptions: draftStore ? _options.RecipeDrafts : null);
+                        recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
+                        cameraSetupOptions: cameraStore ? _options.CameraSetup : null);
                     if (alarmStore)
                         AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                     if (archiveStore)
@@ -528,6 +559,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     if (draftStore)
                         AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                             _options.RecipeDrafts);
+                    if (cameraStore)
+                        AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                            _options.CameraSetup);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -797,6 +831,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (SchemaVersion >= 7) SqliteNative.Execute(canonicalDatabase, AlarmSchemaSql, deadline);
         if (AlgorithmArchiveEnabled) SqliteNative.Execute(canonicalDatabase, AlgorithmResultSchemaSql, deadline);
         if (RecipeDraftEnabled) SqliteNative.Execute(canonicalDatabase, RecipeDraftSchemaSql, deadline);
+        if (CameraSetupEnabled) SqliteNative.Execute(canonicalDatabase, CameraSetupSchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;
@@ -902,6 +937,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (SchemaVersion >= 5)
             {
                 sql = sql.Replace("CHECK(CommandKind IN (0,1,2,3,4,5,6))",
+                    SchemaVersion >= 10 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16))" :
                     SchemaVersion >= 9 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14))" :
                     SchemaVersion >= 7 ? "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11,12,13))" :
                         "CHECK(CommandKind IN (0,1,2,3,4,5,6,7,8,9,10,11))", StringComparison.Ordinal)

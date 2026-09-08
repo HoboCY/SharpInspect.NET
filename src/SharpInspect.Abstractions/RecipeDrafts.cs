@@ -120,7 +120,8 @@ public sealed class RecipeDraftContent
         AlgorithmConfigurationSnapshot configuration, string cameraRole, RequestedCameraConfiguration camera,
         TimeSpan algorithmExecutionTimeout, IEnumerable<RecipeAssetRequirement>? assetRequirements,
         IEnumerable<RecipePolicyRequirement>? policyRequirements,
-        IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null)
+        IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
+        CameraProviderExtensionRequirement? cameraProviderExtension = null)
     {
         RecipeKey = AlgorithmConfigurationValidation.Identifier(recipeKey, nameof(recipeKey));
         DisplayName = AlgorithmContractValidation.BoundedText(displayName, nameof(displayName), 128);
@@ -128,6 +129,7 @@ public sealed class RecipeDraftContent
         Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         CameraRole = AlgorithmConfigurationValidation.Identifier(cameraRole, nameof(cameraRole));
         Camera = camera ?? throw new ArgumentNullException(nameof(camera));
+        CameraProviderExtension = cameraProviderExtension;
         if (!AlgorithmExecutionPolicy.IsRepresentableDuration(algorithmExecutionTimeout))
             throw new ArgumentOutOfRangeException(nameof(algorithmExecutionTimeout));
         AlgorithmExecutionTimeout = algorithmExecutionTimeout;
@@ -158,6 +160,9 @@ public sealed class RecipeDraftContent
     public AlgorithmConfigurationSnapshot Configuration { get; }
     public string CameraRole { get; }
     public RequestedCameraConfiguration Camera { get; }
+    /// <summary>Explicit provider-bound dependency, never a deployment device binding.</summary>
+    public CameraProviderExtensionRequirement? CameraProviderExtension { get; }
+    public bool IsCameraConfigurationPortable => CameraProviderExtension is null;
     public TimeSpan AlgorithmExecutionTimeout { get; }
     public ReadOnlyCollection<RecipeAssetRequirement> AssetRequirements { get; }
     public ReadOnlyCollection<RecipePolicyRequirement> PolicyRequirements { get; }
@@ -189,6 +194,12 @@ public sealed class RecipeDraftContent
         parts.Add(Number(ValueOrigins.Count));
         foreach (var origin in ValueOrigins.OrderBy(item => item.Key, StringComparer.Ordinal))
             parts.AddRange(new[] { origin.Key, origin.Origin.ToString() });
+        // Preserve historical common-only draft hashes exactly. Extension dependencies
+        // add a separately versioned suffix and cannot disappear without changing identity.
+        if (CameraProviderExtension is { } extension)
+            parts.AddRange(new[] { "sharpinspect-camera-provider-extension-v1", extension.Provider.Id,
+                extension.Provider.Version, extension.Provider.AdapterPackageId, extension.Provider.AdapterVersion,
+                extension.ContractId, extension.ContractVersion, extension.ConfigurationContentHash });
         return AlgorithmContractValidation.HashParts(parts);
     }
     private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);

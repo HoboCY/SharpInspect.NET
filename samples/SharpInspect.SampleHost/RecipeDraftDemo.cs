@@ -218,7 +218,8 @@ internal static partial class RecipeDraftDemo
 
     private static RecipeDraftContent CopyContent(RecipeDraftContent content, AlgorithmConfigurationSnapshot configuration) =>
         new(content.RecipeKey, content.DisplayName, content.Algorithm, configuration, content.CameraRole,
-            content.Camera, content.AlgorithmExecutionTimeout, content.AssetRequirements, content.PolicyRequirements);
+            content.Camera, content.AlgorithmExecutionTimeout, content.AssetRequirements, content.PolicyRequirements,
+            cameraProviderExtension: content.CameraProviderExtension);
 
     private static void SetInput(DependencyObject root, object context, string property, string value)
     {

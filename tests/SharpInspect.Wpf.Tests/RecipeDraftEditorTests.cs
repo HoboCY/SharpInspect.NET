@@ -13,6 +13,32 @@ namespace SharpInspect.Wpf.Tests;
 public sealed class RecipeDraftEditorTests
 {
     [Fact]
+    public async Task V117_W90_EditingCommonDraftFieldsPreservesProviderExtensionDependency()
+    {
+        var descriptor = Descriptor(includeEmptyChoice: false);
+        var original = Content(descriptor);
+        var extension = new CameraProviderExtensionRequirement(new("Camera.Provider", "1", "Camera.Package", "1"),
+            "Camera.FixedGamma", "1", new string('B', 64));
+        var bound = new RecipeDraftContent(original.RecipeKey, original.DisplayName, original.Algorithm,
+            original.Configuration, original.CameraRole, original.Camera, original.AlgorithmExecutionTimeout,
+            original.AssetRequirements, original.PolicyRequirements, original.ValueOrigins, extension);
+        var editor = new FakeEditor(descriptor, Defaults(descriptor));
+        var sessions = new FakeSessions(Authenticated());
+        var session = sessions.Current;
+        await editor.SaveAsync(new(Guid.NewGuid(), Guid.NewGuid(), 0, null, bound, "扩展依赖草稿",
+            new(CommandSource.PhysicalConsole, session.PrincipalId, session.SessionId)));
+        await using var model = NewModel(editor, sessions, descriptor);
+        await model.RefreshAsync();
+        model.SelectedHistory = Assert.Single(model.History);
+        await model.OpenSelectedAsync();
+        model.DisplayName = "仅修改显示名称";
+        await model.ValidateAsync();
+        Assert.NotNull(editor.LastValidatedContent);
+        Assert.Equal(extension, editor.LastValidatedContent!.CameraProviderExtension);
+        Assert.False(editor.LastValidatedContent.IsCameraConfigurationPortable);
+    }
+
+    [Fact]
     public async Task V115_W01_TypedFieldsPreserveOriginsAndOptionalPresence()
     {
         var descriptor = Descriptor(includeEmptyChoice: false);

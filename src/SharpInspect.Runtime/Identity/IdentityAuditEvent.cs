@@ -39,7 +39,9 @@ internal enum IdentityEventKind
     RecoveryKitCustodyConfirmed,
     RecoveryKitCustodyRejected,
     AlarmActionAuthorized,
-    RecipeDraftSaved
+    RecipeDraftSaved,
+    CameraSetupActionAuthorized,
+    CameraSetupOperationCompleted
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -107,14 +109,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > 9)
+        if (schemaVersion is < 3 or > 10)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > 9)
+        if (schemaVersion is < 3 or > 10)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -139,7 +141,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 => 46, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -161,6 +163,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= 7 || legacyKind != IdentityEventKind.AlarmActionAuthorized,
                     "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= 9 || legacyKind != IdentityEventKind.RecipeDraftSaved,
+                    "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= 10 ||
+                    legacyKind is not IdentityEventKind.CameraSetupActionAuthorized and
+                    not IdentityEventKind.CameraSetupOperationCompleted,
                     "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
@@ -224,6 +230,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      Enum.IsDefined(actionKind) && actionKind is not AuditedCommandKind.Unsupported and
                      not AuditedCommandKind.GracefulProductionStop &&
                      (schemaVersion >= 9 || actionKind != AuditedCommandKind.SaveRecipeDraft) &&
+                     (schemaVersion >= 10 || (actionKind != AuditedCommandKind.RebindCamera &&
+                        actionKind != AuditedCommandKind.ApplyCameraDebugConfiguration)) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -278,6 +286,68 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[37] == draftId.ToString("D") && fields[38] == operationId.ToString("D") &&
                 fields[39] == AuditedCommandKind.SaveRecipeDraft.ToString() &&
                 fields[9] == "RecipeDraftAuthorized";
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>
+    /// Extracts the signed authorization envelope used by camera setup history
+    /// validation.  The caller must still compare every value with the typed
+    /// camera event and command fact; this is deliberately a narrow decoder rather
+    /// than a second mutable identity projection.
+    /// </summary>
+    internal static bool TryReadCameraAuthorization(byte[] payload, long ordinal, string stationId,
+        int schemaVersion, out CameraAuthorizationAudit binding)
+    {
+        binding = null!;
+        try
+        {
+            if (schemaVersion < 10) return false;
+            _ = VerifyPayload(payload, ordinal, stationId, schemaVersion);
+            var fields = DecodeFields(payload);
+            if (!Enum.TryParse<IdentityEventKind>(fields[2], out var kind) ||
+                kind is not (IdentityEventKind.CameraSetupActionAuthorized or
+                    IdentityEventKind.CameraSetupOperationCompleted) ||
+                !Guid.TryParseExact(fields[5], "D", out var principal) || principal == Guid.Empty ||
+                !Guid.TryParseExact(fields[25], "D", out var session) || session == Guid.Empty ||
+                !Guid.TryParseExact(fields[30], "D", out var actor) || actor == Guid.Empty ||
+                !Guid.TryParseExact(fields[31], "D", out var correlation) || correlation == Guid.Empty ||
+                !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) || boundCorrelation == Guid.Empty ||
+                !Guid.TryParseExact(fields[42], "D", out var operation) || operation == Guid.Empty ||
+                !long.TryParse(fields[35], NumberStyles.None, CultureInfo.InvariantCulture, out var revision) ||
+                revision < 0 || fields[33] is null || fields[37] is null || fields[39] is null ||
+                !Enum.TryParse<AuditedCommandKind>(fields[39], out var commandKind) ||
+                commandKind is not (AuditedCommandKind.RebindCamera or
+                    AuditedCommandKind.ApplyCameraDebugConfiguration))
+                return false;
+            Guid? grant = null;
+            if (fields[32] is not null)
+            {
+                if (!Guid.TryParseExact(fields[32], "D", out var parsedGrant) || parsedGrant == Guid.Empty)
+                    return false;
+                grant = parsedGrant;
+            }
+            var requiredPermission = fields[33]!;
+            var actionTarget = fields[37]!;
+            binding = new CameraAuthorizationAudit(kind, principal, actor, correlation, grant,
+                requiredPermission, actionTarget, boundCorrelation, commandKind, operation, session, revision,
+                fields[9]!);
+            return true;
+        }
+        catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool TryReadEventKind(byte[] payload, out IdentityEventKind kind)
+    {
+        kind = default;
+        try
+        {
+            var fields = DecodeFields(payload);
+            return Enum.TryParse(fields[2], out kind) && Enum.IsDefined(kind);
         }
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
@@ -350,3 +420,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         return true;
     }
 }
+
+internal sealed record CameraAuthorizationAudit(
+    IdentityEventKind Kind, Guid PrincipalId, Guid ActorPrincipalId, Guid CommandCorrelationId,
+    Guid? StepUpGrantId, string RequiredPermission, string ActionTargetId,
+    Guid BoundCommandCorrelationId, AuditedCommandKind CommandKind, Guid OperationId,
+    Guid SessionId, long AuthorizationRevision, string ReasonCode);

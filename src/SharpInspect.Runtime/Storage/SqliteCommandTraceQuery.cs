@@ -46,7 +46,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                     if (!StoragePathValidator.TryValidate(_options, out var currentPath, out var pathReason))
                         throw new InvalidOperationException(pathReason);
                     return QueryCore(currentPath, filter, deadline, cancellationToken,
-                        _options.AlgorithmResultArchive is not null, _options.RecipeDrafts is not null);
+                        _options.AlgorithmResultArchive is not null, _options.RecipeDrafts is not null,
+                        _options.CameraSetup is not null);
                 }, CancellationToken.None)
                 .ConfigureAwait(false);
         }
@@ -66,7 +67,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
     }
 
     private static CommandTracePage QueryCore(string databasePath, CommandTraceFilter filter, StoreDeadline deadline,
-        CancellationToken cancellationToken, bool archiveConfigured, bool draftConfigured)
+        CancellationToken cancellationToken, bool archiveConfigured, bool draftConfigured, bool cameraConfigured)
     {
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         var database = connection.Handle!;
@@ -78,7 +79,11 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 SqliteNative.Step(database, statement, deadline, cancellationToken);
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
             }, cancellationToken);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion == CameraSetupStoreOptions.SchemaVersion && !cameraConfigured)
+            throw new InvalidOperationException("CameraSetupConfigurationRequired");
+        if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && cameraConfigured)
+            throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
         if (schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion && !archiveConfigured)
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
         if (schemaVersion < AlgorithmResultArchiveOptions.SchemaVersion && archiveConfigured)

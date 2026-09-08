@@ -106,7 +106,11 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == RecipeDraftStoreOptions.SchemaVersion,
+            if (schema == CameraSetupStoreOptions.SchemaVersion)
+                AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
+            else if (schema < CameraSetupStoreOptions.SchemaVersion)
+                AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
+            AuditChainDatabase.Require(schema is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion,
                 schema < RecipeDraftStoreOptions.SchemaVersion
                     ? "RecipeDraftGovernedMigrationRequired"
                     : schema > RecipeDraftStoreOptions.SchemaVersion
@@ -115,11 +119,14 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
                 new AuditVerificationRequest(0, policy.MaximumVerificationEntries), false, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
-                recipeDraftOptions: _options.RecipeDrafts);
+                recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                 _options.RecipeDrafts);
+            if (_options.CameraSetup is not null)
+                AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                    _options.CameraSetup);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM recipe_draft_revisions;", deadline);

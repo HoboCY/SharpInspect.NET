@@ -32,4 +32,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 9 append-only Recipe Draft ledger.</summary>
     public RecipeDraftStoreOptions? RecipeDrafts { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 10 camera binding and setup ledger.</summary>
+    public CameraSetupStoreOptions? CameraSetup { get; init; }
 }

@@ -168,6 +168,37 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT',$taskPreviousDraftEvidence,'Process')
         }
     }
+    if ($Ticket -ge 17) {
+        $taskPreviousCameraConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_CONSUMER','Process')
+        $taskPreviousCameraEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_EVIDENCE_ROOT',(Join-Path $taskRun 'camera-setup-demo'),'Process')
+            Invoke-TaskDotnet 'camera-setup-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~CameraSetupConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'camera-setup-consumer-tests'))
+            foreach ($taskCameraFile in @('evidence.json','camera-setup-evidence.json','camera-setup-restart.json',
+                'camera-setup-applied.png','camera-setup-failed.png',
+                'camera-setup-applied-readback.png','camera-setup-failed-readback.png','process.log','restart.log')) {
+                $taskCameraArtifact = Join-Path $taskRun ('camera-setup-demo/' + $taskCameraFile)
+                if (-not (Test-Path -LiteralPath $taskCameraArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskCameraArtifact).Length -eq 0) {
+                    throw "Camera setup consumer evidence is missing or empty: $taskCameraFile"
+                }
+            }
+            $taskCameraEvidence = Get-Content -LiteralPath (Join-Path $taskRun 'camera-setup-demo/evidence.json') -Raw | ConvertFrom-Json
+            if ($taskCameraEvidence.Result -cne 'Pass' -or $taskCameraEvidence.ProductionReady -cne $false -or
+                $taskCameraEvidence.IndependentRestart -cne $true -or $taskCameraEvidence.PhysicalDevices -cne 'NotRun' -or
+                $taskCameraEvidence.ProviderQualification -cne 'NotRun' -or $taskCameraEvidence.StationAcceptance -cne 'NotRun' -or
+                $taskCameraEvidence.ConsumerSha256 -cne (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash) {
+                throw 'Camera setup consumer evidence failed its measured result or artifact binding.'
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_CONSUMER',$taskPreviousCameraConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_EVIDENCE_ROOT',$taskPreviousCameraEvidence,'Process')
+        }
+    }
     $taskDatabase = Join-Path $taskRun 'trace\station.sqlite'
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $taskDatabase))
     $taskTraceManifest = Join-Path $taskRun 'trace-manifest.json'

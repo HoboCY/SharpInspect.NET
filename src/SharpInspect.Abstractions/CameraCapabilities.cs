@@ -264,6 +264,90 @@ public sealed class CameraCapabilities
         }
     }
 
+    /// <summary>
+    /// Validates a provider's complete configuration read-back against the value
+    /// declared by these capabilities. The returned success is the canonical
+    /// expectation produced locally; provider result metadata is never trusted.
+    /// </summary>
+    public CameraConfigurationResult ValidateReadBack(RequestedCameraConfiguration requested,
+        CameraConfigurationResult reported)
+    {
+        ArgumentNullException.ThrowIfNull(requested);
+        ArgumentNullException.ThrowIfNull(reported);
+
+        var expected = ValidateConfiguration(requested);
+        if (!expected.Succeeded)
+            return expected;
+        if (!reported.Succeeded)
+            return CameraConfigurationResult.Failure(reported.ReasonCode);
+        var reportedEffective = reported.Effective;
+        if (reportedEffective is null)
+            return CameraConfigurationResult.Failure("CameraReadBackStateInvalid");
+        if (!EffectiveConfigurationMatches(expected.Effective!, reportedEffective))
+            return CameraConfigurationResult.Failure("CameraReadBackEffectiveMismatch");
+        if (!DifferencesMatch(expected.Differences, reported.Differences))
+            return CameraConfigurationResult.Failure("CameraReadBackDifferencesMismatch");
+
+        return expected;
+    }
+
+    private static bool EffectiveConfigurationMatches(EffectiveCameraConfiguration expected,
+        EffectiveCameraConfiguration reported)
+    {
+        if (expected.ProductionAcquisitionMode != reported.ProductionAcquisitionMode ||
+            expected.ExposureTimeUs != reported.ExposureTimeUs ||
+            expected.GainDb != reported.GainDb ||
+            expected.PixelFormat != reported.PixelFormat ||
+            expected.ValidBits != reported.ValidBits ||
+            expected.AcquisitionTimeoutMs != reported.AcquisitionTimeoutMs ||
+            expected.TriggerDelayUs != reported.TriggerDelayUs)
+            return false;
+
+        var expectedRoi = expected.RegionOfInterest;
+        var reportedRoi = reported.RegionOfInterest;
+        if (expectedRoi.OffsetX != reportedRoi.OffsetX ||
+            expectedRoi.OffsetY != reportedRoi.OffsetY ||
+            expectedRoi.Width != reportedRoi.Width ||
+            expectedRoi.Height != reportedRoi.Height)
+            return false;
+
+        var expectedWhiteBalance = expected.WhiteBalanceRgb;
+        var reportedWhiteBalance = reported.WhiteBalanceRgb;
+        if ((expectedWhiteBalance is null) != (reportedWhiteBalance is null))
+            return false;
+        if (expectedWhiteBalance is not null &&
+            (expectedWhiteBalance.Red != reportedWhiteBalance!.Red ||
+             expectedWhiteBalance.Green != reportedWhiteBalance.Green ||
+             expectedWhiteBalance.Blue != reportedWhiteBalance.Blue))
+            return false;
+
+        return true;
+    }
+
+    private static bool DifferencesMatch(IReadOnlyList<CameraConfigurationDifference> expected,
+        IReadOnlyList<CameraConfigurationDifference> reported)
+    {
+        if (expected.Count != reported.Count)
+            return false;
+
+        var reportedBySetting = new Dictionary<CameraNumericSetting, CameraConfigurationDifference>();
+        foreach (var difference in reported)
+        {
+            if (!reportedBySetting.TryAdd(difference.Setting, difference))
+                return false;
+        }
+
+        foreach (var difference in expected)
+        {
+            if (!reportedBySetting.TryGetValue(difference.Setting, out var reportedDifference) ||
+                difference.Requested != reportedDifference.Requested ||
+                difference.Effective != reportedDifference.Effective)
+                return false;
+        }
+
+        return true;
+    }
+
     private bool TryValidateRoi(RegionOfInterest roi, out string reason)
     {
         if (!TryValidateInt(RegionOfInterest.OffsetX, roi.OffsetX, "CameraConfigurationRoiOffsetX", out reason) ||

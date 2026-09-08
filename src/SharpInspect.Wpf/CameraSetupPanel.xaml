@@ -1,0 +1,293 @@
+<UserControl x:Class="SharpInspect.Wpf.CameraSetupPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             MinHeight="640">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18">
+        <ScrollViewer x:Name="SetupScrollViewer" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="相机设置 · 维护绑定与配置" Foreground="#172B42"
+                           FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="此页面只读取候选、当前读回和 Runtime 受限结果；提交设置不会直接使生产 Ready，后续仍需配方激活。"
+                           Foreground="#6B7888" FontSize="11" Margin="0,6,0,12"
+                           TextWrapping="Wrap" />
+
+                <StackPanel x:Name="UnavailablePanel" Background="#FFF7E7" Visibility="Visible">
+                    <TextBlock x:Name="UnavailableText"
+                               Text="相机设置不可用：未配置受限设置服务。"
+                               Foreground="#75531A" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <StackPanel x:Name="ConfiguredPanel" Visibility="Collapsed">
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="当前状态：" Foreground="#556679" />
+                        <TextBlock x:Name="StatusLabel" Foreground="#334E68" />
+                        <Button x:Name="RefreshButton" Content="刷新当前设置" Click="RefreshClick"
+                                Margin="18,0,0,0" Padding="10,4" />
+                    </WrapPanel>
+                    <TextBlock x:Name="StatusText" Foreground="#334E68" TextWrapping="Wrap" />
+                    <TextBlock x:Name="ErrorText" Foreground="#9B3430" Margin="0,4,0,10"
+                               TextWrapping="Wrap" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.05*" />
+                            <ColumnDefinition Width="18" />
+                            <ColumnDefinition Width="1.35*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                                Padding="12">
+                            <StackPanel>
+                                <TextBlock Text="选择已登记 Provider 与候选设备"
+                                           Foreground="#172B42" FontSize="14"
+                                           FontWeight="SemiBold" />
+                                <TextBlock Text="必须由用户明确选择；刷新候选不会自动选择第一项。"
+                                           Foreground="#6B7888" FontSize="11" Margin="0,5,0,7"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Text="Provider" Foreground="#556679" />
+                                <ComboBox x:Name="ProviderComboBox"
+                                          ItemsSource="{Binding Providers}"
+                                          SelectedItem="{Binding SelectedProvider, Mode=TwoWay}"
+                                          DisplayMemberPath="Id" Margin="0,3,0,8" />
+                                <Button x:Name="DiscoverButton" Content="读取候选设备"
+                                        Click="DiscoverClick" HorizontalAlignment="Left"
+                                        Padding="10,4" />
+                                <TextBlock Text="候选设备" Foreground="#556679" Margin="0,12,0,3" />
+                                <ListBox x:Name="DeviceListBox" ItemsSource="{Binding Devices}"
+                                         SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
+                                         DisplayMemberPath="DisplayName" Height="170" />
+                                <TextBlock x:Name="CandidateText" Foreground="#6B7888"
+                                           FontSize="11" Margin="0,6,0,0"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Background="#F8FAFC" BorderBrush="#DAE1E8"
+                                BorderThickness="1" Padding="12">
+                            <StackPanel>
+                                <TextBlock Text="绑定条件与受保护操作" Foreground="#172B42"
+                                           FontSize="14" FontWeight="SemiBold" />
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="145" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="逻辑相机角色" Foreground="#556679"
+                                               Margin="0,0,8,7" />
+                                    <TextBox Grid.Column="1"
+                                             Text="{Binding LogicalRole, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="64" Margin="0,0,0,7" />
+                                    <TextBlock Grid.Row="1" Text="期望绑定 Revision"
+                                               Foreground="#556679" Margin="0,0,8,7" />
+                                    <TextBox Grid.Row="1" Grid.Column="1"
+                                             Text="{Binding ExpectedBindingRevision, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             Margin="0,0,0,7" />
+                                    <TextBlock Grid.Row="2" Text="期望绑定 Hash"
+                                               Foreground="#556679" Margin="0,0,8,7" />
+                                    <TextBox Grid.Row="2" Grid.Column="1"
+                                             Text="{Binding ExpectedBindingRevisionHash, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="64" Margin="0,0,0,7" />
+                                    <TextBlock Grid.Row="3" Text="变更原因" Foreground="#556679"
+                                               Margin="0,0,8,7" />
+                                    <TextBox Grid.Row="3" Grid.Column="1"
+                                             Text="{Binding ChangeReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                             MaxLength="128" Margin="0,0,0,7" />
+                                    <TextBlock Grid.Row="4" Text="当前绑定" Foreground="#556679"
+                                               Margin="0,0,8,0" />
+                                    <TextBlock Grid.Row="4" Grid.Column="1"
+                                               Text="{Binding BindingSummary}" Foreground="#334E68"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                                <TextBlock Text="当前密码（仅本次 Step-Up 使用）"
+                                           Foreground="#556679" Margin="0,10,0,3" />
+                                <PasswordBox x:Name="StepUpPasswordBox"
+                                             ToolTip="提交后立即清除，不由页面保存。" />
+                                <WrapPanel Margin="0,8,0,0">
+                                    <Button x:Name="RebindButton" Content="提交改绑"
+                                            Click="RebindClick" Padding="10,4" />
+                                    <Button x:Name="ApplyButton" Content="提交配置"
+                                            Click="ApplyClick" Padding="10,4" Margin="8,0,0,0"
+                                            Background="#245B88" Foreground="White" />
+                                </WrapPanel>
+                                <TextBlock x:Name="AuditText" Foreground="#75531A"
+                                           FontSize="11" Margin="0,8,0,0"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="请求公共相机配置" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock Text="所有字段带明确单位；ValidBits 仅适用于 Mono16，白平衡仅适用于 Bgr24。"
+                                       Foreground="#6B7888" FontSize="11" Margin="0,5,0,8"
+                                       TextWrapping="Wrap" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="125" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="125" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="采集模式" Foreground="#556679" Margin="0,0,8,7" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding AcquisitionModes}"
+                                          SelectedItem="{Binding AcquisitionMode, Mode=TwoWay}"
+                                          Margin="0,0,14,7" />
+                                <TextBlock Grid.Column="2" Text="像素格式" Foreground="#556679"
+                                           Margin="0,0,8,7" />
+                                <ComboBox Grid.Column="3" ItemsSource="{Binding PixelFormats}"
+                                          SelectedItem="{Binding PixelFormat, Mode=TwoWay}"
+                                          Margin="0,0,0,7" />
+
+                                <TextBlock Grid.Row="1" Text="有效位数" Foreground="#556679"
+                                           Margin="0,0,8,7" />
+                                <ComboBox Grid.Row="1" Grid.Column="1"
+                                          ItemsSource="{Binding ValidBitsOptions}"
+                                          SelectedItem="{Binding ValidBits, Mode=TwoWay}"
+                                          Margin="0,0,14,7" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="曝光时间 μs"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox Grid.Row="1" Grid.Column="3"
+                                         Text="{Binding ExposureTimeUsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,0,7" />
+
+                                <TextBlock Grid.Row="2" Text="增益 dB" Foreground="#556679"
+                                           Margin="0,0,8,7" />
+                                <TextBox Grid.Row="2" Grid.Column="1"
+                                         Text="{Binding GainDbText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,14,7" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Text="采集超时 ms"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBox Grid.Row="2" Grid.Column="3"
+                                         Text="{Binding AcquisitionTimeoutMsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="32" Margin="0,0,0,7" />
+
+                                <TextBlock Grid.Row="3" Text="ROI X / Y（像素）"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal"
+                                            Margin="0,0,14,7">
+                                    <TextBox Width="70" MaxLength="32"
+                                             Text="{Binding RoiOffsetXText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" />
+                                    <TextBox Width="70" MaxLength="32"
+                                             Text="{Binding RoiOffsetYText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                                <TextBlock Grid.Row="3" Grid.Column="2" Text="ROI W / H（像素）"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <StackPanel Grid.Row="3" Grid.Column="3" Orientation="Horizontal"
+                                            Margin="0,0,0,7">
+                                    <TextBox Width="70" MaxLength="32"
+                                             Text="{Binding RoiWidthText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" />
+                                    <TextBox Width="70" MaxLength="32"
+                                             Text="{Binding RoiHeightText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+
+                                <TextBlock Grid.Row="4" Text="触发延迟 μs" Foreground="#556679"
+                                           Margin="0,0,8,7" />
+                                <TextBox Grid.Row="4" Grid.Column="1"
+                                         Text="{Binding TriggerDelayUsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,14,7" />
+                                <TextBlock Grid.Row="4" Grid.Column="2" Text="白平衡 R / G"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <StackPanel Grid.Row="4" Grid.Column="3" Orientation="Horizontal"
+                                            Margin="0,0,0,7">
+                                    <TextBox Width="70" MaxLength="64"
+                                             Text="{Binding WhiteBalanceRedText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Text=" / " VerticalAlignment="Center" Margin="4,0" />
+                                    <TextBox Width="70" MaxLength="64"
+                                             Text="{Binding WhiteBalanceGreenText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                                <TextBlock Grid.Row="5" Text="白平衡 B" Foreground="#556679"
+                                           Margin="0,0,8,7" />
+                                <TextBox Grid.Row="5" Grid.Column="1"
+                                         Text="{Binding WhiteBalanceBlueText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="64" Margin="0,0,14,7" />
+                                <TextBlock Grid.Row="5" Grid.Column="2" Text="扩展"
+                                           Foreground="#556679" Margin="0,0,8,7" />
+                                <TextBlock Grid.Row="5" Grid.Column="3"
+                                           Text="{Binding ExtensionStatus}" Foreground="#75531A"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+                            <TextBlock Text="{Binding ValidationSummary}" Foreground="#75531A"
+                                       FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1"
+                            Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Runtime 读回与健康轴" Foreground="#172B42"
+                                       FontSize="14" FontWeight="SemiBold" />
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="145" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="Provider Availability" Foreground="#556679" />
+                                <TextBlock Grid.Column="1" Text="{Binding ProviderAvailabilityLabel}"
+                                           Foreground="#334E68" />
+                                <TextBlock Grid.Column="2" Text="Connection" Foreground="#556679" />
+                                <TextBlock Grid.Column="3" Text="{Binding ConnectionLabel}"
+                                           Foreground="#334E68" />
+                                <TextBlock Grid.Row="1" Text="Configuration" Foreground="#556679" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding ConfigurationLabel}"
+                                           Foreground="#334E68" />
+                                <TextBlock Grid.Row="1" Grid.Column="2" Text="Acquisition" Foreground="#556679" />
+                                <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding AcquisitionLabel}"
+                                           Foreground="#334E68" />
+                                <TextBlock Grid.Row="2" Text="故障" Foreground="#556679" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                           Text="{Binding FaultLabel}" Foreground="#9B3430"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="3" Text="Requested" Foreground="#556679" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3"
+                                           Text="{Binding RequestedSummary}" Foreground="#334E68"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="4" Text="Effective" Foreground="#556679" />
+                                <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3"
+                                           Text="{Binding EffectiveSummary}" Foreground="#334E68"
+                                           TextWrapping="Wrap" />
+                                <TextBlock Grid.Row="5" Text="数值差异" Foreground="#556679" />
+                                <TextBlock Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="3"
+                                           Text="{Binding DifferencesSummary}" Foreground="#334E68"
+                                           TextWrapping="Wrap" />
+                            </Grid>
+                            <TextBlock Text="健康四轴由 Runtime 提供；Connection=Open 不等于 Ready。任何成功操作仍需后续配方激活和完整生产门禁。"
+                                       Foreground="#75531A" FontSize="11" Margin="0,8,0,0"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Border>
+</UserControl>

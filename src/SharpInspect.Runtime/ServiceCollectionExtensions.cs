@@ -5,6 +5,7 @@ using SharpInspect.Runtime.Storage;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Algorithms;
+using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Recipes;
 
@@ -55,6 +56,32 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers one explicit camera provider.  The Runtime never scans assemblies
+    /// or selects a provider by discovery order; all providers are matched by the
+    /// four-field <see cref="CameraProviderIdentity"/> value.
+    /// </summary>
+    public static IServiceCollection AddSharpInspectCameraProvider(this IServiceCollection services,
+        ICameraProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(provider);
+        services.AddSingleton<ICameraProvider>(provider);
+        return services;
+    }
+
+    /// <summary>Registers bounded camera setup operation settings.</summary>
+    public static IServiceCollection AddSharpInspectCameraSetup(this IServiceCollection services,
+        CameraSetupOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(options);
+        if (services.Any(item => item.ServiceType == typeof(CameraSetupOptions)))
+            throw new ArgumentException("CameraSetupAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        return services;
+    }
+
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
@@ -62,7 +89,12 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetService<SqliteCommandStore>(), heartbeatInterval,
             frameBufferPool: p.GetService<FrameBufferPool>(), executionGuard: p.GetService<AlgorithmExecutionGuard>(),
-            algorithmExecutionOptions: p.GetService<AlgorithmExecutionOptions>()));
+            algorithmExecutionOptions: p.GetService<AlgorithmExecutionOptions>(),
+            cameraProviders: p.GetServices<ICameraProvider>(),
+            cameraSetupOptions: p.GetService<CameraSetupOptions>()));
+        services.TryAddSingleton<ICameraSetupRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
+            throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
         return services;
     }
 
@@ -114,7 +146,11 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
             p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
-            p.GetService<AlgorithmExecutionOptions>()));
+            p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
+            p.GetService<CameraSetupOptions>()));
+        services.TryAddSingleton<ICameraSetupRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
+            throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
         return services;
     }
 }

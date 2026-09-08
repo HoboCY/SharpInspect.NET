@@ -27,10 +27,10 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release
 
 ```powershell
 # 自动测试、实际 WPF 宿主 smoke、打包及独立 NuGet 消费
-pwsh -File tools/Test-Ticket16.ps1
+pwsh -File tools/Test-Ticket17.ps1
 ```
 
-脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket16/<run>/`，
+脚本把每次运行的日志与环境记录保存在独立的 `artifacts/ticket17/<run>/`，
 不会覆盖前次结果。独立消费项目使用隔离包缓存，确保运行的是本次打包内容。
 空间不足时可添加 `-ArtifactRoot E:\SharpInspectEvidence\artifacts`，把验证产物与隔离包缓存
 放到另一个本地卷；源码、锁文件和验证步骤保持相同。
@@ -64,8 +64,28 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --virtual-cam
 
 `Test-Ticket16.ps1` 在两个独立进程中执行相同输入，比较 `replay-evidence.json` 的完整字节哈希。
 证据列出帧、时间、健康状态和失败结果，另在 `summary.json` 保留执行范围。
-该开发入口尚未接入 Runtime 的生产受理、相机改绑或硬触发 Busy 门控，也不产生真实设备资格。
+该独立重放入口不执行 Runtime 的生产受理或硬触发 Busy 门控，也不产生真实设备资格。
 本票的验证映射见 [V1-16 记录](docs/verification/v1-16.md)。
+
+## 相机绑定与配置调试
+
+宿主显式注册 `ICameraProvider`，调用 `AddSharpInspectCameraSetup(new CameraSetupOptions())`，
+并在 `ProductionStoreOptions` 配置 `CameraSetup = new CameraSetupStoreOptions()`、本地身份和审计政策。
+`ICameraSetupRuntime` 与 `IStationRuntime` 指向同一个 Runtime；`CameraSetupViewModel` 和
+`CameraSetupPanel` 使用该入口完成只读发现、明确选择设备、改绑和完整配置读回。
+默认不发现设备，不按列表顺序选中设备。
+
+绑定记录保存精确 Provider 身份和 Stable Device Identity。改绑与调试配置都需要
+`ManageCameraBindings` 权限及绑定本次 OperationId、逻辑角色和操作类型的 Step-Up。
+相机工艺请求保持九类强类型设置；界面分别呈现 Requested、Effective、声明量化差异和健康状态。
+配置失败关闭设备，清空 Effective 并显示 Configuration Unknown；重试重新应用完整配置。
+重启恢复持久绑定，设备须显式重新打开和配置；成功调试仍需后续 Recipe Activation 才能参与生产准入。
+
+`CameraProviderExtensionRequirement` 记录精确的 Provider、扩展契约版本及配置内容哈希，
+带该依赖的草稿明确标记为不可跨 Provider 移植。目前没有注册扩展处理器，调试入口拒绝未知扩展。
+`Test-Ticket17.ps1` 包含真实登录与 Step-Up 的独立 WPF 消费流程、Virtual Camera 成功/失败配置、
+重启读取和窗口截图；真实硬件、Provider 资格与站点生产验收不在该开发验证中。
+验证映射见 [V1-17 记录](docs/verification/v1-17.md)。
 
 消费宿主显式调用 `services.AddSharpInspectSqliteRuntime(new ProductionStoreOptions(databasePath))`，
 按应用生命期持有并异步释放服务容器。`AddSharpInspectRuntime()` 保留无存储的未配置入口，
@@ -89,6 +109,8 @@ UI 心跳和时效参数只控制状态呈现，不是 PLC 或生产时序政策
 实际写连接校验 WAL、FULL、foreign keys。未启用完整性政策的 Schema Version 为 1；
 新空库显式启用审计政策时为 2，同时启用本地身份时为 7；再启用开发结果归档时为 8。
 显式启用 Recipe Draft 历史时使用 schema 9，同时仍可选择是否启用开发结果归档。
+显式启用相机绑定与调试审计时使用 schema 10，可与 Draft 和开发结果归档共存。
+旧库启用相机能力会拒绝 `CameraSetupGovernedMigrationRequired`；不会自动迁移。
 启用归档时旧库统一只读 preflight 拒绝 `AlgorithmResultArchiveGovernedMigrationRequired`。
 未启用归档的身份路径对 schema6/5/4/3 分别要求报警、恢复、授权、认证治理迁移；
 schema1/2 及未知版本也不开放身份治理写入。迁移随专票提供，不自动补链或升级。

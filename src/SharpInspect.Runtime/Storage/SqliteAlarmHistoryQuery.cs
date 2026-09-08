@@ -71,6 +71,8 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
         if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
         else if (_options.AlgorithmResultArchive is not null)
             AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+        else if (_options.CameraSetup is not null)
+            CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
         else AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
         var database = connection.Handle!;
         SqliteNative.Execute(database, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
@@ -78,7 +80,11 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema is 7 or 8 or 9, schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
+            AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10, schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
+            if (schema == CameraSetupStoreOptions.SchemaVersion)
+                AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
+            else
+                AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
             if (schema == AlgorithmResultArchiveOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.AlgorithmResultArchive is not null,
                     "AlgorithmResultArchiveConfigurationRequired");
@@ -88,24 +94,29 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.RecipeDrafts is not null,
                     "RecipeDraftConfigurationRequired");
-            else
+            else if (schema < RecipeDraftStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.RecipeDrafts is null,
                     "RecipeDraftGovernedMigrationRequired");
             var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
-                schema == RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
-            var draftStore = schema == RecipeDraftStoreOptions.SchemaVersion;
+                schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
+            var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
+            var cameraStore = schema == CameraSetupStoreOptions.SchemaVersion;
             var verification = AuditChainDatabase.Verify(database, _options.AuditIntegrityPolicy!, key.KeyId,
                 key.PublicKeyBase64,
                 new AuditVerificationRequest(0, _options.AuditIntegrityPolicy!.MaximumVerificationEntries), false,
                 deadline, validateAnchorReceipt: false,
                 archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
-                recipeDraftOptions: draftStore ? _options.RecipeDrafts : null);
+                recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
+                cameraSetupOptions: cameraStore ? _options.CameraSetup : null);
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (draftStore)
                 AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                     _options.RecipeDrafts);
+            if (cameraStore)
+                AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                    _options.CameraSetup);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AuditChainDatabase.Require(persistedPolicy is not null &&
                 persistedPolicy.ContentHash == _options.AlarmPolicy!.ContentHash &&
@@ -812,6 +823,8 @@ internal sealed partial class SqliteCommandStore
             if (_options.RecipeDrafts is not null) RecipeDraftStoreOptions.ConfigureSqliteLimit(connection.Handle!);
             else if (_options.AlgorithmResultArchive is not null)
                 AlgorithmResultArchiveOptions.ConfigureSqliteLimit(connection.Handle!);
+            else if (_options.CameraSetup is not null)
+                CameraSetupStoreOptions.ConfigureSqliteLimit(connection.Handle!);
             else AlarmStorageCodec.ConfigureSqliteLimit(connection.Handle!);
             var database = connection.Handle!;
             var deadline = new StoreDeadline(_options.QueryTimeout);
@@ -820,8 +833,12 @@ internal sealed partial class SqliteCommandStore
             try
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9,
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
+                if (schema == CameraSetupStoreOptions.SchemaVersion)
+                    AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
+                else
+                    AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
                 if (schema == AlgorithmResultArchiveOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.AlgorithmResultArchive is not null,
                         "AlgorithmResultArchiveConfigurationRequired");
@@ -831,26 +848,31 @@ internal sealed partial class SqliteCommandStore
                 if (schema == RecipeDraftStoreOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.RecipeDrafts is not null,
                         "RecipeDraftConfigurationRequired");
-                else
+                else if (schema < RecipeDraftStoreOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.RecipeDrafts is null,
                         "RecipeDraftGovernedMigrationRequired");
                 var alarmStore = _options.AlarmPolicy is not null;
                 var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
-                    schema == RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
-                var draftStore = schema == RecipeDraftStoreOptions.SchemaVersion;
+                    schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
+                var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
+                var cameraStore = schema == CameraSetupStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                    alarmStore || archiveStore || draftStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore, deadline,
+                    alarmStore || archiveStore || draftStore || cameraStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore, deadline,
                     validateAnchorReceipt: false,
                     archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
-                    recipeDraftOptions: draftStore ? _options.RecipeDrafts : null);
+                    recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
+                    cameraSetupOptions: cameraStore ? _options.CameraSetup : null);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveStore)
                     AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore)
                     AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
                         _options.RecipeDrafts);
+                if (cameraStore)
+                    AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                        _options.CameraSetup);
                 var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
                 AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);
                 var events = AlarmStorageCodec.ReadEvents(database, deadline);
@@ -900,19 +922,23 @@ internal sealed partial class SqliteCommandStore
             var alarmStore = _options.AlarmPolicy is not null;
             var draftStore = _options.RecipeDrafts is not null;
             var archiveStore = _options.AlgorithmResultArchive is not null;
+            var cameraStore = _options.CameraSetup is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore, deadline,
                 validateAnchorReceipt: false,
                 archiveOptions: _options.AlgorithmResultArchive,
-                recipeDraftOptions: _options.RecipeDrafts);
-                if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
-                if (_options.AlgorithmResultArchive is not null)
-                    AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
-                if (draftStore)
-                    AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
-                        _options.RecipeDrafts);
+                recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup);
+            if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
+            if (archiveStore)
+                AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
+            if (draftStore)
+                AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
+                    _options.RecipeDrafts);
+            if (cameraStore)
+                AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
+                    _options.CameraSetup);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AlarmStorageCodec.RequireConfiguredPolicy(persistedPolicy, _options.AlarmPolicy);
             var before = AlarmStorageCodec.BuildState(persistedPolicy,

@@ -50,6 +50,8 @@ internal static class Program
         var auditKey = Option("--audit-key");
         var draftCheckDirectory = Option("--recipe-draft-check");
         var draftQueryDirectory = Option("--recipe-draft-query");
+        var cameraSetupDirectory = Option("--camera-setup-check");
+        var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var draftEnabled = draftCheckDirectory is not null || draftQueryDirectory is not null ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
@@ -59,6 +61,8 @@ internal static class Program
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
+            CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null
+                ? new CameraSetupStoreOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -70,6 +74,10 @@ internal static class Program
             return RecipeDraftDemo.Run(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
         if (draftQueryDirectory is not null)
             return RecipeDraftDemo.Query(storeOptions, draftQueryDirectory);
+        if (cameraSetupDirectory is not null)
+            return CameraSetupDemo.Run(storeOptions, cameraSetupDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (cameraSetupQueryDirectory is not null)
+            return CameraSetupDemo.Query(storeOptions, cameraSetupQueryDirectory, Option("--user-name"), Option("--expected-principal"));
         if (administratorRecoveryCheck)
             return AdministratorRecoveryDemo.Run(storeOptions);
         if (args.Contains("--alarm-check", StringComparer.OrdinalIgnoreCase))

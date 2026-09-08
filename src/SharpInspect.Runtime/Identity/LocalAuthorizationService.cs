@@ -178,6 +178,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ArmProduction => Permission.ArmProduction,
         AuditedCommandKind.AcknowledgeAlarm => Permission.AcknowledgeAlarm,
         AuditedCommandKind.ResetAlarm => Permission.ResetAlarm,
+        AuditedCommandKind.RebindCamera or AuditedCommandKind.ApplyCameraDebugConfiguration =>
+            Permission.ManageCameraBindings,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,

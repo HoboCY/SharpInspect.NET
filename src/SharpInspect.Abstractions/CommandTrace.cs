@@ -19,7 +19,9 @@ public enum AuditedCommandKind
     SetHumanPermissions = 11,
     AcknowledgeAlarm = 12,
     ResetAlarm = 13,
-    SaveRecipeDraft = 14
+    SaveRecipeDraft = 14,
+    RebindCamera = 15,
+    ApplyCameraDebugConfiguration = 16
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

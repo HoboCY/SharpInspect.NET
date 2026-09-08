@@ -168,6 +168,10 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public string? ConfigurationContentHash => _localContent?.Configuration.ContentHash;
     public string? DraftContentHash => _localContent?.ContentHash;
     public RecipeDraftRevision? CurrentRevision => _revision;
+    public CameraProviderExtensionRequirement? CameraProviderExtension => _revision?.Content.CameraProviderExtension;
+    public string CameraPortabilityText => CameraProviderExtension is null
+        ? "公共相机配置，可在能力兼容的设备间使用。"
+        : "此草稿声明了指定 Provider 的扩展依赖；通用字段编辑会保留该依赖，不能直接移植到其他 Provider。";
     public bool HasDraft => _selectedAlgorithm is not null || _revision is not null;
 
     public string RecipeKey
@@ -934,7 +938,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
             {
                 content = new RecipeDraftContent(_recipeKey, _displayName,
                     RecipeAlgorithmBinding.FromDescriptor(algorithm), configuration!, _cameraRole, camera!, timeout,
-                    assets, policies, origins);
+                    assets, policies, origins, CameraProviderExtension);
             }
             catch { output.Add(new("RecipeDraftContentInvalid")); }
         }
