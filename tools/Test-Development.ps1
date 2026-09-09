@@ -105,8 +105,8 @@ try {
     }
     $taskEvidence.sourceHashes = @(Get-TaskSourceHashes)
     $taskEvidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskRun 'validation.json') -Encoding utf8
-    Invoke-TaskDotnet 'build.log' @('build','SharpInspect.NET.sln','-c','Release','-p:RestoreLockedMode=true')
-    Invoke-TaskDotnet 'tests.log' @('test','SharpInspect.NET.sln','-c','Release','--no-build','--no-restore',
+    Invoke-TaskDotnet 'build.log' @('build','SharpInspect.NET.sln','-c','Release','-p:RestoreLockedMode=true','-m:1')
+    Invoke-TaskDotnet 'tests.log' @('test','SharpInspect.NET.sln','-c','Release','--no-build','--no-restore','-m:1',
         '--logger','trx','--results-directory',(Join-Path $taskRun 'tests'))
 
     $taskFeed = Join-Path $taskRun 'packages'
@@ -799,6 +799,9 @@ try {
     }
     if ($Ticket -ge 32) {
         & (Join-Path $PSScriptRoot 'Test-RecipeActivationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
+    if ($Ticket -ge 33) {
+        & (Join-Path $PSScriptRoot 'Test-PreviewSessionConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

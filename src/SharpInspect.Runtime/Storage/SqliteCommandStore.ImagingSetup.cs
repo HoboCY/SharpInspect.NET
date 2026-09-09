@@ -100,9 +100,10 @@ internal sealed partial class SqliteCommandStore
                 imagingSetupOptions: _options.ImagingSetup,
                  calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                 releaseOptions: _options.RecipeReleases,
-                 contractOptions: _options.PlcResultContracts,
-                 activationOptions: _options.RecipeActivations);
+                  releaseOptions: _options.RecipeReleases,
+                  contractOptions: _options.PlcResultContracts,
+                  activationOptions: _options.RecipeActivations,
+                  previewOptions: _options.PreviewSessions);
             AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
                 _options.CameraSetup);
             if (_options.CameraRecovery is not null)
@@ -119,11 +120,14 @@ internal sealed partial class SqliteCommandStore
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
-            if (_options.RecipeActivations is not null)
-                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                    _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                    _options.CalibrationGovernance);
-            var state = ReadImagingSetupState(database, logicalCameraRole, deadline);
+             if (_options.RecipeActivations is not null)
+                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                     _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                     _options.CalibrationGovernance);
+             if (_options.PreviewSessions is not null)
+                 AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                     _options.PreviewSessions);
+             var state = ReadImagingSetupState(database, logicalCameraRole, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return new ImagingSetupReadResult(state);
         }

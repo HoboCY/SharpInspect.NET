@@ -250,6 +250,7 @@ internal sealed partial class SqliteCommandStore
         var draftStore = _options.RecipeDrafts is not null;
         var cameraStore = _options.CameraSetup is not null;
         var recoveryStore = _options.CameraRecovery is not null;
+        var previewStore = _options.PreviewSessions is not null;
         var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
             _signingKey.PublicKeyBase64,
             new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries), startup: true,
@@ -264,7 +265,8 @@ internal sealed partial class SqliteCommandStore
                 governanceOptions: _options.CalibrationGovernance,
                  releaseOptions: _options.RecipeReleases,
                  contractOptions: _options.PlcResultContracts,
-                 activationOptions: _options.RecipeActivations);
+                 activationOptions: _options.RecipeActivations,
+                 previewOptions: _options.PreviewSessions);
         if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
         if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -284,11 +286,14 @@ internal sealed partial class SqliteCommandStore
          if (_options.PlcResultContracts is not null)
              AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                  _options.PlcResultContracts);
-         if (_options.RecipeActivations is not null)
-             AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                 _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                 _options.CalibrationGovernance);
-    }
+          if (_options.RecipeActivations is not null)
+              AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                  _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                  _options.CalibrationGovernance);
+          if (previewStore)
+              AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                  _options.PreviewSessions);
+     }
 
     private StoreWriteResult AppendCameraNetworkAdmissionCore(sqlite3 database,
         CameraNetworkAdmissionWork work, StoreDeadline deadline)

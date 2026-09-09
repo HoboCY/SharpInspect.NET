@@ -54,7 +54,11 @@ internal enum IdentityEventKind
     RecipeActivationAdmitted,
     RecipeActivationCompleted,
     RecipeActivationFailed,
-    RecipeActivationCancelled
+    RecipeActivationCancelled,
+    PreviewSessionStartAuthorized,
+    PreviewSessionActionAuthorized,
+    PreviewSessionCompleted,
+    PreviewSessionFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -133,14 +137,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > RecipeActivationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PreviewSessionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > RecipeActivationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PreviewSessionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -165,7 +169,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= RecipeActivationStoreOptions.SchemaVersion => 49, _ => 0 };
+                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PreviewSessionStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -216,6 +220,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.RecipeActivationCompleted or
                         IdentityEventKind.RecipeActivationFailed or
                         IdentityEventKind.RecipeActivationCancelled), "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.PreviewSessionStartAuthorized or
+                        IdentityEventKind.PreviewSessionActionAuthorized or
+                        IdentityEventKind.PreviewSessionCompleted or
+                        IdentityEventKind.PreviewSessionFailed), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -300,7 +309,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
+                var maximumPermissions = schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ? 35 :
+                    schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
                 AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
                     IsPermissionSet(fields[41], maximumPermissions),
                     "AuditAuthorizationPayloadInvalid");
@@ -462,6 +472,73 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     : fields[35] != record.ActorAuthorizationRevision.Value.ToString(CultureInfo.InvariantCulture)))
                 return false;
             return fields[31] == fields[38] && fields[34] == fields[5];
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool MatchesPreviewAuthorization(byte[] payload, long ordinal,
+        string stationId, PreviewSessionEvent value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, PreviewSessionStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            return fields.Length == 49 && fields[4] == stationId &&
+                (fields[2] is nameof(IdentityEventKind.PreviewSessionStartAuthorized) or
+                 nameof(IdentityEventKind.PreviewSessionActionAuthorized) or
+                 nameof(IdentityEventKind.PreviewSessionCompleted) or
+                 nameof(IdentityEventKind.PreviewSessionFailed)) &&
+                fields[3] == value.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[5] == value.ActorPrincipalId.ToString("D") &&
+                fields[25] == value.ActorSessionId.ToString("D") &&
+                fields[30] == value.ActorPrincipalId.ToString("D") &&
+                fields[31] == value.CommandCorrelationId.ToString("D") &&
+                fields[33] == Permission.RunPreview.ToString() &&
+                fields[35] == value.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == value.AuthorizationTarget &&
+                fields[38] == value.CommandCorrelationId.ToString("D") &&
+                fields[39] == value.CommandKind.ToString() &&
+                fields[42] == value.SessionId.ToString("D");
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>
+    /// Matches the existing Draft-14 authorization that is reused by a Preview
+    /// save event. The draft writer predates command-fact lifecycles, so the
+    /// immutable operation/correlation and author evidence are the binding here;
+    /// the Preview writer creates its own durable SaveRecipeDraft command fact
+    /// after this existing Draft authorization has been verified.
+    /// </summary>
+    internal static bool MatchesPreviewDraftAuthorization(byte[] payload, long ordinal,
+        string stationId, PreviewSessionEvent value, Guid? expectedStepUpGrantId = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, PreviewSessionStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            var draft = value.SavedDraft ?? value.Header.Draft;
+            return fields.Length == 49 && fields[2] == IdentityEventKind.RecipeDraftSaved.ToString() &&
+                fields[4] == stationId && fields[5] == value.ActorPrincipalId.ToString("D") &&
+                fields[9] == "RecipeDraftAuthorized" &&
+                fields[25] == value.ActorSessionId.ToString("D") &&
+                fields[30] == value.ActorPrincipalId.ToString("D") &&
+                fields[31] == value.CommandCorrelationId.ToString("D") &&
+                fields[32] == expectedStepUpGrantId?.ToString("D") &&
+                fields[33] == Permission.EditRecipeDraft.ToString() &&
+                fields[27] == value.Header.AuthorizationPolicy.Id &&
+                fields[28] == value.Header.AuthorizationPolicy.Version &&
+                fields[29] == value.Header.AuthorizationPolicy.ContentHash &&
+                fields[35] == value.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == draft.DraftId.ToString("D") &&
+                fields[38] == value.CommandCorrelationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.SaveRecipeDraft.ToString();
         }
         catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
             DecoderFallbackException or InvalidOperationException or FormatException)

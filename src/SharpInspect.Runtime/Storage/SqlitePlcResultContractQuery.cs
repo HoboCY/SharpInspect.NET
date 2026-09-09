@@ -115,9 +115,13 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is PlcResultContractStoreOptions.SchemaVersion or
-                RecipeActivationStoreOptions.SchemaVersion,
+                RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion,
                 schema < PlcResultContractStoreOptions.SchemaVersion
                     ? "PlcResultContractGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
+            if (_options.PreviewSessions is null && schema == PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionConfigurationRequired");
             contractOptions.Validate();
             SqliteCommandStore.RequireConfiguredPlcResultContracts(database, contractOptions, deadline);
             var policy = _options.AuditIntegrityPolicy!;
@@ -129,8 +133,10 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup, calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance, releaseOptions: _options.RecipeReleases,
-                 contractOptions: contractOptions,
-                 activationOptions: _options.RecipeActivations);
+                  contractOptions: contractOptions,
+                  activationOptions: _options.RecipeActivations,
+                  previewOptions: schema == PreviewSessionStoreOptions.SchemaVersion
+                      ? _options.PreviewSessions : null);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -152,10 +158,13 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                 AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
             AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline, contractOptions);
-            if (_options.RecipeActivations is not null)
-                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                    _options.RecipeActivations, _options.RecipeReleases, contractOptions,
-                    _options.CalibrationGovernance);
+             if (_options.RecipeActivations is not null)
+                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                     _options.RecipeActivations, _options.RecipeReleases, contractOptions,
+                     _options.CalibrationGovernance);
+             if (_options.PreviewSessions is not null)
+                 AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                     _options.PreviewSessions);
 
             var stored = SqliteCommandStore.ReadPlcResultContractRows(database, contractOptions, deadline);
             var through = stored.Count == 0 ? 0 : stored[^1].Revision.Position;

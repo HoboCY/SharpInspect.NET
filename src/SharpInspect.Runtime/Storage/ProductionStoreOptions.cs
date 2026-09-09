@@ -62,4 +62,9 @@ public sealed class ProductionStoreOptions
     /// camera setup, recipe drafts, released recipes, PLC result contracts, local identity,
     /// and audit integrity options.</summary>
     public RecipeActivationStoreOptions? RecipeActivations { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 19 immutable non-production Preview session ledger.
+    /// Requires local identity, audit integrity, recipe drafts, camera setup, released recipes,
+    /// and recipe activations. Preview records no frames and never grants production authority.</summary>
+    public PreviewSessionStoreOptions? PreviewSessions { get; init; }
 }

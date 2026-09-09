@@ -37,7 +37,11 @@ public enum AuditedCommandKind
     MigrateAlgorithmConfiguration = 29,
     ReleaseRecipe = 30,
     ChangePlcResultContract = 31,
-    ActivateRecipe = 32
+    ActivateRecipe = 32,
+    StartPreview = 33,
+    Tune = 34,
+    Freeze = 35,
+    Exit = 36
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

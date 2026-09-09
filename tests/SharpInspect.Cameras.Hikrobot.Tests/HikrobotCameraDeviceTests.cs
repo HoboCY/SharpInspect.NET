@@ -504,6 +504,70 @@ public sealed class HikrobotCameraDeviceTests
     }
 
     [Fact]
+    public async Task V133_H01_TriggerFailurePrecedesCallbackCandidateFinalization()
+    {
+        var fixture = await CreateFixtureAsync(VisionPixelFormat.Mono8,
+            HikrobotNativePixelFormat.Mono8, new byte[] { 5 });
+        fixture.Sdk.FailTriggerAfterEmit = true;
+        fixture.Sdk.TriggerFailureRelease.Reset();
+        using var candidatePublished = new ManualResetEventSlim();
+        using var candidateRelease = new ManualResetEventSlim();
+        using var triggerFailureReached = new ManualResetEventSlim();
+        using var triggerFailureRelease = new ManualResetEventSlim();
+        using var finalizationAttempted = new ManualResetEventSlim();
+        fixture.Device.AcquisitionTestProbe = point =>
+        {
+            switch (point)
+            {
+                case HikrobotCameraDevice.AcquisitionTestProbePoint.CallbackCandidatePublished:
+                    candidatePublished.Set();
+                    candidateRelease.Wait();
+                    break;
+                case HikrobotCameraDevice.AcquisitionTestProbePoint.TriggerFailureBeforeSignal:
+                    triggerFailureReached.Set();
+                    triggerFailureRelease.Wait();
+                    break;
+                case HikrobotCameraDevice.AcquisitionTestProbePoint.CallbackFinalizationAttempted:
+                    finalizationAttempted.Set();
+                    break;
+            }
+        };
+        await using var service = fixture.CreateService();
+
+        try
+        {
+            var acquire = service.AcquireAsync(ExecutionKind.Qualification,
+                "TriggerFailurePrecedence").AsTask();
+
+            // Hold the callback worker after it has published a valid candidate,
+            // then let the simulated trigger report its failure.  The failure
+            // path is held once more while the callback worker attempts its
+            // finalization, proving that it observes the unsettled trigger.
+            Assert.True(candidatePublished.Wait(TimeSpan.FromSeconds(2)));
+            fixture.Sdk.TriggerFailureRelease.Set();
+            Assert.True(triggerFailureReached.Wait(TimeSpan.FromSeconds(2)));
+            candidateRelease.Set();
+            Assert.True(finalizationAttempted.Wait(TimeSpan.FromSeconds(2)));
+            triggerFailureRelease.Set();
+
+            var attempt = await acquire.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.True(attempt.Accepted);
+            Assert.False(attempt.Outcome!.Succeeded);
+            Assert.Equal(CameraAcquisitionFailureKind.DeviceFault,
+                attempt.Outcome.FailureKind);
+            Assert.Equal("HikrobotFixtureTriggerFailedAfterCallback",
+                attempt.Outcome.ReasonCode);
+        }
+        finally
+        {
+            candidateRelease.Set();
+            triggerFailureRelease.Set();
+            fixture.Sdk.TriggerFailureRelease.Set();
+            fixture.Device.AcquisitionTestProbe = null;
+        }
+    }
+
+    [Fact]
     public async Task V121_C17_HardwareFrameUsesControlStartBeforeWorkerContinuation()
     {
         var fixture = await CreateFixtureAsync(VisionPixelFormat.Mono8,

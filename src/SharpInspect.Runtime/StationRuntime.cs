@@ -122,6 +122,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         }
         ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
         ConfigureRecipeActivationStartup(productionStoreOptions?.RecipeActivations is not null);
+        ConfigurePreviewStartup(productionStoreOptions?.PreviewSessions is not null);
         _storeInitialization = InitializeStoreAsync();
         _heartbeat = PublishHeartbeatAsync(interval);
     }
@@ -150,6 +151,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             // Interactive identity is a separate axis. No arm/Ready/PLC/background work is changed.
             PublishLocked(_snapshot with { Session = current });
             ScheduleCalibrationSessionExitLocked(current);
+            SchedulePreviewSessionExitLocked(current);
         }
     }
 
@@ -163,6 +165,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         _sessionProjectionVersion = checked(_sessionProjectionVersion + 1);
         PublishLocked(_snapshot with { Session = current });
         ScheduleCalibrationSessionExitLocked(current);
+        SchedulePreviewSessionExitLocked(current);
     }
 
     public async IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(
@@ -201,6 +204,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command is PreviewSessionCommand preview)
+            return await SubmitPreviewAsync(preview, cancellationToken).ConfigureAwait(false);
         if (command is ActivateRecipeCommand activate)
             return await SubmitRecipeActivationAsync(activate, cancellationToken).ConfigureAwait(false);
         if (command is ChangePlcResultContractCommand plcContract)
@@ -231,6 +236,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             // A dedicated bounded slot cannot be consumed by ordinary commands.
             if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
                 return Unavailable("LocalStopAlreadyPending");
+            RequestPreviewStop("PreviewLocalStop");
         }
         else if (Interlocked.Increment(ref _queuedCommands) > 64)
         {
@@ -575,6 +581,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         next = ApplyFrameBufferPoolStateLocked(next);
         next = ApplyCameraAcquisitionStateLocked(next);
         next = ApplyCameraRecoveryStateLocked(next);
+        next = ProjectPreviewStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
@@ -597,6 +604,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await ShutdownPreviewAsync().ConfigureAwait(false);
         await ShutdownRecipeActivationAsync().ConfigureAwait(false);
         // Activation owns its camera transaction through bounded restoration.
         // Cancelling the camera lifetime first could synchronously enter provider

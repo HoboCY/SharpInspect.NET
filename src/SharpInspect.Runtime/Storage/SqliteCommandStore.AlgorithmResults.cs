@@ -281,6 +281,7 @@ internal sealed partial class SqliteCommandStore
             started = true;
             var alarmStore = _options.AlarmPolicy is not null;
             var draftStore = _options.RecipeDrafts is not null;
+            var previewStore = _options.PreviewSessions is not null;
             AuditIntegrityReport verification;
             try
             {
@@ -293,9 +294,10 @@ internal sealed partial class SqliteCommandStore
                     imagingSetupOptions: _options.ImagingSetup,
                      calibrationSessionOptions: _options.CalibrationSessions,
                     governanceOptions: _options.CalibrationGovernance,
-                     releaseOptions: _options.RecipeReleases,
-                     contractOptions: _options.PlcResultContracts,
-                     activationOptions: _options.RecipeActivations);
+                      releaseOptions: _options.RecipeReleases,
+                      contractOptions: _options.PlcResultContracts,
+                      activationOptions: _options.RecipeActivations,
+                      previewOptions: _options.PreviewSessions);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -318,11 +320,14 @@ internal sealed partial class SqliteCommandStore
                 if (_options.PlcResultContracts is not null)
                     AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                         _options.PlcResultContracts);
-                if (_options.RecipeActivations is not null)
-                    AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                        _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                        _options.CalibrationGovernance);
-            }
+                 if (_options.RecipeActivations is not null)
+                     AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                         _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                         _options.CalibrationGovernance);
+                 if (previewStore)
+                     AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                         _options.PreviewSessions);
+             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 var reason = SqliteAuditIntegrityQuery.FaultReason(ex, "AlgorithmResultHistoryUnavailable");

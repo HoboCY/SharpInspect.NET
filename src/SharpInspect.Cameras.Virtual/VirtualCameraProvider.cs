@@ -81,6 +81,14 @@ public sealed partial class VirtualCameraProvider : ICameraProvider
 
             totalBytes = checked(totalBytes + scenario.ImageBytes);
             totalBytes = checked(totalBytes + (long)scenario.MaximumFrameBytes * poolCapacity);
+            if (scenario.Preview is { } preview)
+            {
+                // Preview owns its immutable source images and one latest-frame
+                // copy independently of the production pool. Count both so an
+                // explicitly configured preview cannot bypass the provider cap.
+                totalBytes = checked(totalBytes + preview.ImageBytes);
+                totalBytes = checked(totalBytes + preview.MaximumFrameBytes);
+            }
             if (totalBytes > MaximumTotalBytes)
                 throw new ArgumentException("VirtualCameraMemoryBudgetExceeded", nameof(scenarios));
         }
@@ -331,7 +339,7 @@ public sealed partial class VirtualCameraProvider : ICameraProvider
     }
 }
 
-internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
+internal sealed partial class VirtualCameraDevice : IControlledCameraDevice, ICameraPreviewDevice
 {
     private readonly VirtualCameraProvider _provider;
     private readonly VirtualCameraProvider.VirtualCameraSession _session;
@@ -444,6 +452,8 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
         lock (_gate)
         {
             if (_disposed) return CameraConfigurationResult.Failure("VirtualCameraDisposed");
+            if (IsPreviewActive())
+                return CameraConfigurationResult.Failure("VirtualCameraPreviewActive");
             if (_connection != CameraConnectionState.Open)
                 return CameraConfigurationResult.Failure("VirtualCameraNotOpen");
             if (_pendingConfiguration is not null)
@@ -522,6 +532,8 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
         lock (_gate)
         {
             if (_disposed) return ValueTask.FromResult(CameraOperationResult.Failure("VirtualCameraDisposed"));
+            if (IsPreviewActive())
+                return ValueTask.FromResult(CameraOperationResult.Failure("VirtualCameraPreviewActive"));
             if (_connection != CameraConnectionState.Open)
                 return ValueTask.FromResult(CameraOperationResult.Failure("VirtualCameraNotOpen"));
             if (_pendingConfiguration is not null)
@@ -555,6 +567,8 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
         {
             if (_disposed)
                 return Failure(CameraAcquisitionFailureKind.Disconnected, "VirtualCameraDisposed");
+            if (IsPreviewActive())
+                return Failure(CameraAcquisitionFailureKind.DeviceFault, "VirtualCameraPreviewActive");
             if (_connection != CameraConnectionState.Open)
                 return Failure(CameraAcquisitionFailureKind.Disconnected, "VirtualCameraNotOpen");
             if (_pendingConfiguration is not null)
@@ -625,6 +639,7 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
         if (cancellationToken.IsCancellationRequested)
             return ValueTask.FromResult(CameraOperationResult.Failure("VirtualCameraStopCancelled"));
 
+        StopPreviewForLifecycle();
         IDisposable[] handles = Array.Empty<IDisposable>();
         lock (_gate)
         {
@@ -651,6 +666,7 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice
 
     private void DisposeCore(bool providerDisposed)
     {
+        StopPreviewForLifecycle();
         IDisposable[] handles;
         lock (_gate)
         {

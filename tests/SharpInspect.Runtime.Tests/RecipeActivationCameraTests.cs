@@ -13,7 +13,7 @@ namespace SharpInspect.Runtime.Tests;
 /// transaction directly while leaving authorization and the durable Active
 /// commit to the owning StationRuntime command.
 /// </summary>
-public sealed class RecipeActivationCameraTests
+public sealed partial class RecipeActivationCameraTests
 {
     [Fact]
     public async Task V132_R12_StopBeforeFirstPhysicalClaimPreservesBaselineAndItsDeviceOwner()

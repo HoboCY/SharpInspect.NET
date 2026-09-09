@@ -64,7 +64,7 @@ public sealed class VirtualCameraConfigurationPlan
 /// Immutable development input. Acquisition/configuration/open cursors belong to a
 /// provider session and survive device reopen; a scenario never loops acquisitions.
 /// </summary>
-public sealed class VirtualCameraScenario
+public sealed partial class VirtualCameraScenario
 {
     public const string SimulatorVersion = "SharpInspect.VirtualCamera.v1";
     public const int MaximumImages = 64;
@@ -78,6 +78,38 @@ public sealed class VirtualCameraScenario
         IEnumerable<VirtualCameraConfigurationPlan>? configurations = null,
         IEnumerable<VirtualCameraOpenOutcome>? openingOutcomes = null,
         IEnumerable<VirtualCameraSignal>? unsolicitedSignals = null, string? reportedModel = null)
+        : this(id, version, seed, stableDeviceIdentity, capabilities, images, acquisitions,
+            configurations, openingOutcomes, unsolicitedSignals, reportedModel, null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a scenario with an explicit development-only preview extension.
+    /// This is a factory so the historical eleven-argument constructor retains
+    /// its CLR signature and its default byte stream.
+    /// </summary>
+    public static VirtualCameraScenario WithPreview(string id, string version, uint seed,
+        string stableDeviceIdentity, CameraCapabilities capabilities,
+        IEnumerable<VirtualCameraImage> images,
+        IEnumerable<VirtualCameraAcquisitionPlan> acquisitions,
+        VirtualCameraPreviewScenario preview,
+        IEnumerable<VirtualCameraConfigurationPlan>? configurations = null,
+        IEnumerable<VirtualCameraOpenOutcome>? openingOutcomes = null,
+        IEnumerable<VirtualCameraSignal>? unsolicitedSignals = null, string? reportedModel = null)
+    {
+        ArgumentNullException.ThrowIfNull(preview);
+        return new VirtualCameraScenario(id, version, seed, stableDeviceIdentity, capabilities,
+            images, acquisitions, configurations, openingOutcomes, unsolicitedSignals,
+            reportedModel, preview);
+    }
+
+    private VirtualCameraScenario(string id, string version, uint seed, string stableDeviceIdentity,
+        CameraCapabilities capabilities, IEnumerable<VirtualCameraImage> images,
+        IEnumerable<VirtualCameraAcquisitionPlan> acquisitions,
+        IEnumerable<VirtualCameraConfigurationPlan>? configurations,
+        IEnumerable<VirtualCameraOpenOutcome>? openingOutcomes,
+        IEnumerable<VirtualCameraSignal>? unsolicitedSignals, string? reportedModel,
+        VirtualCameraPreviewScenario? preview)
     {
         Id = VirtualCameraContract.Identifier(id, nameof(id));
         Version = VirtualCameraContract.Identifier(version, nameof(version));
@@ -112,6 +144,7 @@ public sealed class VirtualCameraScenario
         }
         OpeningOutcomes = opens.AsReadOnly();
         UnsolicitedSignals = VirtualCameraContract.Copy(unsolicitedSignals ?? Array.Empty<VirtualCameraSignal>(), 16, nameof(unsolicitedSignals));
+        Preview = preview;
         long previousOffset = -1;
         foreach (var signal in UnsolicitedSignals)
         {
@@ -168,6 +201,10 @@ public sealed class VirtualCameraScenario
         writer.Write(OpeningOutcomes.Count);
         foreach (var outcome in OpeningOutcomes) writer.Write((int)outcome);
         WriteSignals(writer, UnsolicitedSignals);
+        // Preserve the historical byte stream for scenarios without preview;
+        // explicitly configured preview is an independent, hashed extension.
+        if (Preview is not null)
+            writer.Write(Preview.ContentHash);
         writer.Flush();
         return Convert.ToHexString(SHA256.HashData(stream.GetBuffer().AsSpan(0, checked((int)stream.Length))));
     }

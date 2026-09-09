@@ -76,6 +76,7 @@ public sealed partial class StationRuntime
 
     private string? RecipeActivationBlockerLocked(ActivationReservation? reservation)
     {
+        if (PreviewConfigurationBlockedLocked) return "PreviewSessionInProgress";
         if (reservation is { CommitClaimed: true } && ReferenceEquals(_activationReservation, reservation)) return null;
         if (reservation is { InFlightPhysicalPhaseId: not 0 }) return "RecipeActivationPhysicalPhaseInProgress";
         if (_activationStartupPending) return "RecipeActivationStartupRecoveryPending";

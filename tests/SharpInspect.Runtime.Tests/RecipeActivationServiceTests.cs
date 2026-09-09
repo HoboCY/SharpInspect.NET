@@ -527,7 +527,7 @@ public sealed partial class RecipeActivationServiceTests
         }
 
         internal static async Task<ActivationHarness> CreateAsync(
-            AuthorizationPolicy? authorizationPolicy = null)
+            AuthorizationPolicy? authorizationPolicy = null, bool enablePreview = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe activation integration requires Windows machine-key protection.");
@@ -551,7 +551,8 @@ public sealed partial class RecipeActivationServiceTests
             };
             var identityOptions = new LocalIdentityOptions(station, passwordPolicy,
                 new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development,
-                authorizationPolicy ?? RecipeDraftTestPolicies.Authoring);
+                authorizationPolicy ?? (enablePreview
+                    ? CreatePreviewAuthorizationPolicy() : RecipeDraftTestPolicies.Authoring));
             var executionPolicy = new AlgorithmExecutionPolicy("V132.Activation.Execution", "1",
                 TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1));
             var governance = new RecipeGovernancePolicy("V132.Activation.Release", "1",
@@ -562,12 +563,14 @@ public sealed partial class RecipeActivationServiceTests
             var options = new ProductionStoreOptions(Path.Combine(directory, "activation.sqlite"))
             {
                 AuditIntegrityPolicy = audit,
+                AlarmPolicy = enablePreview ? CreatePreviewAlarmPolicy() : null,
                 LocalIdentity = identityOptions,
                 RecipeDrafts = new RecipeDraftStoreOptions(executionPolicy),
                 CameraSetup = new CameraSetupStoreOptions(),
                 RecipeReleases = new RecipeReleaseStoreOptions(governance),
                 PlcResultContracts = new PlcResultContractStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
+                PreviewSessions = enablePreview ? new PreviewSessionStoreOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(8),
                 QueryTimeout = TimeSpan.FromSeconds(8),
                 QueueCapacity = 32
@@ -675,8 +678,23 @@ public sealed partial class RecipeActivationServiceTests
             string password)
         {
             var content = ActivationContract.CreateContent(Options);
-            var saved = await Drafts.SaveAsync(new RecipeDraftSaveRequest(Guid.NewGuid(), Guid.NewGuid(),
-                0, null, content, "V132 create activation candidate", Invocation()));
+            var draftOperationId = Guid.NewGuid();
+            var draftId = Guid.NewGuid();
+            var draftInvocation = Invocation();
+            var draftAccess = await Drafts.GetAccessAsync(draftInvocation);
+            Assert.True(draftAccess.CanSave, draftAccess.ReasonCode);
+            Guid? draftGrantId = null;
+            if (draftAccess.RequiresStepUp)
+            {
+                var draftGrant = await GrantAsync(Permission.EditRecipeDraft, draftOperationId,
+                    draftId.ToString("D"), AuditedCommandKind.SaveRecipeDraft,
+                    draftInvocation, password);
+                draftGrantId = draftGrant.GrantId;
+                draftInvocation = draftInvocation with { StepUpGrantId = draftGrantId };
+            }
+            var saved = await Drafts.SaveAsync(new RecipeDraftSaveRequest(draftOperationId, draftId,
+                0, null, content, "V132 create activation candidate", draftInvocation,
+                draftGrantId));
             Assert.True(saved.Saved, saved.ReasonCode);
             var source = Assert.IsType<RecipeDraftRevision>(saved.Revision);
             await WaitForVerifiedAsync();
@@ -831,7 +849,7 @@ public sealed partial class RecipeActivationServiceTests
         }
     }
 
-    private sealed class VirtualCameraProvider : ICameraProvider
+    private sealed partial class VirtualCameraProvider : ICameraProvider
     {
         private readonly ConcurrentQueue<ICameraDevice> _devices;
         private readonly IReadOnlyList<VirtualCameraDevice> _all;
@@ -901,7 +919,7 @@ public sealed partial class RecipeActivationServiceTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class VirtualCameraDevice : ICameraDevice
+    private sealed partial class VirtualCameraDevice : ICameraDevice, ICameraPreviewDevice
     {
         private CameraConfigurationState _configuration = CameraConfigurationState.Unconfigured;
         private readonly TaskCompletionSource<bool> _applyStarted =
@@ -943,7 +961,7 @@ public sealed partial class RecipeActivationServiceTests
         public CameraHealthSnapshot GetHealthSnapshot() => new(
             CameraProviderAvailability.Available, _disposed ? CameraConnectionState.Closed :
                 CameraConnectionState.Open, _disposed ? CameraConfigurationState.Unconfigured :
-                _configuration, CameraAcquisitionState.Stopped,
+                _configuration, GetPreviewAcquisitionState(),
             new FrameTimePoint(DateTimeOffset.UtcNow, Math.Max(0, Stopwatch.GetTimestamp())));
 
         public async ValueTask<CameraConfigurationResult> ApplyConfigurationAsync(
@@ -983,6 +1001,9 @@ public sealed partial class RecipeActivationServiceTests
         public ValueTask<CameraOperationResult> StopAsync(CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _stopCalls);
+            if (FailDispose)
+                return ValueTask.FromResult(CameraOperationResult.Failure("T33VirtualCameraStopFailure"));
+            StopPreviewState();
             _configuration = CameraConfigurationState.Unconfigured;
             return ValueTask.FromResult(CameraOperationResult.Success());
         }
@@ -990,6 +1011,9 @@ public sealed partial class RecipeActivationServiceTests
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref _disposeCalls);
+            if (FailDispose)
+                throw new InvalidOperationException("T33VirtualCameraDisposeFailure");
+            DisposePreviewState();
             _disposed = true;
             return ValueTask.CompletedTask;
         }

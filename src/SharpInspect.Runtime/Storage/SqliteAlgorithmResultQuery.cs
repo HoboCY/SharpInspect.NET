@@ -107,6 +107,10 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
             if (_options.PlcResultContracts is null && schema == PlcResultContractStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PlcResultContractConfigurationRequired");
+            if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
+            if (_options.PreviewSessions is null && schema == PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionConfigurationRequired");
             if (schema == RecipeReleaseStoreOptions.SchemaVersion && _options.RecipeDrafts is null)
                 throw new InvalidOperationException("RecipeDraftConfigurationRequired");
             if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
@@ -147,7 +151,8 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
                  ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                  CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
-                 PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion,
+                PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
+                PreviewSessionStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
@@ -166,13 +171,16 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: schema is CalibrationGovernanceStoreOptions.SchemaVersion or
                     RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-                    RecipeActivationStoreOptions.SchemaVersion
+                    RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion
                     ? _options.CalibrationGovernance : null,
                 releaseOptions: schema is RecipeReleaseStoreOptions.SchemaVersion or
-                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion
+                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
+                    PreviewSessionStoreOptions.SchemaVersion
                     ? _options.RecipeReleases : null,
                 contractOptions: _options.PlcResultContracts,
-                activationOptions: _options.RecipeActivations);
+                activationOptions: _options.RecipeActivations,
+                previewOptions: schema == PreviewSessionStoreOptions.SchemaVersion
+                    ? _options.PreviewSessions : null);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (_options.RecipeDrafts is not null)
                 AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -191,21 +199,25 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                     _options.ImagingSetup);
             if (_options.CalibrationGovernance is not null &&
                 (schema is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
-                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion))
+                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
+                    PreviewSessionStoreOptions.SchemaVersion))
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
-            if ((schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-                    RecipeActivationStoreOptions.SchemaVersion) &&
+                if ((schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                     RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion) &&
                 _options.RecipeReleases is not null)
                 AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
-            if (_options.RecipeActivations is not null)
-                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                    _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                    _options.CalibrationGovernance);
+             if (_options.RecipeActivations is not null)
+                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                     _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                     _options.CalibrationGovernance);
+             if (_options.PreviewSessions is not null)
+                 AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                     _options.PreviewSessions);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline);

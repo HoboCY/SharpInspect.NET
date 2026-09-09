@@ -160,7 +160,8 @@ internal sealed partial class SqliteCommandStore
                 governanceOptions: _options.CalibrationGovernance,
                  releaseOptions: _options.RecipeReleases,
                  contractOptions: _options.PlcResultContracts,
-                 activationOptions: _options.RecipeActivations);
+                 activationOptions: _options.RecipeActivations,
+                 previewOptions: _options.PreviewSessions);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -183,11 +184,14 @@ internal sealed partial class SqliteCommandStore
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
-            if (_options.RecipeActivations is not null)
-                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                    _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                    _options.CalibrationGovernance);
-            recipeDraftHistoryVerificationActive = false;
+             if (_options.RecipeActivations is not null)
+                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                     _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                     _options.CalibrationGovernance);
+             if (_options.PreviewSessions is not null)
+                 AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                     _options.PreviewSessions);
+             recipeDraftHistoryVerificationActive = false;
 
             var state = ReadIdentityState(database, deadline);
             var existing = ReadRecipeDraftByOperation(database, work.Request.OperationId, deadline);
@@ -637,6 +641,23 @@ internal sealed partial class SqliteCommandStore
         var binding = EncodeRecipeDraftBinding(found);
         _ = ReadAndValidateRecipeDraft(database, position, binding, deadline, options);
         return ToPublicRevision(database, found, deadline);
+    }
+
+    internal static RecipeDraftRevision ReadRecipeDraftRevisionByReference(sqlite3 database,
+        PreviewDraftReference reference, StoreDeadline deadline, RecipeDraftStoreOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        options.Validate();
+        var row = ReadRecipeDraftRow(database,
+            "WHERE DraftId=? AND Revision=? LIMIT 2", deadline,
+            reference.DraftId.ToString("D"), reference.Revision.ToString(CultureInfo.InvariantCulture))
+            .SingleOrDefault();
+        AuditChainDatabase.Require(row is not null, "PreviewSessionDraftMissing");
+        AuditChainDatabase.Require(row!.RevisionContentHash == reference.RevisionContentHash,
+            "PreviewSessionDraftBindingMismatch");
+        var binding = EncodeRecipeDraftBinding(row);
+        _ = ReadAndValidateRecipeDraft(database, row.Position, binding, deadline, options);
+        return ToPublicRevision(database, row, deadline);
     }
 
     private static RecipeDraftRevision ToPublicRevision(sqlite3 database, RecipeDraftHead row, StoreDeadline deadline)

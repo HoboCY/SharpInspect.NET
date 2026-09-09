@@ -380,7 +380,7 @@ internal sealed class RecipeActivationCameraRestoreResult
 /// the CameraSetupRuntime operation gate and in-flight marker until this lease
 /// is disposed, including after a successful commit or restoration.
 /// </summary>
-internal sealed class RecipeActivationCameraLease : IAsyncDisposable
+internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
 {
     private const string RecipeActivationPrepared = "CameraActivationPrepared";
     private const string RecipeActivationCommitted = "CameraActivationCommitted";
@@ -712,7 +712,7 @@ internal sealed class RecipeActivationCameraLease : IAsyncDisposable
             ICameraDevice? candidate;
             lock (this)
             {
-                if (_disposed || !_candidatePrepared || _candidateDevice is null ||
+                if (_disposed || _previewOwned || !_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot is null || _committed || _restoreSucceeded)
                     return false;
                 candidate = _candidateDevice;

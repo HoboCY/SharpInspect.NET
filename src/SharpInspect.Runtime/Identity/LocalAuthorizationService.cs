@@ -152,6 +152,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ChangePlcResultContractCommand => Permission.ManagePlcResultContract,
         ReleaseRecipeCommand => Permission.ReleaseRecipe,
         ActivateRecipeCommand => Permission.ActivateRecipe,
+        SavePreviewToDraftCommand => Permission.EditRecipeDraft,
+        PreviewSessionCommand => Permission.RunPreview,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -175,6 +177,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             ChangePlcResultContractCommand change => change.AuthorizationTarget,
             ReleaseRecipeCommand release => release.AuthorizationTarget,
             ActivateRecipeCommand activation => activation.AuthorizationTarget,
+            PreviewSessionCommand preview => preview.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -206,6 +209,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
         AuditedCommandKind.ChangePlcResultContract => Permission.ManagePlcResultContract,
         AuditedCommandKind.ActivateRecipe => Permission.ActivateRecipe,
+        AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
+            AuditedCommandKind.Freeze or AuditedCommandKind.Exit => Permission.RunPreview,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
@@ -238,6 +243,12 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ChangePlcResultContractCommand => AuditedCommandKind.ChangePlcResultContract,
         ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
         ActivateRecipeCommand => AuditedCommandKind.ActivateRecipe,
+        StartPreviewSessionCommand => AuditedCommandKind.StartPreview,
+        ApplyPreviewTuningCommand => AuditedCommandKind.Tune,
+        FreezePreviewSettingsCommand => AuditedCommandKind.Freeze,
+        SavePreviewToDraftCommand => AuditedCommandKind.SaveRecipeDraft,
+        ExitPreviewSessionCommand => AuditedCommandKind.Exit,
+        PreviewSessionContinuationCommand continuation => continuation.OriginalCommandKind,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

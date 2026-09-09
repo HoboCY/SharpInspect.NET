@@ -10,6 +10,7 @@ using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Calibration;
 using SharpInspect.Runtime.Plc;
+using SharpInspect.Runtime.Preview;
 
 namespace SharpInspect.Runtime;
 
@@ -261,6 +262,8 @@ public static class ServiceCollectionExtensions
                 p.GetService<IStationRuntime>() as IAdministratorRecoveryRuntimeGate ??
                     new UnavailableAdministratorRecoveryRuntimeGate()));
         }
+        if (options.PreviewSessions is not null)
+            services.TryAddSingleton<IPreviewSessionHistoryQuery>(_ => new SqlitePreviewSessionQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -274,6 +277,9 @@ public static class ServiceCollectionExtensions
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);
             if (options.RecipeActivations is not null)
                 runtime.ConfigureRecipeActivationService(p.GetRequiredService<RecipeActivationService>());
+            if (options.PreviewSessions is not null)
+                runtime.ConfigurePreviewSessions(p.GetService<PreviewSessionOptions>() ?? new PreviewSessionOptions(),
+                    p.GetRequiredService<RecipeDraftService>(), options);
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
@@ -294,6 +300,9 @@ public static class ServiceCollectionExtensions
 
     private static void RegisterCalibrationGovernance(IServiceCollection services)
     {
+        services.TryAddSingleton<IPreviewSessionService>(p =>
+            p.GetRequiredService<IStationRuntime>() as IPreviewSessionService ??
+            throw new InvalidOperationException("PreviewSessionServiceUnavailable"));
         services.TryAddSingleton<ICalibrationGovernanceRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationGovernanceRuntime ??
             throw new InvalidOperationException("CalibrationGovernanceUnavailable"));

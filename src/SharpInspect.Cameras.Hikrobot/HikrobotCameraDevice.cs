@@ -26,6 +26,16 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
         Stop
     }
 
+    // Internal scheduling points used only by the adapter tests to hold the
+    // callback worker at the candidate/finalization boundary.  They do not
+    // participate in the production protocol.
+    internal enum AcquisitionTestProbePoint
+    {
+        CallbackCandidatePublished,
+        CallbackFinalizationAttempted,
+        TriggerFailureBeforeSignal
+    }
+
     private const string LifecycleOperationBusyReason = "HikrobotCameraOperationBusy";
     private const string SessionConsumedReason = "HikrobotSingleFrameSessionConsumed";
 
@@ -43,6 +53,7 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
     private readonly object _sync = new();
     private readonly object _sdkSequenceSync = new();
     private Action? _finalizationProbe;
+    private Action<AcquisitionTestProbePoint>? _acquisitionTestProbe;
 
     // Every SDK call is appended to this chain.  A completed predecessor, including
     // a faulted predecessor, must settle before the next call is allowed to enter
@@ -84,6 +95,13 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
     {
         get => _pendingWorkerGate;
         set => _pendingWorkerGate = value;
+    }
+
+    /// <summary>Internal scheduling seam for trigger/callback precedence tests.</summary>
+    internal Action<AcquisitionTestProbePoint>? AcquisitionTestProbe
+    {
+        get => _acquisitionTestProbe;
+        set => _acquisitionTestProbe = value;
     }
 
     internal HikrobotCameraDevice(IHikrobotSdkDevice sdk,
@@ -260,9 +278,9 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
 
         if (!control.AcknowledgePending(request))
         {
-            lock (_sync) pending.TriggerSettled = true;
             SignalPendingFailure(pending, Failure(CameraAcquisitionFailureKind.Cancelled,
-                control.IsClosed ? "HikrobotControlClosed" : "HikrobotPendingRejected"));
+                control.IsClosed ? "HikrobotControlClosed" : "HikrobotPendingRejected"),
+                settleTrigger: true);
             // The pending was installed before the Runtime acknowledgement.  A
             // closed control means its lifetime has already crossed the physical
             // ownership boundary, so retire this device as well; clearing this
@@ -513,9 +531,8 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                lock (_sync) pending.TriggerSettled = true;
                 SignalPendingFailure(pending, Failure(CameraAcquisitionFailureKind.Cancelled,
-                    "HikrobotControlClosed"));
+                    "HikrobotControlClosed"), settleTrigger: true);
                 TryFinalizePending(pending);
                 return;
             }
@@ -529,9 +546,7 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                     return;
                 cancelled = pending.CancelRequested;
                 busy = pending.Control.IsBusy;
-                if (cancelled || !busy)
-                    pending.TriggerSettled = true;
-                else
+                if (!cancelled && busy)
                 {
                     if (pending.Effective.ProductionAcquisitionMode ==
                         ProductionAcquisitionMode.SoftwareTrigger && !pending.FrameSignalled)
@@ -545,7 +560,7 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
             if (cancelled || !busy)
             {
                 SignalPendingFailure(pending, Failure(CameraAcquisitionFailureKind.Cancelled,
-                    "HikrobotControlClosed"));
+                    "HikrobotControlClosed"), settleTrigger: true);
                 TryFinalizePending(pending);
                 return;
             }
@@ -570,15 +585,12 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                         pending.TriggerAccepted = SafeTimePoint();
                         triggerTask = EnqueueSdk(() => _sdk.TriggerSoftware());
                     }
-                    else
-                    {
-                        pending.TriggerSettled = true;
-                    }
                 }
                 if (triggerTask is null)
                 {
                     SignalPendingFailure(pending, Failure(
-                        CameraAcquisitionFailureKind.Cancelled, "HikrobotControlClosed"));
+                        CameraAcquisitionFailureKind.Cancelled, "HikrobotControlClosed"),
+                        settleTrigger: true);
                     TryFinalizePending(pending);
                     return;
                 }
@@ -589,10 +601,12 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                 }
                 catch (Exception exception) when (exception is not OutOfMemoryException)
                 {
-                    lock (_sync) pending.TriggerSettled = true;
                     var reason = SdkReason(exception, "HikrobotTriggerFailed");
+                    InvokeAcquisitionTestProbe(
+                        AcquisitionTestProbePoint.TriggerFailureBeforeSignal);
                     SignalPendingFailure(pending, Failure(
-                        CameraAcquisitionFailureKind.DeviceFault, reason));
+                        CameraAcquisitionFailureKind.DeviceFault, reason),
+                        settleTrigger: true);
                     _ = BeginRetirement(reason, CameraFaultClassification.AcquisitionFailed);
                     TryFinalizePending(pending);
                     return;
@@ -607,10 +621,9 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            lock (_sync) pending.TriggerSettled = true;
             var reason = SdkReason(exception, "HikrobotAcquisitionFailed");
             SignalPendingFailure(pending, Failure(CameraAcquisitionFailureKind.DeviceFault,
-                reason));
+                reason), settleTrigger: true);
             TryFinalizePending(pending);
         }
     }
@@ -910,6 +923,11 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                 RecordProtocol(CameraProtocolViolationKind.LateFrame,
                     "HikrobotLateFrameDropped", pending.Request.Correlation, raw.ReceivedAt);
             }
+            else if (!releaseAsLate)
+            {
+                InvokeAcquisitionTestProbe(
+                    AcquisitionTestProbePoint.CallbackCandidatePublished);
+            }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
@@ -929,6 +947,8 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                     _rawTask = null;
             }
             TryFinalizePending(pending);
+            InvokeAcquisitionTestProbe(
+                AcquisitionTestProbePoint.CallbackFinalizationAttempted);
         }
     }
 
@@ -960,7 +980,8 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
     private void SignalPendingFailure(PendingAcquisition? pending,
         FrameAcquisitionResult result,
         CameraProtocolViolationKind? protocolKind = null,
-        CameraFaultClassification? recordFault = null)
+        CameraFaultClassification? recordFault = null,
+        bool settleTrigger = false)
     {
         if (pending is null) return;
         IFrameBufferLease? leaseToDispose = null;
@@ -970,8 +991,15 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
                 return;
             if (pending.Candidate?.Succeeded == true)
                 leaseToDispose = pending.Candidate.Lease;
+            // A callback may have published a successful candidate while the
+            // vendor trigger is still on its stack.  For a trigger failure,
+            // publish the failure and settle the trigger in this same state
+            // transition so the callback worker cannot finalize the success
+            // between those two observations.
             pending.Candidate = result;
             pending.FrameSignalled = true;
+            if (settleTrigger)
+                pending.TriggerSettled = true;
             pending.FrameReady.TrySetResult(true);
             if (protocolKind is { } kind)
                 RecordProtocolLocked(kind, result.Failure?.ReasonCode ?? result.ReasonCode,
@@ -1510,6 +1538,14 @@ internal sealed class HikrobotCameraDevice : IControlledCameraDevice
     private static void DisposeLeaseSafe(IFrameBufferLease lease)
     {
         try { lease.Dispose(); }
+        catch (Exception) { }
+    }
+
+    private void InvokeAcquisitionTestProbe(AcquisitionTestProbePoint point)
+    {
+        var probe = _acquisitionTestProbe;
+        if (probe is null) return;
+        try { probe(point); }
         catch (Exception) { }
     }
 

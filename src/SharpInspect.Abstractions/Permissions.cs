@@ -47,7 +47,9 @@ public enum Permission : ushort
     /// <summary>Manage the project-specific calibration acceptance policy.</summary>
     ManageCalibrationAcceptancePolicy = 33,
     /// <summary>Record independent physical calibration verification evidence.</summary>
-    RecordPhysicalCalibrationVerification = 34
+    RecordPhysicalCalibrationVerification = 34,
+    /// <summary>Run an explicitly admitted non-production Preview session.</summary>
+    RunPreview = 35
 }
 
 /// <summary>

@@ -550,8 +550,23 @@ public sealed class CameraNetworkRuntimeTests
         }
         finally { release.TrySetResult(true); }
         await Task.WhenAll(calls).WaitAsync(TimeSpan.FromSeconds(2));
-        // Completion, including timed-out queue waiters, returns all permits.
-        var recovered = await harness.Runtime.GetNetworkMaintenanceAsync(harness.Target, harness.NewInvocation());
+        // The public calls above may have returned their caller deadline while
+        // the owned workers are still retiring.  Observe recovery within one
+        // fixed bound instead of assuming that Task.WhenAll(calls) includes
+        // those internal workers.  Capacity/deadline results are the only
+        // expected transient states while their permits drain.
+        var recoveryDeadline = Stopwatch.StartNew();
+        CameraNetworkQueryResult recovered;
+        while (true)
+        {
+            recovered = await harness.Runtime.GetNetworkMaintenanceAsync(
+                harness.Target, harness.NewInvocation());
+            if (recovered.Available) break;
+            Assert.Contains(recovered.ReasonCode, new[]
+                { "CameraNetworkQueryCapacityExceeded", "CameraNetworkQueryDeadlineExceeded" });
+            if (recoveryDeadline.Elapsed >= TimeSpan.FromSeconds(2)) break;
+            await Task.Delay(10);
+        }
         Assert.True(recovered.Available, recovered.ReasonCode);
         Assert.Equal("CameraNetworkMaintenanceNotRecorded", recovered.ReasonCode);
     }

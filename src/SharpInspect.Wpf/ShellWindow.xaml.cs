@@ -60,6 +60,7 @@ public partial class ShellWindow : Window
     private readonly AlarmViewModel? _alarmViewModel;
     private readonly AlgorithmResultHistoryViewModel? _algorithmResultViewModel;
     private readonly RecipeDraftEditorViewModel? _recipeDraftViewModel;
+    private readonly PreviewSessionViewModel? _previewSessionViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -69,16 +70,53 @@ public partial class ShellWindow : Window
     private bool _administratorRecoverySelectionLoaded;
     private bool _alarmSelectionLoaded;
     private bool _recipeDraftSelectionLoaded;
+    private bool _previewSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
 
+    /// <summary>
+    /// Keeps the original public constructor signature for source and binary
+    /// compatibility. Preview is attached through the explicit factory below.
+    /// </summary>
     public ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel = null,
         AuditIntegrityViewModel? integrityViewModel = null, IdentityViewModel? identityViewModel = null,
         IdentityAdministrationViewModel? identityAdministrationViewModel = null,
         AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
         AlarmViewModel? alarmViewModel = null, AlgorithmResultHistoryViewModel? algorithmResultViewModel = null,
         RecipeDraftEditorViewModel? recipeDraftViewModel = null)
+        : this(viewModel, traceViewModel, integrityViewModel, identityViewModel,
+            identityAdministrationViewModel, administratorRecoveryViewModel, alarmViewModel,
+            algorithmResultViewModel, recipeDraftViewModel, previewSessionViewModel: null)
+    {
+    }
+
+    /// <summary>
+    /// Explicit Preview-enabled construction. Keeping this as a named factory
+    /// avoids changing or ambiguating the legacy optional-argument constructor.
+    /// </summary>
+    public static ShellWindow CreateWithPreviewSession(
+        StationShellViewModel viewModel,
+        PreviewSessionViewModel previewSessionViewModel,
+        CommandTraceViewModel? traceViewModel = null,
+        AuditIntegrityViewModel? integrityViewModel = null,
+        IdentityViewModel? identityViewModel = null,
+        IdentityAdministrationViewModel? identityAdministrationViewModel = null,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
+        AlarmViewModel? alarmViewModel = null,
+        AlgorithmResultHistoryViewModel? algorithmResultViewModel = null,
+        RecipeDraftEditorViewModel? recipeDraftViewModel = null) =>
+        new ShellWindow(viewModel, traceViewModel, integrityViewModel, identityViewModel,
+            identityAdministrationViewModel, administratorRecoveryViewModel, alarmViewModel,
+            algorithmResultViewModel, recipeDraftViewModel, previewSessionViewModel);
+
+    private ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel,
+        AuditIntegrityViewModel? integrityViewModel, IdentityViewModel? identityViewModel,
+        IdentityAdministrationViewModel? identityAdministrationViewModel,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel,
+        AlarmViewModel? alarmViewModel, AlgorithmResultHistoryViewModel? algorithmResultViewModel,
+        RecipeDraftEditorViewModel? recipeDraftViewModel,
+        PreviewSessionViewModel? previewSessionViewModel)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -90,6 +128,7 @@ public partial class ShellWindow : Window
         _alarmViewModel = alarmViewModel;
         _algorithmResultViewModel = algorithmResultViewModel;
         _recipeDraftViewModel = recipeDraftViewModel;
+        _previewSessionViewModel = previewSessionViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -100,6 +139,7 @@ public partial class ShellWindow : Window
         AlarmPanel.DataContext = alarmViewModel;
         AlgorithmResultsPanel.DataContext = algorithmResultViewModel;
         RecipeDraftEditorPanel.DataContext = recipeDraftViewModel;
+        PreviewPanel.DataContext = previewSessionViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -111,6 +151,7 @@ public partial class ShellWindow : Window
             administratorRecoveryViewModel.PropertyChanged += AdministratorRecoveryChanged;
         if (alarmViewModel is not null) alarmViewModel.PropertyChanged += AlarmChanged;
         if (recipeDraftViewModel is not null) recipeDraftViewModel.PropertyChanged += RecipeDraftChanged;
+        if (previewSessionViewModel is not null) previewSessionViewModel.PropertyChanged += PreviewChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -127,6 +168,7 @@ public partial class ShellWindow : Window
         }
         IsPrivacyLocked = false;
         PrivacyCover.Visibility = Visibility.Collapsed;
+        RenderState();
     }
 
     internal void AllowSmokeShutdown() => _allowSmokeShutdown = true;
@@ -196,6 +238,8 @@ public partial class ShellWindow : Window
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         AlarmPanel.ClearSensitiveInputs();
         RecipeDraftEditorPanel.ClearSensitiveInputs();
+        PreviewPanel.ClearSensitiveInputs();
+        _previewSelectionLoaded = false;
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
         LockedSignInStatus.Text = "";
@@ -329,6 +373,7 @@ public partial class ShellWindow : Window
             _administratorRecoveryViewModel.PropertyChanged -= AdministratorRecoveryChanged;
         if (_alarmViewModel is not null) _alarmViewModel.PropertyChanged -= AlarmChanged;
         if (_recipeDraftViewModel is not null) _recipeDraftViewModel.PropertyChanged -= RecipeDraftChanged;
+        if (_previewSessionViewModel is not null) _previewSessionViewModel.PropertyChanged -= PreviewChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
@@ -336,6 +381,7 @@ public partial class ShellWindow : Window
         PrivacyAdministratorRecoveryPanel.ClearSensitiveInputs();
         AlarmPanel.ClearSensitiveInputs();
         RecipeDraftEditorPanel.ClearSensitiveInputs();
+        PreviewPanel.ClearSensitiveInputs();
         base.OnClosed(e);
     }
 
@@ -347,6 +393,7 @@ public partial class ShellWindow : Window
     private void AdministratorRecoveryChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void AlarmChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void RecipeDraftChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void PreviewChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -366,6 +413,7 @@ public partial class ShellWindow : Window
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
         var alarmSelected = _viewModel.SelectedSection == "Alarms";
         var recipeSelected = _viewModel.SelectedSection == "Recipes";
+        var engineeringSelected = _viewModel.SelectedSection == "Engineering";
         if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导、账号授权与恢复";
         if (recipeSelected) SectionLabel.Text = "配方 · 受限草稿编辑";
         SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected || recipeSelected ? Visibility.Collapsed : Visibility.Visible;
@@ -381,6 +429,8 @@ public partial class ShellWindow : Window
         }
         AlarmPanel.Visibility = alarmSelected ? Visibility.Visible : Visibility.Collapsed;
         RecipeDraftEditorPanel.Visibility = recipeSelected ? Visibility.Visible : Visibility.Collapsed;
+        PreviewPanel.Visibility = engineeringSelected && _previewSessionViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
         if (!recipeSelected)
         {
             if (_recipeDraftSelectionLoaded)
@@ -393,6 +443,19 @@ public partial class ShellWindow : Window
         {
             _recipeDraftSelectionLoaded = true;
             _ = _recipeDraftViewModel.RefreshAsync();
+        }
+        if (!engineeringSelected)
+        {
+            if (_previewSelectionLoaded)
+            {
+                _previewSelectionLoaded = false;
+                PreviewPanel.ClearSensitiveInputs();
+            }
+        }
+        else if (!IsPrivacyLocked && _previewSessionViewModel is not null && !_previewSelectionLoaded)
+        {
+            _previewSelectionLoaded = true;
+            _ = _previewSessionViewModel.StartWatchingAsync();
         }
         if (_traceViewModel is null)
         {

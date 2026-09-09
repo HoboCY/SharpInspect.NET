@@ -159,6 +159,7 @@
                     </Border>
                     <local:AlgorithmResultPanel x:Name="AlgorithmResultsPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:RecipeDraftEditorPanel x:Name="RecipeDraftEditorPanel" Visibility="Collapsed" Margin="0,16,0,0" />
+                    <local:PreviewSessionPanel x:Name="PreviewPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:IdentityPanel x:Name="IdentityPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:IdentityAdministrationPanel x:Name="IdentityAdministrationPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:AdministratorRecoveryPanel x:Name="AdministratorRecoveryPanel" Visibility="Collapsed" Margin="0,16,0,0" />

@@ -129,16 +129,20 @@ public sealed partial class StationRuntime
     }
 
     private async ValueTask<AlarmObservationOutcome> ObserveAlarmCoreAsync(AlarmObservation observation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool previewRestorationDuringShutdown = false)
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null)
             return new(false, "AlarmPolicyUnavailable", AuditPersistence.NotAttempted);
         if (string.IsNullOrWhiteSpace(observation.Code))
             return new(false, "AlarmObservationInvalid", AuditPersistence.NotAttempted);
         Guid epoch;
+        var trustedPreviewRetirement = previewRestorationDuringShutdown &&
+            observation.Code == PreviewAlarmCode && observation.Source == PreviewAlarmSource &&
+            !observation.SourceHealthy;
         lock (_sync)
         {
-            if (_shutdownRequested || _disposed) return new(false, "RuntimeStopped", AuditPersistence.NotAttempted);
+            if ((_shutdownRequested && !trustedPreviewRetirement) || _disposed)
+                return new(false, "RuntimeStopped", AuditPersistence.NotAttempted);
             epoch = _snapshot.RuntimeEpoch;
         }
         try
@@ -149,7 +153,7 @@ public sealed partial class StationRuntime
                 AlarmTransitionDecision decision;
                 lock (_sync)
                 {
-                    if (_shutdownRequested || _disposed || cancellationToken.IsCancellationRequested)
+                    if ((_shutdownRequested && !trustedPreviewRetirement) || _disposed || cancellationToken.IsCancellationRequested)
                         decision = new(false, "AlarmObservationCancelled", Array.Empty<AlarmHistoryRecord>());
                     else if (observation.RuntimeEpoch == epoch &&
                         (observation.Sequence == long.MaxValue ||

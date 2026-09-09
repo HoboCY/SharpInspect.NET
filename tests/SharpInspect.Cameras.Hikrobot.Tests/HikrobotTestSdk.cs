@@ -126,6 +126,7 @@ internal sealed class HikrobotTestSdk : IHikrobotSdkDevice
     internal ManualResetEventSlim StartRelease { get; } = new(true);
     internal ManualResetEventSlim TriggerEntered { get; } = new();
     internal ManualResetEventSlim TriggerRelease { get; } = new(true);
+    internal ManualResetEventSlim TriggerFailureRelease { get; } = new(true);
     internal ManualResetEventSlim StopEntered { get; } = new();
     internal ManualResetEventSlim StopRelease { get; } = new(true);
     internal ManualResetEventSlim DisposeEntered { get; } = new();
@@ -208,7 +209,10 @@ internal sealed class HikrobotTestSdk : IHikrobotSdkDevice
                 Emit(TriggerPixelFormat, TriggerWidth, TriggerHeight, TriggerStrideBytes,
                     TriggerBytes, FrameCounter + 1, DeviceTimestamp + 1, useLastCallback: false);
             if (FailTriggerAfterEmit)
+            {
+                TriggerFailureRelease.Wait();
                 throw new HikrobotSdkException("HikrobotFixtureTriggerFailedAfterCallback");
+            }
         }
         finally { ExitCall("trigger"); }
     }

@@ -62,6 +62,9 @@ internal static class Program
         var recipeActivationQueryDirectory = Option("--recipe-activation-query");
         var recipeActivationEnabled = recipeActivationCheckDirectory is not null ||
             recipeActivationQueryDirectory is not null;
+        var previewCheckDirectory = Option("--preview-check");
+        var previewUiEnabled = args.Contains("--preview-ui", StringComparer.OrdinalIgnoreCase);
+        var previewEnabled = previewCheckDirectory is not null || previewUiEnabled;
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -77,10 +80,12 @@ internal static class Program
         var plcResultContractEnabled = plcResultContractCheckDirectory is not null ||
             plcResultContractQueryDirectory is not null ||
             recipeActivationEnabled ||
+            previewEnabled ||
             args.Contains("--plc-result-contracts", StringComparer.OrdinalIgnoreCase);
         var releaseEnabled = releaseCheckDirectory is not null || releaseQueryDirectory is not null ||
             plcResultContractEnabled ||
             recipeActivationEnabled ||
+            previewEnabled ||
             args.Contains("--recipe-releases", StringComparer.OrdinalIgnoreCase);
         var configuredReleaseMode = Option("--recipe-release-mode");
         var configuredReleasePolicy = Option("--recipe-release-policy");
@@ -93,20 +98,24 @@ internal static class Program
             : null;
         var draftEnabled = releaseEnabled || draftCheckDirectory is not null || draftQueryDirectory is not null ||
             recipeActivationEnabled ||
+            previewEnabled ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
-            AlarmPolicy = Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
+            AlarmPolicy = PreviewSessionDemo.EnsureRecoveryAlarmPolicy(
+                Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
+                previewEnabled),
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
             RecipeReleases = releasePolicy is null ? null : new RecipeReleaseStoreOptions(releasePolicy!),
             PlcResultContracts = plcResultContractEnabled ? new PlcResultContractStoreOptions() : null,
-            RecipeActivations = recipeActivationEnabled ? new RecipeActivationStoreOptions() : null,
+            RecipeActivations = recipeActivationEnabled || previewEnabled ? new RecipeActivationStoreOptions() : null,
             CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
-                || imagingCalibrationEnabled || recipeActivationEnabled
+                || imagingCalibrationEnabled || recipeActivationEnabled || previewEnabled
                 ? new CameraSetupStoreOptions() : null,
+            PreviewSessions = previewEnabled ? new PreviewSessionStoreOptions() : null,
             CameraRecovery = cameraRecoveryEnabled || cameraNetworkEnabled ? new CameraRecoveryStoreOptions() : null,
             CameraNetwork = cameraNetworkEnabled ? new CameraNetworkStoreOptions() : null,
             ImagingSetup = imagingCalibrationEnabled ? new ImagingSetupStoreOptions() : null,
@@ -127,6 +136,9 @@ internal static class Program
                 Option("--user-name"), Option("--expected-principal"));
         if (recipeActivationQueryDirectory is not null)
             return RecipeActivationDemo.Query(storeOptions, recipeActivationQueryDirectory);
+        if (previewCheckDirectory is not null)
+            return PreviewSessionDemo.Run(storeOptions, previewCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
         if (releaseCheckDirectory is not null)
             return RecipeReleaseDemo.Run(storeOptions, releaseCheckDirectory, Option("--user-name"),
                 Option("--expected-principal"), Option("--recipe-release-scenario"));
@@ -181,7 +193,18 @@ internal static class Program
             ? Path.GetFullPath(args[screenshotIndex + 1]) : null;
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var services = new ServiceCollection();
+        SharpInspect.Cameras.Virtual.VirtualCameraClock? previewClock = null;
+        using var previewClockPump = previewEnabled
+            ? PreviewClockPump.Start(previewClock = new SharpInspect.Cameras.Virtual.VirtualCameraClock(
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)))
+            : null;
         if (draftEnabled) services.AddSingleton(RecipeDraftDemo.CreateFactory());
+        if (previewEnabled)
+        {
+            services.AddSingleton(new SharpInspect.Runtime.Preview.PreviewSessionOptions());
+            services.AddSingleton(previewClock!);
+            services.AddSharpInspectCameraProvider(PreviewSessionDemo.CreateProvider(previewClock!));
+        }
         services.AddSharpInspectSqliteRuntime(storeOptions, TimeSpan.FromMilliseconds(500));
         services.AddSingleton<StationShellViewModel>(p =>
         {
@@ -219,6 +242,11 @@ internal static class Program
             p.GetService<IIdentityAdministrationQuery>(), p.GetService<IStepUpAuthentication>(),
             p.GetService<IAlarmHistoryQuery>(), new DispatcherUiDispatcher(app.Dispatcher),
             acknowledgeRequiresStepUp: storeOptions.LocalIdentity?.AuthorizationPolicy.RequiresStepUp(Permission.AcknowledgeAlarm) == true));
+        if (previewUiEnabled)
+            services.AddSingleton<PreviewSessionViewModel>(p => new PreviewSessionViewModel(
+                p.GetRequiredService<StationShellViewModel>(), p.GetRequiredService<IStationRuntime>(),
+                p.GetRequiredService<IPreviewSessionService>(), p.GetService<IInteractiveSessionService>(),
+                new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -228,9 +256,14 @@ internal static class Program
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
         var alarms = provider.GetRequiredService<AlarmViewModel>();
-        var window = new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms,
-            provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
-            provider.GetRequiredService<RecipeDraftEditorViewModel>());
+        var window = previewUiEnabled
+            ? ShellWindow.CreateWithPreviewSession(vm, provider.GetRequiredService<PreviewSessionViewModel>(),
+                trace, integrity, identity, identityAdministration, recovery, alarms,
+                provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
+                provider.GetRequiredService<RecipeDraftEditorViewModel>())
+            : new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms,
+                provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
+                provider.GetRequiredService<RecipeDraftEditorViewModel>());
         var exitCode = 0;
         if (smoke)
         {
@@ -364,7 +397,8 @@ internal static class Program
             {
                 exitCode = 1;
                 if (identitySmoke) Console.Error.WriteLine(exception is SmokeAssertionException assertion
-                    ? $"V104 SMOKE FAIL {assertion.Message}" : $"V104 SMOKE FAIL {exception.GetType().Name}");
+                    ? $"V104 SMOKE FAIL {assertion.Message}"
+                    : $"V104 SMOKE FAIL {exception.GetType().Name} hresult={exception.HResult:X8}{Environment.NewLine}{exception.StackTrace}");
                 else if (smoke) Console.Error.WriteLine($"SMOKE FAIL {exception.GetType().Name}: {exception.Message}");
                 else window.ShowUnavailable();
             }
@@ -373,11 +407,16 @@ internal static class Program
                 if (smoke)
                 {
                     // Dispose while the Dispatcher is alive; ordinary Close never takes this path.
-                    try { await provider.DisposeAsync(); }
+                    try
+                    {
+                        previewClockPump?.Dispose();
+                        await provider.DisposeAsync();
+                    }
                     finally { window.AllowSmokeShutdown(); app.Shutdown(exitCode); }
                 }
             }
         };
+        app.Exit += (_, _) => previewClockPump?.Dispose();
         app.Run();
         return exitCode;
     }

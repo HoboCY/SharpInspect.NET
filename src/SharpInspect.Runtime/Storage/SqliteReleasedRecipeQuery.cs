@@ -114,9 +114,13 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-                RecipeActivationStoreOptions.SchemaVersion,
+                RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion,
                 schema < RecipeReleaseStoreOptions.SchemaVersion
                     ? "RecipeReleaseGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
+            if (_options.PreviewSessions is null && schema == PreviewSessionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("PreviewSessionConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             var policy = _options.AuditIntegrityPolicy!;
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
@@ -127,9 +131,11 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                releaseOptions: releaseOptions,
-                contractOptions: _options.PlcResultContracts,
-                activationOptions: _options.RecipeActivations);
+                 releaseOptions: releaseOptions,
+                 contractOptions: _options.PlcResultContracts,
+                 activationOptions: _options.RecipeActivations,
+                 previewOptions: schema == PreviewSessionStoreOptions.SchemaVersion
+                     ? _options.PreviewSessions : null);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -156,10 +162,13 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
-            if (_options.RecipeActivations is not null)
-                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
-                    _options.RecipeActivations, releaseOptions, _options.PlcResultContracts,
-                    _options.CalibrationGovernance);
+             if (_options.RecipeActivations is not null)
+                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                     _options.RecipeActivations, releaseOptions, _options.PlcResultContracts,
+                     _options.CalibrationGovernance);
+             if (_options.PreviewSessions is not null)
+                 AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
+                     _options.PreviewSessions);
 
             var history = SqliteCommandStore.ReadAllRecipeDraftHistory(database, deadline);
             var policies = SqliteCommandStore.ReadCalibrationAcceptancePolicies(database,
