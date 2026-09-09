@@ -696,8 +696,11 @@ internal static partial class CalibrationConsumer
                 state.Lifecycle == RuntimeLifecycle.Running &&
                 state.AuditIntegrity?.State == AuditIntegrityState.Verified).ConfigureAwait(true);
             await recoveryService.RefreshAsync().ConfigureAwait(true);
-            Require(recoveryService.GetSnapshot() is { State: CameraRecoveryState.Healthy,
-                SourceHealthy: true }, "phase-b-seed-recovery-not-healthy");
+            // Refresh may yield to the Runtime health monitor's in-flight read.
+            // Await the actual healthy observation before starting this fixture.
+            await WaitForRuntimeAsync(runtime, _ => recoveryService.GetSnapshot() is
+                { State: CameraRecoveryState.Healthy, SourceHealthy: true },
+                "phase-b-seed-recovery-not-healthy").ConfigureAwait(true);
             await SignInAsync(sessions, runtime, arguments.UserName,
                 arguments.ExpectedPrincipal, password).ConfigureAwait(true);
 
@@ -989,7 +992,7 @@ internal static partial class CalibrationConsumer
     }
 
     private static async Task WaitForRuntimeAsync(IStationRuntime runtime,
-        Func<StationStateSnapshot, bool> predicate)
+        Func<StationStateSnapshot, bool> predicate, string timeoutReason = "runtime-observation-timeout")
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(45);
         while (DateTime.UtcNow < deadline)
@@ -998,7 +1001,7 @@ internal static partial class CalibrationConsumer
             if (predicate(state)) return;
             await Task.Delay(10).ConfigureAwait(true);
         }
-        throw new CalibrationConsumerCheckException("runtime-observation-timeout");
+        throw new CalibrationConsumerCheckException(timeoutReason);
     }
 
     private static async Task WaitForCalibrationAsync(CalibrationSessionViewModel viewModel,

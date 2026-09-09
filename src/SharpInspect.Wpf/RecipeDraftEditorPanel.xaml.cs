@@ -10,18 +10,29 @@ namespace SharpInspect.Wpf;
 public partial class RecipeDraftEditorPanel : UserControl
 {
     private readonly RecipeDraftEditorViewModel _fallbackViewModel;
+    private readonly RecipeDraftCustomEditorHost _customEditorHost;
     private RecipeDraftEditorViewModel? _observedViewModel;
+    private bool _applyingState;
+    private bool _applyStateAgain;
 
-    public RecipeDraftEditorPanel() : this(null) { }
+    public RecipeDraftEditorPanel() : this(null, null) { }
 
     public RecipeDraftEditorPanel(RecipeDraftEditorViewModel? viewModel)
+        : this(viewModel, null) { }
+
+    public RecipeDraftEditorPanel(RecipeDraftEditorViewModel? viewModel,
+        AlgorithmConfigurationEditorRegistry? registry)
     {
         InitializeComponent();
         AddHandler(DataObject.PastingEvent, new DataObjectPastingEventHandler(TextPasting), true);
         _fallbackViewModel = viewModel ?? new RecipeDraftEditorViewModel(
             null, null, new DispatcherUiDispatcher());
         DataContext = viewModel ?? _fallbackViewModel;
+        _customEditorHost = new RecipeDraftCustomEditorHost(ViewModel, registry,
+            CustomEditorContentControl, ApplyState);
         DataContextChanged += PanelDataContextChanged;
+        IsVisibleChanged += PanelVisibilityChanged;
+        Unloaded += PanelUnloaded;
         AttachViewModel(DataContext as RecipeDraftEditorViewModel);
         ApplyState();
     }
@@ -32,11 +43,25 @@ public partial class RecipeDraftEditorPanel : UserControl
     public IReadOnlyList<RecipeAssetKind> AssetKinds => ViewModel.AssetKinds;
     public IReadOnlyList<RecipePolicyKind> PolicyKinds => ViewModel.PolicyKinds;
 
+    public bool TryUseCustomEditor()
+    {
+        _customEditorHost.TryUseCustomEditor();
+        ApplyState();
+        return _customEditorHost.IsCustomActive;
+    }
+
+    public void UseGenericEditor()
+    {
+        _customEditorHost.UseGenericEditor();
+        ApplyState();
+    }
+
     /// <summary>Clears the transient editor projection when this page is hidden or locked.</summary>
     public void ClearSensitiveInputs()
     {
         StepUpPasswordBox.Clear();
         MigrationStepUpPasswordBox.Clear();
+        _customEditorHost.UseGenericEditor();
         ViewModel.CancelPendingOperations();
         ViewModel.ClearTransientState();
         EditorScrollViewer.ScrollToHome();
@@ -63,12 +88,28 @@ public partial class RecipeDraftEditorPanel : UserControl
     {
         if (_observedViewModel is not null)
             _observedViewModel.PropertyChanged -= ViewModelChanged;
-        _observedViewModel = viewModel;
+        _observedViewModel = viewModel ?? _fallbackViewModel;
         if (_observedViewModel is not null)
             _observedViewModel.PropertyChanged += ViewModelChanged;
+        _customEditorHost.AttachViewModel(_observedViewModel ?? _fallbackViewModel);
     }
 
     private void ViewModelChanged(object? sender, PropertyChangedEventArgs args) => ApplyState();
+
+    private void PanelVisibilityChanged(object sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (args.NewValue is bool visible && !visible)
+            InvalidateCustomEditorPresentation();
+    }
+
+    private void PanelUnloaded(object sender, RoutedEventArgs args) =>
+        InvalidateCustomEditorPresentation();
+
+    private void InvalidateCustomEditorPresentation()
+    {
+        MigrationStepUpPasswordBox.Clear();
+        _customEditorHost.UseGenericEditor();
+    }
 
     private void TextPasting(object sender, DataObjectPastingEventArgs args)
     {
@@ -115,39 +156,71 @@ public partial class RecipeDraftEditorPanel : UserControl
 
     private void ApplyState()
     {
-        var viewModel = ViewModel;
-        var configured = viewModel.IsConfigured;
-        UnavailablePanel.Visibility = configured ? Visibility.Collapsed : Visibility.Visible;
-        ConfiguredPanel.Visibility = configured ? Visibility.Visible : Visibility.Collapsed;
-        StateLabel.Text = viewModel.IsBusy ? "正在读取…" : viewModel.IsUnavailable ? "不可用 / 未授权" : "可编辑视图";
-        StatusText.Text = viewModel.StatusMessage;
-        ErrorText.Text = viewModel.ErrorCode ?? string.Empty;
-        DependencyLabel.Text = $"依赖状态：{viewModel.DependenciesStatus} · 发布资格：{(viewModel.CanRelease ? "可用" : "不可用")}";
-        StepUpLabel.Text = viewModel.RequiresStepUp
-            ? viewModel.HasStepUpService
-                ? "保存需当前密码再次确认；确认后才会提交本次草稿操作。"
-                : "保存需再次确认，但当前未配置确认服务。"
-            : string.Empty;
-        var editable = configured && viewModel.HasDraft && !viewModel.IsBusy;
-        // The algorithm selector must remain usable before a draft exists; the
-        // schema field surface itself is disabled until New Draft/Open succeeds.
-        DraftPanel.IsEnabled = configured && !viewModel.IsBusy;
-        FieldsItemsControl.IsEnabled = editable;
-        RefreshButton.IsEnabled = configured && viewModel.CanRefresh;
-        NewDraftButton.IsEnabled = configured && viewModel.CanCreateDraft;
-        OpenButton.IsEnabled = configured && viewModel.CanOpenSelected;
-        NextHistoryButton.IsEnabled = configured && viewModel.CanNextHistory;
-        ValidateButton.IsEnabled = configured && viewModel.CanValidate;
-        SaveButton.IsEnabled = configured && viewModel.CanSave;
-        SaveWithStepUpButton.IsEnabled = configured && viewModel.CanSaveWithStepUp;
-        MigrationStepUpPasswordBox.IsEnabled = configured && !viewModel.IsBusy;
-        MigrationStepUpButton.IsEnabled = configured && viewModel.CanStepUpMigrate;
-        if (!configured || !viewModel.IsAuthenticated)
-            MigrationStepUpPasswordBox.Clear();
-        UnavailableText.Text = configured
-            ? "请选择算法并新建草稿，或打开已有草稿。"
-            : "配方草稿编辑不可用：未配置受限编辑服务。";
+        if (_applyingState)
+        {
+            _applyStateAgain = true;
+            return;
+        }
+
+        _applyingState = true;
+        try
+        {
+            var viewModel = ViewModel;
+            var configured = viewModel.IsConfigured;
+            var customActive = _customEditorHost.IsCustomActive;
+            UnavailablePanel.Visibility = configured ? Visibility.Collapsed : Visibility.Visible;
+            ConfiguredPanel.Visibility = configured ? Visibility.Visible : Visibility.Collapsed;
+            StateLabel.Text = viewModel.IsBusy ? "正在读取…" : viewModel.IsUnavailable ? "不可用 / 未授权" : "可编辑视图";
+            StatusText.Text = viewModel.StatusMessage;
+            ErrorText.Text = viewModel.ErrorCode ?? string.Empty;
+            DependencyLabel.Text = $"依赖状态：{viewModel.DependenciesStatus} · 发布资格：{(viewModel.CanRelease ? "可用" : "不可用")}";
+            StepUpLabel.Text = viewModel.RequiresStepUp
+                ? viewModel.HasStepUpService
+                    ? "保存需当前密码再次确认；确认后才会提交本次草稿操作。"
+                    : "保存需再次确认，但当前未配置确认服务。"
+                : string.Empty;
+            var editable = configured && viewModel.HasDraft && !viewModel.IsBusy;
+            // The algorithm selector must remain usable before a draft exists; the
+            // schema field surface itself is disabled until New Draft/Open succeeds.
+            DraftPanel.IsEnabled = configured && !viewModel.IsBusy;
+            FieldsItemsControl.IsEnabled = editable && !customActive;
+            GenericEditorContainer.Visibility = customActive ? Visibility.Collapsed : Visibility.Visible;
+            CustomEditorContentControl.Visibility = customActive ? Visibility.Visible : Visibility.Collapsed;
+            CustomEditorContentControl.IsEnabled = configured && !viewModel.IsBusy;
+            CustomEditorButton.IsEnabled = configured && _customEditorHost.CanUseCustomEditor;
+            GenericEditorButton.IsEnabled = configured && !viewModel.IsBusy;
+            CustomEditorStatusText.Text = _customEditorHost.StatusText;
+            RefreshButton.IsEnabled = configured && viewModel.CanRefresh;
+            NewDraftButton.IsEnabled = configured && viewModel.CanCreateDraft;
+            OpenButton.IsEnabled = configured && viewModel.CanOpenSelected;
+            NextHistoryButton.IsEnabled = configured && viewModel.CanNextHistory;
+            ValidateButton.IsEnabled = configured && viewModel.CanValidate;
+            SaveButton.IsEnabled = configured && viewModel.CanSave;
+            SaveWithStepUpButton.IsEnabled = configured && viewModel.CanSaveWithStepUp;
+            MigrationStepUpPasswordBox.IsEnabled = configured && !viewModel.IsBusy;
+            MigrationStepUpButton.IsEnabled = configured && viewModel.CanStepUpMigrate;
+            if (!configured || !viewModel.IsAuthenticated)
+                MigrationStepUpPasswordBox.Clear();
+            UnavailableText.Text = configured
+                ? "请选择算法并新建草稿，或打开已有草稿。"
+                : "配方草稿编辑不可用：未配置受限编辑服务。";
+            _customEditorHost.Refresh();
+            CustomEditorStatusText.Text = _customEditorHost.StatusText;
+        }
+        finally
+        {
+            _applyingState = false;
+            if (_applyStateAgain)
+            {
+                _applyStateAgain = false;
+                ApplyState();
+            }
+        }
     }
+
+    private void CustomEditorClick(object sender, RoutedEventArgs args) => TryUseCustomEditor();
+
+    private void GenericEditorClick(object sender, RoutedEventArgs args) => UseGenericEditor();
 
     private void FieldActionClick(object sender, RoutedEventArgs args)
     {

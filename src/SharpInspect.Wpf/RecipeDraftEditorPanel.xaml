@@ -389,7 +389,23 @@
                                 <TextBox x:Name="ExecutionTimeoutBox" Grid.Row="2" Grid.Column="3" Text="{Binding AlgorithmExecutionTimeoutText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" MaxLength="64" ToolTip="必须由外部执行政策或明确输入提供，不会猜测部署默认值。" />
                             </Grid>
 
-                            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
+                            <StackPanel x:Name="CustomEditorModePanel" Margin="0,12,0,0">
+                                <WrapPanel>
+                                    <TextBlock Text="配置编辑器：" Foreground="#172B42" FontSize="14"
+                                               FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <Button x:Name="CustomEditorButton" Content="使用自定义编辑器"
+                                            Click="CustomEditorClick" Margin="16,0,6,0" Padding="10,4" />
+                                    <Button x:Name="GenericEditorButton" Content="使用通用编辑器"
+                                            Click="GenericEditorClick" Padding="10,4" />
+                                    <TextBlock x:Name="CustomEditorStatusText" Foreground="#556679"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="12,0,0,0" />
+                                </WrapPanel>
+                                <ContentControl x:Name="CustomEditorContentControl" DataContext="{x:Null}"
+                                                Visibility="Collapsed" Margin="0,10,0,0"
+                                                HorizontalContentAlignment="Stretch" />
+                            </StackPanel>
+
+                            <Border x:Name="GenericEditorContainer" Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,12,0,0">
                                 <StackPanel>
                                     <TextBlock Text="算法配置（严格按 Schema 类型）" Foreground="#172B42" FontSize="14" FontWeight="SemiBold" />
                                     <ItemsControl x:Name="FieldsItemsControl" ItemsSource="{Binding Fields}" Margin="0,8,0,0">

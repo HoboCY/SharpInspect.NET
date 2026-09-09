@@ -157,7 +157,7 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_CONSUMER',$taskConsumerDll,'Process')
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT',(Join-Path $taskRun 'draft-demo'),'Process')
             Invoke-TaskDotnet 'draft-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
-                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~RecipeDraftConsumerAcceptanceTests',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~RecipeDraftConsumerAcceptanceTests|FullyQualifiedName~CustomEditorConsumerAcceptanceTests',
                 '--logger','trx','--results-directory',(Join-Path $taskRun 'draft-consumer-tests'))
             foreach ($taskDraftFile in @('evidence.json','draft-editor.png','draft-editor-dependencies.png','draft-restart.json','process.log','restart.log')) {
                 $taskDraftArtifact = Join-Path $taskRun ('draft-demo/' + $taskDraftFile)
@@ -172,6 +172,25 @@ try {
                     (Get-Item -LiteralPath $taskDraftMigrationArtifact).Length -eq 0) {
                     throw "Draft migration consumer evidence is missing or empty: $taskDraftMigrationFile"
                 }
+            }
+            foreach ($taskCustomEditorFile in @('evidence.json','custom-editor.png','custom-editor-evidence.json','custom-editor-restart.json','process.log','restart.log')) {
+                $taskCustomEditorArtifact = Join-Path $taskRun ('draft-demo/custom-editor/' + $taskCustomEditorFile)
+                if (-not (Test-Path -LiteralPath $taskCustomEditorArtifact -PathType Leaf) -or
+                    (Get-Item -LiteralPath $taskCustomEditorArtifact).Length -eq 0) {
+                    throw "Custom editor consumer evidence is missing or empty: $taskCustomEditorFile"
+                }
+            }
+            $taskCustomEditorEvidence = Get-Content -LiteralPath (Join-Path $taskRun 'draft-demo/custom-editor/evidence.json') -Raw | ConvertFrom-Json
+            if ($taskCustomEditorEvidence.Result -cne 'Pass' -or
+                $taskCustomEditorEvidence.ExternalNuGetConsumer -cne $true -or
+                $taskCustomEditorEvidence.ConsumerSha256 -cne (Get-FileHash -LiteralPath $taskConsumerDll).Hash -or
+                $taskCustomEditorEvidence.IndependentRestart -cne $true -or
+                $taskCustomEditorEvidence.DatabaseUnchangedByRestart -cne $true -or
+                $taskCustomEditorEvidence.Revisions -ne 3 -or
+                $taskCustomEditorEvidence.Published -cne $false -or
+                $taskCustomEditorEvidence.Active -cne $false -or
+                $taskCustomEditorEvidence.CanRelease -cne $false) {
+                throw 'Custom editor consumer evidence failed its result, scope or artifact binding.'
             }
         }
         finally {

@@ -12,7 +12,7 @@ namespace SharpInspect.Wpf;
 /// view model owns only presentation values; the constrained IRecipeDraftEditor
 /// remains the only boundary that validates or persists a draft.
 /// </summary>
-public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposable
+public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly record struct OperationStart(long Version, CancellationTokenSource Cancellation);
 
@@ -451,6 +451,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     public void CreateNewDraft()
     {
         if (_editor is null || _selectedAlgorithm is null || _disposed) return;
+        InvalidateCustomEditorBuffer();
         CancelPendingOperations();
         _revision = null;
         _migrationLineage = null;
@@ -1047,24 +1048,42 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
 
     public async Task ValidateAsync(CancellationToken cancellationToken = default)
     {
-        if (_editor is null) return;
+        _ = await ValidateCoreAsync(cancellationToken).ConfigureAwait(true);
+    }
+
+    private async Task<RecipeDraftValidationResult> ValidateCoreAsync(CancellationToken cancellationToken)
+    {
+        if (_editor is null) return ValidationNotCompleted("RecipeDraftEditorUnavailable");
         var start = Begin(cancellationToken);
-        if (!start.HasValue) return;
+        if (!start.HasValue) return ValidationNotCompleted("RecipeDraftBusy");
         try
         {
+            RecipeDraftValidationResult result;
             if (!TryBuildContent(out var content, out var issues))
             {
-                await ApplyValidationAsync(new RecipeDraftValidationResult(false,
-                    LocalValidationReason(issues), issues), start.Value).ConfigureAwait(true);
-                return;
+                result = new RecipeDraftValidationResult(false, LocalValidationReason(issues), issues);
             }
-            var result = await _editor.ValidateAsync(content!, start.Value.Cancellation.Token).ConfigureAwait(true);
+            else result = await _editor.ValidateAsync(content!, start.Value.Cancellation.Token).ConfigureAwait(true);
             await ApplyValidationAsync(result, start.Value).ConfigureAwait(true);
+            lock (_sync)
+                if (!IsCurrentLocked(start.Value) || start.Value.Cancellation.IsCancellationRequested)
+                    return ValidationNotCompleted("RecipeDraftCancelled");
+            return new(result.Valid, SafeReason(result.ReasonCode,
+                result.Valid ? "RecipeDraftValid" : "RecipeDraftValidationFailed"),
+                Array.AsReadOnly((result.Issues ?? Array.Empty<AlgorithmValidationIssue>()).Take(256).ToArray()));
         }
-        catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested) { }
-        catch { await ApplyUnavailableAsync("RecipeDraftValidationFailed", start).ConfigureAwait(true); }
+        catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested)
+        { return ValidationNotCompleted("RecipeDraftCancelled"); }
+        catch
+        {
+            await ApplyUnavailableAsync("RecipeDraftValidationFailed", start).ConfigureAwait(true);
+            return ValidationNotCompleted("RecipeDraftValidationFailed");
+        }
         finally { Complete(start.Value); }
     }
+
+    private static RecipeDraftValidationResult ValidationNotCompleted(string reason) =>
+        new(false, reason, Array.Empty<AlgorithmValidationIssue>());
 
     public Task<RecipeDraftSaveResult?> SaveAsync(CancellationToken cancellationToken = default) =>
         SaveCoreAsync(null, cancellationToken);
@@ -1231,6 +1250,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     {
         CancelPendingOperations();
         if (!_dispatcher.CheckAccess) { _ = _dispatcher.InvokeAsync(ClearTransientState); return; }
+        InvalidateCustomEditorBuffer();
         _revision = null;
         _migrationLineage = null;
         _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
@@ -1445,6 +1465,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
 
     private void LoadRevision(RecipeDraftRevision revision)
     {
+        InvalidateCustomEditorBuffer();
         _revision = revision;
         _draftId = revision.DraftId;
         _expectedRevision = revision.Revision;
@@ -1550,10 +1571,15 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     }
 
     private bool TryBuildContent(out RecipeDraftContent? content,
-        out IReadOnlyList<AlgorithmValidationIssue> issues)
+        out IReadOnlyList<AlgorithmValidationIssue> issues, bool ignoreCustomPending = false)
     {
         content = null;
         var output = new List<AlgorithmValidationIssue>();
+        if (_customInputRejected && !ignoreCustomPending)
+        {
+            issues = new[] { new AlgorithmValidationIssue("CustomEditorPendingInvalid") };
+            return false;
+        }
         var algorithm = _selectedAlgorithm;
         if (algorithm is null)
         {
@@ -1705,12 +1731,14 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     private void RecomputeLocalValidation()
     {
         if (_disposed) return;
-        if (TryBuildContent(out var content, out var issues))
+        if (TryBuildContent(out var content, out var issues, ignoreCustomPending: true))
         {
             _localContent = content;
-            _validationIssues = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
-            _localValidationValid = true;
-            _validationReasonCode = "RecipeDraftInputValid";
+            _validationIssues = new ReadOnlyCollection<AlgorithmValidationIssue>(_customInputRejected
+                ? new[] { new AlgorithmValidationIssue("CustomEditorPendingInvalid") }
+                : Array.Empty<AlgorithmValidationIssue>());
+            _localValidationValid = !_customInputRejected;
+            _validationReasonCode = _customInputRejected ? "CustomEditorPendingInvalid" : "RecipeDraftInputValid";
         }
         else
         {
@@ -1728,7 +1756,12 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
         NotifyCommands();
     }
 
-    private void FieldChanged(object? sender, PropertyChangedEventArgs args) => RecomputeLocalValidation();
+    private void FieldChanged(object? sender, PropertyChangedEventArgs args)
+    {
+        if (_applyingCustomConfiguration) return;
+        _configurationEditRevision++;
+        RecomputeLocalValidation();
+    }
     private void RequirementChanged(object? sender, PropertyChangedEventArgs args) => RecomputeLocalValidation();
     private void SetBoundedProperty(ref string field, string? value, int maximumCharacters,
         int maximumBytes, string propertyName)
@@ -1960,6 +1993,7 @@ public sealed class RecipeDraftEditorViewModel : ObservableObject, IAsyncDisposa
     {
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
+            "CustomEditorPendingInvalid",
             "RecipeDraftEditorUnavailable", "RecipeDraftUnauthenticated", "RecipeDraftAccessDenied",
             "RecipeDraftAuthorizationUnavailable", "RecipeDraftStepUpRequired", "RecipeDraftStepUpUnavailable",
             "StepUpAuthenticationRejected", "RecipeDraftQueryFailed",

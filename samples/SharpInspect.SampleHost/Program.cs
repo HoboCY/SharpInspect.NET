@@ -88,12 +88,16 @@ internal static class Program
         };
         if (draftCheckDirectory is not null)
         {
+            if (args.Contains("--custom-editor", StringComparer.OrdinalIgnoreCase))
+                return RecipeDraftDemo.RunCustomEditor(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
             if (args.Contains("--configuration-migration", StringComparer.OrdinalIgnoreCase))
                 return RecipeDraftDemo.RunMigration(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
             return RecipeDraftDemo.Run(storeOptions, draftCheckDirectory, Option("--user-name"), Option("--expected-principal"));
         }
         if (draftQueryDirectory is not null)
         {
+            if (args.Contains("--custom-editor", StringComparer.OrdinalIgnoreCase))
+                return RecipeDraftDemo.QueryCustomEditor(storeOptions, draftQueryDirectory);
             if (args.Contains("--configuration-migration", StringComparer.OrdinalIgnoreCase))
                 return RecipeDraftDemo.QueryMigration(storeOptions, draftQueryDirectory);
             return RecipeDraftDemo.Query(storeOptions, draftQueryDirectory);

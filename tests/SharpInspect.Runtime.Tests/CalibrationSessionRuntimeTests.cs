@@ -360,8 +360,7 @@ public sealed class CalibrationSessionRuntimeTests
         try
         {
             await fixture.WaitForHealthySourceAsync();
-            var start = await fixture.CreateAuthorizedStartCommandAsync();
-            var accepted = await fixture.Runtime.SubmitAsync(start);
+            var accepted = await fixture.StartRestartFixtureWhenCameraIdleAsync();
             Assert.True(accepted.Disposition == CommandDisposition.Accepted, accepted.ReasonCode);
 
             // Do not simulate the restart while Start is still changing physical state.
@@ -878,6 +877,33 @@ public sealed class CalibrationSessionRuntimeTests
 
         internal async Task<CalibrationSessionQueryResult> QueryEvidenceAsync(Guid sessionId) =>
             await Runtime.QueryCalibrationSessionAsync(sessionId, User.Invocation);
+
+        internal async Task<RuntimeCommandOutcome> StartRestartFixtureWhenCameraIdleAsync()
+        {
+            // This test needs one admitted session before simulating a crash. A healthy
+            // cached projection does not reserve the camera against heartbeat probes.
+            // Retry only a persisted busy rejection with no session or physical effect,
+            // using a fresh audited command and Step-Up; never retry an accepted operation.
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                var command = await CreateAuthorizedStartCommandAsync();
+                var outcome = await Runtime.SubmitAsync(command);
+                if (outcome.Disposition != CommandDisposition.Rejected ||
+                    outcome.ReasonCode != "CameraCalibrationBusy")
+                    return outcome;
+
+                Assert.Equal(AuditPersistence.Persisted, outcome.Audit);
+                Assert.Null((await Runtime.GetSnapshotAsync()).CalibrationSession);
+                Assert.Equal(0, Provider.OpenCount);
+                Assert.Equal(0, Initial.ApplyCount);
+                Assert.Equal(0, Initial.StartCount);
+                Assert.Equal(0, Initial.AcquireCount);
+                await WaitForVerifiedAsync(Store);
+                await Task.Delay(10);
+                if (elapsed.Elapsed >= TimeSpan.FromSeconds(15)) return outcome;
+            }
+        }
 
         internal async Task WaitForHealthySourceAsync()
         {

@@ -10,7 +10,7 @@ using Xunit;
 
 namespace SharpInspect.Wpf.Tests;
 
-public sealed class RecipeDraftEditorTests
+public sealed partial class RecipeDraftEditorTests
 {
     [Fact]
     public async Task V117_W90_EditingCommonDraftFieldsPreservesProviderExtensionDependency()
@@ -815,6 +815,7 @@ public sealed class RecipeDraftEditorTests
         public int ReadCount { get; private set; }
         public RecipeDraftContent? LastValidatedContent { get; private set; }
         public RecipeDraftSaveRequest? LastSaveRequest { get; private set; }
+        public Func<RecipeDraftContent, CancellationToken, ValueTask<RecipeDraftValidationResult>>? ValidationOverride { get; set; }
         public Func<RecipeDraftFilter, Task<RecipeDraftPage>>? QueryOverride { get; set; }
         public List<RecipeDraftFilter> ObservedFilters { get; } = new();
 
@@ -824,6 +825,7 @@ public sealed class RecipeDraftEditorTests
         public ValueTask<RecipeDraftValidationResult> ValidateAsync(RecipeDraftContent content, CancellationToken cancellationToken = default)
         {
             LastValidatedContent = content;
+            if (ValidationOverride is not null) return ValidationOverride(content, cancellationToken);
             return ValueTask.FromResult(new RecipeDraftValidationResult(true, "RecipeDraftValid",
                 Array.Empty<AlgorithmValidationIssue>()));
         }
