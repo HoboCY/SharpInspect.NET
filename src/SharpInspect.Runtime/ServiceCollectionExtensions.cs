@@ -218,6 +218,14 @@ public static class ServiceCollectionExtensions
                     new AlgorithmConfigurationMigrationService(p.GetRequiredService<RecipeDraftService>(),
                         p.GetRequiredService<LocalAuthorizationService>(),
                         p.GetRequiredService<AlgorithmConfigurationMigrationRegistry>(), options));
+                if (options.RecipeReleases is not null)
+                {
+                    services.TryAddSingleton<IReleasedRecipeQuery>(_ => new SqliteReleasedRecipeQuery(options));
+                    services.TryAddSingleton<IRecipeReleaseService>(p => new RecipeReleaseService(
+                        p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<LocalAuthorizationService>(),
+                        p.GetRequiredService<IReleasedRecipeQuery>(), options,
+                        () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                }
             }
             services.TryAddSingleton<ILocalAdministratorRecovery>(p => new LocalAdministratorRecoveryService(
                 p.GetRequiredService<SqliteCommandStore>(), options.LocalIdentity,
@@ -225,13 +233,18 @@ public static class ServiceCollectionExtensions
                 p.GetService<IStationRuntime>() as IAdministratorRecoveryRuntimeGate ??
                     new UnavailableAdministratorRecoveryRuntimeGate()));
         }
-        services.TryAddSingleton<IStationRuntime>(p => new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
+        services.TryAddSingleton<IStationRuntime>(p =>
+        {
+            var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
             p.GetService<IInteractiveSessionService>(), p.GetService<LocalAuthorizationService>(),
             p.GetService<FrameBufferPool>(), p.GetService<AlgorithmExecutionGuard>(),
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
             p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
-            p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>()));
+            p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
+            if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
+            return runtime;
+        });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));

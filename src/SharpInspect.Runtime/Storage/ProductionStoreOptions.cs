@@ -50,4 +50,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 15 calibration-governance ledger.</summary>
     public CalibrationGovernanceStoreOptions? CalibrationGovernance { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 16 immutable released-recipe ledger.</summary>
+    public RecipeReleaseStoreOptions? RecipeReleases { get; init; }
 }

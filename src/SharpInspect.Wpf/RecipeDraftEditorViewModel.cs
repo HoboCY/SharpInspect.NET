@@ -112,11 +112,23 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         AlgorithmExecutionPolicy? executionPolicy,
         IStepUpAuthentication? stepUpAuthentication,
         IAlgorithmConfigurationMigrationService? migrationService)
+        : this(editor, sessions, dispatcher, executionPolicy, stepUpAuthentication,
+            migrationService, null)
+    {
+    }
+
+    public RecipeDraftEditorViewModel(IRecipeDraftEditor? editor,
+        IInteractiveSessionService? sessions, IUiDispatcher? dispatcher,
+        AlgorithmExecutionPolicy? executionPolicy,
+        IStepUpAuthentication? stepUpAuthentication,
+        IAlgorithmConfigurationMigrationService? migrationService,
+        IRecipeReleaseService? releaseService)
     {
         _editor = editor;
         _sessions = sessions;
         _stepUp = stepUpAuthentication;
         _migrationService = migrationService;
+        _releaseService = releaseService;
         _dispatcher = dispatcher ?? new DispatcherUiDispatcher();
         _executionPolicy = executionPolicy;
         _readOnlyFields = new ReadOnlyObservableCollection<RecipeDraftFieldViewModel>(_fields);
@@ -151,6 +163,13 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             _ = MigrateWithStepUpAsync(password);
         }, _ => CanStepUpMigrate);
         CancelMigrationCommand = new RelayCommand(_ => CancelMigration(), _ => CanCancelMigration);
+        ReleaseCommand = new AsyncRelayCommand(() => ReleaseAsync(),
+            () => CanRelease && !ReleaseRequiresStepUp);
+        ReleaseWithStepUpCommand = new RelayCommand(parameter =>
+        {
+            var password = parameter as string ?? string.Empty;
+            _ = ReleaseWithStepUpAsync(password);
+        }, _ => CanReleaseWithStepUp);
         if (_sessions is not null) _sessions.Changed += SessionChanged;
         RecomputeLocalValidation();
     }
@@ -166,6 +185,8 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
     public AsyncRelayCommand MigrateCommand { get; }
     public RelayCommand StepUpMigrateCommand { get; }
     public RelayCommand CancelMigrationCommand { get; }
+    public AsyncRelayCommand ReleaseCommand { get; }
+    public RelayCommand ReleaseWithStepUpCommand { get; }
 
     public bool IsConfigured => _editor is not null;
     public bool IsBusy { get { lock (_sync) return _isBusy; } }
@@ -417,7 +438,6 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         _validationIssues.Count == 0 ? "请先选择算法并填写完整配置。" :
         $"存在 {_validationIssues.Count} 项需要处理的配置问题。";
     public string DependenciesStatus => "NotRun";
-    public bool CanRelease => false;
     public bool IsUnavailable => !IsConfigured || !IsAuthenticated || _access is null || !_access.CanSave;
     public bool RequiresStepUp => _access?.RequiresStepUp == true;
     public string StatusMessage { get { lock (_sync) return _statusMessage; } private set { lock (_sync) _statusMessage = value; OnPropertyChanged(); } }
@@ -459,6 +479,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         _selectedMigrationSource = null;
         _selectedMigrationTargetAlgorithm = null;
         _selectedMigrationMigrator = null;
+        ResetReleaseProjection(clearAccess: false);
         _draftId = Guid.NewGuid();
         _expectedRevision = 0;
         _expectedRevisionContentHash = null;
@@ -582,10 +603,14 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             var migrationAccess = _migrationService is null ? null :
                 await _migrationService.GetAccessAsync(CreateInvocation(session), start.Value.Cancellation.Token).ConfigureAwait(true);
             start.Value.Cancellation.Token.ThrowIfCancellationRequested();
+            var releaseAccess = await ReadReleaseAccessAsync(CreateInvocation(session),
+                start.Value.Cancellation.Token).ConfigureAwait(true);
+            start.Value.Cancellation.Token.ThrowIfCancellationRequested();
             var page = await _editor.QueryAsync(new RecipeDraftFilter(PageSize: 50), start.Value.Cancellation.Token)
                 .ConfigureAwait(true);
             start.Value.Cancellation.Token.ThrowIfCancellationRequested();
-            await ApplyRefreshAsync(session, access, migrationAccess, page, start.Value).ConfigureAwait(true);
+            await ApplyRefreshAsync(session, access, migrationAccess, releaseAccess, page,
+                start.Value).ConfigureAwait(true);
         }
         catch (OperationCanceledException) when (start.Value.Cancellation.IsCancellationRequested) { }
         catch { await ApplyUnavailableAsync("RecipeDraftQueryFailed", start).ConfigureAwait(true); }
@@ -1289,6 +1314,8 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         _historyPage = 0;
         _localContent = null;
         _access = null; _migrationAccess = null;
+        _releaseReason = ReleaseDefaultReason;
+        ResetReleaseProjection(clearAccess: true);
         lock (_sync) _lastStepUpBinding = null;
         _draftId = Guid.NewGuid();
         _expectedRevision = 0;
@@ -1296,6 +1323,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         _validationIssues = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
         _localValidationValid = false;
         _validationReasonCode = "RecipeDraftNotInitialized";
+        _releaseReason = "发布配方草稿";
         _errorCode = null;
         _statusMessage = IsConfigured ? "编辑内容已清除，请重新读取或新建草稿。" : "配方草稿编辑不可用。";
         OnPropertyChanged(string.Empty);
@@ -1315,7 +1343,8 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         await Task.CompletedTask;
     }
 
-    private async Task ApplyRefreshAsync(InteractiveSession session, RecipeDraftAccess access, RecipeDraftAccess? migrationAccess,
+    private async Task ApplyRefreshAsync(InteractiveSession session, RecipeDraftAccess access,
+        RecipeDraftAccess? migrationAccess, RecipeReleaseAccess? releaseAccess,
         RecipeDraftPage page, OperationStart start)
     {
         await _dispatcher.InvokeAsync(() =>
@@ -1324,6 +1353,8 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             _session = session;
             _access = access;
             _migrationAccess = migrationAccess;
+            _releaseAccess = releaseAccess;
+            if (!HasExactSavedReleaseSnapshot()) ResetReleaseProjection(clearAccess: false);
             _history.Clear();
             var validPage = IsHistoryPageValid(page, 0, null);
             _historyThroughPosition = validPage ? page.ThroughPosition : null;
@@ -1466,6 +1497,10 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
     private void LoadRevision(RecipeDraftRevision revision)
     {
         InvalidateCustomEditorBuffer();
+        ResetReleaseProjection(clearAccess: false);
+        // Session clearing removes the previous person's unsaved reason. Opening
+        // a verified revision starts a fresh editor with the normal default.
+        _changeReason = "编辑配方草稿";
         _revision = revision;
         _draftId = revision.DraftId;
         _expectedRevision = revision.Revision;
@@ -1747,6 +1782,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             _localValidationValid = false;
             _validationReasonCode = issues.Count == 0 ? "RecipeDraftNotInitialized" : issues[0].Code;
         }
+        ReleaseProjectionChanged();
         OnPropertyChanged(nameof(ConfigurationContentHash));
         OnPropertyChanged(nameof(DraftContentHash));
         OnPropertyChanged(nameof(IsValid));
@@ -1874,6 +1910,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         {
             if (start.HasValue) lock (_sync) if (!IsCurrentLocked(start.Value)) return;
             _access = null; _migrationAccess = null;
+            ResetReleaseProjection(clearAccess: true);
             ErrorCode = SafeReason(errorCode, "RecipeDraftUnavailable");
             StatusMessage = "配方草稿服务暂不可用，当前内容未写入。";
             NotifyStateChanged();
@@ -1931,6 +1968,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         OnPropertyChanged(nameof(MigrationOutputConfigurationHash));
         OnPropertyChanged(nameof(MigrationLineageHash));
         OnPropertyChanged(nameof(IsMigrationBusy));
+        NotifyReleaseProperties();
         NotifyCommands();
     }
 
@@ -1944,6 +1982,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         MigrateCommand.RaiseCanExecuteChanged();
         StepUpMigrateCommand.RaiseCanExecuteChanged();
         CancelMigrationCommand.RaiseCanExecuteChanged();
+        NotifyReleaseCommands();
         NewDraftCommand.RaiseCanExecuteChanged();
         AddCalibrationRequirementCommand.RaiseCanExecuteChanged();
         RemoveCalibrationRequirementCommand.RaiseCanExecuteChanged();
@@ -2023,7 +2062,45 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             "RecipeDraftMigrationRejected", "RecipeDraftAlgorithmSemanticInvalid",
             "RecipeDraftConfigurationInvalid", "RecipeDraftValidationCancelled",
             "RecipeDraftSemanticValidationTimedOut", "RecipeDraftSemanticValidationFailed",
-            "PermissionDenied", "StepUpRequired", "StepUpInvalid"
+            "PermissionDenied", "StepUpRequired", "StepUpInvalid", "RuntimeStopped",
+            "RecipeReleaseUnavailable", "RecipeReleaseAccessUnavailable",
+            "RecipeReleaseAuthorizationUnavailable", "RecipeReleaseAccessDenied",
+            "RecipeReleasePermissionDenied", "RecipeReleasePolicyRequired",
+            "RecipeReleasePolicyInvalid", "RecipeReleaseStepUpRequired",
+            "RecipeReleaseStepUpUnavailable", "RecipeReleaseReasonRequired",
+            "RecipeReleaseDraftRequired", "RecipeReleaseDraftUnsaved",
+            "RecipeReleaseContentChanged", "RecipeReleaseRevisionConflict",
+            "RecipeReleaseSessionChanged", "RecipeReleaseCancelled",
+            "RecipeReleaseDependencyInvalid", "RecipeReleaseValidationFailed",
+            "RecipeReleaseMakerCheckerConflict", "RecipeReleaseAuditIntegrityFailed",
+            "RecipeReleaseAuditUnavailable", "RecipeReleaseRejected",
+            "RecipeReleaseResultInvalid", "RecipeReleaseReleased",
+            "RecipeReleaseFailed", "RecipeReleaseBusy", "RecipeReleaseNotFound",
+            "RecipeReleaseConfigurationRequired", "RecipeReleaseCapacityExceeded",
+            "RecipeReleaseExecutionPolicyRequired", "RecipeReleasePolicyDependencyUnavailable",
+            "RecipeReleaseAssetAuthorityUnavailable", "RecipeReleaseCalibrationDependencyUnavailable",
+            "RecipeReleaseCameraExtensionAuthorityUnavailable", "RecipeReleaseGovernancePolicyMismatch",
+            "RecipeReleaseRuntimeUnavailable", "RecipeReleaseDraftRevisionConflict",
+            "RecipeReleaseDraftAlreadyReleased", "RecipeReleaseValidationSourceMismatch",
+            "RecipeReleaseValidationUnavailable", "RecipeReleaseEvidenceUnavailable",
+            "RecipeReleaseAccessAvailable", "RecipeReleased",
+            "RecipeReleaseActivationBindingMismatch", "RecipeReleaseAuditBindingMismatch",
+            "RecipeReleaseAuditEntryMissing", "RecipeReleaseAuditPayloadInvalid",
+            "RecipeReleaseAuditPayloadMismatch", "RecipeReleaseAuthorizationAuditBindingMismatch",
+            "RecipeReleaseAuthorizationAuditMissing", "RecipeReleaseAuthorizationPayloadInvalid",
+            "RecipeReleaseAuthorizationPayloadTrailingBytes", "RecipeReleaseCommandAuditBindingMismatch",
+            "RecipeReleaseCommandAuditMissing", "RecipeReleaseCommandCorrelationInvalid",
+            "RecipeReleaseCommandDispositionInvalid", "RecipeReleaseCommandGrantInvalid",
+            "RecipeReleaseCommandKindInvalid", "RecipeReleaseCommandPhaseInvalid",
+            "RecipeReleaseCommandPrincipalInvalid", "RecipeReleaseCommandSessionInvalid",
+            "RecipeReleaseConfigurationMismatch", "RecipeReleaseEntryCapacityExceeded",
+            "RecipeReleaseIdentityInvalid", "RecipeReleaseIdentityMutationMismatch",
+            "RecipeReleaseMutationMissing", "RecipeReleasePayloadCanonicalMismatch",
+            "RecipeReleasePayloadCapacityExceeded", "RecipeReleasePayloadHashMismatch",
+            "RecipeReleasePayloadInvalid", "RecipeReleasePositionGap",
+            "RecipeReleasePreviousHashMismatch", "RecipeReleaseRecipeVersionConflict",
+            "RecipeReleaseRecordBindingMismatch", "RecipeReleaseStationIdentityMissing",
+            "RecipeReleaseTotalCapacityExceeded"
         };
         return value is not null && known.Contains(value) ? value : fallback;
     }

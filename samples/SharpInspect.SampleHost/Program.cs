@@ -52,6 +52,8 @@ internal static class Program
         var auditKey = Option("--audit-key");
         var draftCheckDirectory = Option("--recipe-draft-check");
         var draftQueryDirectory = Option("--recipe-draft-query");
+        var releaseCheckDirectory = Option("--recipe-release-check");
+        var releaseQueryDirectory = Option("--recipe-release-query");
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -64,7 +66,18 @@ internal static class Program
         var cameraNetworkEnabled = cameraNetworkDirectory is not null || cameraNetworkQueryDirectory is not null;
         var imagingCalibrationEnabled = imagingCalibrationDirectory is not null ||
             imagingCalibrationQueryDirectory is not null;
-        var draftEnabled = draftCheckDirectory is not null || draftQueryDirectory is not null ||
+        var releaseEnabled = releaseCheckDirectory is not null || releaseQueryDirectory is not null ||
+            args.Contains("--recipe-releases", StringComparer.OrdinalIgnoreCase);
+        var configuredReleaseMode = Option("--recipe-release-mode");
+        var configuredReleasePolicy = Option("--recipe-release-policy");
+        var releaseModeSpecified = args.Contains("--recipe-release-mode", StringComparer.OrdinalIgnoreCase);
+        var releasePolicySpecified = args.Contains("--recipe-release-policy", StringComparer.OrdinalIgnoreCase);
+        var releasePolicy = releaseEnabled
+            ? !releaseModeSpecified && !releasePolicySpecified
+                ? RecipeReleaseDeploymentTemplate.SingleApproverRelease
+                : RecipeReleaseDeploymentTemplate.Select(configuredReleaseMode ?? configuredReleasePolicy)
+            : null;
+        var draftEnabled = releaseEnabled || draftCheckDirectory is not null || draftQueryDirectory is not null ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
@@ -73,6 +86,7 @@ internal static class Program
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
+            RecipeReleases = releasePolicy is null ? null : new RecipeReleaseStoreOptions(releasePolicy!),
             CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
                 || imagingCalibrationEnabled
                 ? new CameraSetupStoreOptions() : null,
@@ -86,6 +100,12 @@ internal static class Program
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
             }
         };
+        if (releaseCheckDirectory is not null)
+            return RecipeReleaseDemo.Run(storeOptions, releaseCheckDirectory, Option("--user-name"),
+                Option("--expected-principal"), Option("--recipe-release-scenario"));
+        if (releaseQueryDirectory is not null)
+            return RecipeReleaseDemo.Query(storeOptions, releaseQueryDirectory,
+                Option("--recipe-release-scenario"));
         if (draftCheckDirectory is not null)
         {
             if (args.Contains("--custom-editor", StringComparer.OrdinalIgnoreCase))
@@ -156,7 +176,7 @@ internal static class Program
         services.AddSingleton(p => new RecipeDraftEditorViewModel(p.GetService<IRecipeDraftEditor>(),
             p.GetService<IInteractiveSessionService>(), new DispatcherUiDispatcher(app.Dispatcher),
             storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>(),
-            p.GetService<IAlgorithmConfigurationMigrationService>()));
+            p.GetService<IAlgorithmConfigurationMigrationService>(), p.GetService<IRecipeReleaseService>()));
         services.AddSingleton(p => new IdentityViewModel(p.GetService<ILocalAdministratorBootstrap>(),
             p.GetService<IIdentityProvider>(), "SampleDevelopmentStation", p.GetService<IInteractiveSessionService>(),
             new DispatcherUiDispatcher(app.Dispatcher)));

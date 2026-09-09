@@ -1632,7 +1632,8 @@ internal sealed partial class SqliteCommandStore
             cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
             imagingSetupOptions: _options.ImagingSetup,
             calibrationSessionOptions: _options.CalibrationSessions,
-            governanceOptions: _options.CalibrationGovernance);
+            governanceOptions: _options.CalibrationGovernance,
+            releaseOptions: _options.RecipeReleases);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -1647,6 +1648,9 @@ internal sealed partial class SqliteCommandStore
             AuditChainDatabase.RequireFullCameraNetworkVerification(database, verification, deadline, _options.CameraNetwork);
         if (_options.ImagingSetup is not null)
             AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline, _options.ImagingSetup);
+        if (_options.RecipeReleases is not null)
+            AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
         ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline, _policy!.StationId);
     }
 

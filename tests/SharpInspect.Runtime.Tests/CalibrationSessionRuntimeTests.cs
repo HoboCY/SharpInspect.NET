@@ -693,7 +693,8 @@ public sealed class CalibrationSessionRuntimeTests
             bool blockInputValidation = false, bool withCalibrationGovernance = false,
             Func<DateTimeOffset>? utcNow = null, bool withGovernanceEvidence = false,
             PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
-            double governanceSampleThreshold = 1)
+            double governanceSampleThreshold = 1,
+            RecipeReleaseStoreOptions? recipeReleases = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Calibration session integration requires Windows machine protection.");
@@ -712,7 +713,8 @@ public sealed class CalibrationSessionRuntimeTests
                 VerificationInterval = TimeSpan.FromSeconds(1),
                 MaximumVerificationEntries = 10_000
             };
-            var authorizationPolicy = CreateAuthorizationPolicy(withCalibrationGovernance);
+            var authorizationPolicy = CreateAuthorizationPolicy(withCalibrationGovernance,
+                includeRecipeDraftAuthoring: recipeReleases is not null);
             var identityOptions = new LocalIdentityOptions(audit.StationId,
                 new LocalPasswordPolicy
                 {
@@ -724,6 +726,11 @@ public sealed class CalibrationSessionRuntimeTests
             {
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
+                RecipeDrafts = recipeReleases is null ? null : new RecipeDraftStoreOptions(
+                    new AlgorithmExecutionPolicy("V130.Calibration.Release.Execution", "1",
+                        TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
+                        TimeSpan.FromSeconds(1))),
+                RecipeReleases = recipeReleases,
                 AlarmPolicy = CreateAlarmPolicy(),
                 CameraSetup = new CameraSetupStoreOptions(),
                 CameraRecovery = new CameraRecoveryStoreOptions(),
@@ -1097,7 +1104,8 @@ public sealed class CalibrationSessionRuntimeTests
             ProductionAcquisitionMode.SoftwareTrigger, exposure, 0,
             new RegionOfInterest(0, 0, 2, 2), VisionPixelFormat.Mono8, null, 100, 0, null);
 
-        private static AuthorizationPolicy CreateAuthorizationPolicy(bool includeGovernance = false)
+        private static AuthorizationPolicy CreateAuthorizationPolicy(bool includeGovernance = false,
+            bool includeRecipeDraftAuthoring = false)
         {
             var development = AuthorizationPolicy.Development;
             var roles = development.RoleBundles.ToDictionary(item => item.Key,
@@ -1108,6 +1116,9 @@ public sealed class CalibrationSessionRuntimeTests
                             Permission.ManageCalibrationAcceptancePolicy,
                             Permission.RecordPhysicalCalibrationVerification
                         } : Array.Empty<Permission>())
+                        .Concat(includeRecipeDraftAuthoring
+                            ? new[] { Permission.EditRecipeDraft }
+                            : Array.Empty<Permission>())
                     : item.Value.AsEnumerable());
             return new AuthorizationPolicy("v124-calibration", "1", roles);
         }

@@ -34,7 +34,8 @@ public enum AuditedCommandKind
     EvaluateCalibrationCandidate = 26,
     PublishCalibrationProfile = 27,
     RecordPhysicalCalibrationVerification = 28,
-    MigrateAlgorithmConfiguration = 29
+    MigrateAlgorithmConfiguration = 29,
+    ReleaseRecipe = 30
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

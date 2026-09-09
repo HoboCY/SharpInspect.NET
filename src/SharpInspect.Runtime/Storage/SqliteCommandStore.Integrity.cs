@@ -26,6 +26,10 @@ internal sealed partial class SqliteCommandStore
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
         if (_options.CalibrationGovernance is null && version == CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernanceConfigurationRequired");
+        if (_options.RecipeReleases is null && version == RecipeReleaseStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
+        if (_options.RecipeReleases is not null && version < RecipeReleaseStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
         if (_options.CalibrationGovernance is not null && version > 0 && version < CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernanceMigrationRequired");
         if (_options.CalibrationSessions is null && version == CalibrationSessionStoreOptions.SchemaVersion)

@@ -502,6 +502,68 @@
                                         Background="#6B4E16" Foreground="White" />
                                 <TextBlock x:Name="StepUpLabel" TextWrapping="Wrap" Foreground="#75531A" VerticalAlignment="Center" Margin="8,0,0,0" />
                             </WrapPanel>
+
+                            <Border x:Name="ReleasePanel" Background="#F8F5EC" BorderBrush="#C9B889"
+                                    BorderThickness="1" Padding="12" Margin="0,14,0,0">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasReleaseService}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel>
+                                    <TextBlock Text="配方发布治理" Foreground="#172B42" FontSize="14"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="发布只针对当前已保存的精确 Draft 修订；成功后生成 Available 不可变版本，不会激活或武装。"
+                                               Foreground="#556679" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,8" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="145" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="145" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Text="治理模式" Foreground="#556679" Margin="0,0,6,6" />
+                                        <TextBlock Grid.Column="1" Text="{Binding ReleasePolicyModeText}"
+                                                   Foreground="#334E68" Margin="0,0,12,6" />
+                                        <TextBlock Grid.Column="2" Text="治理政策" Foreground="#556679" Margin="0,0,6,6" />
+                                        <TextBlock Grid.Column="3" Text="{Binding ReleasePolicyText}"
+                                                   Foreground="#334E68" TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+                                        <TextBlock Grid.Row="1" Text="发布原因" Foreground="#556679" Margin="0,0,6,6" />
+                                        <TextBox x:Name="ReleaseReasonBox" Grid.Row="1" Grid.Column="1"
+                                                 Grid.ColumnSpan="3" Text="{Binding ReleaseReason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 MaxLength="256" Margin="0,0,0,6" ToolTip="本次发布的明确原因。" />
+                                        <TextBlock Grid.Row="2" Text="发布状态" Foreground="#556679" Margin="0,0,6,6" />
+                                        <TextBlock x:Name="ReleaseStatusText" Grid.Row="2" Grid.Column="1"
+                                                   Grid.ColumnSpan="3" Text="{Binding ReleaseStatusText}"
+                                                   Foreground="#75531A" TextWrapping="Wrap" Margin="0,0,0,6" />
+                                        <TextBlock Grid.Row="3" Text="Available 版本" Foreground="#556679" Margin="0,0,6,0" />
+                                        <TextBlock x:Name="ReleasedRecipeText" Grid.Row="3" Grid.Column="1"
+                                                   Grid.ColumnSpan="3" Text="{Binding ReleasedRecipeReferenceText}"
+                                                   Foreground="#334E68" TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                    <WrapPanel Margin="0,10,0,0">
+                                        <Button x:Name="ReleaseButton" Content="发布草稿" Command="{Binding ReleaseCommand}"
+                                                Background="#245B88" Foreground="White" />
+                                        <PasswordBox x:Name="ReleaseStepUpPasswordBox" Width="170" Margin="8,0,6,0"
+                                                     ToolTip="仅本次发布使用；提交后立即清除。" />
+                                        <Button x:Name="ReleaseStepUpButton" Content="确认并发布" Click="ReleaseStepUpClick"
+                                                Background="#6B4E16" Foreground="White" />
+                                        <TextBlock x:Name="ReleaseStepUpLabel" TextWrapping="Wrap" Foreground="#75531A"
+                                                   VerticalAlignment="Center" Margin="8,0,0,0" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Grid>
                 </StackPanel>

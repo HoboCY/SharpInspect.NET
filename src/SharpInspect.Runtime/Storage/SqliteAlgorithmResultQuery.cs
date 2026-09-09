@@ -99,6 +99,12 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            if (_options.RecipeReleases is not null && schema < RecipeReleaseStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
+            if (_options.RecipeReleases is null && schema == RecipeReleaseStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
+            if (schema == RecipeReleaseStoreOptions.SchemaVersion && _options.RecipeDrafts is null)
+                throw new InvalidOperationException("RecipeDraftConfigurationRequired");
             if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
             if (_options.CalibrationSessions is null &&
@@ -136,7 +142,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
                 CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
                 ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-                CalibrationGovernanceStoreOptions.SchemaVersion,
+                CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
@@ -153,8 +159,10 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
-                governanceOptions: schema == CalibrationGovernanceStoreOptions.SchemaVersion
-                    ? _options.CalibrationGovernance : null);
+                governanceOptions: schema is CalibrationGovernanceStoreOptions.SchemaVersion or
+                    RecipeReleaseStoreOptions.SchemaVersion ? _options.CalibrationGovernance : null,
+                releaseOptions: schema == RecipeReleaseStoreOptions.SchemaVersion
+                    ? _options.RecipeReleases : null);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (_options.RecipeDrafts is not null)
                 AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -174,6 +182,9 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
             if (schema == CalibrationGovernanceStoreOptions.SchemaVersion)
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
+            if (schema == RecipeReleaseStoreOptions.SchemaVersion)
+                AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                    _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM development_algorithm_results;", deadline);

@@ -48,7 +48,8 @@ internal enum IdentityEventKind
     CameraRecoveryCycleStartFailed,
     CalibrationSessionStartAuthorized,
     CalibrationSessionActionAuthorized,
-    CalibrationGovernanceActionAuthorized
+    CalibrationGovernanceActionAuthorized,
+    RecipeReleased
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -127,14 +128,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > CalibrationGovernanceStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeReleaseStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > CalibrationGovernanceStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeReleaseStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -159,7 +160,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, 11 or 12 or 13 or 14 or 15 => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= 16 => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -201,6 +202,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.CalibrationGovernanceActionAuthorized,
                     "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.RecipeReleased, "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -276,6 +279,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         actionKind is not (>= AuditedCommandKind.StartCalibrationSession and <= AuditedCommandKind.ExitCalibrationSession)) &&
                     (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
                         actionKind is not (>= AuditedCommandKind.PublishCalibrationAcceptancePolicy and <= AuditedCommandKind.RecordPhysicalCalibrationVerification)) &&
+                    (schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ReleaseRecipe) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -350,6 +354,31 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[9] == (migrationPlan is null ? "RecipeDraftAuthorized" : "RecipeDraftMigrationAuthorized");
         }
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool MatchesRecipeReleaseAuthorization(byte[] payload, long ordinal, string stationId,
+        RecipeReleaseRecord record)
+    {
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, RecipeReleaseStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            return fields.Length == 49 && fields[2] == IdentityEventKind.RecipeReleased.ToString() &&
+                fields[3] == record.ReleasedAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[5] == record.ApproverPrincipalId.ToString("D") && fields[9] == "RecipeReleased" &&
+                fields[25] == record.ApproverSessionId.ToString("D") &&
+                fields[27] == record.AuthorizationPolicy.Id && fields[28] == record.AuthorizationPolicy.Version &&
+                fields[29] == record.AuthorizationPolicy.ContentHash &&
+                fields[30] == record.ApproverPrincipalId.ToString("D") &&
+                fields[31] == record.OperationId.ToString("D") && fields[32] == record.StepUpGrantId.ToString("D") &&
+                fields[33] == Permission.ReleaseRecipe.ToString() &&
+                fields[35] == record.ApproverAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == record.AuthorizationTarget && fields[38] == record.OperationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.ReleaseRecipe.ToString() && fields[42] == record.OperationId.ToString("D");
+        }
+        catch (Exception exception) when (exception is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
         { return false; }
     }

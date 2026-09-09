@@ -311,7 +311,8 @@ internal sealed partial class SqliteCommandStore
         var signingKey = _signingKey ?? throw new InvalidOperationException("CalibrationGovernanceAuditUnavailable");
         options.Validate();
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-        AuditChainDatabase.Require(schema == CalibrationGovernanceStoreOptions.SchemaVersion,
+        AuditChainDatabase.Require(schema is CalibrationGovernanceStoreOptions.SchemaVersion or
+            RecipeReleaseStoreOptions.SchemaVersion,
             "CalibrationGovernanceSchemaInvalid");
         RequireConfiguredCalibrationGovernance(database, options, deadline);
 
@@ -586,7 +587,7 @@ internal sealed partial class SqliteCommandStore
                 if (!string.Equals(Convert.ToBase64String(payload), row.Payload, StringComparison.Ordinal))
                     continue;
                 IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId,
-                    CalibrationGovernanceStoreOptions.SchemaVersion);
+                    RecipeReleaseStoreOptions.SchemaVersion);
             }
             catch (Exception exception) when (exception is ArgumentException or FormatException or
                                                InvalidOperationException or EndOfStreamException)

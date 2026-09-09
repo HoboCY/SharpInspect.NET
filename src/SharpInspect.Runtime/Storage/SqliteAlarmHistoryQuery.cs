@@ -75,9 +75,16 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            var schema16 = schema == RecipeReleaseStoreOptions.SchemaVersion;
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15,
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
+            if (_options.RecipeReleases is not null && schema < RecipeReleaseStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
+            if (_options.RecipeReleases is null && schema == RecipeReleaseStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
+            if (schema == RecipeReleaseStoreOptions.SchemaVersion && _options.RecipeDrafts is null)
+                throw new InvalidOperationException("RecipeDraftConfigurationRequired");
             if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
             if (_options.CalibrationSessions is null &&
@@ -91,7 +98,7 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                 CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                 CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
                 AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
-            else
+            else if (!schema16)
                 AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
             if (_options.CameraRecovery is not null && schema < CameraRecoveryStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
@@ -117,20 +124,27 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                 schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
             var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
-            var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+            var cameraStore = schema16 ? _options.CameraSetup is not null :
+                schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                 CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                 CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
-            var recoveryStore = schema == CameraRecoveryStoreOptions.SchemaVersion ||
+            var recoveryStore = schema16 ? _options.CameraRecovery is not null :
+                schema == CameraRecoveryStoreOptions.SchemaVersion ||
                 (schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) ||
                 (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) &&
                 _options.CameraRecovery is not null;
-            var networkStore = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+            var networkStore = schema16 ? _options.CameraNetwork is not null :
+                (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                 CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                 _options.CameraNetwork is not null;
-            var imagingStore = schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+            var imagingStore = schema16 ? _options.ImagingSetup is not null :
+                schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                 CalibrationGovernanceStoreOptions.SchemaVersion;
-            var calibrationStore = schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
-            var governanceStore = schema == CalibrationGovernanceStoreOptions.SchemaVersion;
+            var calibrationStore = schema16 ? _options.CalibrationSessions is not null :
+                schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
+            var governanceStore = schema16 ? _options.CalibrationGovernance is not null :
+                schema == CalibrationGovernanceStoreOptions.SchemaVersion;
+            var releaseStore = schema16;
             var verification = AuditChainDatabase.Verify(database, _options.AuditIntegrityPolicy!, key.KeyId,
                 key.PublicKeyBase64,
                 new AuditVerificationRequest(0, _options.AuditIntegrityPolicy!.MaximumVerificationEntries), false,
@@ -142,7 +156,8 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                 cameraNetworkOptions: networkStore ? _options.CameraNetwork : null,
                 imagingSetupOptions: imagingStore ? _options.ImagingSetup : null,
                 calibrationSessionOptions: calibrationStore ? _options.CalibrationSessions : null,
-                governanceOptions: governanceStore ? _options.CalibrationGovernance : null);
+                 governanceOptions: governanceStore ? _options.CalibrationGovernance : null,
+                 releaseOptions: releaseStore ? _options.RecipeReleases : null);
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -164,6 +179,9 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             if (governanceStore)
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
+            if (releaseStore)
+                AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                    _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AuditChainDatabase.Require(persistedPolicy is not null &&
                 persistedPolicy.ContentHash == _options.AlarmPolicy!.ContentHash &&
@@ -881,9 +899,16 @@ internal sealed partial class SqliteCommandStore
             try
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+                var schema16 = schema == RecipeReleaseStoreOptions.SchemaVersion;
                 SqliteNative.ConfigureSqliteLimit(database, _options, schema);
-            AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15,
+            AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
+                if (_options.RecipeReleases is not null && schema < RecipeReleaseStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
+                if (_options.RecipeReleases is null && schema == RecipeReleaseStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
+                if (schema == RecipeReleaseStoreOptions.SchemaVersion && _options.RecipeDrafts is null)
+                    throw new InvalidOperationException("RecipeDraftConfigurationRequired");
                 if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
                 if (_options.CalibrationSessions is null &&
@@ -897,7 +922,7 @@ internal sealed partial class SqliteCommandStore
                     CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                     CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion)
                     AuditChainDatabase.Require(_options.CameraSetup is not null, "CameraSetupConfigurationRequired");
-                else
+                else if (!schema16)
                     AuditChainDatabase.Require(_options.CameraSetup is null, "CameraSetupGovernedMigrationRequired");
                 if (_options.CameraRecovery is not null && schema < CameraRecoveryStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CameraRecoveryGovernedMigrationRequired");
@@ -924,24 +949,31 @@ internal sealed partial class SqliteCommandStore
                 var archiveStore = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
                 var draftStore = schema >= RecipeDraftStoreOptions.SchemaVersion && _options.RecipeDrafts is not null;
-                var cameraStore = schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
+                var cameraStore = schema16 ? _options.CameraSetup is not null :
+                    schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                     CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                     CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
-                var recoveryStore = schema == CameraRecoveryStoreOptions.SchemaVersion ||
+                var recoveryStore = schema16 ? _options.CameraRecovery is not null :
+                    schema == CameraRecoveryStoreOptions.SchemaVersion ||
                     (schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) ||
                     (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion) &&
                     _options.CameraRecovery is not null;
-                var networkStore = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
+                var networkStore = schema16 ? _options.CameraNetwork is not null :
+                    (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                     CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) &&
                     _options.CameraNetwork is not null;
-                var imagingStore = schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
+                var imagingStore = schema16 ? _options.ImagingSetup is not null :
+                    schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                     CalibrationGovernanceStoreOptions.SchemaVersion;
-                var calibrationStore = schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
-                var governanceStore = schema == CalibrationGovernanceStoreOptions.SchemaVersion;
+                var calibrationStore = schema16 ? _options.CalibrationSessions is not null :
+                    schema is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
+                var governanceStore = schema16 ? _options.CalibrationGovernance is not null :
+                    schema == CalibrationGovernanceStoreOptions.SchemaVersion;
+                var releaseStore = schema16;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                    alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || governanceStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !governanceStore, deadline,
+                    alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || governanceStore || releaseStore ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                        new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !governanceStore && !releaseStore, deadline,
                     validateAnchorReceipt: false,
                     archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
                     recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
@@ -950,7 +982,8 @@ internal sealed partial class SqliteCommandStore
                     cameraNetworkOptions: networkStore ? _options.CameraNetwork : null,
                     imagingSetupOptions: imagingStore ? _options.ImagingSetup : null,
                     calibrationSessionOptions: calibrationStore ? _options.CalibrationSessions : null,
-                    governanceOptions: governanceStore ? _options.CalibrationGovernance : null);
+                    governanceOptions: governanceStore ? _options.CalibrationGovernance : null,
+                    releaseOptions: releaseStore ? _options.RecipeReleases : null);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveStore)
                     AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -972,6 +1005,9 @@ internal sealed partial class SqliteCommandStore
                 if (governanceStore)
                     AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                         _options.CalibrationGovernance);
+                if (releaseStore)
+                    AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                        _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
                 var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
                 AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);
                 var events = AlarmStorageCodec.ReadEvents(database, deadline);
@@ -1027,10 +1063,11 @@ internal sealed partial class SqliteCommandStore
             var imagingStore = _options.ImagingSetup is not null;
             var calibrationStore = _options.CalibrationSessions is not null;
             var governanceStore = _options.CalibrationGovernance is not null;
+            var releaseStore = _options.RecipeReleases is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || governanceStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !governanceStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || governanceStore || releaseStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !governanceStore && !releaseStore, deadline,
                 validateAnchorReceipt: false,
                 archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
@@ -1038,7 +1075,8 @@ internal sealed partial class SqliteCommandStore
                 cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
-                governanceOptions: _options.CalibrationGovernance);
+                governanceOptions: _options.CalibrationGovernance,
+                releaseOptions: _options.RecipeReleases);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -1060,6 +1098,9 @@ internal sealed partial class SqliteCommandStore
             if (governanceStore)
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
+            if (releaseStore)
+                AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                    _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
             var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
             AlarmStorageCodec.RequireConfiguredPolicy(persistedPolicy, _options.AlarmPolicy);
             var before = AlarmStorageCodec.BuildState(persistedPolicy,

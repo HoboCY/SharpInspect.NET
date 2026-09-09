@@ -61,6 +61,7 @@ public partial class RecipeDraftEditorPanel : UserControl
     {
         StepUpPasswordBox.Clear();
         MigrationStepUpPasswordBox.Clear();
+        ReleaseStepUpPasswordBox.Clear();
         _customEditorHost.UseGenericEditor();
         ViewModel.CancelPendingOperations();
         ViewModel.ClearTransientState();
@@ -108,6 +109,7 @@ public partial class RecipeDraftEditorPanel : UserControl
     private void InvalidateCustomEditorPresentation()
     {
         MigrationStepUpPasswordBox.Clear();
+        ReleaseStepUpPasswordBox.Clear();
         _customEditorHost.UseGenericEditor();
     }
 
@@ -179,6 +181,11 @@ public partial class RecipeDraftEditorPanel : UserControl
                     ? "保存需当前密码再次确认；确认后才会提交本次草稿操作。"
                     : "保存需再次确认，但当前未配置确认服务。"
                 : string.Empty;
+            ReleaseStepUpLabel.Text = viewModel.ReleaseRequiresStepUp
+                ? viewModel.HasStepUpService
+                    ? "发布需当前密码新鲜确认；治理策略和精确 Draft 修订会绑定到本次操作。"
+                    : "发布需要再次确认，但当前未配置确认服务。"
+                : string.Empty;
             var editable = configured && viewModel.HasDraft && !viewModel.IsBusy;
             // The algorithm selector must remain usable before a draft exists; the
             // schema field surface itself is disabled until New Draft/Open succeeds.
@@ -197,10 +204,17 @@ public partial class RecipeDraftEditorPanel : UserControl
             ValidateButton.IsEnabled = configured && viewModel.CanValidate;
             SaveButton.IsEnabled = configured && viewModel.CanSave;
             SaveWithStepUpButton.IsEnabled = configured && viewModel.CanSaveWithStepUp;
+            ReleaseButton.IsEnabled = configured && viewModel.CanRelease &&
+                !viewModel.ReleaseRequiresStepUp;
+            ReleaseStepUpButton.IsEnabled = configured && viewModel.CanReleaseWithStepUp;
+            ReleaseStepUpPasswordBox.IsEnabled = configured && !viewModel.IsBusy;
             MigrationStepUpPasswordBox.IsEnabled = configured && !viewModel.IsBusy;
             MigrationStepUpButton.IsEnabled = configured && viewModel.CanStepUpMigrate;
             if (!configured || !viewModel.IsAuthenticated)
+            {
                 MigrationStepUpPasswordBox.Clear();
+                ReleaseStepUpPasswordBox.Clear();
+            }
             UnavailableText.Text = configured
                 ? "请选择算法并新建草稿，或打开已有草稿。"
                 : "配方草稿编辑不可用：未配置受限编辑服务。";
@@ -246,6 +260,21 @@ public partial class RecipeDraftEditorPanel : UserControl
         finally
         {
             StepUpPasswordBox.Clear();
+            ApplyState();
+        }
+    }
+
+    private async void ReleaseStepUpClick(object sender, RoutedEventArgs args)
+    {
+        var password = ReleaseStepUpPasswordBox.Password;
+        ReleaseStepUpPasswordBox.Clear();
+        try
+        {
+            await ViewModel.ReleaseWithStepUpAsync(password).ConfigureAwait(true);
+        }
+        finally
+        {
+            ReleaseStepUpPasswordBox.Clear();
             ApplyState();
         }
     }

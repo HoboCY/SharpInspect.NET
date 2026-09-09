@@ -199,6 +199,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command is ReleaseRecipeCommand release)
+            return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         var attempt = Guid.NewGuid();
         RuntimeCommandOutcome Unavailable(string reason) => new(command.CorrelationId,

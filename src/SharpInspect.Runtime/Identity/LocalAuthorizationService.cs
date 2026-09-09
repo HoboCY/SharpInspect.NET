@@ -149,6 +149,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PublishCalibrationAcceptancePolicyCommand => Permission.ManageCalibrationAcceptancePolicy,
         EvaluateCalibrationCandidateCommand or PublishCalibrationProfileCommand => Permission.PublishCalibration,
         RecordPhysicalCalibrationVerificationCommand => Permission.RecordPhysicalCalibrationVerification,
+        ReleaseRecipeCommand => Permission.ReleaseRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -169,6 +170,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             StartCalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             CalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             CalibrationGovernanceCommand calibration => calibration.AuthorizationTarget,
+            ReleaseRecipeCommand release => release.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -200,6 +202,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
+        AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,
@@ -226,6 +229,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         EvaluateCalibrationCandidateCommand => AuditedCommandKind.EvaluateCalibrationCandidate,
         PublishCalibrationProfileCommand => AuditedCommandKind.PublishCalibrationProfile,
         RecordPhysicalCalibrationVerificationCommand => AuditedCommandKind.RecordPhysicalCalibrationVerification,
+        ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

@@ -132,6 +132,8 @@ internal static class SqliteNative
             limit = Math.Max(limit, CalibrationSessionStoreOptions.SqliteValueLimitBytes);
         if (options.CalibrationGovernance is not null)
             limit = Math.Max(limit, CalibrationGovernanceStoreOptions.SqliteValueLimitBytes);
+        if (options.RecipeReleases is not null)
+            limit = Math.Max(limit, RecipeReleaseStoreOptions.SqliteValueLimitBytes);
         // Read-only audit consumers may omit identity configuration. Preserve
         // the historical schema's payload budget after reading its version,
         // without reducing a larger limit from another configured ledger.
@@ -146,6 +148,9 @@ internal static class SqliteNative
             14 => CalibrationSessionStoreOptions.SqliteValueLimitBytes,
             15 => Math.Max(CalibrationSessionStoreOptions.SqliteValueLimitBytes,
                 CalibrationGovernanceStoreOptions.SqliteValueLimitBytes),
+            16 => Math.Max(Math.Max(CalibrationSessionStoreOptions.SqliteValueLimitBytes,
+                    CalibrationGovernanceStoreOptions.SqliteValueLimitBytes),
+                RecipeReleaseStoreOptions.SqliteValueLimitBytes),
             _ => 65536
         };
         limit = Math.Max(limit, schemaLimit);

@@ -531,7 +531,8 @@ public sealed class RecipeDraftStorageTests
 
         internal static async Task<Fixture> CreateAsync(bool requireStepUp = false,
             bool enableArchive = false, int? maximumRevisionCount = null,
-            TimeSpan? verificationInterval = null)
+            TimeSpan? verificationInterval = null, RecipeReleaseStoreOptions? recipeReleases = null,
+            AlarmPolicy? alarmPolicy = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -567,7 +568,9 @@ public sealed class RecipeDraftStorageTests
             {
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
+                AlarmPolicy = alarmPolicy,
                 RecipeDrafts = draftOptions,
+                RecipeReleases = recipeReleases,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };

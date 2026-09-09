@@ -251,7 +251,8 @@ internal sealed partial class SqliteCommandStore
                  cameraNetworkOptions: networkStore ? _options.CameraNetwork : null,
                  imagingSetupOptions: _options.ImagingSetup,
                  calibrationSessionOptions: _options.CalibrationSessions,
-                governanceOptions: _options.CalibrationGovernance);
+                governanceOptions: _options.CalibrationGovernance,
+                releaseOptions: _options.RecipeReleases);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -266,6 +267,9 @@ internal sealed partial class SqliteCommandStore
             if (_options.ImagingSetup is not null)
                 AuditChainDatabase.RequireFullImagingSetupVerification(database, verification, deadline,
                     _options.ImagingSetup);
+            if (_options.RecipeReleases is not null)
+                AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
+                    _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
 
             ValidateFact(work.Admission);
             var attempt = ReadAttempt(database, work.Admission.AttemptId, deadline);

@@ -198,6 +198,46 @@ try {
             [Environment]::SetEnvironmentVariable('SHARPINSPECT_DRAFT_EVIDENCE_ROOT',$taskPreviousDraftEvidence,'Process')
         }
     }
+    if ($Ticket -ge 30) {
+        $taskPreviousReleaseConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_RELEASE_CONSUMER','Process')
+        $taskPreviousReleaseEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_RELEASE_EVIDENCE_ROOT','Process')
+        try {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_RELEASE_CONSUMER',$taskConsumerDll,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_RELEASE_EVIDENCE_ROOT',(Join-Path $taskRun 'release-demo'),'Process')
+            Invoke-TaskDotnet 'recipe-release-consumer.log' @('test','tests/SharpInspect.Runtime.Tests/SharpInspect.Runtime.Tests.csproj',
+                '-c','Release','--no-build','--no-restore','--filter','FullyQualifiedName~RecipeReleaseConsumerAcceptanceTests',
+                '--logger','trx','--results-directory',(Join-Path $taskRun 'recipe-release-consumer-tests'))
+            foreach ($taskReleaseCase in @('single','maker-checker','concurrent','dependency')) {
+                $taskReleaseDirectory = Join-Path $taskRun ('release-demo/' + $taskReleaseCase)
+                foreach ($taskReleaseFile in @('evidence.json','release-editor.png','release-evidence.json','release-restart.json','process.log','restart.log')) {
+                    $taskReleaseArtifact = Join-Path $taskReleaseDirectory $taskReleaseFile
+                    if (-not (Test-Path -LiteralPath $taskReleaseArtifact -PathType Leaf) -or
+                        (Get-Item -LiteralPath $taskReleaseArtifact).Length -eq 0) {
+                        throw "Recipe release consumer evidence is missing or empty: $taskReleaseCase/$taskReleaseFile"
+                    }
+                }
+                $taskReleaseEvidence = Get-Content -LiteralPath (Join-Path $taskReleaseDirectory 'evidence.json') -Raw | ConvertFrom-Json
+                $taskReleaseExpectedCount = if ($taskReleaseCase -ceq 'single') { 1 } else { 0 }
+                $taskReleaseExpectedAvailable = $taskReleaseCase -ceq 'single'
+                if ($taskReleaseEvidence.Result -cne 'Pass' -or
+                    $taskReleaseEvidence.ExternalNuGetConsumer -cne $true -or
+                    $taskReleaseEvidence.ConsumerSha256 -cne (Get-FileHash -LiteralPath $taskConsumerDll).Hash -or
+                    $taskReleaseEvidence.IndependentRestart -cne $true -or
+                    $taskReleaseEvidence.DatabaseUnchangedByRestart -cne $true -or
+                    $taskReleaseEvidence.ReleasedVersions -ne $taskReleaseExpectedCount -or
+                    $taskReleaseEvidence.Available -cne $taskReleaseExpectedAvailable -or
+                    $taskReleaseEvidence.Active -cne $false -or
+                    $taskReleaseEvidence.Armed -cne $false -or
+                    $taskReleaseEvidence.ProductionReady -cne $false) {
+                    throw "Recipe release consumer did not prove its exact outcome and read-only restart: $taskReleaseCase"
+                }
+            }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_RELEASE_CONSUMER',$taskPreviousReleaseConsumer,'Process')
+            [Environment]::SetEnvironmentVariable('SHARPINSPECT_RELEASE_EVIDENCE_ROOT',$taskPreviousReleaseEvidence,'Process')
+        }
+    }
     if ($Ticket -ge 17) {
         $taskPreviousCameraConsumer = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_CONSUMER','Process')
         $taskPreviousCameraEvidence = [Environment]::GetEnvironmentVariable('SHARPINSPECT_CAMERA_SETUP_EVIDENCE_ROOT','Process')
