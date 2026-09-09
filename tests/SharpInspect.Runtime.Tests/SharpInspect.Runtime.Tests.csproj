@@ -13,6 +13,8 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Fixtures/recipe-draft-legacy-t31/*.json"
+                      LogicalName="RecipeDraftLegacyT31.%(Filename)%(Extension)" />
     <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticCheckerboardFixture.cs"
              Link="Fixtures/SyntheticCheckerboardFixture.cs" />
     <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticPlanarFixture.cs"

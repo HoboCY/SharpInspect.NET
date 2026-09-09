@@ -291,10 +291,11 @@ internal sealed partial class SqliteCommandStore
                     recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                     cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                     imagingSetupOptions: _options.ImagingSetup,
-                    calibrationSessionOptions: _options.CalibrationSessions,
+                     calibrationSessionOptions: _options.CalibrationSessions,
                     governanceOptions: _options.CalibrationGovernance,
                      releaseOptions: _options.RecipeReleases,
-                     contractOptions: _options.PlcResultContracts);
+                     contractOptions: _options.PlcResultContracts,
+                     activationOptions: _options.RecipeActivations);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -317,6 +318,10 @@ internal sealed partial class SqliteCommandStore
                 if (_options.PlcResultContracts is not null)
                     AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                         _options.PlcResultContracts);
+                if (_options.RecipeActivations is not null)
+                    AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                        _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                        _options.CalibrationGovernance);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

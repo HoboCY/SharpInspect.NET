@@ -161,7 +161,7 @@ internal sealed class AlgorithmConfigurationMigrationService : IAlgorithmConfigu
                 RecipeAlgorithmBinding.FromDescriptor(target), configuration, old.CameraRole, old.Camera,
                 old.AlgorithmExecutionTimeout, old.AssetRequirements, old.PolicyRequirements,
                 configuration.Values.Select(value => new RecipeDraftFieldOrigin(value.Key, RecipeDraftValueOrigin.Explicit)),
-                old.CameraProviderExtension, old.CalibrationRequirements);
+                old.CameraProviderExtension, old.CalibrationRequirements, old.PartIdentityRequirement);
             var validationTask = _drafts.ValidateAsync(content, budget.Token).AsTask();
             physical = validationTask;
             var validation = await validationTask.WaitAsync(deadline.Remaining, cancellationToken).ConfigureAwait(false);

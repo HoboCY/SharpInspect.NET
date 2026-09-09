@@ -67,7 +67,8 @@ public sealed partial class StationRuntime
         lock (_sync)
         {
             existing = _calibrationCoordinator;
-            reason = _auditFault || !_storeReady ? "CalibrationAuditUnavailable" :
+            reason = RecipeActivationConfigurationBlockedLocked ? "RecipeActivationInProgress" :
+                _auditFault || !_storeReady ? "CalibrationAuditUnavailable" :
                 command is StartCalibrationSessionCommand ? CheckCalibrationStartLocked() :
                 CheckCalibrationActionLocked((CalibrationSessionCommand)command);
         }

@@ -58,6 +58,10 @@ internal static class Program
         var releaseQueryDirectory = Option("--recipe-release-query");
         var plcResultContractCheckDirectory = Option("--plc-result-contract-check");
         var plcResultContractQueryDirectory = Option("--plc-result-contract-query");
+        var recipeActivationCheckDirectory = Option("--recipe-activation-check");
+        var recipeActivationQueryDirectory = Option("--recipe-activation-query");
+        var recipeActivationEnabled = recipeActivationCheckDirectory is not null ||
+            recipeActivationQueryDirectory is not null;
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -72,9 +76,11 @@ internal static class Program
             imagingCalibrationQueryDirectory is not null;
         var plcResultContractEnabled = plcResultContractCheckDirectory is not null ||
             plcResultContractQueryDirectory is not null ||
+            recipeActivationEnabled ||
             args.Contains("--plc-result-contracts", StringComparer.OrdinalIgnoreCase);
         var releaseEnabled = releaseCheckDirectory is not null || releaseQueryDirectory is not null ||
             plcResultContractEnabled ||
+            recipeActivationEnabled ||
             args.Contains("--recipe-releases", StringComparer.OrdinalIgnoreCase);
         var configuredReleaseMode = Option("--recipe-release-mode");
         var configuredReleasePolicy = Option("--recipe-release-policy");
@@ -86,6 +92,7 @@ internal static class Program
                 : RecipeReleaseDeploymentTemplate.Select(configuredReleaseMode ?? configuredReleasePolicy)
             : null;
         var draftEnabled = releaseEnabled || draftCheckDirectory is not null || draftQueryDirectory is not null ||
+            recipeActivationEnabled ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
@@ -96,8 +103,9 @@ internal static class Program
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
             RecipeReleases = releasePolicy is null ? null : new RecipeReleaseStoreOptions(releasePolicy!),
             PlcResultContracts = plcResultContractEnabled ? new PlcResultContractStoreOptions() : null,
+            RecipeActivations = recipeActivationEnabled ? new RecipeActivationStoreOptions() : null,
             CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
-                || imagingCalibrationEnabled
+                || imagingCalibrationEnabled || recipeActivationEnabled
                 ? new CameraSetupStoreOptions() : null,
             CameraRecovery = cameraRecoveryEnabled || cameraNetworkEnabled ? new CameraRecoveryStoreOptions() : null,
             CameraNetwork = cameraNetworkEnabled ? new CameraNetworkStoreOptions() : null,
@@ -114,6 +122,11 @@ internal static class Program
                 Option("--user-name"), Option("--expected-principal"));
         if (plcResultContractQueryDirectory is not null)
             return PlcResultContractGovernanceDemo.Query(storeOptions, plcResultContractQueryDirectory);
+        if (recipeActivationCheckDirectory is not null)
+            return RecipeActivationDemo.Run(storeOptions, recipeActivationCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
+        if (recipeActivationQueryDirectory is not null)
+            return RecipeActivationDemo.Query(storeOptions, recipeActivationQueryDirectory);
         if (releaseCheckDirectory is not null)
             return RecipeReleaseDemo.Run(storeOptions, releaseCheckDirectory, Option("--user-name"),
                 Option("--expected-principal"), Option("--recipe-release-scenario"));

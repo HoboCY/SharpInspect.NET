@@ -128,6 +128,10 @@ public sealed class CameraRecoveryServiceTests
         fixture.Clock.FireDue();
         await EventuallyAsync(() => fixture.Provider.OpenCalls == 1);
 
+        // The provider call is observed before its failed attempt is retired and
+        // the coordinator publishes the next deadline. Wait for that public
+        // scheduling boundary before advancing the independent fake clock.
+        await EventuallyAsync(() => service.GetSnapshot().NextAttemptTimestamp.HasValue);
         var next = service.GetSnapshot().NextAttemptTimestamp;
         Assert.True(next.HasValue);
         fixture.Clock.AdvanceTo(next!.Value - 1);

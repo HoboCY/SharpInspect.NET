@@ -351,9 +351,10 @@ internal sealed partial class SqliteCommandStore
             SELECT Kind,Payload FROM calibration_governance_events ORDER BY Position;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0) ?? string.Empty,
                 Payload: Convert.FromBase64String(SqliteNative.ColumnText(statement, 1) ?? string.Empty)));
-        // The governance ledger is optional in schema 16 and schema 17.  Only a configured
+        // The governance ledger is optional in schema 16 through schema 18.  Only a configured
         // and already integrity-checked ledger contributes dependency facts.
-        if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion))
+        if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion
+            or RecipeActivationStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationGovernanceSchemaInvalid");
         return rows.Select(row => CalibrationGovernanceCodec.Decode(row.Kind, row.Payload))
             .OfType<CalibrationAcceptancePolicyRevision>().ToArray();

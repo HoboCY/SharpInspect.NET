@@ -57,4 +57,9 @@ public sealed class ProductionStoreOptions
     /// <summary>Explicit opt-in for the schema 17 immutable PLC result contract ledger. Requires
     /// recipe drafts, released recipes, local identity, and audit integrity options.</summary>
     public PlcResultContractStoreOptions? PlcResultContracts { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 18 immutable recipe activation ledger. Requires
+    /// camera setup, recipe drafts, released recipes, PLC result contracts, local identity,
+    /// and audit integrity options.</summary>
+    public RecipeActivationStoreOptions? RecipeActivations { get; init; }
 }

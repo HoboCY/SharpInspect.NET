@@ -172,7 +172,7 @@ internal static class RecipeReleaseProjection
             throw Invalid("ContributionContentInvalid");
         using var document = JsonDocument.Parse(encoded!.PayloadJson);
         var root = document.RootElement;
-        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 4 ||
+        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 5 ||
             root.GetProperty("CanonicalizationVersion").GetInt32() != 1)
             throw Invalid("ContributionFormatUnsupported");
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -188,6 +188,8 @@ internal static class RecipeReleaseProjection
             {
                 case "FormatVersion": case "CanonicalizationVersion": case "ContentHash": break;
                 case "RecipeKey": case "DisplayName": case "CameraRole": case "AlgorithmExecutionTimeoutTicks":
+                    Add(property.Name, property.Value); break;
+                case "PartIdentityRequirement":
                     Add(property.Name, property.Value); break;
                 case "CameraProviderExtension": case "MigrationLineage":
                     if (property.Value.ValueKind != JsonValueKind.Null) Add(property.Name, property.Value);

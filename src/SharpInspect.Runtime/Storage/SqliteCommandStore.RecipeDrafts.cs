@@ -156,10 +156,11 @@ internal sealed partial class SqliteCommandStore
                 cameraSetupOptions: _options.CameraSetup, cameraRecoveryOptions: _options.CameraRecovery,
                 cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
-                calibrationSessionOptions: _options.CalibrationSessions,
+                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
                  releaseOptions: _options.RecipeReleases,
-                 contractOptions: _options.PlcResultContracts);
+                 contractOptions: _options.PlcResultContracts,
+                 activationOptions: _options.RecipeActivations);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -182,6 +183,10 @@ internal sealed partial class SqliteCommandStore
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
+            if (_options.RecipeActivations is not null)
+                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                    _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                    _options.CalibrationGovernance);
             recipeDraftHistoryVerificationActive = false;
 
             var state = ReadIdentityState(database, deadline);
@@ -421,8 +426,9 @@ internal sealed partial class SqliteCommandStore
         var cameraSetupEnabled = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion;
+             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
+             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+             RecipeActivationStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
@@ -478,7 +484,8 @@ internal sealed partial class SqliteCommandStore
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion);
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+            RecipeActivationStoreOptions.SchemaVersion);
         return auditPayload;
     }
 

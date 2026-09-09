@@ -79,21 +79,31 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
              }, cancellationToken);
         SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18)) throw new InvalidOperationException("StoreSchemaUnavailable");
         if (options.PlcResultContracts is not null && schemaVersion < PlcResultContractStoreOptions.SchemaVersion)
             throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
-        if (options.PlcResultContracts is null && schemaVersion == PlcResultContractStoreOptions.SchemaVersion)
+        if (options.PlcResultContracts is null &&
+            (schemaVersion == PlcResultContractStoreOptions.SchemaVersion ||
+                schemaVersion == RecipeActivationStoreOptions.SchemaVersion))
             throw new InvalidOperationException("PlcResultContractConfigurationRequired");
-        if (schemaVersion == PlcResultContractStoreOptions.SchemaVersion &&
+        if ((schemaVersion == PlcResultContractStoreOptions.SchemaVersion ||
+                schemaVersion == RecipeActivationStoreOptions.SchemaVersion) &&
             (options.RecipeDrafts is null || options.RecipeReleases is null ||
                 options.LocalIdentity is null || options.AuditIntegrityPolicy is null))
             throw new InvalidOperationException("PlcResultContractsRequiresDraftsReleasesIdentityAndAudit");
         if (options.RecipeReleases is not null && schemaVersion < RecipeReleaseStoreOptions.SchemaVersion)
             throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
-        if (options.RecipeReleases is null && schemaVersion == RecipeReleaseStoreOptions.SchemaVersion)
+        if (options.RecipeReleases is null &&
+            (schemaVersion == RecipeReleaseStoreOptions.SchemaVersion ||
+                schemaVersion == PlcResultContractStoreOptions.SchemaVersion ||
+                schemaVersion == RecipeActivationStoreOptions.SchemaVersion))
             throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
-        if (schemaVersion == RecipeReleaseStoreOptions.SchemaVersion && options.RecipeDrafts is null)
+        if ((schemaVersion == RecipeReleaseStoreOptions.SchemaVersion ||
+                schemaVersion == PlcResultContractStoreOptions.SchemaVersion ||
+                schemaVersion == RecipeActivationStoreOptions.SchemaVersion) && options.RecipeDrafts is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
+        if (schemaVersion == RecipeActivationStoreOptions.SchemaVersion && options.RecipeActivations is null)
+            throw new InvalidOperationException("RecipeActivationConfigurationRequired");
         if (options.CalibrationSessions is not null && schemaVersion < CalibrationSessionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
         if (options.CalibrationSessions is null &&
@@ -105,7 +115,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             throw new InvalidOperationException("CalibrationGovernanceConfigurationRequired");
         if ((schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
-            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion) && options.CameraSetup is null)
+            CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
+            RecipeActivationStoreOptions.SchemaVersion) && options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
             throw new InvalidOperationException("CameraSetupGovernedMigrationRequired");
@@ -144,6 +155,35 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 options.CalibrationGovernance is not null, release: true);
             SqliteCommandStore.RequireConfiguredRecipeReleases(database, options.RecipeReleases!, deadline);
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts!, deadline);
+            if (options.AlgorithmResultArchive is not null)
+                SqliteCommandStore.RequireConfiguredArchive(database, options.AlgorithmResultArchive, deadline);
+            if (options.CameraSetup is not null)
+                SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup, deadline);
+            if (options.CameraRecovery is not null)
+                SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
+            if (options.CameraNetwork is not null)
+                SqliteCommandStore.RequireConfiguredCameraNetwork(database, options.CameraNetwork, deadline);
+            if (options.ImagingSetup is not null)
+                SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup, deadline);
+            if (options.CalibrationSessions is not null)
+                SqliteCommandStore.RequireConfiguredCalibrationSessions(database, options.CalibrationSessions, deadline);
+            if (options.CalibrationGovernance is not null)
+                SqliteCommandStore.RequireConfiguredCalibrationGovernance(database, options.CalibrationGovernance, deadline);
+        }
+        if (schemaVersion == RecipeActivationStoreOptions.SchemaVersion)
+        {
+            Integrity.AuditChainDatabase.RequireReleaseLedgerPresence(database, deadline,
+                options.AlgorithmResultArchive is not null, options.CameraSetup is not null,
+                options.CameraRecovery is not null, options.CameraNetwork is not null,
+                options.ImagingSetup is not null, options.CalibrationSessions is not null,
+                options.CalibrationGovernance is not null, release: true,
+                plcResultContract: true, activation: true);
+            SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts!, deadline);
+            SqliteCommandStore.RequireConfiguredRecipeReleases(database, options.RecipeReleases!, deadline);
+            SqliteCommandStore.RequireConfiguredPlcResultContracts(database,
+                options.PlcResultContracts!, deadline);
+            SqliteCommandStore.RequireConfiguredRecipeActivations(database,
+                options.RecipeActivations!, deadline);
             if (options.AlgorithmResultArchive is not null)
                 SqliteCommandStore.RequireConfiguredArchive(database, options.AlgorithmResultArchive, deadline);
             if (options.CameraSetup is not null)

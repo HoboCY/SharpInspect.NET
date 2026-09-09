@@ -317,7 +317,7 @@ public sealed class CalibrationValidityTests
 
     private static RecipeContractReference Contract(string id) => new(id, "1", HashD);
 
-    private sealed class Fixture
+    internal sealed class Fixture
     {
         private Fixture(CalibrationAcceptancePolicy policy,
             CalibrationCandidateReference candidate,

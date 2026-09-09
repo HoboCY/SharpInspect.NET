@@ -59,6 +59,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
     private AlgorithmDescriptor? _selectedMigrationTargetAlgorithm;
     private AlgorithmConfigurationMigrationDescriptor? _selectedMigrationMigrator;
     private RecipeDraftMigrationLineage? _migrationLineage;
+    private PartIdentityRequirement? _partIdentityRequirement;
     private ReadOnlyCollection<AlgorithmValidationIssue> _migrationWarnings =
         new(Array.Empty<AlgorithmValidationIssue>());
     private string _migrationChangeReason = "迁移算法配置";
@@ -475,6 +476,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         CancelPendingOperations();
         _revision = null;
         _migrationLineage = null;
+        _partIdentityRequirement = null;
         _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
         _selectedMigrationSource = null;
         _selectedMigrationTargetAlgorithm = null;
@@ -1278,6 +1280,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         InvalidateCustomEditorBuffer();
         _revision = null;
         _migrationLineage = null;
+        _partIdentityRequirement = null;
         _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(Array.Empty<AlgorithmValidationIssue>());
         _selectedMigrationSource = null;
         _selectedMigrationTargetAlgorithm = null;
@@ -1507,6 +1510,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
         _expectedRevisionContentHash = revision.RevisionContentHash;
         var content = revision.Content;
         _migrationLineage = content.MigrationLineage;
+        _partIdentityRequirement = content.PartIdentityRequirement;
         _migrationWarnings = new ReadOnlyCollection<AlgorithmValidationIssue>(
             content.MigrationLineage?.Warnings.ToArray() ?? Array.Empty<AlgorithmValidationIssue>());
         // A loaded revision is the source of a possible next hop.  Its prior
@@ -1700,7 +1704,7 @@ public sealed partial class RecipeDraftEditorViewModel : ObservableObject, IAsyn
             {
                 content = new RecipeDraftContent(_migrationLineage, _recipeKey, _displayName,
                     RecipeAlgorithmBinding.FromDescriptor(algorithm), configuration!, _cameraRole, camera!, timeout,
-                    assets, policies, origins, CameraProviderExtension, calibrations);
+                    assets, policies, origins, CameraProviderExtension, calibrations, _partIdentityRequirement);
             }
             catch { output.Add(new("RecipeDraftContentInvalid")); }
         }

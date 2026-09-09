@@ -22,6 +22,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (_disposed || _shutdownRequested) return "RuntimeStopped";
+                if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
                 // Registered acquisition/recovery singletons retain physical ownership even when
                 // disconnected or exhausted. Maintenance must not dispose and replace their owners.
                 if (_cameraAcquisitionService is not null || _cameraRecoveryService is not null)

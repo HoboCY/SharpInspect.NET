@@ -43,6 +43,7 @@ public sealed partial class StationRuntime
 
     private string? PlcResultContractBlockerLocked()
     {
+        if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
         if (_disposed || _shutdownRequested || _snapshot.Lifecycle == RuntimeLifecycle.Stopped) return "RuntimeStopped";
         if (_snapshot.Ready || _snapshot.ArmState != ProductionArmState.Disarmed) return "PlcResultContractRequiresDisarmedNotReady";
         if (_snapshot.Busy || _snapshot.CurrentExecution is not null) return "PlcResultContractExecutionConflict";

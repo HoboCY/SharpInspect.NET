@@ -92,6 +92,7 @@ internal sealed partial class CameraSetupRuntime
                 authorization.Reservation?.Dispose();
                 return FailedImaging("CameraSetupBusy");
             }
+            Volatile.Write(ref _configurationMutationInProgress, 1);
             var barrier = await CheckNetworkBarrierAsync(linked.Token).ConfigureAwait(false);
             if (barrier is not null)
             {
@@ -164,6 +165,7 @@ internal sealed partial class CameraSetupRuntime
         }
         finally
         {
+            Volatile.Write(ref _configurationMutationInProgress, 0);
             if (gateAcquired) _operationGate.Release();
             CompleteInFlight(drain);
         }

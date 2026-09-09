@@ -64,13 +64,17 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("CalibrationGovernanceConfigurationRequired");
                 if (_options.RecipeReleases is not null && schema < RecipeReleaseStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
-                if (_options.RecipeReleases is null && schema == RecipeReleaseStoreOptions.SchemaVersion)
+                if (_options.RecipeReleases is null &&
+                    (schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                        RecipeActivationStoreOptions.SchemaVersion))
                     throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
                 if (_options.PlcResultContracts is not null && schema < PlcResultContractStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
-                if (_options.PlcResultContracts is null && schema == PlcResultContractStoreOptions.SchemaVersion)
+                if (_options.PlcResultContracts is null &&
+                    (schema is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion))
                     throw new InvalidOperationException("PlcResultContractConfigurationRequired");
-                if (schema == RecipeReleaseStoreOptions.SchemaVersion && _options.RecipeDrafts is null)
+                if ((schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                    RecipeActivationStoreOptions.SchemaVersion) && _options.RecipeDrafts is null)
                     throw new InvalidOperationException("RecipeDraftConfigurationRequired");
                 if (_options.LocalIdentity is not null && schema < 7)
                 {
@@ -108,7 +112,7 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     throw new InvalidOperationException("ImagingSetupGovernedMigrationRequired");
                 if (_options.ImagingSetup is null && schema == ImagingSetupStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("ImagingSetupConfigurationRequired");
-                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17,
+                AuditChainDatabase.Require(schema is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18,
                     "AuditGovernedMigrationRequired");
                 var archiveSchema = schema == AlgorithmResultArchiveOptions.SchemaVersion ||
                     schema >= RecipeDraftStoreOptions.SchemaVersion && _options.AlgorithmResultArchive is not null;
@@ -116,38 +120,47 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-                        RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) &&
+                        RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                        RecipeActivationStoreOptions.SchemaVersion) &&
                         _options.RecipeDrafts is not null;
                 var cameraSchema = (schema is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                     CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                     CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-                    RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) && _options.CameraSetup is not null;
+                    RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                    RecipeActivationStoreOptions.SchemaVersion) && _options.CameraSetup is not null;
                 var recoverySchema = schema == CameraRecoveryStoreOptions.SchemaVersion ||
                     (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-                        RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) &&
+                        RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                        RecipeActivationStoreOptions.SchemaVersion) &&
                     _options.CameraRecovery is not null;
                 var networkSchema = (schema is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                     CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-                    RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) &&
+                    RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                    RecipeActivationStoreOptions.SchemaVersion) &&
                     _options.CameraNetwork is not null;
                 var imagingSchema = (schema is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-                    CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) &&
+                    CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
+                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion) &&
                     _options.ImagingSetup is not null;
                 var calibrationSchema = (schema is CalibrationSessionStoreOptions.SchemaVersion or
-                    CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion) &&
+                    CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
+                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion) &&
                     _options.CalibrationSessions is not null;
-                var governanceSchema = (schema == CalibrationGovernanceStoreOptions.SchemaVersion ||
-                    schema == RecipeReleaseStoreOptions.SchemaVersion || schema == PlcResultContractStoreOptions.SchemaVersion) && _options.CalibrationGovernance is not null;
-                var releaseSchema = schema == RecipeReleaseStoreOptions.SchemaVersion ||
-                    schema == PlcResultContractStoreOptions.SchemaVersion && _options.RecipeReleases is not null;
-                var contractSchema = schema == PlcResultContractStoreOptions.SchemaVersion;
+                var governanceSchema = (schema is CalibrationGovernanceStoreOptions.SchemaVersion or
+                    RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                    RecipeActivationStoreOptions.SchemaVersion) && _options.CalibrationGovernance is not null;
+                var releaseSchema = schema is RecipeReleaseStoreOptions.SchemaVersion or
+                    PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion;
+                var contractSchema = schema is PlcResultContractStoreOptions.SchemaVersion or
+                    RecipeActivationStoreOptions.SchemaVersion;
+                var activationSchema = schema == RecipeActivationStoreOptions.SchemaVersion;
                 var archiveVerification = archiveSchema;
                 var draftVerification = draftSchema;
                 var alarmStartup = schema >= 7 && startup && _options.AlarmPolicy is not null;
                 var networkVerification = networkSchema;
                 var fullVerification = archiveVerification || draftVerification || cameraSchema || recoverySchema || networkVerification ||
-                    imagingSchema || calibrationSchema || governanceSchema || releaseSchema || contractSchema || alarmStartup;
+                    imagingSchema || calibrationSchema || governanceSchema || releaseSchema || contractSchema || activationSchema || alarmStartup;
                 var verificationRequest = fullVerification
                     ? new AuditVerificationRequest(0, policy.MaximumVerificationEntries)
                     : request;
@@ -162,7 +175,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     calibrationSessionOptions: calibrationSchema ? _options.CalibrationSessions : null,
                     governanceOptions: governanceSchema ? _options.CalibrationGovernance : null,
                     releaseOptions: releaseSchema ? _options.RecipeReleases : null,
-                    contractOptions: contractSchema ? _options.PlcResultContracts : null);
+                    contractOptions: contractSchema ? _options.PlcResultContracts : null,
+                    activationOptions: activationSchema ? _options.RecipeActivations : null);
                 if (alarmStartup) AuditChainDatabase.RequireFullAlarmVerification(db, report, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(db, report, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(db, report, deadline,
@@ -181,6 +195,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
                 if (contractSchema) AuditChainDatabase.RequireFullPlcResultContractVerification(db, report, deadline,
                     _options.PlcResultContracts);
+                if (activationSchema) AuditChainDatabase.RequireFullRecipeActivationVerification(db, report, deadline,
+                    _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                    _options.CalibrationGovernance);
                 var checkpoint = AuditChainDatabase.LatestCheckpoint(db, deadline)!;
                 SqliteNative.Execute(db, "COMMIT;", deadline, lifetime.Token);
                 return (Report: report, Checkpoint: checkpoint);
@@ -230,6 +247,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
         if (exception is InvalidOperationException { Message: var contractReason } &&
             contractReason.StartsWith("PlcResultContract", StringComparison.Ordinal))
             return contractReason;
+        if (exception is InvalidOperationException { Message: var activationReason } &&
+            activationReason.StartsWith("RecipeActivation", StringComparison.Ordinal))
+            return activationReason;
         if (exception is InvalidOperationException { Message: "IdentityAuthenticationGovernedMigrationRequired" })
             return "IdentityAuthenticationGovernedMigrationRequired";
         if (exception is InvalidOperationException { Message: "IdentityAuthorizationGovernedMigrationRequired" })

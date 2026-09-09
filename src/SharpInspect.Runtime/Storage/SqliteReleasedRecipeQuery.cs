@@ -113,7 +113,8 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
+                RecipeActivationStoreOptions.SchemaVersion,
                 schema < RecipeReleaseStoreOptions.SchemaVersion
                     ? "RecipeReleaseGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -127,7 +128,8 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
                 releaseOptions: releaseOptions,
-                contractOptions: _options.PlcResultContracts);
+                contractOptions: _options.PlcResultContracts,
+                activationOptions: _options.RecipeActivations);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -154,6 +156,10 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
             if (_options.PlcResultContracts is not null)
                 AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
                     _options.PlcResultContracts);
+            if (_options.RecipeActivations is not null)
+                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                    _options.RecipeActivations, releaseOptions, _options.PlcResultContracts,
+                    _options.CalibrationGovernance);
 
             var history = SqliteCommandStore.ReadAllRecipeDraftHistory(database, deadline);
             var policies = SqliteCommandStore.ReadCalibrationAcceptancePolicies(database,

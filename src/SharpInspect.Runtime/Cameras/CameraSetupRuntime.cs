@@ -56,7 +56,17 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
     // in an unknown state. Keep a strong owner and fail closed until an explicit
     // process-level recovery can deal with it.
     private readonly HashSet<ICameraDevice> _retainedDevices = new();
+    private int _configurationMutationInProgress;
     private bool _disposed;
+
+    /// <summary>
+    /// Indicates that an ordinary camera configuration mutation owns the camera
+    /// operation gate and has not yet completed its provider transaction.  The
+    /// Station Runtime reads this marker while deciding whether activation may
+    /// reserve its own workflow.
+    /// </summary>
+    internal bool ConfigurationMutationInProgress =>
+        Volatile.Read(ref _configurationMutationInProgress) != 0;
 
     internal CameraSetupRuntime(IEnumerable<ICameraProvider> providers, CameraSetupOptions options,
         ICommandAuditWriter? audit, IInteractiveSessionService? sessions,
@@ -435,6 +445,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
                 authorization.Reservation?.Dispose();
                 return Failed("CameraSetupBusy", AuditPersistence.NotAttempted);
             }
+            Volatile.Write(ref _configurationMutationInProgress, 1);
 
             var networkBarrier = await CheckNetworkBarrierAsync(linked.Token).ConfigureAwait(false);
             if (networkBarrier is not null)
@@ -603,6 +614,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         }
         finally
         {
+            Volatile.Write(ref _configurationMutationInProgress, 0);
             opened = null;
             try
             {
@@ -644,6 +656,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
                 authorization.Reservation?.Dispose();
                 return Failed("CameraSetupBusy", AuditPersistence.NotAttempted);
             }
+            Volatile.Write(ref _configurationMutationInProgress, 1);
 
             var networkBarrier = await CheckNetworkBarrierAsync(linked.Token).ConfigureAwait(false);
             if (networkBarrier is not null)
@@ -828,6 +841,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         }
         finally
         {
+            Volatile.Write(ref _configurationMutationInProgress, 0);
             opened = null;
             try
             {
@@ -1011,6 +1025,8 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         if (station.Recovery == RecoveryState.InProgress || station.LastCommandPending)
             return "CameraSetupWorkflowConflict";
         if (station.ActiveRecipe is not null) return "CameraSetupActiveRecipeConflict";
+        if (IsActivationRestorationBlocked(role))
+            return "CameraActivationRestorationRequired";
 
         lock (_stateSync)
         {

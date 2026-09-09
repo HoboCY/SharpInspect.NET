@@ -4,3 +4,5 @@
 # Preserve the already-frozen byte identities of the planar fixtures.
 /tests/SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticPlanarFixture.cs text eol=lf
 /tests/SharpInspect.Calibration.OpenCvSharp.Tests/Fixtures/planar-v1.json text eol=lf
+# Historical Recipe JSON is a byte-level compatibility fixture encoded by T31.
+/tests/SharpInspect.Runtime.Tests/Fixtures/recipe-draft-legacy-t31/format-*.json -text

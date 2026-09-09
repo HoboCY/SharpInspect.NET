@@ -520,7 +520,8 @@ internal static class RecipeReleaseDemo
                     source.Content.Configuration, source.Content.CameraRole, source.Content.Camera,
                     source.Content.AlgorithmExecutionTimeout, source.Content.AssetRequirements,
                     source.Content.PolicyRequirements, source.Content.ValueOrigins,
-                    source.Content.CameraProviderExtension, source.Content.CalibrationRequirements);
+                    source.Content.CameraProviderExtension, source.Content.CalibrationRequirements,
+                    source.Content.PartIdentityRequirement);
                 var save = await _editor.SaveAsync(new RecipeDraftSaveRequest(Guid.NewGuid(),
                     source.DraftId, source.Revision, source.RevisionContentHash, changed,
                     "并发编辑验证", command.Invocation), cancellationToken).ConfigureAwait(true);

@@ -1,0 +1,86 @@
+using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Plc;
+using SharpInspect.Runtime.Storage;
+
+namespace SharpInspect.Runtime.Recipes;
+
+internal sealed record RecipeActivationPreparedInputs(RecipeReleaseRecord Release,
+    AlgorithmDescriptor Algorithm, PlcResultContractBinding PlcBinding, RecipeContractReference PlcRevision);
+
+/// <summary>Exact local references and portable dependencies, before any camera write.</summary>
+internal sealed class RecipeActivationPreparation
+{
+    private readonly RecipeDraftService _drafts;
+    private readonly IReleasedRecipeQuery _releases;
+    private readonly IPlcResultContractQuery _contracts;
+    private readonly ProductionStoreOptions _options;
+
+    internal RecipeActivationPreparation(RecipeDraftService drafts, IReleasedRecipeQuery releases,
+        IPlcResultContractQuery contracts, ProductionStoreOptions options)
+    { _drafts = drafts; _releases = releases; _contracts = contracts; _options = options; }
+
+    internal async ValueTask<RecipeActivationPreparedInputs?> PrepareAsync(ActivateRecipeCommand command,
+        RecipeActivationChecks checks, CancellationToken token)
+    {
+        var read = await _releases.ReadAsync(command.Candidate, token).ConfigureAwait(false);
+        var release = read.Recipe;
+        var exact = read.Available && release is { Available: true } &&
+            release.Reference == command.Candidate && release.Record.ReleaseId == command.ReleaseId &&
+            release.Record.ContentHash == command.ReleaseRecordContentHash;
+        checks.Observe(3, exact, exact ? "RecipeActivationExactReleaseResolved" :
+            read.Available ? "RecipeActivationReleaseIdentityMismatch" : read.ReasonCode,
+            command.ReleaseRecordContentHash, release?.Record.ContentHash);
+        if (!exact) return null;
+        var content = release!.Content;
+        var partReason = content.PartIdentityRequirement is null ? "PartIdentityDeclarationMissing" :
+            content.PartIdentityRequirement.Mode != PartIdentityRequirementMode.None ?
+                "PartIdentityBindingUnavailable" : "PartIdentityExplicitNone";
+        checks.Set(4, content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None ?
+            RecipeActivationCheckStatus.NotApplicable : RecipeActivationCheckStatus.Failed,
+            partReason, content.PartIdentityRequirement?.ContentHash);
+
+        var execution = _options.RecipeDrafts!.ExecutionPolicy;
+        var executionReference = new RecipeContractReference(execution.Id, execution.Version, execution.ContentHash);
+        var policyValid = content.PolicyRequirements.Count(value => value.Kind == RecipePolicyKind.AlgorithmExecution) == 1 &&
+            content.PolicyRequirements.All(value => value.Kind switch
+            {
+                RecipePolicyKind.AlgorithmExecution => value.Contract == executionReference,
+                RecipePolicyKind.RecipeGovernance => value.Contract == _options.RecipeReleases!.Policy.Reference,
+                _ => false
+            });
+        var assetsValid = content.AssetRequirements.Count == 0 && content.CameraProviderExtension is null;
+        var dependencies = assetsValid && policyValid && content.AlgorithmExecutionTimeout <= execution.MaximumExecutionTimeout;
+        checks.Observe(5, dependencies, !assetsValid ? "RecipeActivationAssetAuthorityUnavailable" :
+            !policyValid ? "RecipeActivationCurrentPolicyMismatch" : content.AlgorithmExecutionTimeout > execution.MaximumExecutionTimeout ?
+                "RecipeActivationExecutionTimeoutPolicyMismatch" : "RecipeActivationExactDependenciesResolved", content.ContentHash);
+
+        var algorithm = _drafts.Algorithms.SingleOrDefault(value => value.Identity == content.Algorithm.Algorithm &&
+            value.ConfigurationSchema.Id == content.Algorithm.ConfigurationSchema.Id &&
+            value.ConfigurationSchema.Version == content.Algorithm.ConfigurationSchema.Version &&
+            value.ConfigurationSchema.ContentHash == content.Algorithm.ConfigurationSchema.ContentHash &&
+            new RecipeContractReference(value.ResultSchema.Id, value.ResultSchema.Version, value.ResultSchema.ContentHash) ==
+                content.Algorithm.ResultSchema &&
+            new RecipeContractReference(value.ResultSchema.OverlayContract.Id, value.ResultSchema.OverlayContract.Version,
+                value.ResultSchema.OverlayContract.ContentHash) == content.Algorithm.OverlayContract);
+        if (algorithm is null)
+        {
+            checks.Observe(6, false, "RecipeActivationExactAlgorithmUnavailable");
+            return null;
+        }
+        var current = await _contracts.ReadCurrentAsync(token).ConfigureAwait(false);
+        if (!current.Available || current.Revision is null)
+        {
+            checks.Observe(7, false, current.Available ? "RecipeActivationPlcContractMissing" : current.ReasonCode);
+            return null;
+        }
+        var bound = new PlcResultContractBinder().Bind(command.Candidate, algorithm.Identity,
+            algorithm.ResultSchema, current.Revision.Contract);
+        checks.Observe(7, bound.Bound && bound.Binding is not null, bound.ReasonCode,
+            current.Revision.Reference.ContentHash, bound.Binding?.ContentHash);
+        if (!bound.Bound || bound.Binding is null) return null;
+        if (content.CalibrationRequirements.Count == 0)
+            checks.Calibration(RecipeActivationCalibrationEvaluator.EvaluateRecords(content,
+                command.CalibrationSelections, null, null, Array.Empty<object>(), DateTimeOffset.UtcNow), false);
+        return new(release.Record, algorithm, bound.Binding, current.Revision.Reference);
+    }
+}

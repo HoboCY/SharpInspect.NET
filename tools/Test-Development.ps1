@@ -797,6 +797,9 @@ try {
     if ($Ticket -ge 31) {
         & (Join-Path $PSScriptRoot 'Test-PlcResultContractConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
+    if ($Ticket -ge 32) {
+        & (Join-Path $PSScriptRoot 'Test-RecipeActivationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

@@ -40,6 +40,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private bool _shutdownRequested;
     private bool _auditFault;
     private bool _storeReady;
+    private bool _baseStoreReady;
     private int _queuedCommands;
     private int _pendingLocalStops;
     private StationStateSnapshot _snapshot;
@@ -120,6 +121,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             }
         }
         ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
+        ConfigureRecipeActivationStartup(productionStoreOptions?.RecipeActivations is not null);
         _storeInitialization = InitializeStoreAsync();
         _heartbeat = PublishHeartbeatAsync(interval);
     }
@@ -199,6 +201,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command is ActivateRecipeCommand activate)
+            return await SubmitRecipeActivationAsync(activate, cancellationToken).ConfigureAwait(false);
         if (command is ChangePlcResultContractCommand plcContract)
             return await SubmitPlcResultContractAsync(plcContract, cancellationToken).ConfigureAwait(false);
         if (command is ReleaseRecipeCommand release)
@@ -223,6 +227,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             command.Invocation?.Source == CommandSource.PhysicalConsole;
         if (localStop)
         {
+            CancelRecipeActivation();
             // A dedicated bounded slot cannot be consumed by ordinary commands.
             if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
                 return Unavailable("LocalStopAlreadyPending");
@@ -310,7 +315,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 {
                     if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
                     ReconcileAlgorithmExecutionLocked();
-                    forced = cameraNetworkBarrier ?? (_snapshot.LastCommand?.State == OperationState.Pending
+                    forced = RecipeActivationConfigurationBlockedLocked ? "RecipeActivationInProgress" : cameraNetworkBarrier ?? (_snapshot.LastCommand?.State == OperationState.Pending
                         ? "OperationInProgress" : null);
                     if (command is ArmProductionCommand && _cameraNetworkMaintenanceActive)
                         forced = "CameraNetworkMaintenanceInProgress";
@@ -411,7 +416,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             StartCalibrationSessionCommand or CalibrationSessionCommand => Reject("AuthorizationUnavailable"),
             ArmProductionCommand => Reject(_snapshot.AdmissionBlockers[0]),
             GracefulProductionStopCommand when command.Invocation.Source != CommandSource.PhysicalConsole => Reject("LocalConsoleRequired"),
-            GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Pending => Reject("OperationInProgress"),
+            GracefulProductionStopCommand when _snapshot.LastCommand?.State == OperationState.Pending &&
+                _activationReservation is null => Reject("OperationInProgress"),
             GracefulProductionStopCommand when _snapshot.LastCommand is { State: OperationState.Completed, ReasonCode: "LocallyDisarmed" } => Reject("AlreadyLocallyDisarmed"),
             GracefulProductionStopCommand => new(command.CorrelationId, CommandDisposition.Accepted, "StopAdmitted"),
             _ => Reject("UnsupportedCommand")
@@ -457,7 +463,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (result.Committed) await InitializeCalibrationSessionsAsync().ConfigureAwait(false);
         lock (_sync)
         {
-            _storeReady = result.Committed && !_calibrationStartupBlocked;
+            _baseStoreReady = result.Committed && !_calibrationStartupBlocked;
+            _storeReady = _baseStoreReady && !_activationStartupPending && !_activationStartupBlocked;
             if (_disposed) return;
             var blockers = _snapshot.AdmissionBlockers.Where(x => x != "TraceStoreMissing").ToList();
             if (!result.Committed) blockers.Add(result.ReasonCode);
@@ -588,9 +595,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
-        CancelCameraSetupOperations();
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await ShutdownRecipeActivationAsync().ConfigureAwait(false);
+        // Activation owns its camera transaction through bounded restoration.
+        // Cancelling the camera lifetime first could synchronously enter provider
+        // callbacks and prevent the activation shutdown budget from taking effect.
+        CancelCameraSetupOperations();
         await _commandGate.WaitAsync().ConfigureAwait(false);
         try
         {

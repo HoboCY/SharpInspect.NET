@@ -50,7 +50,11 @@ internal enum IdentityEventKind
     CalibrationSessionActionAuthorized,
     CalibrationGovernanceActionAuthorized,
     RecipeReleased,
-    PlcResultContractChanged
+    PlcResultContractChanged,
+    RecipeActivationAdmitted,
+    RecipeActivationCompleted,
+    RecipeActivationFailed,
+    RecipeActivationCancelled
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -129,14 +133,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > PlcResultContractStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeActivationStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > PlcResultContractStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeActivationStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -161,7 +165,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PlcResultContractStoreOptions.SchemaVersion => 49, _ => 0 };
+                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= RecipeActivationStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -207,6 +211,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     legacyKind != IdentityEventKind.RecipeReleased, "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= PlcResultContractStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.PlcResultContractChanged, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= RecipeActivationStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.RecipeActivationAdmitted or
+                        IdentityEventKind.RecipeActivationCompleted or
+                        IdentityEventKind.RecipeActivationFailed or
+                        IdentityEventKind.RecipeActivationCancelled), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -282,9 +291,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         actionKind is not (>= AuditedCommandKind.StartCalibrationSession and <= AuditedCommandKind.ExitCalibrationSession)) &&
                     (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
                         actionKind is not (>= AuditedCommandKind.PublishCalibrationAcceptancePolicy and <= AuditedCommandKind.RecordPhysicalCalibrationVerification)) &&
-                    (schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ReleaseRecipe) &&
-                    (schemaVersion >= PlcResultContractStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ChangePlcResultContract) &&
-                     fields[39] == actionKind.ToString()),
+                     (schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ReleaseRecipe) &&
+                     (schemaVersion >= PlcResultContractStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ChangePlcResultContract) &&
+                     (schemaVersion >= RecipeActivationStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ActivateRecipe) &&
+                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
@@ -414,6 +424,60 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             InvalidOperationException or FormatException)
         { return false; }
     }
+
+    /// <summary>Matches the signed identity event for one activation ledger event.</summary>
+    internal static bool MatchesRecipeActivationAuthorization(byte[] payload, long ordinal,
+        string stationId, RecipeActivationRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, RecipeActivationStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            if (fields.Length != 49 || fields[2] != ActivationKind(record.Outcome.State).ToString() ||
+                fields[3] != record.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) ||
+                fields[4] != stationId || fields[9] != record.Outcome.ReasonCode ||
+                fields[33] != Permission.ActivateRecipe.ToString() ||
+                fields[37] != record.AuthorizationTarget ||
+                fields[38] is not { Length: 36 } || !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) ||
+                boundCorrelation != record.OperationId || fields[39] != AuditedCommandKind.ActivateRecipe.ToString() ||
+                fields[42] != record.OperationId.ToString("D") ||
+                // An unauthenticated pre-admission rejection has no policy on the
+                // activation record.  The identity writer still binds the active
+                // deployment policy to its signed event, so the absence of a
+                // record policy must not require those payload fields to be null.
+                // Authenticated records remain an exact policy match.
+                (record.AuthorizationPolicy is not null &&
+                    (fields[27] != record.AuthorizationPolicy.Id || fields[28] != record.AuthorizationPolicy.Version ||
+                     fields[29] != record.AuthorizationPolicy.ContentHash)) ||
+                (record.ActorPrincipalId is null
+                    ? fields[5] is not null || fields[30] is not null
+                    : fields[5] != record.ActorPrincipalId.Value.ToString("D") ||
+                      fields[30] != record.ActorPrincipalId.Value.ToString("D")) ||
+                (record.ActorSessionId is null
+                    ? fields[25] is not null
+                    : fields[25] != record.ActorSessionId.Value.ToString("D")) ||
+                (record.ActorAuthorizationRevision is null
+                    ? fields[35] != "0"
+                    : fields[35] != record.ActorAuthorizationRevision.Value.ToString(CultureInfo.InvariantCulture)))
+                return false;
+            return fields[31] == fields[38] && fields[34] == fields[5];
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static string? DecodeEventId(byte[] payload) => DecodeFields(payload).ElementAtOrDefault(1);
+
+    private static IdentityEventKind ActivationKind(RecipeActivationOutcomeState state) => state switch
+    {
+        RecipeActivationOutcomeState.Admitted => IdentityEventKind.RecipeActivationAdmitted,
+        RecipeActivationOutcomeState.Succeeded => IdentityEventKind.RecipeActivationCompleted,
+        RecipeActivationOutcomeState.Failed => IdentityEventKind.RecipeActivationFailed,
+        RecipeActivationOutcomeState.Cancelled => IdentityEventKind.RecipeActivationCancelled,
+        _ => throw new ArgumentOutOfRangeException(nameof(state))
+    };
 
     /// <summary>Matches a schema-14 calibration authorization to its immutable session and exact command target.</summary>
     internal static bool MatchesCalibrationAuthorization(byte[] payload, long ordinal, string stationId,

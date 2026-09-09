@@ -34,6 +34,10 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("PlcResultContractConfigurationRequired");
         if (_options.PlcResultContracts is not null && version < PlcResultContractStoreOptions.SchemaVersion)
             throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
+        if (_options.RecipeActivations is null && version == RecipeActivationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeActivationConfigurationRequired");
+        if (_options.RecipeActivations is not null && version < RecipeActivationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeActivationGovernedMigrationRequired");
         if (_options.CalibrationGovernance is not null && version > 0 && version < CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernanceMigrationRequired");
         if (_options.CalibrationSessions is null && version == CalibrationSessionStoreOptions.SchemaVersion)

@@ -36,7 +36,8 @@ public enum AuditedCommandKind
     RecordPhysicalCalibrationVerification = 28,
     MigrateAlgorithmConfiguration = 29,
     ReleaseRecipe = 30,
-    ChangePlcResultContract = 31
+    ChangePlcResultContract = 31,
+    ActivateRecipe = 32
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

@@ -19,6 +19,7 @@ internal static class RecipeDraftStorageCodec
     private const int ProviderExtensionFormatVersion = 2;
     private const int CalibrationRequirementFormatVersion = 3;
     private const int MigrationLineageFormatVersion = 4;
+    private const int PartIdentityFormatVersion = 5;
     private const int CanonicalizationVersion = 1;
     private const int MaximumDepth = 32;
 
@@ -154,7 +155,7 @@ internal static class RecipeDraftStorageCodec
         var rebuilt = new RecipeDraftContent(content.MigrationLineage, content.RecipeKey, content.DisplayName, content.Algorithm,
             content.Configuration, content.CameraRole, content.Camera, content.AlgorithmExecutionTimeout,
             content.AssetRequirements, content.PolicyRequirements, content.ValueOrigins,
-            content.CameraProviderExtension, content.CalibrationRequirements);
+            content.CameraProviderExtension, content.CalibrationRequirements, content.PartIdentityRequirement);
         if (!string.Equals(rebuilt.ContentHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
     }
@@ -162,7 +163,8 @@ internal static class RecipeDraftStorageCodec
     private static void WriteContent(Utf8JsonWriter writer, RecipeDraftContent content)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("FormatVersion", content.MigrationLineage is not null
+        writer.WriteNumber("FormatVersion", content.PartIdentityRequirement is not null
+            ? PartIdentityFormatVersion : content.MigrationLineage is not null
             ? MigrationLineageFormatVersion : content.CalibrationRequirements.Count != 0
             ? CalibrationRequirementFormatVersion : content.CameraProviderExtension is null
                 ? FormatVersion : ProviderExtensionFormatVersion);
@@ -192,9 +194,11 @@ internal static class RecipeDraftStorageCodec
             writer.WriteString("ConfigurationContentHash", extension.ConfigurationContentHash);
             writer.WriteEndObject();
         }
-        else if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null)
+        else if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
+            content.PartIdentityRequirement is not null)
             writer.WriteNull("CameraProviderExtension");
-        if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null)
+        if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
+            content.PartIdentityRequirement is not null)
         {
             writer.WritePropertyName("CalibrationRequirements");
             writer.WriteStartArray();
@@ -218,6 +222,20 @@ internal static class RecipeDraftStorageCodec
         {
             writer.WritePropertyName("MigrationLineage");
             WriteMigrationLineage(writer, migration);
+        }
+        else if (content.PartIdentityRequirement is not null)
+            writer.WriteNull("MigrationLineage");
+        if (content.PartIdentityRequirement is { } partIdentity)
+        {
+            writer.WritePropertyName("PartIdentityRequirement");
+            writer.WriteStartObject();
+            writer.WriteString("Mode", partIdentity.Mode.ToString());
+            writer.WriteString("LogicalRole", partIdentity.LogicalRole);
+            writer.WritePropertyName("Format");
+            if (partIdentity.Format is { } format) WriteContractReference(writer, format);
+            else writer.WriteNullValue();
+            writer.WriteString("ContentHash", partIdentity.ContentHash);
+            writer.WriteEndObject();
         }
         writer.WriteNumber("AlgorithmExecutionTimeoutTicks", content.AlgorithmExecutionTimeout.Ticks);
         writer.WritePropertyName("AssetRequirements");
@@ -442,13 +460,14 @@ internal static class RecipeDraftStorageCodec
     {
         if (root.ValueKind != JsonValueKind.Object) throw Invalid("RecipeDraftPayloadObjectInvalid");
         var format = Int32(root, "FormatVersion");
-        EnsureObject(root, format == MigrationLineageFormatVersion ? MigrationTopProperties :
+        EnsureObject(root, format == PartIdentityFormatVersion ? PartIdentityTopProperties :
+            format == MigrationLineageFormatVersion ? MigrationTopProperties :
             format == CalibrationRequirementFormatVersion ? CalibrationTopProperties :
             format == ProviderExtensionFormatVersion ? ExtendedTopProperties : TopProperties,
             "RecipeDraftPayload");
         var canonical = Int32(root, "CanonicalizationVersion");
         if (format is not (FormatVersion or ProviderExtensionFormatVersion or CalibrationRequirementFormatVersion or
-            MigrationLineageFormatVersion) ||
+            MigrationLineageFormatVersion or PartIdentityFormatVersion) ||
             canonical != CanonicalizationVersion)
             throw Invalid("RecipeDraftPayloadVersionUnsupported");
         var binding = ReadBinding(RequiredObject(root, "Algorithm"));
@@ -458,7 +477,8 @@ internal static class RecipeDraftStorageCodec
             !string.Equals(configuration.SchemaContentHash, binding.ConfigurationSchema.ContentHash,
                 StringComparison.Ordinal))
             throw Invalid("RecipeDraftConfigurationSchemaBindingMismatch");
-        var migration = format == MigrationLineageFormatVersion
+        var migration = format >= MigrationLineageFormatVersion &&
+            RequiredValue(root, "MigrationLineage").ValueKind != JsonValueKind.Null
             ? ReadMigrationLineage(RequiredObject(root, "MigrationLineage")) : null;
         var content = new RecipeDraftContent(
             migration, RequiredString(root, "RecipeKey"), RequiredString(root, "DisplayName"), binding, configuration,
@@ -470,12 +490,27 @@ internal static class RecipeDraftStorageCodec
             format >= ProviderExtensionFormatVersion &&
                 RequiredValue(root, "CameraProviderExtension").ValueKind != JsonValueKind.Null
                 ? ReadCameraExtension(RequiredObject(root, "CameraProviderExtension")) : null,
-            format is CalibrationRequirementFormatVersion or MigrationLineageFormatVersion
-                ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements"), format == MigrationLineageFormatVersion) : null);
+            format >= CalibrationRequirementFormatVersion
+                ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements"), format >= MigrationLineageFormatVersion) : null,
+            format == PartIdentityFormatVersion
+                ? ReadPartIdentity(RequiredObject(root, "PartIdentityRequirement")) : null);
         var suppliedHash = RequiredString(root, "ContentHash");
         if (!string.Equals(suppliedHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
         return content;
+    }
+
+    private static PartIdentityRequirement ReadPartIdentity(JsonElement element)
+    {
+        EnsureObject(element, PartIdentityProperties, "RecipeDraftPartIdentity");
+        var requirement = new PartIdentityRequirement(
+            ParseEnum<PartIdentityRequirementMode>(RequiredString(element, "Mode"), "RecipeDraftPartIdentityModeInvalid"),
+            NullableString(element, "LogicalRole"),
+            RequiredValue(element, "Format").ValueKind == JsonValueKind.Null
+                ? null : ReadContractReference(RequiredObject(element, "Format")));
+        if (requirement.ContentHash != RequiredString(element, "ContentHash"))
+            throw Invalid("RecipeDraftPartIdentityHashMismatch");
+        return requirement;
     }
 
     private static CameraProviderExtensionRequirement ReadCameraExtension(JsonElement element)
@@ -991,6 +1026,8 @@ internal static class RecipeDraftStorageCodec
     private static readonly string[] ExtendedTopProperties = TopProperties.Concat(new[] { "CameraProviderExtension" }).ToArray();
     private static readonly string[] CalibrationTopProperties = ExtendedTopProperties.Concat(new[] { "CalibrationRequirements" }).ToArray();
     private static readonly string[] MigrationTopProperties = CalibrationTopProperties.Concat(new[] { "MigrationLineage" }).ToArray();
+    private static readonly string[] PartIdentityTopProperties = MigrationTopProperties.Concat(new[] { "PartIdentityRequirement" }).ToArray();
+    private static readonly string[] PartIdentityProperties = { "Mode", "LogicalRole", "Format", "ContentHash" };
     private static readonly string[] CalibrationProperties = { "LogicalCameraRole", "Kind", "LogicalPurpose", "CoefficientContract", "AcceptancePolicy" };
     private static readonly string[] CameraExtensionProperties = { "Provider", "ContractId", "ContractVersion", "ConfigurationContentHash" };
     private static readonly string[] CameraProviderProperties = { "Id", "Version", "AdapterPackageId", "AdapterVersion" };

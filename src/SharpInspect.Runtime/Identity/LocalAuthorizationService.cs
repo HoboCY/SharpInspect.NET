@@ -151,6 +151,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RecordPhysicalCalibrationVerificationCommand => Permission.RecordPhysicalCalibrationVerification,
         ChangePlcResultContractCommand => Permission.ManagePlcResultContract,
         ReleaseRecipeCommand => Permission.ReleaseRecipe,
+        ActivateRecipeCommand => Permission.ActivateRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -173,6 +174,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             CalibrationGovernanceCommand calibration => calibration.AuthorizationTarget,
             ChangePlcResultContractCommand change => change.AuthorizationTarget,
             ReleaseRecipeCommand release => release.AuthorizationTarget,
+            ActivateRecipeCommand activation => activation.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -203,6 +205,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             Permission.PublishCalibration,
         AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
         AuditedCommandKind.ChangePlcResultContract => Permission.ManagePlcResultContract,
+        AuditedCommandKind.ActivateRecipe => Permission.ActivateRecipe,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
@@ -234,6 +237,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RecordPhysicalCalibrationVerificationCommand => AuditedCommandKind.RecordPhysicalCalibrationVerification,
         ChangePlcResultContractCommand => AuditedCommandKind.ChangePlcResultContract,
         ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
+        ActivateRecipeCommand => AuditedCommandKind.ActivateRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

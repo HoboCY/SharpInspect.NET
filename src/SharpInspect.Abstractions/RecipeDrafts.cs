@@ -122,10 +122,11 @@ public sealed class RecipeDraftContent
         IEnumerable<RecipePolicyRequirement>? policyRequirements,
         IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
         CameraProviderExtensionRequirement? cameraProviderExtension = null,
-        IEnumerable<CalibrationRequirement>? calibrationRequirements = null)
+        IEnumerable<CalibrationRequirement>? calibrationRequirements = null,
+        PartIdentityRequirement? partIdentityRequirement = null)
         : this(null, recipeKey, displayName, algorithm, configuration, cameraRole, camera,
             algorithmExecutionTimeout, assetRequirements, policyRequirements, valueOrigins,
-            cameraProviderExtension, calibrationRequirements) { }
+            cameraProviderExtension, calibrationRequirements, partIdentityRequirement) { }
 
     /// <summary>Preserves an existing immutable migration origin during ordinary draft revision authoring.</summary>
     public RecipeDraftContent(RecipeDraftMigrationLineage? migrationLineage, string recipeKey, string displayName,
@@ -134,7 +135,8 @@ public sealed class RecipeDraftContent
         IEnumerable<RecipeAssetRequirement>? assetRequirements, IEnumerable<RecipePolicyRequirement>? policyRequirements,
         IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
         CameraProviderExtensionRequirement? cameraProviderExtension = null,
-        IEnumerable<CalibrationRequirement>? calibrationRequirements = null)
+        IEnumerable<CalibrationRequirement>? calibrationRequirements = null,
+        PartIdentityRequirement? partIdentityRequirement = null)
     {
         MigrationLineage = migrationLineage;
         RecipeKey = AlgorithmConfigurationValidation.Identifier(recipeKey, nameof(recipeKey));
@@ -144,6 +146,7 @@ public sealed class RecipeDraftContent
         CameraRole = AlgorithmConfigurationValidation.Identifier(cameraRole, nameof(cameraRole));
         Camera = camera ?? throw new ArgumentNullException(nameof(camera));
         CameraProviderExtension = cameraProviderExtension;
+        PartIdentityRequirement = partIdentityRequirement;
         if (!AlgorithmExecutionPolicy.IsRepresentableDuration(algorithmExecutionTimeout))
             throw new ArgumentOutOfRangeException(nameof(algorithmExecutionTimeout));
         AlgorithmExecutionTimeout = algorithmExecutionTimeout;
@@ -188,6 +191,8 @@ public sealed class RecipeDraftContent
     public ReadOnlyCollection<RecipeAssetRequirement> AssetRequirements { get; }
     public ReadOnlyCollection<RecipePolicyRequirement> PolicyRequirements { get; }
     public ReadOnlyCollection<CalibrationRequirement> CalibrationRequirements { get; }
+    /// <summary>Null preserves historical content and means undeclared, never implicit None.</summary>
+    public PartIdentityRequirement? PartIdentityRequirement { get; }
     public ReadOnlyCollection<RecipeDraftFieldOrigin> ValueOrigins { get; }
     public string ContentHash { get; }
 
@@ -233,6 +238,8 @@ public sealed class RecipeDraftContent
         }
         if (MigrationLineage is { } migration)
             parts.AddRange(new[] { "sharpinspect-recipe-draft-migration-lineage-v1", migration.ContentHash });
+        if (PartIdentityRequirement is { } partIdentity)
+            parts.AddRange(new[] { "sharpinspect-recipe-part-identity-v1", partIdentity.ContentHash });
         return AlgorithmContractValidation.HashParts(parts);
     }
     private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);

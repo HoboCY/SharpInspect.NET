@@ -8,6 +8,75 @@ namespace SharpInspect.Runtime.Tests;
 
 public sealed class RecipeDraftStorageCodecTests
 {
+    [Theory]
+    [InlineData(2, "2C2883A59ABF77B0342D0BC9B11D9C6FEF87121F191B45A87C1874DDFBA0F85B", "7845C14670B8EF3817628D5B98E81F854BE15A8C0BAE62795182C38653BAE726")]
+    [InlineData(3, "D6E97B5CACA8F840DDF8EE09FE0373993B8A8EE25D7A28662876896AAFC1C4CE", "F2174C9A71B927929A6BCF7109825C8C9F0F94606AE4531CA8E9843C8C804877")]
+    [InlineData(4, "321C1C2AD5062CA6A1A21B491D2C9A675FA7A1376288B24B130E53E8B606C812", "D99234690DFCD42B51775C1EE06B254FC6495B14B786C24E8BA1504969E08E26")]
+    public void V132_D03_ArchivedT31PayloadBytesAndIdentitiesRemainExact(int format, string payloadHash, string contentHash)
+    {
+        var assembly = typeof(RecipeDraftStorageCodecTests).Assembly;
+        var resource = "RecipeDraftLegacyT31.format-" + format + ".json";
+        using var stream = assembly.GetManifestResourceStream(resource)!;
+        Assert.NotNull(stream);
+        using var bytes = new MemoryStream();
+        stream.CopyTo(bytes);
+        var frozen = bytes.ToArray();
+        Assert.Equal(payloadHash, Convert.ToHexString(SHA256.HashData(frozen)));
+        var payload = Encoding.UTF8.GetString(frozen);
+        Assert.StartsWith("{\"FormatVersion\":" + format + ",", payload, StringComparison.Ordinal);
+        Assert.True(RecipeDraftStorageCodec.TryDecodeContent(payload, payloadHash, out var decoded, out var reason), reason);
+        Assert.Equal(contentHash, decoded!.ContentHash);
+        Assert.Null(decoded.PartIdentityRequirement);
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(decoded, out var encoded, out reason), reason);
+        Assert.Equal(payloadHash, encoded!.PayloadHash);
+        Assert.Equal(frozen, Encoding.UTF8.GetBytes(encoded.PayloadJson));
+    }
+
+    [Theory]
+    [InlineData(PartIdentityRequirementMode.None)]
+    [InlineData(PartIdentityRequirementMode.Optional)]
+    [InlineData(PartIdentityRequirementMode.Required)]
+    public void V132_D01_ExplicitPartIdentityDeclarationHasStrictVersionedRoundTrip(PartIdentityRequirementMode mode)
+    {
+        var original = CreateContent();
+        var requirement = mode == PartIdentityRequirementMode.None ? PartIdentityRequirement.None :
+            new PartIdentityRequirement(mode, "PartCode", new("PartCode.Format", "1", new string('D', 64)));
+        var content = new RecipeDraftContent(original.MigrationLineage, original.RecipeKey,
+            original.DisplayName, original.Algorithm, original.Configuration, original.CameraRole,
+            original.Camera, original.AlgorithmExecutionTimeout, original.AssetRequirements,
+            original.PolicyRequirements, original.ValueOrigins, original.CameraProviderExtension,
+            original.CalibrationRequirements, requirement);
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(content, out var document, out var reason), reason);
+        Assert.Contains("\"FormatVersion\":5", document!.PayloadJson, StringComparison.Ordinal);
+        Assert.True(RecipeDraftStorageCodec.TryDecodeContent(document.PayloadJson, document.PayloadHash,
+            out var decoded, out reason), reason);
+        Assert.Equal(requirement, decoded!.PartIdentityRequirement);
+        Assert.Equal(content.ContentHash, decoded.ContentHash);
+        Assert.NotEqual(original.ContentHash, decoded.ContentHash);
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(decoded, out var roundTrip, out reason), reason);
+        Assert.Equal(document.PayloadJson, roundTrip!.PayloadJson);
+        Assert.Equal(document.PayloadHash, roundTrip.PayloadHash);
+        var altered = System.Text.Json.Nodes.JsonNode.Parse(document.PayloadJson)!.AsObject();
+        altered.Remove("PartIdentityRequirement");
+        Assert.False(RecipeDraftStorageCodec.TryDecodeContent(altered.ToJsonString(), out _, out _));
+        altered["PartIdentityRequirement"] = null;
+        Assert.False(RecipeDraftStorageCodec.TryDecodeContent(altered.ToJsonString(), out _, out _));
+    }
+
+    [Fact]
+    public void V132_D02_HistoricalOmissionRemainsUndeclaredAndKeepsFrozenBytes()
+    {
+        var content = CreateContent();
+        Assert.Null(content.PartIdentityRequirement);
+        Assert.True(RecipeDraftStorageCodec.TryEncodeContent(content, out var document, out var reason), reason);
+        Assert.Equal("B08617404C7F03A62B65A9DA6714F2F84A823D0BC6B3C308FFADACAB666B842E", document!.PayloadHash);
+        Assert.DoesNotContain("PartIdentityRequirement", document.PayloadJson, StringComparison.Ordinal);
+        Assert.True(RecipeDraftStorageCodec.TryDecodeContent(document.PayloadJson, out var decoded, out reason), reason);
+        Assert.Null(decoded!.PartIdentityRequirement);
+        Assert.Throws<ArgumentException>(() => new PartIdentityRequirement(PartIdentityRequirementMode.None, "PartCode"));
+        Assert.Throws<ArgumentNullException>(() => new PartIdentityRequirement(PartIdentityRequirementMode.Required));
+    }
+
     [Fact]
     public void V117_D20_CommonDraftRetainsPreExtensionCanonicalPayload()
     {

@@ -114,7 +114,8 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == PlcResultContractStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is PlcResultContractStoreOptions.SchemaVersion or
+                RecipeActivationStoreOptions.SchemaVersion,
                 schema < PlcResultContractStoreOptions.SchemaVersion
                     ? "PlcResultContractGovernedMigrationRequired" : "StoreSchemaTooNew");
             contractOptions.Validate();
@@ -128,7 +129,8 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup, calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance, releaseOptions: _options.RecipeReleases,
-                contractOptions: contractOptions);
+                 contractOptions: contractOptions,
+                 activationOptions: _options.RecipeActivations);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -150,6 +152,10 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                 AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
             AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline, contractOptions);
+            if (_options.RecipeActivations is not null)
+                AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                    _options.RecipeActivations, _options.RecipeReleases, contractOptions,
+                    _options.CalibrationGovernance);
 
             var stored = SqliteCommandStore.ReadPlcResultContractRows(database, contractOptions, deadline);
             var through = stored.Count == 0 ? 0 : stored[^1].Revision.Position;

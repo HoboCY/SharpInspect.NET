@@ -260,10 +260,11 @@ internal sealed partial class SqliteCommandStore
              cameraRecoveryOptions: recoveryStore ? _options.CameraRecovery : null,
              cameraNetworkOptions: _options.CameraNetwork,
              imagingSetupOptions: _options.ImagingSetup,
-             calibrationSessionOptions: _options.CalibrationSessions,
+                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
                  releaseOptions: _options.RecipeReleases,
-                 contractOptions: _options.PlcResultContracts);
+                 contractOptions: _options.PlcResultContracts,
+                 activationOptions: _options.RecipeActivations);
         if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
         if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -280,9 +281,13 @@ internal sealed partial class SqliteCommandStore
         if (_options.RecipeReleases is not null)
             AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                 _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
-        if (_options.PlcResultContracts is not null)
-            AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
-                _options.PlcResultContracts);
+         if (_options.PlcResultContracts is not null)
+             AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
+                 _options.PlcResultContracts);
+         if (_options.RecipeActivations is not null)
+             AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
+                 _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
+                 _options.CalibrationGovernance);
     }
 
     private StoreWriteResult AppendCameraNetworkAdmissionCore(sqlite3 database,

@@ -1,0 +1,36 @@
+{
+  "sourceCommit": "b2e1dc7c1504fd21ba8932d37884fe8fea949fce",
+  "sourceTree": "bc066eb76f55136483d60003cbd2e27f0562d74c",
+  "provenance": "Encoded by the archived T31 Runtime and Abstractions assemblies using archived T31 test builders. Format 4 preserves the generated migration IDs as immutable fixture data.",
+  "assemblies": [
+    {
+      "name": "SharpInspect.Abstractions.dll",
+      "sha256": "8C2937EBA7C93B04A7116379A2B4506D217A948A6812E8CF67E5E1273002CB7D"
+    },
+    {
+      "name": "SharpInspect.Runtime.dll",
+      "sha256": "B125DD226B7E05995D5A2A53D3FF8D508970B830E4D38C35138FF162DB8D91D9"
+    }
+  ],
+  "testAssemblySha256": "FA7D7C2CF12A8EDD6AC63EEBBB806B14C17CB90078B6D58DB3C93AF1E4B9BFD6",
+  "fixtures": [
+    {
+      "format": 2,
+      "file": "format-2.json",
+      "payloadSha256": "2C2883A59ABF77B0342D0BC9B11D9C6FEF87121F191B45A87C1874DDFBA0F85B",
+      "contentHash": "7845C14670B8EF3817628D5B98E81F854BE15A8C0BAE62795182C38653BAE726"
+    },
+    {
+      "format": 3,
+      "file": "format-3.json",
+      "payloadSha256": "D6E97B5CACA8F840DDF8EE09FE0373993B8A8EE25D7A28662876896AAFC1C4CE",
+      "contentHash": "F2174C9A71B927929A6BCF7109825C8C9F0F94606AE4531CA8E9843C8C804877"
+    },
+    {
+      "format": 4,
+      "file": "format-4.json",
+      "payloadSha256": "321C1C2AD5062CA6A1A21B491D2C9A675FA7A1376288B24B130E53E8B606C812",
+      "contentHash": "D99234690DFCD42B51775C1EE06B254FC6495B14B786C24E8BA1504969E08E26"
+    }
+  ]
+}

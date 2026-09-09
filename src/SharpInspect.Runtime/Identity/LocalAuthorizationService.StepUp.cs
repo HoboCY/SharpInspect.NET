@@ -21,6 +21,9 @@ internal sealed partial class LocalAuthorizationService
             if (request.Binding?.CommandKind == AuditedCommandKind.ChangePlcResultContract &&
                 _store.PlcResultContractOptions is null)
                 return await RejectStepUpAsync(request, "PlcResultContractConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding?.CommandKind == AuditedCommandKind.ActivateRecipe &&
+                _store.RecipeActivationOptions is null)
+                return await RejectStepUpAsync(request, "RecipeActivationConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.CorrelationId == Guid.Empty || request.Binding is null || !ValidBinding(request.Binding))
                 return await RejectStepUpAsync(request, "StepUpBindingInvalid", null, cancellationToken).ConfigureAwait(false);
             var before = await _store.ReadIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -125,7 +128,9 @@ internal sealed partial class LocalAuthorizationService
             reason, ValidBinding(request.Binding) &&
                 (request.Binding.CommandKind != AuditedCommandKind.ReleaseRecipe || _store.RecipeReleaseOptions is not null) &&
                 (request.Binding.CommandKind != AuditedCommandKind.ChangePlcResultContract ||
-                    _store.PlcResultContractOptions is not null) ? request.Binding : null,
+                    _store.PlcResultContractOptions is not null) &&
+                (request.Binding.CommandKind != AuditedCommandKind.ActivateRecipe ||
+                    _store.RecipeActivationOptions is not null) ? request.Binding : null,
             actorId, actorId.HasValue ? request.Invocation?.SessionId : null,
             null, request.CorrelationId == Guid.Empty ? null : request.CorrelationId,
             actorId.HasValue ? Find(state, actorId.Value)?.AuthorizationRevision ?? 0 : 0);

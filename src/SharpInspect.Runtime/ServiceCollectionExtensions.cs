@@ -236,6 +236,22 @@ public static class ServiceCollectionExtensions
                                 ? authority.EnterPlcResultContractChangeAsync(token)
                                 : ValueTask.FromResult(new PlcResultContractRuntimeLease(Guid.Empty, () => "PlcResultContractRuntimeUnavailable")),
                             () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                        if (options.RecipeActivations is not null)
+                        {
+                            services.TryAddSingleton<IRecipeActivationQuery>(_ => new SqliteRecipeActivationQuery(options));
+                            services.TryAddSingleton(p => new RecipeActivationService(
+                                p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<IReleasedRecipeQuery>(),
+                                p.GetRequiredService<IPlcResultContractQuery>(), p.GetRequiredService<IRecipeActivationQuery>(),
+                                p.GetRequiredService<LocalAuthorizationService>(), p.GetRequiredService<SqliteCommandStore>(),
+                                options, p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmPreparationOptions>(),
+                                p.GetService<FrameBufferPool>(),
+                                (correlation, token) => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
+                                    ? authority.ReserveRecipeActivationAsync(correlation, token)
+                                    : ValueTask.FromResult(new RecipeActivationRuntimeLease(Guid.Empty,
+                                        "RecipeActivationRuntimeUnavailable", token)),
+                                () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                            services.TryAddSingleton<IRecipeActivationService>(p => p.GetRequiredService<RecipeActivationService>());
+                        }
                     }
                 }
             }
@@ -256,6 +272,8 @@ public static class ServiceCollectionExtensions
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);
+            if (options.RecipeActivations is not null)
+                runtime.ConfigureRecipeActivationService(p.GetRequiredService<RecipeActivationService>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>

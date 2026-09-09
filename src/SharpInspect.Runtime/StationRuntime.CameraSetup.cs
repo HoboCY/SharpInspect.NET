@@ -40,7 +40,7 @@ public sealed partial class StationRuntime
             return new CameraSetupRuntime.CameraStationContext(_snapshot.RuntimeEpoch,
                 _snapshot.Ready, _snapshot.ArmState, _snapshot.Busy, _snapshot.CurrentExecution,
                 _snapshot.Evidence.PendingDeliveries, _snapshot.Handshake, _snapshot.Mode,
-                _snapshot.Recovery, _snapshot.LastCommand?.State == OperationState.Pending,
+                _snapshot.Recovery, RecipeActivationConfigurationBlockedLocked || _snapshot.LastCommand?.State == OperationState.Pending,
                 _snapshot.ActiveRecipe, _shutdownRequested, _disposed);
         }
     }
