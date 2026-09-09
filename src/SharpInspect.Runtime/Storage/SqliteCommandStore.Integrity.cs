@@ -30,6 +30,10 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("RecipeReleaseConfigurationRequired");
         if (_options.RecipeReleases is not null && version < RecipeReleaseStoreOptions.SchemaVersion)
             throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
+        if (_options.PlcResultContracts is null && version == PlcResultContractStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcResultContractConfigurationRequired");
+        if (_options.PlcResultContracts is not null && version < PlcResultContractStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
         if (_options.CalibrationGovernance is not null && version > 0 && version < CalibrationGovernanceStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernanceMigrationRequired");
         if (_options.CalibrationSessions is null && version == CalibrationSessionStoreOptions.SchemaVersion)

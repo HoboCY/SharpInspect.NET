@@ -479,6 +479,28 @@ try {
             throw 'The independent execution consumer did not prove its frozen timing evidence.'
         }
     }
+    if ($Ticket -ge 31) {
+        $taskPlcPayloadDirectory = Join-Path $taskRun 'plc-result-payload'
+        Invoke-TaskDotnet 'plc-result-payload.log' @($taskConsumerDll,'--plc-result-payload-check',$taskPlcPayloadDirectory)
+        $taskPlcPayloadEvidence = Get-Content -LiteralPath (Join-Path $taskPlcPayloadDirectory 'evidence.json') -Raw | ConvertFrom-Json
+        if ($taskPlcPayloadEvidence.Result -cne 'Pass' -or $taskPlcPayloadEvidence.PublicAlgorithmInput -cne $true -or
+            $taskPlcPayloadEvidence.PayloadPreview -cne $true -or $taskPlcPayloadEvidence.ProductionPayloadSnapshot -cne $false -or
+            $taskPlcPayloadEvidence.ConsumerSha256 -cne (Get-FileHash -LiteralPath $taskConsumerDll -Algorithm SHA256).Hash -or
+            $taskPlcPayloadEvidence.WholeFault -cne $true -or $taskPlcPayloadEvidence.Ready -cne $false -or
+            $taskPlcPayloadEvidence.ArmState -cne 'Disarmed' -or $taskPlcPayloadEvidence.OutstandingLeases -ne 0 -or
+            $taskPlcPayloadEvidence.Payloads.Count -ne 4 -or
+            @($taskPlcPayloadEvidence.Checks | Where-Object { $_.Passed -cne $true }).Count -ne 0 -or
+            ($taskPlcPayloadEvidence.ActualGoldenBytes -join '|') -cne
+                '10:11223344|12:55667788|14:0009|15:0001|16:0000|20:18E7|25:00FF|30:0064|40:A55A') {
+            throw 'The independent PLC result consumer did not prove complete golden register bytes and the development boundary.'
+        }
+        foreach ($taskNotRun in @('HardwarePlc','ProductionExecutionAdmission','ResultPublicationGate','ResultValid','StationAcceptance')) {
+            if ($taskPlcPayloadEvidence.$taskNotRun -cne 'NotRun') { throw "PLC result evidence overstates qualification: $taskNotRun" }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $taskPlcPayloadDirectory 'payload-preview.html') -PathType Leaf)) {
+            throw 'PLC result byte preview is missing.'
+        }
+    }
     if ($Ticket -ge 14) {
         $taskOverlayDirectory = Join-Path $taskRun 'overlay-demo'
         Invoke-TaskDotnet 'overlay-consumer.log' @($taskConsumerDll,'--overlay-check',$taskOverlayDirectory)
@@ -771,6 +793,9 @@ try {
     }
     if ($Ticket -ge 24) {
         & (Join-Path $PSScriptRoot 'Test-CalibrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
+    if ($Ticket -ge 31) {
+        & (Join-Path $PSScriptRoot 'Test-PlcResultContractConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

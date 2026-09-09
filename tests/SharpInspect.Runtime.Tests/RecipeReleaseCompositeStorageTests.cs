@@ -19,7 +19,12 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class RecipeReleaseCompositeStorageTests
 {
     [Fact]
-    public async Task V130_S04_Schema16ReleaseArchiveAndAlarmWritesRemainQueryable()
+    public Task V130_S04_Schema16ReleaseArchiveAndAlarmWritesRemainQueryable() => RunAsync(false);
+
+    [Fact]
+    public Task V131_I01_Schema17ContractReleaseArchiveAndAlarmWritesRemainQueryable() => RunAsync(true);
+
+    private static async Task RunAsync(bool enablePlc)
     {
         RequireWindows();
         var releasePolicy = new RecipeGovernancePolicy("V130.S04.Release", "1",
@@ -36,8 +41,9 @@ public sealed class RecipeReleaseCompositeStorageTests
         await using var storage = await RecipeDraftStorageTests.Fixture.CreateAsync(
             enableArchive: true,
             recipeReleases: new RecipeReleaseStoreOptions(releasePolicy),
-            alarmPolicy: alarmPolicy);
-        Assert.Equal((long)RecipeReleaseStoreOptions.SchemaVersion,
+            alarmPolicy: alarmPolicy,
+            plcResultContracts: enablePlc ? new PlcResultContractStoreOptions() : null);
+        Assert.Equal(enablePlc ? 17L : RecipeReleaseStoreOptions.SchemaVersion,
             await storage.ScalarAsync("PRAGMA user_version;"));
         Assert.NotNull(storage.Options.RecipeReleases);
         Assert.NotNull(storage.Options.AlarmPolicy);
@@ -48,7 +54,8 @@ public sealed class RecipeReleaseCompositeStorageTests
         var source = saved.Revision!;
         await storage.WaitForVerifiedAsync();
 
-        await using var drafts = new RecipeDraftService(new[] { new Factory(source.Content) },
+        var factory = new Factory(source.Content);
+        await using var drafts = new RecipeDraftService(new[] { factory },
             storage.Options, storage.Authorization, new SqliteRecipeDraftQuery(storage.Options));
         await using var runtime = new StationRuntime(storage.Store, TimeSpan.FromMilliseconds(500),
             storage.Sessions, storage.Authorization);
@@ -73,6 +80,13 @@ public sealed class RecipeReleaseCompositeStorageTests
         Assert.Equal(AuditPersistence.Persisted, released.Outcome.Audit);
         Assert.NotNull(released.Recipe);
         await storage.WaitForVerifiedAsync();
+
+        if (enablePlc)
+        {
+            var revision = await PlcResultContractTestSupport.CommitAsync(storage.Options, drafts,
+                storage.Authorization, runtime, storage.Invocation(), storage.Password, factory.Descriptor.ResultSchema);
+            Assert.Equal(released.Recipe!.Record.ContentHash, revision.Bindings.Single().ReleaseRecordContentHash);
+        }
 
         var archiveDocument = CreateArchiveDocument();
         var archived = await storage.Store.AppendAlgorithmResultAsync(archiveDocument,
@@ -131,6 +145,7 @@ public sealed class RecipeReleaseCompositeStorageTests
             LocalIdentity = storage.Options.LocalIdentity,
             RecipeDrafts = storage.Options.RecipeDrafts,
             RecipeReleases = storage.Options.RecipeReleases,
+            PlcResultContracts = storage.Options.PlcResultContracts,
             AlarmPolicy = storage.Options.AlarmPolicy
         };
         var incompleteQuery = await new SqliteReleasedRecipeQuery(omittedArchive).QueryAsync(
@@ -140,6 +155,27 @@ public sealed class RecipeReleaseCompositeStorageTests
         var traceFailure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             new SqliteCommandTraceQuery(omittedArchive).QueryAsync(new CommandTraceFilter()).AsTask());
         Assert.Equal("AlgorithmResultArchiveConfigurationRequired", traceFailure.Message);
+
+        var archiveOptions = storage.Options.AlgorithmResultArchive!;
+        var mismatchedArchive = new ProductionStoreOptions(storage.Options.DatabasePath)
+        {
+            AuditIntegrityPolicy = storage.Options.AuditIntegrityPolicy,
+            LocalIdentity = storage.Options.LocalIdentity,
+            RecipeDrafts = storage.Options.RecipeDrafts,
+            RecipeReleases = storage.Options.RecipeReleases,
+            PlcResultContracts = storage.Options.PlcResultContracts,
+            AlarmPolicy = storage.Options.AlarmPolicy,
+            AlgorithmResultArchive = new AlgorithmResultArchiveOptions
+            {
+                MaximumRecordBytes = archiveOptions.MaximumRecordBytes,
+                MaximumTotalBytes = archiveOptions.MaximumTotalBytes,
+                MaximumPageBytes = archiveOptions.MaximumPageBytes,
+                MaximumRecords = archiveOptions.MaximumRecords - 1
+            }
+        };
+        var mismatchedTrace = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SqliteCommandTraceQuery(mismatchedArchive).QueryAsync(new CommandTraceFilter()).AsTask());
+        Assert.Equal("AlgorithmResultArchiveConfigurationMismatch", mismatchedTrace.Message);
     }
 
     private static AlgorithmResultArchiveDocument CreateArchiveDocument()

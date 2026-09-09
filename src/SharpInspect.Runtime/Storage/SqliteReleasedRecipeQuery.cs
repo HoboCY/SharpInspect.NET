@@ -113,7 +113,7 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == RecipeReleaseStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion,
                 schema < RecipeReleaseStoreOptions.SchemaVersion
                     ? "RecipeReleaseGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -126,7 +126,8 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                releaseOptions: releaseOptions);
+                releaseOptions: releaseOptions,
+                contractOptions: _options.PlcResultContracts);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -150,6 +151,9 @@ public sealed class SqliteReleasedRecipeQuery : IReleasedRecipeQuery
                     _options.CalibrationGovernance);
             AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                 releaseOptions, _options.RecipeDrafts, _options.CalibrationGovernance);
+            if (_options.PlcResultContracts is not null)
+                AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
+                    _options.PlcResultContracts);
 
             var history = SqliteCommandStore.ReadAllRecipeDraftHistory(database, deadline);
             var policies = SqliteCommandStore.ReadCalibrationAcceptancePolicies(database,

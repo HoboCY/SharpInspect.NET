@@ -39,6 +39,8 @@ internal static class Program
             return CameraAcquisitionDemo.Run(acquisitionDirectory);
         if (args.Contains("--algorithm-execution-check", StringComparer.OrdinalIgnoreCase))
             return AlgorithmExecutionDemo.Run();
+        if (Option("--plc-result-payload-check") is { } plcResultPayloadDirectory)
+            return PlcResultPayloadDemo.Run(plcResultPayloadDirectory);
         if (Option("--overlay-check") is { } overlayDirectory)
             return AlgorithmOverlayDemo.Run(overlayDirectory);
         if (Option("--overlay-query") is { } overlayQueryDirectory)
@@ -54,6 +56,8 @@ internal static class Program
         var draftQueryDirectory = Option("--recipe-draft-query");
         var releaseCheckDirectory = Option("--recipe-release-check");
         var releaseQueryDirectory = Option("--recipe-release-query");
+        var plcResultContractCheckDirectory = Option("--plc-result-contract-check");
+        var plcResultContractQueryDirectory = Option("--plc-result-contract-query");
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -66,7 +70,11 @@ internal static class Program
         var cameraNetworkEnabled = cameraNetworkDirectory is not null || cameraNetworkQueryDirectory is not null;
         var imagingCalibrationEnabled = imagingCalibrationDirectory is not null ||
             imagingCalibrationQueryDirectory is not null;
+        var plcResultContractEnabled = plcResultContractCheckDirectory is not null ||
+            plcResultContractQueryDirectory is not null ||
+            args.Contains("--plc-result-contracts", StringComparer.OrdinalIgnoreCase);
         var releaseEnabled = releaseCheckDirectory is not null || releaseQueryDirectory is not null ||
+            plcResultContractEnabled ||
             args.Contains("--recipe-releases", StringComparer.OrdinalIgnoreCase);
         var configuredReleaseMode = Option("--recipe-release-mode");
         var configuredReleasePolicy = Option("--recipe-release-policy");
@@ -87,6 +95,7 @@ internal static class Program
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
             RecipeReleases = releasePolicy is null ? null : new RecipeReleaseStoreOptions(releasePolicy!),
+            PlcResultContracts = plcResultContractEnabled ? new PlcResultContractStoreOptions() : null,
             CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
                 || imagingCalibrationEnabled
                 ? new CameraSetupStoreOptions() : null,
@@ -100,6 +109,11 @@ internal static class Program
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
             }
         };
+        if (plcResultContractCheckDirectory is not null)
+            return PlcResultContractGovernanceDemo.Run(storeOptions, plcResultContractCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
+        if (plcResultContractQueryDirectory is not null)
+            return PlcResultContractGovernanceDemo.Query(storeOptions, plcResultContractQueryDirectory);
         if (releaseCheckDirectory is not null)
             return RecipeReleaseDemo.Run(storeOptions, releaseCheckDirectory, Option("--user-name"),
                 Option("--expected-principal"), Option("--recipe-release-scenario"));

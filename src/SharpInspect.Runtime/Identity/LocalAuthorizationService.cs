@@ -149,6 +149,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PublishCalibrationAcceptancePolicyCommand => Permission.ManageCalibrationAcceptancePolicy,
         EvaluateCalibrationCandidateCommand or PublishCalibrationProfileCommand => Permission.PublishCalibration,
         RecordPhysicalCalibrationVerificationCommand => Permission.RecordPhysicalCalibrationVerification,
+        ChangePlcResultContractCommand => Permission.ManagePlcResultContract,
         ReleaseRecipeCommand => Permission.ReleaseRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
@@ -170,6 +171,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             StartCalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             CalibrationSessionCommand calibration => calibration.AuthorizationTarget,
             CalibrationGovernanceCommand calibration => calibration.AuthorizationTarget,
+            ChangePlcResultContractCommand change => change.AuthorizationTarget,
             ReleaseRecipeCommand release => release.AuthorizationTarget,
             _ => _options.StationId
         },
@@ -200,6 +202,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.EvaluateCalibrationCandidate or AuditedCommandKind.PublishCalibrationProfile =>
             Permission.PublishCalibration,
         AuditedCommandKind.RecordPhysicalCalibrationVerification => Permission.RecordPhysicalCalibrationVerification,
+        AuditedCommandKind.ChangePlcResultContract => Permission.ManagePlcResultContract,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
@@ -229,6 +232,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         EvaluateCalibrationCandidateCommand => AuditedCommandKind.EvaluateCalibrationCandidate,
         PublishCalibrationProfileCommand => AuditedCommandKind.PublishCalibrationProfile,
         RecordPhysicalCalibrationVerificationCommand => AuditedCommandKind.RecordPhysicalCalibrationVerification,
+        ChangePlcResultContractCommand => AuditedCommandKind.ChangePlcResultContract,
         ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {

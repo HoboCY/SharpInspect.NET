@@ -634,7 +634,7 @@ public sealed class CalibrationSessionRuntimeTests
     internal sealed class Fixture : IAsyncDisposable
     {
         private const string UserName = "calibration-session-admin";
-        private const string Password = "V124 calibration session test secret 26!";
+        internal const string Password = "V124 calibration session test secret 26!";
         private const string Role = "TopCamera";
         private readonly string _directory;
         private readonly AuditIntegrityPolicy _audit;
@@ -694,7 +694,8 @@ public sealed class CalibrationSessionRuntimeTests
             Func<DateTimeOffset>? utcNow = null, bool withGovernanceEvidence = false,
             PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
             double governanceSampleThreshold = 1,
-            RecipeReleaseStoreOptions? recipeReleases = null)
+            RecipeReleaseStoreOptions? recipeReleases = null,
+            PlcResultContractStoreOptions? plcResultContracts = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Calibration session integration requires Windows machine protection.");
@@ -731,6 +732,7 @@ public sealed class CalibrationSessionRuntimeTests
                         TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
                         TimeSpan.FromSeconds(1))),
                 RecipeReleases = recipeReleases,
+                PlcResultContracts = plcResultContracts,
                 AlarmPolicy = CreateAlarmPolicy(),
                 CameraSetup = new CameraSetupStoreOptions(),
                 CameraRecovery = new CameraRecoveryStoreOptions(),

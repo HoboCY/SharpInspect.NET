@@ -9,6 +9,7 @@ using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Calibration;
+using SharpInspect.Runtime.Plc;
 
 namespace SharpInspect.Runtime;
 
@@ -225,6 +226,17 @@ public static class ServiceCollectionExtensions
                         p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<LocalAuthorizationService>(),
                         p.GetRequiredService<IReleasedRecipeQuery>(), options,
                         () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                    if (options.PlcResultContracts is not null)
+                    {
+                        services.TryAddSingleton<IPlcResultContractQuery>(_ => new SqlitePlcResultContractQuery(options));
+                        services.TryAddSingleton<IPlcResultContractService>(p => new PlcResultContractService(
+                            p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<IReleasedRecipeQuery>(),
+                            p.GetRequiredService<IPlcResultContractQuery>(), p.GetRequiredService<LocalAuthorizationService>(), options,
+                            token => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
+                                ? authority.EnterPlcResultContractChangeAsync(token)
+                                : ValueTask.FromResult(new PlcResultContractRuntimeLease(Guid.Empty, () => "PlcResultContractRuntimeUnavailable")),
+                            () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                    }
                 }
             }
             services.TryAddSingleton<ILocalAdministratorRecovery>(p => new LocalAdministratorRecoveryService(
@@ -243,6 +255,7 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
+            if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>

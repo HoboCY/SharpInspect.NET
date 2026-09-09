@@ -74,17 +74,19 @@ internal sealed partial class SqliteCommandStore
             var imagingStore = _options.ImagingSetup is not null;
             var calibrationStore = _options.CalibrationSessions is not null;
             var releaseStore = _options.RecipeReleases is not null;
+            var contractStore = _options.PlcResultContracts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                releaseOptions: _options.RecipeReleases);
+                 releaseOptions: _options.RecipeReleases,
+                 contractOptions: _options.PlcResultContracts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -100,6 +102,8 @@ internal sealed partial class SqliteCommandStore
                 _options.ImagingSetup);
             if (releaseStore) AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                 _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
+            if (contractStore) AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
+                _options.PlcResultContracts);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -132,17 +136,19 @@ internal sealed partial class SqliteCommandStore
             var imagingStore = _options.ImagingSetup is not null;
             var calibrationStore = _options.CalibrationSessions is not null;
             var releaseStore = _options.RecipeReleases is not null;
+            var contractStore = _options.PlcResultContracts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                releaseOptions: _options.RecipeReleases);
+                 releaseOptions: _options.RecipeReleases,
+                 contractOptions: _options.PlcResultContracts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -158,6 +164,8 @@ internal sealed partial class SqliteCommandStore
                 _options.ImagingSetup);
             if (releaseStore) AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                 _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
+            if (contractStore) AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
+                _options.PlcResultContracts);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -274,17 +282,19 @@ internal sealed partial class SqliteCommandStore
             var imagingStore = _options.ImagingSetup is not null;
             var calibrationStore = _options.CalibrationSessions is not null;
             var releaseStore = _options.RecipeReleases is not null;
+            var contractStore = _options.PlcResultContracts is not null;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
                 imagingSetupOptions: _options.ImagingSetup,
                 calibrationSessionOptions: _options.CalibrationSessions,
                 governanceOptions: _options.CalibrationGovernance,
-                releaseOptions: _options.RecipeReleases);
+                 releaseOptions: _options.RecipeReleases,
+                 contractOptions: _options.PlcResultContracts);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -300,10 +310,13 @@ internal sealed partial class SqliteCommandStore
                 _options.ImagingSetup);
             if (releaseStore) AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                 _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
+            if (contractStore) AuditChainDatabase.RequireFullPlcResultContractVerification(database, verification, deadline,
+                _options.PlcResultContracts);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null ||
-                work.CalibrationGovernanceUpdate is not null || work.RecipeReleaseUpdate is not null) &&
+                work.CalibrationGovernanceUpdate is not null || work.RecipeReleaseUpdate is not null ||
+                work.PlcResultContractUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
@@ -346,9 +359,11 @@ internal sealed partial class SqliteCommandStore
                 ReadCalibrationGovernanceCommandState(database, work.CalibrationGovernanceCommand, deadline);
             var releaseState = work.RecipeReleaseCommand is null ? null :
                 ReadRecipeReleaseCommandState(database, work.RecipeReleaseCommand, deadline);
+            var contractState = work.PlcResultContractCommand is null ? null :
+                ReadPlcResultContractCommandState(database, deadline);
             var evaluated = work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                 cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
-                releaseState);
+                releaseState, contractState);
             decision = evaluated;
             guard = evaluated.CommitGuard;
             if (evaluated.NoMutation)
@@ -356,7 +371,7 @@ internal sealed partial class SqliteCommandStore
                 AuditChainDatabase.Require(evaluated.Events.Count == 0 && evaluated.CommandFacts is null &&
                     evaluated.CameraEvents is null && evaluated.ImagingRevision is null &&
                     evaluated.CalibrationAdmission is null && evaluated.CalibrationGovernance is null &&
-                    evaluated.RecipeRelease is null && guard is null,
+                    evaluated.RecipeRelease is null && evaluated.PlcResultContract is null && guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
                 committed = true;
@@ -426,6 +441,11 @@ internal sealed partial class SqliteCommandStore
             {
                 AppendRecipeReleaseIdentityMutation(database, evaluated, releaseState!,
                     work.RecipeReleaseCommand!, deadline);
+            }
+            if (evaluated.PlcResultContract is not null)
+            {
+                AppendPlcResultContractIdentityMutation(database, evaluated, contractState!,
+                    work.PlcResultContractCommand!, deadline);
             }
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.Execute(database, "COMMIT;", deadline);
@@ -706,6 +726,14 @@ internal sealed partial class SqliteCommandStore
             RecipeReleaseUpdate = update;
         }
 
+        internal IdentityWork(ChangePlcResultContractCommand command,
+            Func<IdentityAuthorityState, PlcResultContractCommandState, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            PlcResultContractCommand = command;
+            PlcResultContractUpdate = update;
+        }
+
         internal IdentityWork(Func<IdentityAuthorityState, IdentityUpdate> update) => Update = update;
 
         internal IdentityWork(Guid commandCorrelationId,
@@ -770,14 +798,19 @@ internal sealed partial class SqliteCommandStore
         internal ReleaseRecipeCommand? RecipeReleaseCommand { get; }
         internal Func<IdentityAuthorityState, RecipeReleaseCommandState, bool, IdentityUpdate>?
             RecipeReleaseUpdate { get; }
+        internal ChangePlcResultContractCommand? PlcResultContractCommand { get; }
+        internal Func<IdentityAuthorityState, PlcResultContractCommandState, bool, IdentityUpdate>?
+            PlcResultContractUpdate { get; }
 
         internal IdentityUpdate Evaluate(IdentityAuthorityState state, AlarmStateSnapshot? alarmState,
             bool duplicateCorrelation, RecoveryOperationState? existingRecoveryOperation,
             CameraSetupStoreSnapshot? cameraSetupState, bool duplicateCameraOperation,
             ImagingSetupStoreSnapshot? imagingSetupState = null, bool duplicateImagingOperation = false,
             CalibrationGovernanceCommandState? governanceState = null,
-            RecipeReleaseCommandState? releaseState = null) =>
+            RecipeReleaseCommandState? releaseState = null,
+            PlcResultContractCommandState? plcResultContractState = null) =>
             RecipeReleaseUpdate is not null ? RecipeReleaseUpdate(state, releaseState!, duplicateCorrelation) :
+            PlcResultContractUpdate is not null ? PlcResultContractUpdate(state, plcResultContractState!, duplicateCorrelation) :
             CalibrationGovernanceUpdate is not null ? CalibrationGovernanceUpdate(state, governanceState!, duplicateCorrelation) :
             AlarmCommandUpdate is not null ? AlarmCommandUpdate(state, alarmState!, duplicateCorrelation) :
             CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
@@ -804,6 +837,7 @@ internal sealed record IdentityUpdate(
     ImagingSetupRevisionMutation? ImagingRevision = null,
     CalibrationSessionHeader? CalibrationAdmission = null,
     bool NoMutation = false,
-    CalibrationGovernanceMutation? CalibrationGovernance = null,
-    RecipeReleaseMutation? RecipeRelease = null);
+     CalibrationGovernanceMutation? CalibrationGovernance = null,
+     RecipeReleaseMutation? RecipeRelease = null,
+     PlcResultContractMutation? PlcResultContract = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

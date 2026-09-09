@@ -199,6 +199,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command is ChangePlcResultContractCommand plcContract)
+            return await SubmitPlcResultContractAsync(plcContract, cancellationToken).ConfigureAwait(false);
         if (command is ReleaseRecipeCommand release)
             return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();

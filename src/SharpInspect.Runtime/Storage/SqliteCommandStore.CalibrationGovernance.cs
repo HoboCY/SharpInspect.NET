@@ -312,7 +312,7 @@ internal sealed partial class SqliteCommandStore
         options.Validate();
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         AuditChainDatabase.Require(schema is CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion,
             "CalibrationGovernanceSchemaInvalid");
         RequireConfiguredCalibrationGovernance(database, options, deadline);
 
@@ -570,6 +570,7 @@ internal sealed partial class SqliteCommandStore
         Guid eventId, Guid operationId, AuditedCommandKind commandKind, string stationId,
         StoreDeadline deadline)
     {
+        var schemaVersion = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
         var rows = AuditChainDatabase.Read(database, @"
             SELECT Sequence,IdentityPosition,Payload,Hash FROM audit_entries
             WHERE Kind='IdentityEvent' AND IdentityPosition IS NOT NULL ORDER BY Sequence;", deadline,
@@ -586,8 +587,7 @@ internal sealed partial class SqliteCommandStore
                 payload = Convert.FromBase64String(row.Payload);
                 if (!string.Equals(Convert.ToBase64String(payload), row.Payload, StringComparison.Ordinal))
                     continue;
-                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId,
-                    RecipeReleaseStoreOptions.SchemaVersion);
+                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId, schemaVersion);
             }
             catch (Exception exception) when (exception is ArgumentException or FormatException or
                                                InvalidOperationException or EndOfStreamException)

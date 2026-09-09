@@ -351,9 +351,9 @@ internal sealed partial class SqliteCommandStore
             SELECT Kind,Payload FROM calibration_governance_events ORDER BY Position;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0) ?? string.Empty,
                 Payload: Convert.FromBase64String(SqliteNative.ColumnText(statement, 1) ?? string.Empty)));
-        // The governance ledger is optional in schema 16.  Only a configured
+        // The governance ledger is optional in schema 16 and schema 17.  Only a configured
         // and already integrity-checked ledger contributes dependency facts.
-        if (schema != RecipeReleaseStoreOptions.SchemaVersion)
+        if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationGovernanceSchemaInvalid");
         return rows.Select(row => CalibrationGovernanceCodec.Decode(row.Kind, row.Payload))
             .OfType<CalibrationAcceptancePolicyRevision>().ToArray();
@@ -531,6 +531,7 @@ internal sealed partial class SqliteCommandStore
     private static ReleaseAuthorizationAuditReference ReadReleaseAuthorizationReference(sqlite3 database,
         Guid eventId, RecipeReleaseRecord record, string stationId, StoreDeadline deadline)
     {
+        var schemaVersion = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
         var rows = AuditChainDatabase.Read(database, @"
             SELECT Sequence,IdentityPosition,Payload,Hash FROM audit_entries
             WHERE Kind='IdentityEvent' AND IdentityPosition IS NOT NULL ORDER BY Sequence;", deadline,
@@ -547,8 +548,7 @@ internal sealed partial class SqliteCommandStore
                 payload = Convert.FromBase64String(row.Payload);
                 if (!string.Equals(Convert.ToBase64String(payload), row.Payload, StringComparison.Ordinal) ||
                     !IsReleaseHash(row.Hash)) continue;
-                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId,
-                    RecipeReleaseStoreOptions.SchemaVersion);
+                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId, schemaVersion);
                 var fields = DecodeReleaseIdentityFields(payload);
                 if (fields.Length != 49 || !Guid.TryParseExact(fields[1], "D", out var parsedEvent) ||
                     parsedEvent != eventId) continue;

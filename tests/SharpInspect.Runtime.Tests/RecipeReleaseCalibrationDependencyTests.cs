@@ -17,13 +17,19 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class RecipeReleaseCalibrationDependencyTests
 {
     [Fact]
-    public async Task V130_R14_PublishedCalibrationPolicySatisfiesRecipeReleaseWithoutStationQualification()
+    public Task V130_R14_PublishedCalibrationPolicySatisfiesRecipeReleaseWithoutStationQualification() => RunAsync(false);
+
+    [Fact]
+    public Task V131_I02_Schema17ContractAndCalibrationGovernanceRemainIndependentlyQueryable() => RunAsync(true);
+
+    private static async Task RunAsync(bool enablePlc)
     {
         var releasePolicy = new RecipeGovernancePolicy("V130.Calibration.Release", "1",
             RecipeGovernanceMode.SingleApproverRelease);
         await using var fixture = await CalibrationSessionRuntimeTests.Fixture.CreateAsync(
             withDevelopmentFixture: true, withCalibrationGovernance: true,
-            recipeReleases: new RecipeReleaseStoreOptions(releasePolicy));
+            recipeReleases: new RecipeReleaseStoreOptions(releasePolicy),
+            plcResultContracts: enablePlc ? new PlcResultContractStoreOptions() : null);
         await fixture.WaitForHealthySourceAsync();
 
         var policy = fixture.GovernancePolicy!;
@@ -98,6 +104,18 @@ public sealed class RecipeReleaseCalibrationDependencyTests
             check => check.GateId == "CalibrationDependency");
         Assert.True(calibrationGate.Passed, calibrationGate.ReasonCode);
         Assert.Equal(publishedRevision.Policy.Reference, calibrationGate.Contract);
+
+        if (enablePlc)
+        {
+            var revision = await PlcResultContractTestSupport.CommitAsync(fixture.Options, drafts,
+                fixture.Authorization, fixture.Runtime, fixture.User.Invocation, CalibrationSessionRuntimeTests.Fixture.Password,
+                factory.Descriptor.ResultSchema);
+            Assert.Equal(released.Record.ContentHash, revision.Bindings.Single().ReleaseRecordContentHash);
+            var policyAfterContract = await fixture.Runtime.ReadPolicyAsync(publishedRevision.Policy.Reference,
+                fixture.User.Invocation);
+            Assert.True(policyAfterContract.Available, policyAfterContract.ReasonCode);
+            Assert.Equal(publishedRevision.ContentHash, policyAfterContract.Value!.ContentHash);
+        }
 
         var coldRead = await new SqliteReleasedRecipeQuery(fixture.Options)
             .ReadAsync(released.Reference);

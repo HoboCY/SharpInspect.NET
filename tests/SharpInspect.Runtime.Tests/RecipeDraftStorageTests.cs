@@ -532,7 +532,8 @@ public sealed class RecipeDraftStorageTests
         internal static async Task<Fixture> CreateAsync(bool requireStepUp = false,
             bool enableArchive = false, int? maximumRevisionCount = null,
             TimeSpan? verificationInterval = null, RecipeReleaseStoreOptions? recipeReleases = null,
-            AlarmPolicy? alarmPolicy = null)
+            AlarmPolicy? alarmPolicy = null, PlcResultContractStoreOptions? plcResultContracts = null,
+            IExternalAuditAnchor? externalAuditAnchor = null, bool requireExternalAnchor = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -547,7 +548,10 @@ public sealed class RecipeDraftStorageTests
                 AllowInitialKeyCreation = true,
                 KeyDirectory = Path.Combine(directory, "keys"),
                 CheckpointEveryEntries = 2,
-                VerificationInterval = verificationInterval ?? TimeSpan.FromSeconds(1)
+                VerificationInterval = verificationInterval ?? TimeSpan.FromSeconds(1),
+                RequireExternalAnchor = requireExternalAnchor,
+                ExternalAnchorRouteId = requireExternalAnchor ? "v131-query-anchor" : null,
+                AnchorTimeout = TimeSpan.FromSeconds(2)
             };
             var passwordPolicy = new LocalPasswordPolicy
             {
@@ -569,8 +573,10 @@ public sealed class RecipeDraftStorageTests
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
                 AlarmPolicy = alarmPolicy,
+                ExternalAuditAnchor = externalAuditAnchor,
                 RecipeDrafts = draftOptions,
                 RecipeReleases = recipeReleases,
+                PlcResultContracts = plcResultContracts,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };
@@ -581,14 +587,14 @@ public sealed class RecipeDraftStorageTests
                 store = new SqliteCommandStore(options);
                 var initialized = await store.Initialization.WaitAsync(TimeSpan.FromSeconds(15));
                 Assert.True(initialized.Committed, initialized.ReasonCode);
-                await WaitForVerifiedAsync(store);
+                await WaitForVerifiedAsync(store, allowTransientAnchorPending: requireExternalAnchor);
 
                 var identity = new LocalIdentityService(store, identityOptions, new FixtureConsole());
                 var token = await identity.ProvisionBootstrapTokenAsync();
                 Assert.True(token.Succeeded, token.ReasonCode);
                 var bootstrap = token.Token!.TakeForDisplay();
                 token.Token.Dispose();
-                await WaitForVerifiedAsync(store);
+                await WaitForVerifiedAsync(store, allowTransientAnchorPending: requireExternalAnchor);
                 const string userName = "draft.storage.admin";
                 const string password = "V115 draft storage password 2026!";
                 var created = await identity.CreateFirstAdministratorAsync(
@@ -596,14 +602,14 @@ public sealed class RecipeDraftStorageTests
                         "Draft Storage Administrator", password));
                 Assert.True(created.Succeeded, created.ReasonCode);
                 created.RecoveryKit?.Dispose();
-                await WaitForVerifiedAsync(store);
+                await WaitForVerifiedAsync(store, allowTransientAnchorPending: requireExternalAnchor);
 
                 var sessions = new InteractiveSessionService(identity,
                     identityOptions.AuthenticationPolicy, identity.PersistSessionEventAsync);
                 var login = await sessions.SignInAsync(new PasswordSignInRequest(userName, password));
                 Assert.True(login.Succeeded, login.ReasonCode);
                 var authorization = new LocalAuthorizationService(store, identityOptions, identity, sessions);
-                await WaitForVerifiedAsync(store);
+                await WaitForVerifiedAsync(store, allowTransientAnchorPending: requireExternalAnchor);
                 return new Fixture(directory, options, audit, identityOptions, store,
                     identity, sessions, authorization, userName, password);
             }
@@ -701,14 +707,21 @@ public sealed class RecipeDraftStorageTests
             DeleteDirectory(_directory, _auditPolicy);
         }
 
-        internal static async Task WaitForVerifiedAsync(SqliteCommandStore store)
+        internal static async Task WaitForVerifiedAsync(SqliteCommandStore store,
+            bool allowTransientAnchorPending = false)
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
             while (DateTime.UtcNow < deadline)
             {
                 if (store.Integrity is { State: AuditIntegrityState.Verified }) return;
                 if (store.Integrity is { State: AuditIntegrityState.Faulted } fault)
-                    throw new XunitException(fault.ReasonCode);
+                {
+                    // A required-anchor store briefly publishes this advisory state after a
+                    // signed append and before the background delivery/receipt commit.  Keep
+                    // waiting only for that known transient; every other fault remains fatal.
+                    if (!allowTransientAnchorPending || fault.ReasonCode != "AuditRequiredAnchorPending")
+                        throw new XunitException(fault.ReasonCode);
+                }
                 await Task.Delay(25);
             }
             throw new XunitException("Audit integrity did not become Verified: " + store.Integrity?.ReasonCode);

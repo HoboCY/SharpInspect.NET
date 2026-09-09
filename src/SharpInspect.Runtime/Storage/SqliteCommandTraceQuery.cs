@@ -79,7 +79,15 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 return checked((int)SqliteNative.ColumnInt64(statement, 0));
              }, cancellationToken);
         SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (options.PlcResultContracts is not null && schemaVersion < PlcResultContractStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcResultContractGovernedMigrationRequired");
+        if (options.PlcResultContracts is null && schemaVersion == PlcResultContractStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcResultContractConfigurationRequired");
+        if (schemaVersion == PlcResultContractStoreOptions.SchemaVersion &&
+            (options.RecipeDrafts is null || options.RecipeReleases is null ||
+                options.LocalIdentity is null || options.AuditIntegrityPolicy is null))
+            throw new InvalidOperationException("PlcResultContractsRequiresDraftsReleasesIdentityAndAudit");
         if (options.RecipeReleases is not null && schemaVersion < RecipeReleaseStoreOptions.SchemaVersion)
             throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
         if (options.RecipeReleases is null && schemaVersion == RecipeReleaseStoreOptions.SchemaVersion)
@@ -133,7 +141,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 options.AlgorithmResultArchive is not null, options.CameraSetup is not null,
                 options.CameraRecovery is not null, options.CameraNetwork is not null,
                 options.ImagingSetup is not null, options.CalibrationSessions is not null,
-                options.CalibrationGovernance is not null);
+                options.CalibrationGovernance is not null, release: true);
             SqliteCommandStore.RequireConfiguredRecipeReleases(database, options.RecipeReleases!, deadline);
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts!, deadline);
             if (options.AlgorithmResultArchive is not null)
@@ -151,7 +159,36 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             if (options.CalibrationGovernance is not null)
                 SqliteCommandStore.RequireConfiguredCalibrationGovernance(database, options.CalibrationGovernance, deadline);
         }
-
+        if (schemaVersion == PlcResultContractStoreOptions.SchemaVersion)
+        {
+            Integrity.AuditChainDatabase.RequireReleaseLedgerPresence(database, deadline,
+                options.AlgorithmResultArchive is not null, options.CameraSetup is not null,
+                options.CameraRecovery is not null, options.CameraNetwork is not null,
+                options.ImagingSetup is not null, options.CalibrationSessions is not null,
+                options.CalibrationGovernance is not null, release: true,
+                plcResultContract: true);
+            SqliteCommandStore.RequireConfiguredPlcResultContracts(database,
+                options.PlcResultContracts!, deadline);
+            if (options.RecipeReleases is not null)
+            {
+                SqliteCommandStore.RequireConfiguredRecipeReleases(database, options.RecipeReleases, deadline);
+                SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts!, deadline);
+            }
+            if (options.AlgorithmResultArchive is not null)
+                SqliteCommandStore.RequireConfiguredArchive(database, options.AlgorithmResultArchive, deadline);
+            if (options.CameraSetup is not null)
+                SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup, deadline);
+            if (options.CameraRecovery is not null)
+                SqliteCommandStore.RequireConfiguredCameraRecovery(database, options.CameraRecovery, deadline);
+            if (options.CameraNetwork is not null)
+                SqliteCommandStore.RequireConfiguredCameraNetwork(database, options.CameraNetwork, deadline);
+            if (options.ImagingSetup is not null)
+                SqliteCommandStore.RequireConfiguredImagingSetup(database, options.ImagingSetup, deadline);
+            if (options.CalibrationSessions is not null)
+                SqliteCommandStore.RequireConfiguredCalibrationSessions(database, options.CalibrationSessions, deadline);
+            if (options.CalibrationGovernance is not null)
+                SqliteCommandStore.RequireConfiguredCalibrationGovernance(database, options.CalibrationGovernance, deadline);
+        }
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>
         {

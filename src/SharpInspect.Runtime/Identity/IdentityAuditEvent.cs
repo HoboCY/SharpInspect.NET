@@ -49,7 +49,8 @@ internal enum IdentityEventKind
     CalibrationSessionStartAuthorized,
     CalibrationSessionActionAuthorized,
     CalibrationGovernanceActionAuthorized,
-    RecipeReleased
+    RecipeReleased,
+    PlcResultContractChanged
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -128,14 +129,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > RecipeReleaseStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PlcResultContractStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > RecipeReleaseStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PlcResultContractStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -160,7 +161,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= 16 => 49, _ => 0 };
+                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PlcResultContractStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -204,6 +205,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.RecipeReleased, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= PlcResultContractStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.PlcResultContractChanged, "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -280,6 +283,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= CalibrationGovernanceStoreOptions.SchemaVersion ||
                         actionKind is not (>= AuditedCommandKind.PublishCalibrationAcceptancePolicy and <= AuditedCommandKind.RecordPhysicalCalibrationVerification)) &&
                     (schemaVersion >= RecipeReleaseStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ReleaseRecipe) &&
+                    (schemaVersion >= PlcResultContractStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.ChangePlcResultContract) &&
                      fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -377,6 +381,34 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[35] == record.ApproverAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
                 fields[37] == record.AuthorizationTarget && fields[38] == record.OperationId.ToString("D") &&
                 fields[39] == AuditedCommandKind.ReleaseRecipe.ToString() && fields[42] == record.OperationId.ToString("D");
+        }
+        catch (Exception exception) when (exception is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool MatchesPlcResultContractAuthorization(byte[] payload, long ordinal, string stationId,
+        PlcResultContractRevision revision)
+    {
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, PlcResultContractStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            return fields.Length == 49 && fields[2] == IdentityEventKind.PlcResultContractChanged.ToString() &&
+                fields[3] == revision.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[5] == revision.ActorPrincipalId.ToString("D") && fields[9] == "PlcResultContractChanged" &&
+                fields[25] == revision.ActorSessionId.ToString("D") &&
+                fields[27] == revision.AuthorizationPolicy.Id &&
+                fields[28] == revision.AuthorizationPolicy.Version &&
+                fields[29] == revision.AuthorizationPolicy.ContentHash &&
+                fields[30] == revision.ActorPrincipalId.ToString("D") &&
+                fields[31] == revision.OperationId.ToString("D") &&
+                fields[32] == revision.StepUpGrantId.ToString("D") &&
+                fields[33] == Permission.ManagePlcResultContract.ToString() &&
+                fields[35] == revision.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == revision.AuthorizationTarget && fields[38] == revision.OperationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.ChangePlcResultContract.ToString() &&
+                fields[42] == revision.OperationId.ToString("D");
         }
         catch (Exception exception) when (exception is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
