@@ -64,6 +64,7 @@ public partial class ShellWindow : Window
     private readonly RecipeDraftEditorViewModel? _recipeDraftViewModel;
     private readonly PreviewSessionViewModel? _previewSessionViewModel;
     private readonly ManualInspectionSessionViewModel? _manualInspectionViewModel;
+    private readonly StationQualificationSessionViewModel? _qualificationViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -75,6 +76,7 @@ public partial class ShellWindow : Window
     private bool _recipeDraftSelectionLoaded;
     private bool _previewSelectionLoaded;
     private bool _manualSelectionLoaded;
+    private bool _qualificationSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
@@ -132,6 +134,19 @@ public partial class ShellWindow : Window
             algorithmResultViewModel, recipeDraftViewModel, previewSessionViewModel,
             manualInspectionViewModel);
 
+    /// <summary>Attaches the explicit isolated qualification command surface.</summary>
+    public static ShellWindow CreateWithStationQualification(StationShellViewModel viewModel,
+        StationQualificationSessionViewModel qualificationViewModel,
+        ManualInspectionSessionViewModel? manualInspectionViewModel = null,
+        PreviewSessionViewModel? previewSessionViewModel = null,
+        CommandTraceViewModel? traceViewModel = null, AuditIntegrityViewModel? integrityViewModel = null,
+        IdentityViewModel? identityViewModel = null, IdentityAdministrationViewModel? identityAdministrationViewModel = null,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null, AlarmViewModel? alarmViewModel = null,
+        AlgorithmResultHistoryViewModel? algorithmResultViewModel = null, RecipeDraftEditorViewModel? recipeDraftViewModel = null) =>
+        new(viewModel, traceViewModel, integrityViewModel, identityViewModel, identityAdministrationViewModel,
+            administratorRecoveryViewModel, alarmViewModel, algorithmResultViewModel, recipeDraftViewModel,
+            previewSessionViewModel, manualInspectionViewModel, qualificationViewModel);
+
     private ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel,
         AuditIntegrityViewModel? integrityViewModel, IdentityViewModel? identityViewModel,
         IdentityAdministrationViewModel? identityAdministrationViewModel,
@@ -139,7 +154,8 @@ public partial class ShellWindow : Window
         AlarmViewModel? alarmViewModel, AlgorithmResultHistoryViewModel? algorithmResultViewModel,
         RecipeDraftEditorViewModel? recipeDraftViewModel,
         PreviewSessionViewModel? previewSessionViewModel,
-        ManualInspectionSessionViewModel? manualInspectionViewModel = null)
+        ManualInspectionSessionViewModel? manualInspectionViewModel = null,
+        StationQualificationSessionViewModel? qualificationViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -153,6 +169,7 @@ public partial class ShellWindow : Window
         _recipeDraftViewModel = recipeDraftViewModel;
         _previewSessionViewModel = previewSessionViewModel;
         _manualInspectionViewModel = manualInspectionViewModel;
+        _qualificationViewModel = qualificationViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -165,6 +182,7 @@ public partial class ShellWindow : Window
         RecipeDraftEditorPanel.DataContext = recipeDraftViewModel;
         PreviewPanel.DataContext = previewSessionViewModel;
         ManualInspectionPanel.DataContext = manualInspectionViewModel;
+        QualificationPanel.DataContext = qualificationViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -178,6 +196,7 @@ public partial class ShellWindow : Window
         if (recipeDraftViewModel is not null) recipeDraftViewModel.PropertyChanged += RecipeDraftChanged;
         if (previewSessionViewModel is not null) previewSessionViewModel.PropertyChanged += PreviewChanged;
         if (manualInspectionViewModel is not null) manualInspectionViewModel.PropertyChanged += ManualInspectionChanged;
+        if (qualificationViewModel is not null) qualificationViewModel.PropertyChanged += QualificationChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -266,6 +285,7 @@ public partial class ShellWindow : Window
         RecipeDraftEditorPanel.ClearSensitiveInputs();
         PreviewPanel.ClearSensitiveInputs();
         ManualInspectionPanel.Deactivate();
+        QualificationPanel.Deactivate();
         _previewSelectionLoaded = false;
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
@@ -402,6 +422,7 @@ public partial class ShellWindow : Window
         if (_recipeDraftViewModel is not null) _recipeDraftViewModel.PropertyChanged -= RecipeDraftChanged;
         if (_previewSessionViewModel is not null) _previewSessionViewModel.PropertyChanged -= PreviewChanged;
         if (_manualInspectionViewModel is not null) _manualInspectionViewModel.PropertyChanged -= ManualInspectionChanged;
+        if (_qualificationViewModel is not null) _qualificationViewModel.PropertyChanged -= QualificationChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
@@ -411,6 +432,7 @@ public partial class ShellWindow : Window
         RecipeDraftEditorPanel.ClearSensitiveInputs();
         PreviewPanel.ClearSensitiveInputs();
         ManualInspectionPanel.Deactivate();
+        QualificationPanel.Deactivate();
         base.OnClosed(e);
     }
 
@@ -424,6 +446,7 @@ public partial class ShellWindow : Window
     private void RecipeDraftChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void PreviewChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void ManualInspectionChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void QualificationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -466,6 +489,21 @@ public partial class ShellWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
         ManualInspectionPanel.Visibility = engineeringSelected && _manualInspectionViewModel is not null
             ? Visibility.Visible : Visibility.Collapsed;
+        QualificationPanel.Visibility = engineeringSelected && _qualificationViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!engineeringSelected || IsPrivacyLocked)
+        {
+            if (_qualificationSelectionLoaded)
+            {
+                _qualificationSelectionLoaded = false;
+                QualificationPanel.Deactivate();
+            }
+        }
+        else if (_qualificationViewModel is not null && !_qualificationSelectionLoaded)
+        {
+            _qualificationSelectionLoaded = true;
+            _ = _qualificationViewModel.RefreshAsync();
+        }
         if (!engineeringSelected || IsPrivacyLocked)
         {
             if (_manualSelectionLoaded)

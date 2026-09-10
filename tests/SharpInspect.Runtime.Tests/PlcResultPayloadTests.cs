@@ -9,6 +9,49 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class PlcResultPayloadTests
 {
     [Fact]
+    public async Task V137_E01_QualificationUsesActualEncoderBytesWithoutProductionPayloadAuthority()
+    {
+        var schema = Schema();
+        var binding = Bind(schema, Contract(schema));
+        var outcome = await ExecuteAsync(schema, Result(schema), ExecutionKind.Qualification);
+        var encoder = new PlcResultPayloadEncoder();
+        var session = Guid.NewGuid();
+        var run = new QualificationRunId(outcome.Correlation.Value);
+        var encoded = encoder.EncodeQualification(session, run, new string('A', 64), binding,
+            0x11223344, 0x55667788, outcome);
+        var payload = Assert.IsType<StationQualificationPayload>(encoded.Payload);
+        Assert.Equal("117AFE8D996141090BA9C4702EC18934638C91C6A85760999FA770D201AB706F",
+            payload.WireContentHash);
+        Assert.Equal(session, payload.SessionId);
+        Assert.Equal(run, payload.RunId);
+        Assert.False(payload.ProductionAuthority);
+        Assert.False(encoder.Encode(binding, new(0x11223344, 0x55667788), outcome).Succeeded);
+        Assert.False(encoder.EncodePreview(binding, 0x11223344, 0x55667788, outcome).Succeeded);
+        var otherContext = encoder.EncodeQualification(session, run, new string('B', 64), binding,
+            0x11223344, 0x55667788, outcome).Payload!;
+        Assert.Equal(payload.WireContentHash, otherContext.WireContentHash);
+        Assert.NotEqual(payload.ContentHash, otherContext.ContentHash);
+    }
+
+    [Fact]
+    public async Task V137_E02_QualificationEncodingRejectsUnrelatedRunAndManualIdentity()
+    {
+        var schema = Schema();
+        var binding = Bind(schema, Contract(schema));
+        var outcome = await ExecuteAsync(schema, Result(schema), ExecutionKind.Qualification);
+        var encoder = new PlcResultPayloadEncoder();
+        var wrongRun = encoder.EncodeQualification(Guid.NewGuid(), new QualificationRunId(Guid.NewGuid()),
+            new string('A', 64), binding, 1, 2, outcome);
+        Assert.Null(wrongRun.Payload);
+        Assert.Equal("PlcResultQualificationCorrelationRequired", wrongRun.ReasonCode);
+        var manual = await ExecuteAsync(schema, Result(schema));
+        var wrongKind = encoder.EncodeQualification(Guid.NewGuid(), new QualificationRunId(manual.Correlation.Value),
+            new string('A', 64), binding, 1, 2, manual);
+        Assert.Null(wrongKind.Payload);
+        Assert.Equal("PlcResultQualificationCorrelationRequired", wrongKind.ReasonCode);
+    }
+
+    [Fact]
     public async Task V131_E01_PublicAlgorithmOutcomeProducesIndependentGoldenRegisterImageAndHash()
     {
         var schema = Schema();

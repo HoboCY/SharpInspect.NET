@@ -149,6 +149,8 @@ internal static class SqliteNative
             limit = Math.Max(limit, ManualInspectionStoreOptions.SqliteValueLimitBytes);
         if (options.ProductionAdmission is not null)
             limit = Math.Max(limit, ProductionAdmissionStoreOptions.SqliteValueLimitBytes);
+        if (options.StationQualifications is not null)
+            limit = Math.Max(limit, StationQualificationStoreOptions.SqliteValueLimitBytes);
         // Read-only audit consumers may omit identity configuration. Preserve
         // the historical schema's payload budget after reading its version,
         // without reducing a larger limit from another configured ledger.
@@ -205,6 +207,19 @@ internal static class SqliteNative
                 CalibrationImportStoreOptions.SqliteValueLimitBytes),
                 ManualInspectionStoreOptions.SqliteValueLimitBytes),
                 ProductionAdmissionStoreOptions.SqliteValueLimitBytes),
+            23 => new[]
+            {
+                CalibrationSessionStoreOptions.SqliteValueLimitBytes,
+                CalibrationGovernanceStoreOptions.SqliteValueLimitBytes,
+                RecipeReleaseStoreOptions.SqliteValueLimitBytes,
+                PlcResultContractStoreOptions.SqliteValueLimitBytes,
+                RecipeActivationStoreOptions.SqliteValueLimitBytes,
+                PreviewSessionStoreOptions.SqliteValueLimitBytes,
+                CalibrationImportStoreOptions.SqliteValueLimitBytes,
+                ManualInspectionStoreOptions.SqliteValueLimitBytes,
+                ProductionAdmissionStoreOptions.SqliteValueLimitBytes,
+                StationQualificationStoreOptions.SqliteValueLimitBytes
+            }.Max(),
             _ => 65536
         };
         limit = Math.Max(limit, schemaLimit);

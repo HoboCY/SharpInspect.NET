@@ -44,12 +44,34 @@ public sealed class PlcResultPayloadEncoder
     }
 
     private sealed record EncodingData(IReadOnlyList<PlcRegisterSegment>? Segments, string? Reason);
+
+    internal (StationQualificationPayload? Payload, string ReasonCode) EncodeQualification(
+        Guid sessionId, QualificationRunId runId, string contextHash, PlcResultContractBinding binding,
+        uint controllerEpoch, uint cycleSequence, AlgorithmExecutionOutcome outcome)
+    {
+        if (sessionId == Guid.Empty || runId is null || binding is null || outcome is null ||
+            outcome.Correlation.Kind != ExecutionKind.Qualification || outcome.Correlation.Value != runId.Value)
+            return (null, "PlcResultQualificationCorrelationRequired");
+        var encoded = EncodeSegments(binding, controllerEpoch, cycleSequence, outcome, ExecutionKind.Qualification);
+        if (encoded.Segments is null) return (null, encoded.Reason ?? "PlcResultEncodingFault");
+        try
+        {
+            return (new StationQualificationPayload(sessionId, runId, contextHash, binding,
+                controllerEpoch, cycleSequence, outcome.ExecutionStatus, outcome.Decision,
+                outcome.ReasonCode, encoded.Segments), "PlcResultQualificationPayloadEncoded");
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        { return (null, "PlcResultCompleteEncodingFailed"); }
+    }
+
     private static EncodingData EncodeSegments(PlcResultContractBinding binding, uint controllerEpoch, uint resultSequence,
         AlgorithmExecutionOutcome outcome, ExecutionKind requiredKind)
     {
         EncodingData Fault(string detail) => new(null, detail);
         if (outcome.Correlation.Kind != requiredKind || outcome.Correlation.Value == Guid.Empty)
-            return Fault(requiredKind == ExecutionKind.Production ? "PlcResultProductionCorrelationRequired" : "PlcResultPreviewManualCorrelationRequired");
+            return Fault(requiredKind == ExecutionKind.Production ? "PlcResultProductionCorrelationRequired" :
+                requiredKind == ExecutionKind.Qualification ? "PlcResultQualificationCorrelationRequired" :
+                "PlcResultPreviewManualCorrelationRequired");
         if (binding.Recipe != outcome.Timing.Recipe || binding.Algorithm != outcome.Algorithm ||
             binding.ResultSchema.Id != outcome.ResultSchema.Id || binding.ResultSchema.Version != outcome.ResultSchema.Version ||
             binding.ResultSchema.ContentHash != outcome.ResultSchema.ContentHash)

@@ -1636,7 +1636,9 @@ internal sealed partial class SqliteCommandStore
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
+            previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
+            manualOptions: _options.ManualInspections, productionAdmissionOptions: _options.ProductionAdmission,
+            stationQualificationOptions: _options.StationQualifications);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -1664,10 +1666,13 @@ internal sealed partial class SqliteCommandStore
         if (_options.PreviewSessions is not null)
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                 _options.PreviewSessions);
-            if (_options.CalibrationImports is not null)
-                AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
-                if (_options.ManualInspections is not null)
-                    AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+        if (_options.CalibrationImports is not null)
+            AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+        if (_options.ManualInspections is not null)
+            AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+        if (_options.ProductionAdmission is not null)
+            AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline, _options.ProductionAdmission);
+        StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
         ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline, _policy!.StationId);
     }
 

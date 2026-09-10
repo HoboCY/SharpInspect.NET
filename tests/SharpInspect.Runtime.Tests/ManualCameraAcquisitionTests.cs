@@ -9,6 +9,55 @@ namespace SharpInspect.Runtime.Tests;
 public sealed class ManualCameraAcquisitionTests
 {
     [Fact]
+    public async Task V137_A01_QualificationSessionRequiresOwnedCorrelationAndRetiresActualDevice()
+    {
+        var clock = new FixtureClock();
+        var device = new FixtureControlledDevice(clock);
+        await using var service = CreateService(device, clock);
+        var correlation = new ExecutionCorrelationId(ExecutionKind.Qualification, Guid.NewGuid());
+
+        var unowned = await service.AcquireQualificationSessionAsync(correlation, "Primary");
+        Assert.False(unowned.Accepted);
+        Assert.Equal("CameraQualificationSessionLeaseRequired", unowned.ReasonCode);
+        Assert.Equal(0, device.AcquireCalls);
+
+        service.EnableQualificationSessionAcquisition();
+        var publicProbe = await service.AcquireAsync(ExecutionKind.Qualification, "Primary");
+        Assert.False(publicProbe.Accepted);
+        Assert.Equal("CameraQualificationSessionControlledOnly", publicProbe.ReasonCode);
+        Assert.Equal(0, device.AcquireCalls);
+
+        var acquired = await service.AcquireQualificationSessionAsync(correlation, "Primary");
+        Assert.True(acquired.Accepted);
+        Assert.Equal(correlation, acquired.Correlation);
+        Assert.Equal(correlation, acquired.Outcome!.Correlation);
+        Assert.Equal(ExecutionStatus.Error, acquired.Outcome.ExecutionStatus);
+        Assert.Equal(1, device.AcquireCalls);
+        var retired = await service.RetireAsync();
+        Assert.True(retired.SafeToReplace);
+        Assert.Equal(1, device.StopCalls);
+        Assert.Equal(1, device.DisposeCalls);
+    }
+
+    [Theory]
+    [InlineData(ExecutionKind.Production)]
+    [InlineData(ExecutionKind.Manual)]
+    [InlineData(ExecutionKind.Calibration)]
+    public async Task V137_A02_QualificationOwnerRejectsOtherExecutionKinds(ExecutionKind kind)
+    {
+        var clock = new FixtureClock();
+        var device = new FixtureControlledDevice(clock);
+        await using var service = CreateService(device, clock);
+        service.EnableQualificationSessionAcquisition();
+        var rejected = await service.AcquireQualificationSessionAsync(new(kind, Guid.NewGuid()), "Primary");
+        Assert.False(rejected.Accepted);
+        Assert.Equal("CameraQualificationCorrelationInvalid", rejected.ReasonCode);
+        Assert.Equal(0, device.AcquireCalls);
+        Assert.Throws<InvalidOperationException>(() => service.EnableManualAcquisition());
+        Assert.Throws<InvalidOperationException>(() => service.EnableCalibrationAcquisition());
+    }
+
+    [Fact]
     public async Task V135_R01_PublicManualSelectionCannotBypassRuntimeCorrelation()
     {
         var clock = new FixtureClock();

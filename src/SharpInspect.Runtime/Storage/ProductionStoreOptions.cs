@@ -81,4 +81,9 @@ public sealed class ProductionStoreOptions
     /// qualification or change Runtime state. The ledger requires only local identity and
     /// central audit integrity, while each missing required gate remains a rejection.</summary>
     public ProductionAdmissionStoreOptions? ProductionAdmission { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 23 non-production station qualification ledger.
+    /// It stores only bounded qualification session provenance and typed facility observations;
+    /// it never produces a production result or activation.</summary>
+    public StationQualificationStoreOptions? StationQualifications { get; init; }
 }

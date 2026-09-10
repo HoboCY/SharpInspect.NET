@@ -119,6 +119,15 @@ internal sealed partial class CameraSetupRuntime
                 RecipeActivationValidation.CameraHash(previous.CameraSetup)))
             return new(false, "ManualInspectionRecoveryEvidenceMismatch", null, false);
 
+        return await RecoverNonProductionCameraAfterRestartAsync(header.CurrentBinding,
+            candidate, previous, "ManualInspection", cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<RecipeActivationCameraRestoreResult> RecoverNonProductionCameraAfterRestartAsync(
+        CameraBindingRevision expectedBinding, RecipeDraftContent candidate,
+        RecipeActivationSnapshot? previous, string reasonPrefix, CancellationToken cancellationToken)
+    {
+        var candidateRole = expectedBinding.LogicalRole;
         if (cancellationToken.IsCancellationRequested)
             return new(false, "CameraOperationCancelled", null, false);
 
@@ -131,7 +140,7 @@ internal sealed partial class CameraSetupRuntime
                 .ConfigureAwait(false);
             if (!gateAcquired)
                 return RecoveryFailure(candidateRole, previous?.CameraSetup, candidate.Camera,
-                    candidate.CameraProviderExtension, "ManualInspectionRecoveryCameraBusy",
+                    candidate.CameraProviderExtension, reasonPrefix + "RecoveryCameraBusy",
                     hardwareTouched: false);
 
             lock (_stateSync)
@@ -163,9 +172,9 @@ internal sealed partial class CameraSetupRuntime
             if (current?.Binding is null)
                 return RecoveryFailure(candidateRole, previous?.CameraSetup, candidate.Camera,
                     candidate.CameraProviderExtension, "CameraBindingMissing", hardwareTouched: false);
-            if (current.Binding != header.CurrentBinding)
+            if (current.Binding != expectedBinding)
                 return RecoveryFailure(candidateRole, previous?.CameraSetup, candidate.Camera,
-                    candidate.CameraProviderExtension, "ManualInspectionRecoveryBindingConflict",
+                    candidate.CameraProviderExtension, reasonPrefix + "RecoveryBindingConflict",
                     hardwareTouched: false);
 
             return previous is null
@@ -187,7 +196,7 @@ internal sealed partial class CameraSetupRuntime
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return RecoveryFailure(candidateRole, previous?.CameraSetup, candidate.Camera,
-                candidate.CameraProviderExtension, "ManualInspectionRecoveryUnavailable", true);
+                candidate.CameraProviderExtension, reasonPrefix + "RecoveryUnavailable", true);
         }
         finally
         {
@@ -205,15 +214,24 @@ internal sealed partial class RecipeActivationCameraLease
     private Task<CameraDeviceRetirement>? _manualRetirementTask;
     private bool _manualRetirementFailed;
 
-    internal async ValueTask<ManualCameraAcquisitionResult> AcquireManualFrameAsync(
+    internal ValueTask<ManualCameraAcquisitionResult> AcquireManualFrameAsync(
         ExecutionCorrelationId correlation, FrameBufferPool framePool,
         IFrameAcquisitionClock clock, CancellationToken cancellationToken = default,
-        Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory = null)
+        Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory = null) =>
+        AcquireNonProductionFrameAsync(ExecutionKind.Manual, correlation, framePool,
+            clock, cancellationToken, physicalPhaseFactory);
+
+    private async ValueTask<ManualCameraAcquisitionResult> AcquireNonProductionFrameAsync(
+        ExecutionKind requiredKind, ExecutionCorrelationId correlation, FrameBufferPool framePool,
+        IFrameAcquisitionClock clock, CancellationToken cancellationToken,
+        Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory)
     {
         if (correlation is null)
             throw new ArgumentNullException(nameof(correlation));
-        if (correlation.Kind != ExecutionKind.Manual || correlation.Value == Guid.Empty)
-            return Failure(correlation, "CameraManualCorrelationInvalid");
+        if (requiredKind is not (ExecutionKind.Manual or ExecutionKind.Qualification) ||
+            correlation.Kind != requiredKind || correlation.Value == Guid.Empty)
+            return Failure(correlation, requiredKind == ExecutionKind.Manual
+                ? "CameraManualCorrelationInvalid" : "CameraQualificationCorrelationInvalid");
         if (framePool is null)
             return Failure(correlation, "CameraManualFramePoolUnavailable");
         if (clock is null)
@@ -243,6 +261,11 @@ internal sealed partial class RecipeActivationCameraLease
                     return Failure(correlation, RecipeActivationRestored);
                 if (_previewOwned)
                     return Failure(correlation, "CameraManualPreviewConflict");
+                if (requiredKind == ExecutionKind.Qualification && !_qualificationOwned)
+                    return Failure(correlation, "CameraQualificationLeaseRequired");
+                if (requiredKind == ExecutionKind.Manual && _qualificationOwned ||
+                    requiredKind == ExecutionKind.Qualification && _manualOwned)
+                    return Failure(correlation, "CameraNonProductionOwnerConflict");
                 if (!_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot?.Effective is not { } candidateEffective)
                     return Failure(correlation, "CameraManualCandidateUnavailable");
@@ -250,17 +273,18 @@ internal sealed partial class RecipeActivationCameraLease
                 // Set the inspection-only ownership bit before leaving the lock,
                 // including when the provider does not implement the controlled
                 // acquisition contract.  No later caller can Commit the candidate.
-                _manualOwned = true;
+                if (requiredKind == ExecutionKind.Manual) _manualOwned = true;
                 effective = candidateEffective;
                 controlled = _candidateDevice as IControlledCameraDevice;
             }
 
             if (controlled is null)
                 return Failure(correlation, "CameraManualAcquisitionNotControlled");
-            if (!controlled.Capabilities.AcquisitionModes.Contains(
+            if (requiredKind == ExecutionKind.Manual && !controlled.Capabilities.AcquisitionModes.Contains(
                     ProductionAcquisitionMode.SoftwareTrigger))
                 return Failure(correlation, "ManualSoftwareTriggerUnavailable");
-            if (effective!.ProductionAcquisitionMode != ProductionAcquisitionMode.SoftwareTrigger)
+            if (requiredKind == ExecutionKind.Manual &&
+                effective!.ProductionAcquisitionMode != ProductionAcquisitionMode.SoftwareTrigger)
                 return Failure(correlation, "ManualSoftwareTriggerRequired");
 
             return await AcquireManualThroughServiceAsync(controlled, effective!,
@@ -294,10 +318,19 @@ internal sealed partial class RecipeActivationCameraLease
             acquisition = new CameraAcquisitionService(
                 new ManualControlledCameraBorrow(controlled, physicalPhaseFactory), effective, clock,
                 _owner.CreateManualAcquisitionOptions());
-            acquisition.EnableManualAcquisition();
-
-            var attempt = await acquisition.AcquireManualAsync(correlation,
-                _logicalRole, cancellationToken).ConfigureAwait(false);
+            CameraAcquisitionAttempt attempt;
+            if (correlation.Kind == ExecutionKind.Qualification)
+            {
+                acquisition.EnableQualificationSessionAcquisition();
+                attempt = await acquisition.AcquireQualificationSessionAsync(correlation,
+                    _logicalRole, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                acquisition.EnableManualAcquisition();
+                attempt = await acquisition.AcquireManualAsync(correlation,
+                    _logicalRole, cancellationToken).ConfigureAwait(false);
+            }
             preparationReason = attempt.ReasonCode;
             outcome = attempt.Outcome;
             executionStatus = outcome?.ExecutionStatus ??

@@ -355,7 +355,7 @@ internal sealed partial class SqliteCommandStore
         // and already integrity-checked ledger contributes dependency facts.
         if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion
             or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion))
+            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationGovernanceSchemaInvalid");
         return rows.Select(row => CalibrationGovernanceCodec.Decode(row.Kind, row.Payload))
             .OfType<CalibrationAcceptancePolicyRevision>().ToArray();

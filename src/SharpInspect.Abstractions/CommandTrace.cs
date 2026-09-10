@@ -49,7 +49,9 @@ public enum AuditedCommandKind
     PublishImportedCalibration = 41,
     StartManualInspectionSession = 42,
     RunManualInspection = 43,
-    ExitManualInspectionSession = 44
+    ExitManualInspectionSession = 44,
+    StartStationQualificationSession = 45,
+    ExitStationQualificationSession = 46
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

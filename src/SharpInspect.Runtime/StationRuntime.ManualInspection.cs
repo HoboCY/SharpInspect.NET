@@ -90,6 +90,7 @@ public sealed partial class StationRuntime : IManualInspectionSessionService
 
     private string? CheckManualInspectionStartLocked()
     {
+        if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (_manualOptions is null || _manualResolver is null || _manualPreparation is null ||
             _manualExecutionOptions is null || _manualAcquisitionClock is null || _frameBufferPool is null || _authorization is null ||
             _audit is not SqliteCommandStore) return "ManualInspectionUnavailable";

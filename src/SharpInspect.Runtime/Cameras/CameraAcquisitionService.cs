@@ -33,6 +33,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     private long _nextProtocolSequence = 1;
     private bool _calibrationEnabled;
     private bool _manualEnabled;
+    private bool _qualificationSessionEnabled;
 
     public CameraAcquisitionService(IControlledCameraDevice device,
         EffectiveCameraConfiguration effectiveConfiguration, IFrameAcquisitionClock clock,
@@ -114,7 +115,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     {
         lock (_sync)
         {
-            if (_disposed || _attempt is not null || _admissionInProgress || _manualEnabled)
+            if (_disposed || _attempt is not null || _admissionInProgress || _manualEnabled || _qualificationSessionEnabled)
                 throw new InvalidOperationException("CameraCalibrationAcquisitionUnavailable");
             _calibrationEnabled = true;
         }
@@ -260,10 +261,11 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         {
             var correlationValid = suppliedCorrelation.Value != Guid.Empty &&
                 suppliedCorrelation.Kind == kind &&
-                kind is ExecutionKind.Calibration or ExecutionKind.Manual;
+                kind is ExecutionKind.Calibration or ExecutionKind.Manual or ExecutionKind.Qualification;
             if (!correlationValid)
                 return Rejected(kind == ExecutionKind.Manual
                     ? "CameraManualCorrelationInvalid"
+                    : kind == ExecutionKind.Qualification ? "CameraQualificationCorrelationInvalid"
                     : "CameraCalibrationCorrelationInvalid");
         }
         if (cancellationToken.IsCancellationRequested)
@@ -290,6 +292,10 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
                 return Rejected("CameraCalibrationLeaseRequired");
             if (kind == ExecutionKind.Manual && !_manualEnabled)
                 return Rejected("CameraManualLeaseRequired");
+            if (kind == ExecutionKind.Qualification && suppliedCorrelation is not null && !_qualificationSessionEnabled)
+                return Rejected("CameraQualificationSessionLeaseRequired");
+            if (kind == ExecutionKind.Qualification && suppliedCorrelation is null && _qualificationSessionEnabled)
+                return Rejected("CameraQualificationSessionControlledOnly");
             if (kind == ExecutionKind.Qualification && (_calibrationEnabled || _manualEnabled))
                 return Rejected(_manualEnabled ? "CameraManualControlledOnly" :
                     "CameraCalibrationControlledOnly");

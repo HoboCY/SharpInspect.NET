@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Tests;
 /// schema-14 session, camera, identity and Step-Up path; the opt-in governance option
 /// upgrades that same database to the schema-15 ledger.
 /// </summary>
-public sealed class CalibrationGovernanceRuntimeTests
+public sealed partial class CalibrationGovernanceRuntimeTests
 {
     [Fact]
     public async Task V127_R01_RuntimeRetainsEvidencePublishesDevelopmentProfileAndVerifiesPhysicalRecord()

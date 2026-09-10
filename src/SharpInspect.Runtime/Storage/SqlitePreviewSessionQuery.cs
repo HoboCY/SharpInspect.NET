@@ -147,7 +147,7 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion,
+                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
                 schema < PreviewSessionStoreOptions.SchemaVersion
                     ? "PreviewSessionGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
@@ -165,6 +165,7 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
+            StationQualificationReadGuard.RequireConfiguration(schema, _options);
             VerifyDependencies(database, previewOptions, key, deadline);
 
             PreviewSessionHistoryPage page;
@@ -226,7 +227,9 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             activationOptions: _options.RecipeActivations,
             previewOptions: previewOptions, importOptions: _options.CalibrationImports,
             manualOptions: _options.ManualInspections,
-            productionAdmissionOptions: _options.ProductionAdmission);
+            productionAdmissionOptions: _options.ProductionAdmission,
+                stationQualificationOptions: _options.StationQualifications);
+            StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)

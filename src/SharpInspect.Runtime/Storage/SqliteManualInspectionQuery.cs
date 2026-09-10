@@ -160,7 +160,7 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                ProductionAdmissionStoreOptions.SchemaVersion,
+                ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
                 schema < ManualInspectionStoreOptions.SchemaVersion
                     ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
@@ -168,6 +168,7 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
             if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
+            StationQualificationReadGuard.RequireConfiguration(schema, _options);
             ManualInspectionStoreOptions.ConfigureSqliteLimit(database);
             VerifyDependencies(database, manualOptions, key, deadline);
 
@@ -231,7 +232,9 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
             previewOptions: _options.PreviewSessions,
             importOptions: _options.CalibrationImports,
             manualOptions: manualOptions,
-            productionAdmissionOptions: _options.ProductionAdmission);
+            productionAdmissionOptions: _options.ProductionAdmission,
+                stationQualificationOptions: _options.StationQualifications);
+            StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)

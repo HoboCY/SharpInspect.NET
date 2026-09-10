@@ -79,10 +79,11 @@ internal sealed partial class SqliteCommandStore
             var previewStore = _options.PreviewSessions is not null;
             var manualStore = _options.ManualInspections is not null;
             var productionAdmissionStore = ProductionAdmissionEnabled;
+            var stationQualificationStore = StationQualificationEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore && !stationQualificationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
@@ -94,7 +95,7 @@ internal sealed partial class SqliteCommandStore
                   activationOptions: _options.RecipeActivations,
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
-                  productionAdmissionOptions: _options.ProductionAdmission);
+                  productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -121,6 +122,7 @@ internal sealed partial class SqliteCommandStore
             if (manualStore) AuditChainDatabase.RequireFullManualInspectionVerification(database, verification,
                 deadline, _options.ManualInspections);
             if (productionAdmissionStore) AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline, _options.ProductionAdmission);
+            if (stationQualificationStore) AuditChainDatabase.RequireFullStationQualificationVerification(database, verification, deadline, _options.StationQualifications);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -158,10 +160,11 @@ internal sealed partial class SqliteCommandStore
             var previewStore = _options.PreviewSessions is not null;
             var manualStore = _options.ManualInspections is not null;
             var productionAdmissionStore = ProductionAdmissionEnabled;
+            var stationQualificationStore = StationQualificationEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore && !stationQualificationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
@@ -173,7 +176,7 @@ internal sealed partial class SqliteCommandStore
                   activationOptions: _options.RecipeActivations,
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
-                  productionAdmissionOptions: _options.ProductionAdmission);
+                  productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -200,6 +203,7 @@ internal sealed partial class SqliteCommandStore
             if (manualStore) AuditChainDatabase.RequireFullManualInspectionVerification(database, verification,
                 deadline, _options.ManualInspections);
             if (productionAdmissionStore) AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline, _options.ProductionAdmission);
+            if (stationQualificationStore) AuditChainDatabase.RequireFullStationQualificationVerification(database, verification, deadline, _options.StationQualifications);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -269,6 +273,212 @@ internal sealed partial class SqliteCommandStore
         return EnqueueIdentityAsync(new IdentityWork(correlationId, update), cancellationToken, deadline);
     }
 
+    /// <summary>
+    /// Runs a station-qualification admission against the same fresh SQLite
+    /// snapshot that will receive its identity and qualification rows.  The
+    /// caller's preflight is only an expected value; the callback receives the
+    /// authoritative session/activation/camera projection read after BEGIN
+    /// IMMEDIATE and must bind its result to that projection.
+    /// </summary>
+    internal ValueTask<IdentityWriteResult> UpdateStationQualificationCommandAsync(
+        StationQualificationCommand command,
+        Func<IdentityAuthorityState, StationQualificationCommandState,
+            StationQualificationAdmissionInput?, bool, IdentityUpdate> update,
+        CancellationToken cancellationToken, StoreDeadline? deadline = null)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(update);
+        if (command.CorrelationId == Guid.Empty)
+            return ValueTask.FromResult(new IdentityWriteResult(false, "CorrelationIdRequired"));
+        if (_options.StationQualifications is null)
+            return ValueTask.FromResult(new IdentityWriteResult(false,
+                "StationQualificationConfigurationRequired"));
+        return EnqueueIdentityAsync(new IdentityWork(command, update), cancellationToken, deadline);
+    }
+
+    /// <summary>Reads qualification state and all immutable dependencies inside the
+    /// writer transaction.  No caller-selected history row is trusted as current.</summary>
+    internal StationQualificationCommandState ReadStationQualificationCommandState(
+        sqlite3 database, StationQualificationCommand command, StoreDeadline deadline)
+    {
+        var options = _options.StationQualifications;
+        if (options is null)
+            return new(false, null, Array.Empty<StationQualificationSessionEvent>(),
+                Array.Empty<StationQualificationRunRecord>(), null, null, false);
+
+        options.Validate();
+        RequireConfiguredStationQualifications(database, options, deadline);
+        var rows = ReadStationQualificationRows(database, options, deadline);
+        var allEvents = rows.Select(value => value.Event).ToArray();
+        var commandEvents = command switch
+        {
+            ExitStationQualificationSessionCommand exit => allEvents
+                .Where(value => value.SessionId == exit.SessionId)
+                .OrderBy(value => value.Position).ToArray(),
+            StartStationQualificationSessionCommand start => allEvents
+                .Where(value => value.Header.StartCorrelationId == start.CorrelationId)
+                .OrderBy(value => value.Position).ToArray(),
+            _ => Array.Empty<StationQualificationSessionEvent>()
+        };
+        var commandCurrent = commandEvents.LastOrDefault();
+        var pending = allEvents.GroupBy(value => value.SessionId)
+            .Select(group => group.OrderBy(value => value.Position).Last())
+            .Where(value => !value.Terminal || value.Phase == StationQualificationSessionPhase.RecoveryBlocked ||
+                value.Restoration == StationQualificationRestorationState.RecoveryBlocked)
+            .OrderBy(value => value.Position).LastOrDefault()?.Header;
+
+        var plan = command switch
+        {
+            StartStationQualificationSessionCommand start => start.Plan,
+            _ => commandCurrent?.Header.Plan
+        };
+        RecipeActivationRecord? targetBaseline = null;
+        CameraSetupStoreSnapshot? currentBinding = null;
+        if (plan is not null)
+        {
+            var activation = ReadRecipeActivationCommandState(database, deadline);
+            targetBaseline = activation.Records.SingleOrDefault(value =>
+                value.Reference == plan.TargetActivation);
+            if (activation.PendingAdmission is not null || targetBaseline?.Outcome.Succeeded != true ||
+                targetBaseline.SuccessfulSnapshot is null ||
+                (targetBaseline.EvidenceKind == RecipeActivationEvidenceKind.InternalContractFixture
+                    ? !plan.Harness.DevelopmentOnly
+                    : targetBaseline.EvidenceKind != RecipeActivationEvidenceKind.LocalAuthority ||
+                      activation.Current?.Reference != targetBaseline.Reference))
+                targetBaseline = null;
+            // A qualification plan binds one durable activation head.  Even a
+            // later failed/admitted activation is a material configuration
+            // change until the normal activation recovery path has settled;
+            // never let a historical target silently become the current
+            // qualification baseline.
+            if (targetBaseline is not null && activation.Records.Any(value =>
+                value.Position > targetBaseline.Position))
+                targetBaseline = null;
+            if (targetBaseline?.SuccessfulSnapshot?.CameraSetup is { } targetCamera)
+                currentBinding = ReadCameraSetupState(database, targetCamera.LogicalRole, deadline);
+        }
+
+        var admission = plan is not null && targetBaseline is not null && currentBinding is not null
+            ? new StationQualificationAdmissionInput(plan, targetBaseline, currentBinding)
+            : null;
+        var startEvent = commandEvents.FirstOrDefault(value =>
+            value.CommandKind == AuditedCommandKind.StartStationQualificationSession);
+        var startFact = startEvent is null ? null : ReadFact(database, startEvent.AttemptId, 1, deadline);
+        var latestBySession = allEvents.GroupBy(value => value.SessionId)
+            .Select(group => group.OrderBy(value => value.Position).Last()).ToArray();
+        var recoveryRequired = latestBySession.Any(value =>
+            value.Phase is StationQualificationSessionPhase.Restoring or StationQualificationSessionPhase.RecoveryBlocked ||
+            value.Restoration == StationQualificationRestorationState.RecoveryBlocked);
+        var runs = commandEvents.Where(value => value.Run is not null)
+            .Select(value => value.Run!).ToArray();
+        var header = commandCurrent?.Header;
+        var history = command is StartStationQualificationSessionCommand ? allEvents : commandEvents;
+        return new StationQualificationCommandState(true, header, history, runs,
+            targetBaseline, currentBinding, recoveryRequired, pending, startFact,
+            Array.Empty<CommandAuditFact>());
+    }
+
+    /// <summary>
+    /// Rechecks the accepted qualification responsibility from the same SQLite
+    /// snapshot that is about to receive a progress event.  This is the durable
+    /// actor/baseline/fact check only; the Runtime must separately hold its
+    /// live session authorization lease while admitting a nonterminal event.
+    /// Cleanup continuations remain bound to the original accepted fact and
+    /// immutable header; the caller decides whether its accepted-fact cleanup
+    /// path may bypass the ordinary actor/dependency check.
+    /// </summary>
+    internal string? ValidateStationQualificationProgressAuthority(sqlite3 database,
+        StationQualificationProgressRequest request, StoreDeadline deadline,
+        bool acceptedCleanup = false)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(deadline);
+        var options = _options.StationQualifications;
+        if (options is null) return "StationQualificationConfigurationRequired";
+        options.Validate();
+        RequireConfiguredStationQualifications(database, options, deadline);
+        var rows = ReadStationQualificationRows(database, options, deadline);
+        var sessionEvents = rows.Where(value => value.Event.SessionId == request.Header.SessionId)
+            .OrderBy(value => value.Event.Position).Select(value => value.Event).ToArray();
+        var current = sessionEvents.LastOrDefault();
+        if (current is null || current.Header.ContentHash != request.Header.ContentHash)
+            return "StationQualificationStateChanged";
+        if (current.Terminal && !acceptedCleanup)
+            return "StationQualificationSessionClosed";
+        var identity = ReadIdentityState(database, deadline);
+        var actor = identity.EnumerateAccounts().SingleOrDefault(value =>
+            value.PrincipalId == request.Header.ActorPrincipalId);
+        var policyOptions = _options.LocalIdentity!.AuthorizationPolicy;
+        var policy = new RecipeContractReference(policyOptions.Id,
+            policyOptions.Version, policyOptions.ContentHash);
+        if (!acceptedCleanup && (actor is not { Enabled: true } ||
+            !actor.Permissions.Contains(Permission.RunStationQualification) ||
+            actor.AuthorizationRevision != request.Header.ActorAuthorizationRevision ||
+            request.Header.AuthorizationPolicy != policy))
+            return "StationQualificationAuthorityChanged";
+
+        if (!acceptedCleanup)
+        {
+            var activation = ReadRecipeActivationCommandState(database, deadline);
+            var target = activation.Records.SingleOrDefault(value =>
+                value.Reference == request.Header.Plan.TargetActivation);
+            if (target is null || target.SuccessfulSnapshot?.CameraSetup is not { } targetCamera ||
+                activation.Records.Any(value => value.Position > target.Position))
+                return "StationQualificationDependencyChanged";
+            var currentCamera = ReadCameraSetupState(database, targetCamera.LogicalRole, deadline);
+            if (!SameStationQualificationCameraBinding(targetCamera, currentCamera))
+                return "StationQualificationDependencyChanged";
+        }
+
+        var accepted = ReadFact(database, request.AttemptId, 1, deadline);
+        if (request.CommandFact is { } requestedFact && requestedFact != accepted)
+            return "StationQualificationAcceptedCommandMismatch";
+        if (accepted is null || accepted.Phase != CommandAuditPhase.Outcome ||
+            accepted.Disposition != CommandDisposition.Accepted || accepted.AttemptId != request.AttemptId ||
+            accepted.CorrelationId != request.CommandCorrelationId ||
+            accepted.RuntimeEpoch != request.Header.RuntimeEpoch ||
+            accepted.CommandKind != request.CommandKind ||
+            accepted.ClaimedPrincipalId != request.Header.ActorPrincipalId.ToString("D") ||
+            accepted.ClaimedSessionId != request.Header.ActorSessionId ||
+            accepted.AuthenticatedHumanPrincipalId != request.Header.ActorPrincipalId.ToString("D"))
+            return "StationQualificationAcceptedCommandMissing";
+
+        var acceptedEvent = sessionEvents.FirstOrDefault(value =>
+            value.CommandCorrelationId == accepted.CorrelationId && value.AttemptId == accepted.AttemptId &&
+            value.CommandKind == accepted.CommandKind);
+        if (acceptedEvent is null || acceptedEvent.CommandAuthorizationTarget !=
+            request.CommandAuthorizationTarget)
+            return "StationQualificationAcceptedCommandMissing";
+        if (acceptedEvent.AuthorizationAuditSequence is not long authorizationSequence)
+            return "StationQualificationAuthorizationAuditMissing";
+        var authorization = AuditChainDatabase.Read(database,
+            "SELECT Sequence,IdentityPosition,Hash,Payload FROM audit_entries WHERE Sequence=? AND Kind='IdentityEvent' LIMIT 1;",
+            deadline, statement => (Sequence: SqliteNative.ColumnInt64(statement, 0),
+                Ordinal: SqliteNative.ColumnInt64(statement, 1),
+                Hash: SqliteNative.ColumnText(statement, 2),
+                Payload: SqliteNative.ColumnText(statement, 3)),
+            authorizationSequence.ToString(CultureInfo.InvariantCulture)).SingleOrDefault();
+        if (authorization.Ordinal <= 0 || authorization.Payload is null || authorization.Hash != acceptedEvent.AuthorizationAuditHash)
+            return "StationQualificationAuthorizationAuditMissing";
+        byte[] payload;
+        try { payload = Convert.FromBase64String(authorization.Payload); }
+        catch (FormatException) { return "StationQualificationAuthorizationAuditInvalid"; }
+        if (!IdentityAuditEvent.MatchesStationQualificationAuthorization(payload, authorization.Ordinal,
+            _options.LocalIdentity!.StationId, acceptedEvent, accepted))
+            return "StationQualificationAuthorizationAuditMismatch";
+        return null;
+    }
+
+    private static bool SameStationQualificationCameraBinding(CameraSetupSnapshot target,
+        CameraSetupStoreSnapshot current) => current.Binding is { } binding && !current.HasPending &&
+        string.Equals(target.LogicalRole, current.LogicalRole, StringComparison.Ordinal) &&
+        target.Binding is { } targetBinding && targetBinding.LogicalRole == binding.LogicalRole &&
+        targetBinding.Revision == binding.Revision &&
+        targetBinding.RevisionHash == binding.RevisionHash &&
+        targetBinding.Target.ContentHash == binding.Target.ContentHash &&
+        targetBinding.OperationId == binding.OperationId;
+
     /// <summary>Runs an authenticated alarm transition against the fresh identity and alarm projections
     /// while retaining one SQLite transaction for identity events, alarm history and command facts.</summary>
     internal ValueTask<IdentityWriteResult> UpdateAlarmCommandAsync(Guid correlationId, Guid runtimeEpoch,
@@ -321,10 +531,11 @@ internal sealed partial class SqliteCommandStore
             var previewStore = _options.PreviewSessions is not null;
             var manualStore = _options.ManualInspections is not null;
             var productionAdmissionStore = ProductionAdmissionEnabled;
+            var stationQualificationStore = StationQualificationEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
-                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
-                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore, deadline,
+                alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
+                    new AuditVerificationRequest(), !alarmStore && !archiveStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !manualStore && !productionAdmissionStore && !stationQualificationStore, deadline,
                 validateAnchorReceipt: false, archiveOptions: _options.AlgorithmResultArchive,
                 recipeDraftOptions: _options.RecipeDrafts, cameraSetupOptions: _options.CameraSetup,
                 cameraRecoveryOptions: _options.CameraRecovery, cameraNetworkOptions: _options.CameraNetwork,
@@ -336,7 +547,7 @@ internal sealed partial class SqliteCommandStore
                   activationOptions: _options.RecipeActivations,
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
-                  productionAdmissionOptions: _options.ProductionAdmission);
+                  productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -363,13 +574,29 @@ internal sealed partial class SqliteCommandStore
             if (manualStore) AuditChainDatabase.RequireFullManualInspectionVerification(database, verification,
                 deadline, _options.ManualInspections);
             if (productionAdmissionStore) AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline, _options.ProductionAdmission);
+            if (stationQualificationStore) AuditChainDatabase.RequireFullStationQualificationVerification(database, verification, deadline, _options.StationQualifications);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
+            var stationQualificationState = work.StationQualificationCommand is { } stationQualificationCommand
+                ? ReadStationQualificationCommandState(database, stationQualificationCommand, deadline)
+                : null;
+            var stationQualificationPlan = work.StationQualificationCommand switch
+            {
+                StartStationQualificationSessionCommand start => start.Plan,
+                _ => stationQualificationState?.Header?.Plan
+            };
+            var stationQualificationInput = stationQualificationState is { } qualificationState &&
+                qualificationState.TargetBaseline is not null && qualificationState.CurrentBinding is not null &&
+                stationQualificationPlan is not null
+                ? new StationQualificationAdmissionInput(
+                    stationQualificationPlan,
+                    qualificationState.TargetBaseline, qualificationState.CurrentBinding)
+                : null;
             var duplicateCorrelation = (work.CommandUpdate is not null || work.AlarmCommandUpdate is not null ||
                 work.CalibrationGovernanceUpdate is not null || work.RecipeReleaseUpdate is not null ||
                 work.PlcResultContractUpdate is not null || work.RecipeActivationUpdate is not null ||
                 work.PreviewSessionUpdate is not null || work.CalibrationImportUpdate is not null ||
-                work.ManualInspectionUpdate is not null) &&
+                work.ManualInspectionUpdate is not null || work.StationQualificationUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
@@ -436,11 +663,11 @@ internal sealed partial class SqliteCommandStore
                     work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                         cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                         releaseState, contractState, activationState, previewState, previewInput, importState,
-                        manualState, manualInput)
+                        manualState, manualInput, stationQualificationState, stationQualificationInput)
                 : work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                     cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                     releaseState, contractState, activationState, previewState, previewInput, importState,
-                    manualState, manualInput);
+                    manualState, manualInput, stationQualificationState, stationQualificationInput);
             if (evaluated.Result is ProductionAdmissionTerminalRequest terminalRequest)
                 evaluated = BuildProductionAdmissionTerminal(database, state, terminalRequest, deadline);
             decision = evaluated;
@@ -463,6 +690,23 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.ManualInspection is not null)
                 EnsureManualInspectionTransactionCapacity(database, evaluated, manualState!, deadline);
             var productionAdmission = PrepareProductionAdmissionWrite(database, state, evaluated, deadline);
+            StationQualificationWriteContext? stationQualification;
+            try { stationQualification = PrepareStationQualificationWrite(database, evaluated, deadline); }
+            catch (InvalidOperationException exception) when (evaluated.Result is
+                StationQualificationTransactionResult { Accepted: true, Event: not null } &&
+                exception.Message is "StationQualificationEntryCapacityExceeded" or
+                    "StationQualificationPayloadCapacityExceeded" or "StationQualificationTotalCapacityExceeded" or
+                    "StationQualificationAuditCapacityExceeded")
+            {
+                // No writes or physical admission have happened. Preserve this
+                // rejected command in the ordinary audit while releasing the
+                // unconsumed step-up reservation for the denied admission.
+                guard?.Dispose();
+                guard = null;
+                evaluated = RejectStationQualificationCapacity(evaluated, exception.Message);
+                decision = evaluated;
+                stationQualification = null;
+            }
             long identitySequence = 0;
             long recoveryIdentitySequence = 0;
             var recoveryEventCount = 0;
@@ -472,7 +716,8 @@ internal sealed partial class SqliteCommandStore
                 identitySequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey,
                     BindAuthenticationPolicy(fact with { StateRevision = state.Revision }), deadline,
                     manualInspectionReserveOverride: evaluated.ManualInspection is null ? null : 0,
-                    productionAdmissionReserveOverride: productionAdmission?.TakeReserve());
+                    productionAdmissionReserveOverride: productionAdmission?.TakeReserve(),
+                    stationQualificationReserveOverride: stationQualification?.TakeReserve());
                 if (evaluated.CompletedRecoveryOperation is { } operation &&
                     fact.OperationId == operation.OperationId)
                 {
@@ -531,7 +776,12 @@ internal sealed partial class SqliteCommandStore
                     work.PreviewSessionUpdate is not null || work.ManualInspectionUpdate is not null ||
                     evaluated.Result is ProductionAdmissionTerminalMutation,
                 manualInspectionTransaction: evaluated.ManualInspection is not null,
-                productionAdmission: productionAdmission);
+                productionAdmission: productionAdmission,
+                stationQualification: stationQualification);
+            if (evaluated.Result is StationQualificationTransactionResult stationQualificationResult &&
+                stationQualificationResult.Accepted && stationQualificationResult.Event is not null)
+                AppendStationQualificationIdentityMutation(database, evaluated, work,
+                    stationQualification, deadline);
             if (productionAdmission is not null)
             {
                 AppendProductionAdmissionWrite(database, productionAdmission, identitySequence,
@@ -571,7 +821,8 @@ internal sealed partial class SqliteCommandStore
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
-            if (evaluated.ManualInspection is null)
+            if (evaluated.ManualInspection is null &&
+                evaluated.Result is not StationQualificationTransactionResult { Accepted: true, Event: not null })
                 work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
                     ? commit with { Revision = imagingRevision } : evaluated.Result;
             try { guard?.Commit(); }
@@ -742,7 +993,8 @@ internal sealed partial class SqliteCommandStore
     private void AppendIdentityCommandFacts(sqlite3 database, IReadOnlyList<CommandAuditFact>? facts,
         Guid? expectedCorrelationId, StoreDeadline deadline, bool allowTerminalContinuation = false,
         AuditChainDatabase.CameraNetworkAuditWriteMode cameraNetworkMode = AuditChainDatabase.CameraNetworkAuditWriteMode.Generic,
-        bool manualInspectionTransaction = false, ProductionAdmissionWriteContext? productionAdmission = null)
+        bool manualInspectionTransaction = false, ProductionAdmissionWriteContext? productionAdmission = null,
+        StationQualificationWriteContext? stationQualification = null)
     {
         if (facts is null || facts.Count == 0)
         {
@@ -788,7 +1040,8 @@ internal sealed partial class SqliteCommandStore
             InsertFact(database, continuation, aggregateSequence: 2, deadline);
             AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, continuation.EventId, deadline, cameraNetworkMode,
                 manualInspectionReserveOverride: manualInspectionTransaction ? 0 : null,
-                productionAdmissionReserveOverride: productionAdmission?.TakeReserve());
+                productionAdmissionReserveOverride: productionAdmission?.TakeReserve(),
+                stationQualificationReserveOverride: stationQualification?.TakeReserve());
             return;
         }
 
@@ -820,13 +1073,15 @@ internal sealed partial class SqliteCommandStore
         InsertFact(database, outcome, aggregateSequence: 1, deadline);
         AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, outcome.EventId, deadline, cameraNetworkMode,
             manualInspectionReserveOverride: manualInspectionTransaction ? 0 : null,
-            productionAdmissionReserveOverride: productionAdmission?.TakeReserve());
+            productionAdmissionReserveOverride: productionAdmission?.TakeReserve(),
+            stationQualificationReserveOverride: stationQualification?.TakeReserve());
         if (terminal is not null)
         {
             InsertFact(database, terminal, aggregateSequence: 2, deadline);
             AuditChainDatabase.AppendCommand(database, _policy!, _signingKey!, terminal.EventId, deadline, cameraNetworkMode,
                 manualInspectionReserveOverride: manualInspectionTransaction ? 0 : null,
-                productionAdmissionReserveOverride: productionAdmission?.TakeReserve());
+                productionAdmissionReserveOverride: productionAdmission?.TakeReserve(),
+                stationQualificationReserveOverride: stationQualification?.TakeReserve());
         }
     }
 
@@ -840,6 +1095,15 @@ internal sealed partial class SqliteCommandStore
 
     private sealed class IdentityWork
     {
+        internal IdentityWork(StationQualificationCommand command,
+            Func<IdentityAuthorityState, StationQualificationCommandState,
+                StationQualificationAdmissionInput?, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            StationQualificationCommand = command;
+            StationQualificationUpdate = update;
+        }
+
         internal IdentityWork(CalibrationGovernanceCommand command,
             Func<IdentityAuthorityState, CalibrationGovernanceCommandState, bool, IdentityUpdate> update)
         {
@@ -983,6 +1247,9 @@ internal sealed partial class SqliteCommandStore
         internal Func<IdentityAuthorityState, ManualInspectionCommandState, ManualInspectionCommand,
             ManualInspectionSessionHeader, string?>? ManualInspectionReplayAuthorization { get; }
         internal bool ManualInspectionReplayAllowed { get; }
+        internal StationQualificationCommand? StationQualificationCommand { get; }
+        internal Func<IdentityAuthorityState, StationQualificationCommandState,
+            StationQualificationAdmissionInput?, bool, IdentityUpdate>? StationQualificationUpdate { get; }
 
         internal IdentityUpdate Evaluate(IdentityAuthorityState state, AlarmStateSnapshot? alarmState,
             bool duplicateCorrelation, RecoveryOperationState? existingRecoveryOperation,
@@ -996,7 +1263,9 @@ internal sealed partial class SqliteCommandStore
             PreviewSessionAdmissionInput? previewSessionInput = null,
             CalibrationImportCommandState? calibrationImportState = null,
             ManualInspectionCommandState? manualInspectionState = null,
-            ManualInspectionAdmissionInput? manualInspectionInput = null) =>
+            ManualInspectionAdmissionInput? manualInspectionInput = null,
+            StationQualificationCommandState? stationQualificationState = null,
+            StationQualificationAdmissionInput? stationQualificationInput = null) =>
             CalibrationImportUpdate is not null ? CalibrationImportUpdate(state, calibrationImportState!, duplicateCorrelation) :
             RecipeActivationUpdate is not null ? RecipeActivationUpdate(state, recipeActivationState!, duplicateCorrelation) :
             RecipeReleaseUpdate is not null ? RecipeReleaseUpdate(state, releaseState!, duplicateCorrelation) :
@@ -1006,6 +1275,8 @@ internal sealed partial class SqliteCommandStore
             CommandUpdate is not null ? CommandUpdate(state, duplicateCorrelation) :
             ManualInspectionUpdate is not null ? ManualInspectionUpdate(state, manualInspectionState!, manualInspectionInput) :
             PreviewSessionUpdate is not null ? PreviewSessionUpdate(state, previewSessionState!, previewSessionInput) :
+            StationQualificationUpdate is not null ? StationQualificationUpdate(state, stationQualificationState!,
+                stationQualificationInput, duplicateCorrelation) :
             RecoveryOperationUpdate is not null ? RecoveryOperationUpdate(state, existingRecoveryOperation) :
             CameraSetupUpdate is not null ? CameraSetupUpdate(state, cameraSetupState!, duplicateCameraOperation) :
             ImagingSetupUpdate is not null ? ImagingSetupUpdate(state, cameraSetupState!, imagingSetupState!, duplicateImagingOperation) :

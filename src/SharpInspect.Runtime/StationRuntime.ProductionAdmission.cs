@@ -193,6 +193,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 forced = _shutdownRequested || _disposed ? "RuntimeStopped" : networkBarrier;
+                if (forced is null && StationQualificationConfigurationBlockedLocked) forced = "StationQualificationSessionInProgress";
                 if (forced is null && Volatile.Read(ref _pendingLocalStops) > 0) forced = "LocalStopPending";
                 if (forced is null && _snapshot.Mode != ExclusiveMode.None) forced = "ExclusiveWorkInProgress";
                 if (forced is null && _snapshot.Recovery != RecoveryState.None) forced = "StartupRecoveryNotVerified";
@@ -281,6 +282,7 @@ public sealed partial class StationRuntime
             {
                 if (!_disposed) PublishLocked(_snapshot);
                 stable = auditVerified && durableHeadsVerified && !_shutdownRequested && !_disposed &&
+                    !StationQualificationConfigurationBlockedLocked &&
                     _snapshot.ProductionAdmission?.CanArm == true &&
                     _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
                     _admissionGeneration == capture.Generation &&
@@ -304,6 +306,7 @@ public sealed partial class StationRuntime
                 {
                     if (!_disposed) PublishLocked(_snapshot);
                     var stillStable = completionCommitted && completionVerified && completionHeadsVerified && !_disposed &&
+                        !StationQualificationConfigurationBlockedLocked &&
                         _snapshot.ProductionAdmission?.CanArm == true &&
                         !_shutdownRequested && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
                         _admissionGeneration == capture.Generation &&

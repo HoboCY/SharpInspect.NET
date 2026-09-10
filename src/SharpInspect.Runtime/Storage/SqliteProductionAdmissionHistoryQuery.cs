@@ -154,10 +154,11 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == ProductionAdmissionStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
                 schema < ProductionAdmissionStoreOptions.SchemaVersion
                     ? "ProductionAdmissionGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
+            StationQualificationReadGuard.RequireConfiguration(schema, _options);
             VerifyDependencies(database, admissionOptions, key, deadline);
 
             var rows = SqliteCommandStore.ReadProductionAdmissionRows(database,
@@ -227,7 +228,9 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
             previewOptions: _options.PreviewSessions,
             importOptions: _options.CalibrationImports,
             manualOptions: _options.ManualInspections,
-            productionAdmissionOptions: admissionOptions);
+            productionAdmissionOptions: admissionOptions,
+                stationQualificationOptions: _options.StationQualifications);
+            StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)

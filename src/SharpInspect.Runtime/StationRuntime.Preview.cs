@@ -75,6 +75,7 @@ public sealed partial class StationRuntime : IPreviewSessionService
 
     private string? CheckPreviewStartLocked()
     {
+        if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (_previewOptions is null || _previewDrafts is null || _authorization is null || _audit is not SqliteCommandStore)
             return "PreviewUnavailable";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";

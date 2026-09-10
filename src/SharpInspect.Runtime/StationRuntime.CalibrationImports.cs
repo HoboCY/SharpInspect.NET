@@ -119,6 +119,7 @@ public sealed partial class StationRuntime
 
     private string? CalibrationImportBlockerLocked(CalibrationImportCommand command, bool cameraReserved = false)
     {
+        if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
         if (!_storeReady || _auditFault) return "CalibrationImportAuditUnavailable";
         if (Volatile.Read(ref _pendingLocalStops) != 0) return "CalibrationImportLocalStopInProgress";

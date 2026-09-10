@@ -158,6 +158,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         SavePreviewToDraftCommand => Permission.EditRecipeDraft,
         PreviewSessionCommand => Permission.RunPreview,
         ManualInspectionCommand => Permission.RunManualInspection,
+        StationQualificationCommand => Permission.RunStationQualification,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -185,6 +186,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             ActivateRecipeCommand activation => activation.AuthorizationTarget,
             PreviewSessionCommand preview => preview.AuthorizationTarget,
             ManualInspectionCommand manual => manual.AuthorizationTarget,
+            StationQualificationCommand qualification => qualification.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -225,6 +227,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
         AuditedCommandKind.StartManualInspectionSession or AuditedCommandKind.RunManualInspection or
             AuditedCommandKind.ExitManualInspectionSession => Permission.RunManualInspection,
+        AuditedCommandKind.StartStationQualificationSession or
+            AuditedCommandKind.ExitStationQualificationSession => Permission.RunStationQualification,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -271,6 +275,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RunManualInspectionCommand => AuditedCommandKind.RunManualInspection,
         ExitManualInspectionSessionCommand => AuditedCommandKind.ExitManualInspectionSession,
         ManualInspectionContinuationCommand continuation => continuation.OriginalCommandKind,
+        StartStationQualificationSessionCommand => AuditedCommandKind.StartStationQualificationSession,
+        ExitStationQualificationSessionCommand => AuditedCommandKind.ExitStationQualificationSession,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

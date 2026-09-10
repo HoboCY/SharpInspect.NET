@@ -45,6 +45,10 @@ internal static class Program
             return AlgorithmOverlayDemo.Run(overlayDirectory);
         if (Option("--overlay-query") is { } overlayQueryDirectory)
             return AlgorithmOverlayDemo.Query(overlayQueryDirectory);
+        if (Option("--station-qualification-check") is { } qualificationDirectory)
+            return StationQualificationDemo.Run(qualificationDirectory, queryOnly: false);
+        if (Option("--station-qualification-query") is { } qualificationQueryDirectory)
+            return StationQualificationDemo.Run(qualificationQueryDirectory, queryOnly: true);
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);

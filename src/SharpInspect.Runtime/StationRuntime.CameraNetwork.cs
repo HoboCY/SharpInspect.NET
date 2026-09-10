@@ -22,6 +22,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (_disposed || _shutdownRequested) return "RuntimeStopped";
+                if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
                 if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
                 if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
                 // Registered acquisition/recovery singletons retain physical ownership even when

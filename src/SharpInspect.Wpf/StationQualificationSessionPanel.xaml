@@ -1,0 +1,37 @@
+<UserControl x:Class="SharpInspect.Wpf.StationQualificationSessionPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="16">
+        <StackPanel>
+            <TextBlock Text="工位资格会话" FontSize="18" FontWeight="SemiBold" Foreground="#172B42" />
+            <TextBlock Text="在隔离设施中执行验收步骤，退出后恢复目标配置。此会话不签发合格记录，也不会自动武装生产。"
+                       TextWrapping="Wrap" Foreground="#6B7888" Margin="0,6,0,12" />
+            <TextBlock Text="冻结目标" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding Plan.TargetStationFingerprint}" TextWrapping="Wrap" FontFamily="Consolas" />
+            <TextBlock Text="候选版本" FontWeight="SemiBold" Margin="0,8,0,0" />
+            <TextBlock Text="{Binding Plan.ReleaseCandidateFingerprint}" TextWrapping="Wrap" FontFamily="Consolas" />
+            <TextBlock Text="测试上下文" FontWeight="SemiBold" Margin="0,8,0,0" />
+            <TextBlock Text="{Binding Plan.QualificationContextHash}" TextWrapping="Wrap" FontFamily="Consolas" />
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,12,0,8" />
+            <TextBlock Text="操作原因" />
+            <TextBox x:Name="ReasonBox" MaxLength="512" Margin="0,4,0,8" />
+            <TextBlock Text="进入前重新认证" />
+            <PasswordBox x:Name="StepUpPasswordBox" MaxLength="256" Margin="0,4,0,8" />
+            <WrapPanel>
+                <Button Content="刷新" Click="RefreshClicked" IsEnabled="{Binding CanRefresh}" Padding="12,5" Margin="0,0,8,0" />
+                <Button Content="进入资格会话" Click="StartClicked" IsEnabled="{Binding CanStart}" Padding="12,5" Margin="0,0,8,0" />
+                <Button Content="完成并恢复" Click="ExitClicked" IsEnabled="{Binding CanExit}" Padding="12,5" Margin="0,0,8,0" />
+                <Button Content="中止并恢复" Click="AbortClicked" IsEnabled="{Binding CanExit}" Padding="12,5" />
+            </WrapPanel>
+            <TextBlock Text="会话历史（本页最多 20 条）" FontWeight="SemiBold" Margin="0,14,0,4" />
+            <DataGrid ItemsSource="{Binding History}" AutoGenerateColumns="False" IsReadOnly="True" MaxHeight="240">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="时间" Binding="{Binding RecordedAtUtc}" Width="180" />
+                    <DataGridTextColumn Header="阶段" Binding="{Binding Phase}" Width="130" />
+                    <DataGridTextColumn Header="恢复" Binding="{Binding Restoration}" Width="130" />
+                    <DataGridTextColumn Header="原因" Binding="{Binding ReasonCode}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </StackPanel>
+    </Border>
+</UserControl>

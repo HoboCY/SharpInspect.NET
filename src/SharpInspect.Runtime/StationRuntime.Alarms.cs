@@ -236,7 +236,10 @@ public sealed partial class StationRuntime
                 if (_disposed) return;
                 var blocking = current.Instances.Any(instance => instance.ProductionImpact != ProductionImpact.None);
                 if (current.Instances.Any(instance => instance.ProductionImpact == ProductionImpact.FaultAbort))
+                {
                     RequestManualInspectionStop("ManualInspectionFaultAbort", abort: true);
+                    RequestStationQualificationStop("StationQualificationFaultAbort", abort: true);
+                }
                 var blockers = _snapshot.AdmissionBlockers.Where(code => code is not
                     ("AlarmProductionBlocked" or "AlarmAuthorityUnavailable")).ToList();
                 if (blocking) blockers.Add("AlarmProductionBlocked");

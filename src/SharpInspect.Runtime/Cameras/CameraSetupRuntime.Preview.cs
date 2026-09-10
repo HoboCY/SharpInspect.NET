@@ -216,7 +216,7 @@ internal sealed partial class RecipeActivationCameraLease
             ICameraDevice? device;
             lock (this)
             {
-                if (_disposed || _committed || _safeClosed || _restoreSucceeded || !_candidatePrepared ||
+                if (_disposed || _committed || _qualificationOwned || _safeClosed || _restoreSucceeded || !_candidatePrepared ||
                     _candidateDevice is null || _candidateSnapshot is null)
                     return new(false, "PreviewDeviceOwnerUnavailable", null);
                 if (starting ? _previewOwned : !_previewOwned)

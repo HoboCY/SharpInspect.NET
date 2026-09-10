@@ -114,10 +114,11 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            StationQualificationReadGuard.RequireConfiguration(schema, _options);
             AuditChainDatabase.Require(schema is PlcResultContractStoreOptions.SchemaVersion or
                 RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                 CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                ProductionAdmissionStoreOptions.SchemaVersion,
+                ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
                 schema < PlcResultContractStoreOptions.SchemaVersion
                     ? "PlcResultContractGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
@@ -159,16 +160,18 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                   contractOptions: contractOptions,
                   activationOptions: _options.RecipeActivations,
                   previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                       ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion
+                       ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion
                       ? _options.PreviewSessions : null,
                   importOptions: schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                      ProductionAdmissionStoreOptions.SchemaVersion
+                      ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion
                        ? _options.CalibrationImports : null,
                   manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion ||
-                      (schema == ProductionAdmissionStoreOptions.SchemaVersion && _options.ManualInspections is not null)
+                      ((schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion) && _options.ManualInspections is not null)
                       ? _options.ManualInspections : null,
-                  productionAdmissionOptions: schema == ProductionAdmissionStoreOptions.SchemaVersion
-                      ? _options.ProductionAdmission : null);
+                  productionAdmissionOptions: schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion
+                      ? _options.ProductionAdmission : null,
+                stationQualificationOptions: _options.StationQualifications);
+            StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)

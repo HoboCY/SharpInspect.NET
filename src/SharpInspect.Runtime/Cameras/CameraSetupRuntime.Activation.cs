@@ -712,7 +712,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             ICameraDevice? candidate;
             lock (this)
             {
-                if (_disposed || _previewOwned || _manualOwned || !_candidatePrepared || _candidateDevice is null ||
+                if (_disposed || _previewOwned || _manualOwned || _qualificationOwned || !_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot is null || _committed || _restoreSucceeded)
                     return false;
                 candidate = _candidateDevice;

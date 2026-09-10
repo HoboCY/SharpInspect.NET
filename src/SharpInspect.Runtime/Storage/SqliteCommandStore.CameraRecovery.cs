@@ -258,7 +258,9 @@ internal sealed partial class SqliteCommandStore
                  activationOptions: _options.RecipeActivations,
                  previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                  manualOptions: _options.ManualInspections,
-                 productionAdmissionOptions: _options.ProductionAdmission);
+                 productionAdmissionOptions: _options.ProductionAdmission,
+                stationQualificationOptions: _options.StationQualifications);
+                RequireStationQualificationWriteSnapshot(database, verification, deadline);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,

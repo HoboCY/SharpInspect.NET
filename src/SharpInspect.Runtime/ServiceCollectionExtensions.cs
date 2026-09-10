@@ -280,6 +280,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IManualInspectionHistoryQuery>(_ => new SqliteManualInspectionQuery(options));
         if (options.ProductionAdmission is not null)
             services.TryAddSingleton<IProductionAdmissionHistoryQuery>(_ => new SqliteProductionAdmissionHistoryQuery(options));
+        if (options.StationQualifications is not null)
+            services.TryAddSingleton<IStationQualificationHistoryQuery>(_ => new SqliteStationQualificationHistoryQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -304,6 +306,12 @@ public static class ServiceCollectionExtensions
                     p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmPreparationOptions>(),
                     p.GetService<AlgorithmExecutionOptions>(), options, p.GetService<IFrameAcquisitionClock>());
             runtime.ConfigureCalibrationImports(options, p.GetService<ImportedCalibrationPhysicalVerificationRegistry>());
+            if (options.StationQualifications is not null)
+                runtime.ConfigureStationQualificationSessions(
+                    p.GetService<SharpInspect.Runtime.Qualification.StationQualificationSessionOptions>() ?? new(),
+                    p.GetService<StationQualificationPlan>(), p.GetService<SharpInspect.Runtime.Qualification.IStationQualificationFacility>(),
+                    p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmExecutionOptions>(), options,
+                    p.GetService<IFrameAcquisitionClock>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
@@ -324,6 +332,9 @@ public static class ServiceCollectionExtensions
 
     private static void RegisterCalibrationGovernance(IServiceCollection services)
     {
+        services.TryAddSingleton<IStationQualificationSessionService>(p =>
+            p.GetRequiredService<IStationRuntime>() as IStationQualificationSessionService ??
+            throw new InvalidOperationException("StationQualificationSessionServiceUnavailable"));
         services.TryAddSingleton<ICalibrationImportRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationImportRuntime ??
             throw new InvalidOperationException("CalibrationImportUnavailable"));

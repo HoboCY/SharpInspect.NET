@@ -713,7 +713,7 @@ public sealed class CalibrationSessionRuntimeTests
             RecipeReleaseStoreOptions? recipeReleases = null,
             PlcResultContractStoreOptions? plcResultContracts = null,
             ManualInspectionStoreOptions? manualInspections = null,
-            IVisionAlgorithmFactory? manualFactory = null)
+            IVisionAlgorithmFactory? manualFactory = null, bool withStationQualification = false)
         {
             if ((manualInspections is null) != (manualFactory is null))
                 throw new ArgumentException("ManualInspectionFixtureFactoryRequired");
@@ -771,6 +771,7 @@ public sealed class CalibrationSessionRuntimeTests
                     ? new CalibrationGovernanceStoreOptions()
                     : null,
                 ManualInspections = manualInspections,
+                StationQualifications = withStationQualification ? new StationQualificationStoreOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(5),
                 QueryTimeout = TimeSpan.FromSeconds(5),
                 QueueCapacity = 16
@@ -879,6 +880,13 @@ public sealed class CalibrationSessionRuntimeTests
                     calibrationSessionOptions: calibrationOptions,
                     calibrationProcedures: registry, productionStoreOptions: options,
                     physicalCalibrationVerificationRegistry: physicalCalibrationVerificationRegistry);
+
+                if (withStationQualification)
+                {
+                    runtime.ConfigureStationQualificationSessions(new SharpInspect.Runtime.Qualification.StationQualificationSessionOptions(),
+                        null, null, null, null, options, null);
+                    await runtime.WaitForStationQualificationStartupAsync().WaitAsync(TimeSpan.FromSeconds(30));
+                }
 
                 if (manualInspections is not null)
                 {

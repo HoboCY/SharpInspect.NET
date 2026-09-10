@@ -37,6 +37,9 @@ internal sealed partial class LocalAuthorizationService
                 AuditedCommandKind.RunManualInspection or AuditedCommandKind.ExitManualInspectionSession) &&
                 _store.ManualInspectionOptions is null)
                 return await RejectStepUpAsync(request, "ManualInspectionConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding?.CommandKind is (AuditedCommandKind.StartStationQualificationSession or
+                AuditedCommandKind.ExitStationQualificationSession) && !_store.StationQualificationEnabled)
+                return await RejectStepUpAsync(request, "StationQualificationConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.CorrelationId == Guid.Empty || request.Binding is null || !ValidBinding(request.Binding))
                 return await RejectStepUpAsync(request, "StepUpBindingInvalid", null, cancellationToken).ConfigureAwait(false);
             var before = await _store.ReadIdentityAsync(cancellationToken).ConfigureAwait(false);

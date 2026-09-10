@@ -313,7 +313,9 @@ internal sealed partial class SqliteCommandStore
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         AuditChainDatabase.Require(schema is CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-            RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
+            RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
+            CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+            ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
             "CalibrationGovernanceSchemaInvalid");
         RequireConfiguredCalibrationGovernance(database, options, deadline);
 
