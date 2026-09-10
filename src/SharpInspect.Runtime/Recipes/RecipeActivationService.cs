@@ -54,6 +54,9 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command.HistoricalSelection is not null && !_store.CalibrationImportEnabled)
+            return new(new(command.CorrelationId, CommandDisposition.Rejected,
+                "HistoricalCalibrationConfigurationRequired", AuditPersistence.NotAttempted, Guid.NewGuid()));
         var attempt = Guid.NewGuid();
         var kind = _fixture is null ? RecipeActivationEvidenceKind.LocalAuthority : RecipeActivationEvidenceKind.InternalContractFixture;
         var checks = new RecipeActivationChecks();
@@ -72,7 +75,8 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
             {
                 if (failure is null)
                 {
-                    var access = await GetAccessAsync(command.Invocation, cancellationToken).ConfigureAwait(false);
+                    var access = await _authorization.GetRecipeActivationAccessAsync(command.Invocation,
+                        command.HistoricalSelection is not null, cancellationToken).ConfigureAwait(false);
                     checks.Observe(1, access.CanActivate, access.ReasonCode);
                     if (!access.CanActivate) failure = access.ReasonCode;
                     else

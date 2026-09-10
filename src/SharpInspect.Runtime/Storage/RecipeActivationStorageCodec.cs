@@ -16,6 +16,7 @@ internal static class RecipeActivationStorageCodec
     internal const int MaximumPayloadBytes = RecipeActivationStoreOptions.MaximumPayloadBytesHardLimit;
     private const int Magic = 0x31414152; // RAA1
     private const byte FormatVersion = 1;
+    private const byte HistoricalFormatVersion = 2;
     private const int MaximumStringBytes = 256 * 1024;
     private const int MaximumIdentifierBytes = 1024;
     private const int MaximumCheckCount = 256;
@@ -28,8 +29,9 @@ internal static class RecipeActivationStorageCodec
         using (var writer = new BinaryWriter(stream, new UTF8Encoding(false, true), leaveOpen: true))
         {
             writer.Write(Magic);
-            writer.Write(FormatVersion);
-            WriteRecord(writer, record);
+            var version = record.HistoricalSelection is null ? FormatVersion : HistoricalFormatVersion;
+            writer.Write(version);
+            WriteRecord(writer, record, version);
             WriteString(writer, record.ContentHash, 64);
         }
         if (stream.Length is < 1 or > MaximumPayloadBytes)
@@ -46,9 +48,14 @@ internal static class RecipeActivationStorageCodec
         {
             using var stream = new MemoryStream(payload.ToArray(), writable: false);
             using var reader = new BinaryReader(stream, new UTF8Encoding(false, true), leaveOpen: true);
-            if (reader.ReadInt32() != Magic || reader.ReadByte() != FormatVersion)
+            if (reader.ReadInt32() != Magic)
                 throw new InvalidOperationException("RecipeActivationPayloadVersionUnsupported");
-            var record = ReadRecord(reader, profileResolver);
+            var version = reader.ReadByte();
+            if (version is not (FormatVersion or HistoricalFormatVersion))
+                throw new InvalidOperationException("RecipeActivationPayloadVersionUnsupported");
+            var record = ReadRecord(reader, profileResolver, version);
+            if ((version == HistoricalFormatVersion) != (record.HistoricalSelection is not null))
+                throw new InvalidOperationException("RecipeActivationHistoricalSelectionVersionMismatch");
             var savedHash = ReadString(reader, 64);
             if (!string.Equals(savedHash, record.ContentHash, StringComparison.Ordinal))
                 throw new InvalidOperationException("RecipeActivationContentHashMismatch");
@@ -66,7 +73,7 @@ internal static class RecipeActivationStorageCodec
         }
     }
 
-    private static void WriteRecord(BinaryWriter writer, RecipeActivationRecord record)
+    private static void WriteRecord(BinaryWriter writer, RecipeActivationRecord record, byte version)
     {
         writer.Write(record.Position);
         WriteGuid(writer, record.ActivationId);
@@ -92,11 +99,12 @@ internal static class RecipeActivationStorageCodec
         WriteString(writer, record.ChangeReason, MaximumStringBytes);
         WriteString(writer, record.AuthorizationTarget, 64);
         writer.Write(record.RecordedAtUtc.UtcTicks);
-        WriteAdmission(writer, record.Admission);
+        if (version >= HistoricalFormatVersion) WriteHistoricalSelection(writer, record.HistoricalSelection);
+        WriteAdmission(writer, record.Admission, version);
     }
 
     private static RecipeActivationRecord ReadRecord(BinaryReader reader,
-        Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? profileResolver)
+        Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? profileResolver, byte version)
     {
         var position = reader.ReadInt64();
         var activationId = ReadGuid(reader);
@@ -125,15 +133,16 @@ internal static class RecipeActivationStorageCodec
         var authorizationTarget = ReadString(reader, 64) ??
             throw new InvalidOperationException("RecipeActivationAuthorizationTargetMissing");
         var recordedAtUtc = new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero);
-        var admission = ReadAdmission(reader, profileResolver);
+        var historicalSelection = version >= HistoricalFormatVersion ? ReadHistoricalSelection(reader) : null;
+        var admission = ReadAdmission(reader, profileResolver, version);
         return new RecipeActivationRecord(position, activationId, attemptId, operationId,
             admissionReference, previousActivation, previousRecipe, previousSnapshotHash,
             candidate, releaseId, releaseHash, resultingRecipe, outcome, checks, restoration,
             snapshot, evidenceKind, actorPrincipal, actorSession, actorRevision, authorizationPolicy,
-            changeReason, authorizationTarget, recordedAtUtc, admission);
+            changeReason, authorizationTarget, recordedAtUtc, admission, historicalSelection);
     }
 
-    private static void WriteAdmission(BinaryWriter writer, RecipeActivationAdmission? admission)
+    private static void WriteAdmission(BinaryWriter writer, RecipeActivationAdmission? admission, byte version)
     {
         writer.Write(admission is not null);
         if (admission is null) return;
@@ -157,11 +166,12 @@ internal static class RecipeActivationStorageCodec
         WriteString(writer, admission.AuthorizationTarget, 64);
         writer.Write((byte)admission.EvidenceKind);
         writer.Write(admission.AdmittedAtUtc.UtcTicks);
+        if (version >= HistoricalFormatVersion) WriteHistoricalSelection(writer, admission.HistoricalSelection);
         WriteString(writer, admission.ContentHash, 64);
     }
 
     private static RecipeActivationAdmission? ReadAdmission(BinaryReader reader,
-        Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? profileResolver)
+        Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? profileResolver, byte version)
     {
         if (!reader.ReadBoolean()) return null;
         var position = reader.ReadInt64();
@@ -184,11 +194,12 @@ internal static class RecipeActivationStorageCodec
         var target = ReadString(reader, 64) ?? throw new InvalidOperationException("RecipeActivationAdmissionTargetMissing");
         var evidenceKind = ReadEnum<RecipeActivationEvidenceKind>(reader.ReadByte(), "RecipeActivationEvidenceKindInvalid");
         var admittedAt = new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero);
+        var historicalSelection = version >= HistoricalFormatVersion ? ReadHistoricalSelection(reader) : null;
         var contentHash = ReadString(reader, 64);
         var admission = new RecipeActivationAdmission(position, activationId, attemptId, operationId,
             candidate, releaseId, releaseHash, expectedActive, previousActivation, previousRecipe,
             previousSnapshotHash, selections, reason, actorPrincipal, actorSession, actorRevision,
-            policy, target, evidenceKind, admittedAt);
+            policy, target, evidenceKind, admittedAt, historicalSelection);
         if (!string.Equals(contentHash, admission.ContentHash, StringComparison.Ordinal))
             throw new InvalidOperationException("RecipeActivationAdmissionContentHashMismatch");
         return admission;
@@ -400,6 +411,50 @@ internal static class RecipeActivationStorageCodec
             result.Add(new CalibrationProfileSelection(requirement, profile));
         }
         return result;
+    }
+
+    private static void WriteHistoricalSelection(BinaryWriter writer,
+        HistoricalCalibrationSelectionIntent? selection)
+    {
+        writer.Write(selection is not null);
+        if (selection is null) return;
+        WriteString(writer, selection.Source, MaximumIdentifierBytes);
+        WriteProfileReference(writer, selection.PreviousExactProfile);
+        WriteString(writer, selection.Reason, MaximumStringBytes);
+        WriteString(writer, selection.ContentHash, 64);
+    }
+
+    private static HistoricalCalibrationSelectionIntent? ReadHistoricalSelection(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean()) return null;
+        var source = ReadString(reader, MaximumIdentifierBytes) ??
+            throw new InvalidOperationException("HistoricalCalibrationSelectionSourceMissing");
+        var previous = ReadProfileReference(reader);
+        var reason = ReadString(reader, MaximumStringBytes) ??
+            throw new InvalidOperationException("HistoricalCalibrationSelectionReasonMissing");
+        var contentHash = ReadString(reader, 64) ??
+            throw new InvalidOperationException("HistoricalCalibrationSelectionHashMissing");
+        var result = new HistoricalCalibrationSelectionIntent(source, previous, reason);
+        if (!string.Equals(contentHash, result.ContentHash, StringComparison.Ordinal))
+            throw new InvalidOperationException("HistoricalCalibrationSelectionHashMismatch");
+        return result;
+    }
+
+    private static void WriteProfileReference(BinaryWriter writer, CalibrationProfileReference? profile)
+    {
+        writer.Write(profile is not null);
+        if (profile is null) return;
+        WriteGuid(writer, profile.ProfileId);
+        writer.Write(profile.Version);
+        WriteString(writer, profile.ContentHash, 64);
+    }
+
+    private static CalibrationProfileReference? ReadProfileReference(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean()) return null;
+        return new CalibrationProfileReference(ReadGuid(reader), reader.ReadInt64(),
+            ReadString(reader, 64) ?? throw new InvalidOperationException(
+                "HistoricalCalibrationSelectionProfileHashMissing"));
     }
 
     private static void WriteRecipe(BinaryWriter writer, RecipeReference? recipe)

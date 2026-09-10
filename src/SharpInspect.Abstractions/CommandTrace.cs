@@ -41,7 +41,12 @@ public enum AuditedCommandKind
     StartPreview = 33,
     Tune = 34,
     Freeze = 35,
-    Exit = 36
+    Exit = 36,
+    SelectHistoricalCalibration = 37,
+    ImportCalibrationPackage = 38,
+    RevalidateImportedCalibration = 39,
+    VerifyImportedCalibration = 40,
+    PublishImportedCalibration = 41
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

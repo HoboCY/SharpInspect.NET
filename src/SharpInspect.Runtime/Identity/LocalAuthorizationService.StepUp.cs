@@ -16,6 +16,9 @@ internal sealed partial class LocalAuthorizationService
         LocalAdministratorState? previous = null;
         try
         {
+            if (request.Binding?.CommandKind is >= AuditedCommandKind.ImportCalibrationPackage and <= AuditedCommandKind.PublishImportedCalibration &&
+                !_store.CalibrationImportEnabled)
+                return await RejectStepUpAsync(request, "CalibrationImportConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.Binding?.CommandKind == AuditedCommandKind.ReleaseRecipe && _store.RecipeReleaseOptions is null)
                 return await RejectStepUpAsync(request, "RecipeReleaseConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.Binding?.CommandKind == AuditedCommandKind.ChangePlcResultContract &&
@@ -24,6 +27,9 @@ internal sealed partial class LocalAuthorizationService
             if (request.Binding?.CommandKind == AuditedCommandKind.ActivateRecipe &&
                 _store.RecipeActivationOptions is null)
                 return await RejectStepUpAsync(request, "RecipeActivationConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding?.CommandKind == AuditedCommandKind.SelectHistoricalCalibration &&
+                !_store.CalibrationImportEnabled)
+                return await RejectStepUpAsync(request, "HistoricalCalibrationConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.Binding?.CommandKind is (AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
                 AuditedCommandKind.Freeze or AuditedCommandKind.Exit) && _store.PreviewSessionOptions is null)
                 return await RejectStepUpAsync(request, "PreviewSessionConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
@@ -129,11 +135,15 @@ internal sealed partial class LocalAuthorizationService
     {
         var fact = AuthorizationEvent(state, cancelled ? IdentityEventKind.StepUpCancelled : IdentityEventKind.StepUpRejected,
             reason, ValidBinding(request.Binding) &&
+                (request.Binding.CommandKind is not (>= AuditedCommandKind.ImportCalibrationPackage and <= AuditedCommandKind.PublishImportedCalibration) ||
+                    _store.CalibrationImportEnabled) &&
                 (request.Binding.CommandKind != AuditedCommandKind.ReleaseRecipe || _store.RecipeReleaseOptions is not null) &&
                 (request.Binding.CommandKind != AuditedCommandKind.ChangePlcResultContract ||
                     _store.PlcResultContractOptions is not null) &&
                 (request.Binding.CommandKind != AuditedCommandKind.ActivateRecipe ||
                     _store.RecipeActivationOptions is not null) &&
+                (request.Binding.CommandKind != AuditedCommandKind.SelectHistoricalCalibration ||
+                    _store.CalibrationImportEnabled) &&
                 (request.Binding.CommandKind is not (AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
                     AuditedCommandKind.Freeze or AuditedCommandKind.Exit) ||
                     _store.PreviewSessionOptions is not null) ? request.Binding : null,

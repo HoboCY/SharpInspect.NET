@@ -354,7 +354,7 @@ internal sealed partial class SqliteCommandStore
         // The governance ledger is optional in schema 16 through schema 18.  Only a configured
         // and already integrity-checked ledger contributes dependency facts.
         if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion
-            or RecipeActivationStoreOptions.SchemaVersion))
+            or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationGovernanceSchemaInvalid");
         return rows.Select(row => CalibrationGovernanceCodec.Decode(row.Kind, row.Payload))
             .OfType<CalibrationAcceptancePolicyRevision>().ToArray();

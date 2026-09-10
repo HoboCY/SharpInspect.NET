@@ -11,7 +11,7 @@ namespace SharpInspect.Runtime.Calibration;
 /// rebuilt through the public or assembly-internal domain constructor and then
 /// re-encoded byte-for-byte before it is returned.
 /// </summary>
-internal static class CalibrationGovernanceCodec
+internal static partial class CalibrationGovernanceCodec
 {
     internal const int MaximumPayloadBytes = 512 * 1024;
 

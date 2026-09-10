@@ -72,10 +72,15 @@ internal sealed partial class RecipeActivationService
                 restored.ReasonCode, baseline is null ? null : RecipeActivationValidation.CameraHash(baseline.CameraSetup),
                 restored.Snapshot is null ? null : RecipeActivationValidation.CameraHash(restored.Snapshot), restored.Snapshot);
             var intent = admitted.Admission;
-            var command = new ActivateRecipeCommand(admitted.OperationId,
-                new(CommandSource.PhysicalConsole, intent.ActorPrincipalId.ToString("D"), intent.ActorSessionId),
-                intent.Candidate, intent.ReleaseId, intent.ReleaseRecordContentHash, intent.ExpectedActive,
-                intent.CalibrationSelections, intent.ChangeReason);
+            var invocation = new CommandInvocation(CommandSource.PhysicalConsole,
+                intent.ActorPrincipalId.ToString("D"), intent.ActorSessionId);
+            var command = intent.HistoricalSelection is { } historical
+                ? new SelectHistoricalCalibrationCommand(admitted.OperationId, invocation, intent.Candidate,
+                    intent.ReleaseId, intent.ReleaseRecordContentHash, intent.ExpectedActive,
+                    intent.CalibrationSelections, historical, admitted.OperationId)
+                : new ActivateRecipeCommand(admitted.OperationId, invocation, intent.Candidate,
+                    intent.ReleaseId, intent.ReleaseRecordContentHash, intent.ExpectedActive,
+                    intent.CalibrationSelections, intent.ChangeReason, admitted.OperationId);
             var terminal = await _authorization.FinalizeRecipeActivationFailureAsync(command, epoch, admitted,
                 admitted.Checks, restoration, RecipeActivationOutcomeState.Failed,
                 "RecipeActivationInterruptedByRestart", new StoreDeadline(_options.CommitTimeout)).ConfigureAwait(false);

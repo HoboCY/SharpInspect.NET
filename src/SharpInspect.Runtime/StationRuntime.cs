@@ -16,7 +16,7 @@ namespace SharpInspect.Runtime;
 /// </summary>
 public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntime, ICameraNetworkMaintenanceRuntime,
     IImagingSetupRuntime, ICalibrationSessionQuery, ICalibrationGovernanceRuntime, ICalibrationGovernanceQuery,
-    IAsyncDisposable, IAdministratorRecoveryRuntimeGate
+    ICalibrationImportRuntime, ICalibrationImportQuery, IAsyncDisposable, IAdministratorRecoveryRuntimeGate
 {
     private const int MaximumSubscribers = 64;
     private readonly object _sync = new();
@@ -152,6 +152,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             PublishLocked(_snapshot with { Session = current });
             ScheduleCalibrationSessionExitLocked(current);
             SchedulePreviewSessionExitLocked(current);
+            if (current.State != InteractiveSessionState.Authenticated) _importPhysicalReservation?.Cancel();
         }
     }
 
@@ -212,6 +213,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitPlcResultContractAsync(plcContract, cancellationToken).ConfigureAwait(false);
         if (command is ReleaseRecipeCommand release)
             return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
+        if (command is CalibrationImportCommand import)
+            return await SubmitCalibrationImportAsync(import, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         var attempt = Guid.NewGuid();
         RuntimeCommandOutcome Unavailable(string reason) => new(command.CorrelationId,
@@ -232,10 +235,15 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             command.Invocation?.Source == CommandSource.PhysicalConsole;
         if (localStop)
         {
-            CancelRecipeActivation();
             // A dedicated bounded slot cannot be consumed by ordinary commands.
-            if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
-                return Unavailable("LocalStopAlreadyPending");
+            // The barrier and import cancellation share the physical-admission lock.
+            lock (_sync)
+            {
+                if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
+                    return Unavailable("LocalStopAlreadyPending");
+                _importPhysicalReservation?.Cancel();
+            }
+            CancelRecipeActivation();
             RequestPreviewStop("PreviewLocalStop");
         }
         else if (Interlocked.Increment(ref _queuedCommands) > 64)
@@ -550,6 +558,15 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
 
     private async Task CompletePendingStopAsync()
     {
+        Task? physicalRetirement;
+        lock (_sync) physicalRetirement = _importPhysicalReservation?.Retirement;
+        if (physicalRetirement is not null)
+        {
+            // A plugin can outlive cancellation. Keep Stop pending until its actual
+            // device lease retires, without occupying the command gate or blocking shutdown.
+            try { await physicalRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        }
         await _commandGate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -643,6 +660,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_alarmMaintenance is not null) await _alarmMaintenance.ConfigureAwait(false);
         if (_cameraAcquisitionObservation is not null) await _cameraAcquisitionObservation.ConfigureAwait(false);
         if (_cameraRecoveryObservation is not null) await _cameraRecoveryObservation.ConfigureAwait(false);
+        if (_calibrationTransfers is not null) await _calibrationTransfers.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
     }
 }

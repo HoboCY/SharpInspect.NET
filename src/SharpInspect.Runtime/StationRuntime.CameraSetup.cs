@@ -41,6 +41,7 @@ public sealed partial class StationRuntime
                 _snapshot.Ready, _snapshot.ArmState, _snapshot.Busy, _snapshot.CurrentExecution,
                 _snapshot.Evidence.PendingDeliveries, _snapshot.Handshake, _snapshot.Mode,
                 _snapshot.Recovery, RecipeActivationConfigurationBlockedLocked || PreviewConfigurationBlockedLocked ||
+                    _importPhysicalReservation is not null ||
                     _snapshot.LastCommand?.State == OperationState.Pending,
                 _snapshot.ActiveRecipe, _shutdownRequested, _disposed);
         }

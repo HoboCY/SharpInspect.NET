@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime;
 using SharpInspect.Runtime.Algorithms;
+using SharpInspect.Runtime.Calibration;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
@@ -429,7 +430,8 @@ public sealed partial class RecipeActivationServiceTests
             IRecipeActivationQuery activationHistory, AlgorithmPreparationService preparation,
             AlgorithmPreparationOptions preparationOptions, FrameBufferPool framePool,
             ActivationFactory factory, VirtualCameraProvider cameraProvider,
-            RecipeDraftRevision source, ReleasedRecipe released)
+            RecipeDraftRevision source, ReleasedRecipe released,
+            CalibrationImportProcedureFixture? importProcedure)
         {
             _provider = provider;
             _directory = directory;
@@ -455,6 +457,7 @@ public sealed partial class RecipeActivationServiceTests
             CameraProvider = cameraProvider;
             Source = source;
             Released = released;
+            ImportProcedure = importProcedure;
         }
 
         internal ProductionStoreOptions Options { get; }
@@ -476,8 +479,20 @@ public sealed partial class RecipeActivationServiceTests
         internal FrameBufferPool FramePool { get; }
         internal ActivationFactory Factory { get; }
         internal VirtualCameraProvider CameraProvider { get; }
+        internal CalibrationImportProcedureFixture? ImportProcedure { get; }
+        internal ImportPhysicalProcedureFixture? ImportPhysicalProcedure =>
+            _provider.GetService<ImportPhysicalProcedureFixture>();
         internal RecipeDraftRevision Source { get; private set; } = null!;
         internal ReleasedRecipe Released { get; private set; } = null!;
+
+        internal IImagingSetupRuntime ImagingSetup =>
+            _provider.GetRequiredService<IImagingSetupRuntime>();
+        internal ICalibrationGovernanceRuntime CalibrationGovernance =>
+            _provider.GetRequiredService<ICalibrationGovernanceRuntime>();
+        internal ICalibrationImportRuntime CalibrationImports =>
+            _provider.GetRequiredService<ICalibrationImportRuntime>();
+        internal ICalibrationImportQuery CalibrationImportQuery =>
+            _provider.GetRequiredService<ICalibrationImportQuery>();
 
         internal CommandInvocation Invocation() => new(CommandSource.Integration,
             Sessions.Current.PrincipalId, Sessions.Current.SessionId);
@@ -510,6 +525,10 @@ public sealed partial class RecipeActivationServiceTests
             (correlation, token) => Runtime.ReserveRecipeActivationAsync(correlation, token),
             () => Runtime.GetSnapshotAsync(), RecipeActivationInternalFixture.CreateForContractTests());
 
+        internal Task<StepUpResult> IssueGrantAsync(Permission permission, Guid operationId,
+            string target, AuditedCommandKind commandKind) => GrantAsync(permission, operationId,
+                target, commandKind, ActivationInvocation(), TestPassword);
+
         internal async Task WaitForVerifiedAsync() => await WaitForVerifiedAsync(Store);
 
         internal static async Task WaitForVerifiedAsync(SqliteCommandStore store)
@@ -527,7 +546,8 @@ public sealed partial class RecipeActivationServiceTests
         }
 
         internal static async Task<ActivationHarness> CreateAsync(
-            AuthorizationPolicy? authorizationPolicy = null, bool enablePreview = false)
+            AuthorizationPolicy? authorizationPolicy = null, bool enablePreview = false,
+            bool enableImports = false, bool importPhysicalRequired = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe activation integration requires Windows machine-key protection.");
@@ -535,6 +555,14 @@ public sealed partial class RecipeActivationServiceTests
             var directory = Path.Combine(Path.GetTempPath(), "SharpInspect.Runtime.Tests",
                 "V132-RecipeActivation-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
+            var previewEnabled = enablePreview || enableImports;
+            var calibrationEvidenceRoot = Path.Combine(directory, "calibration-evidence");
+            var calibrationArtifactRoot = Path.Combine(directory, "calibration-artifacts");
+            if (enableImports)
+            {
+                Directory.CreateDirectory(calibrationEvidenceRoot);
+                Directory.CreateDirectory(calibrationArtifactRoot);
+            }
             var station = "V132ActivationStation";
             var audit = new AuditIntegrityPolicy(station, "development-v1",
                 "SharpInspect.T32.Activation." + Guid.NewGuid().ToString("N"))
@@ -551,8 +579,9 @@ public sealed partial class RecipeActivationServiceTests
             };
             var identityOptions = new LocalIdentityOptions(station, passwordPolicy,
                 new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development,
-                authorizationPolicy ?? (enablePreview
-                    ? CreatePreviewAuthorizationPolicy() : RecipeDraftTestPolicies.Authoring));
+                authorizationPolicy ?? (enableImports
+                    ? CreateCalibrationImportAuthorizationPolicy()
+                    : previewEnabled ? CreatePreviewAuthorizationPolicy() : RecipeDraftTestPolicies.Authoring));
             var executionPolicy = new AlgorithmExecutionPolicy("V132.Activation.Execution", "1",
                 TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1));
             var governance = new RecipeGovernancePolicy("V132.Activation.Release", "1",
@@ -563,14 +592,25 @@ public sealed partial class RecipeActivationServiceTests
             var options = new ProductionStoreOptions(Path.Combine(directory, "activation.sqlite"))
             {
                 AuditIntegrityPolicy = audit,
-                AlarmPolicy = enablePreview ? CreatePreviewAlarmPolicy() : null,
+                AlarmPolicy = previewEnabled ? CreatePreviewAlarmPolicy() : null,
                 LocalIdentity = identityOptions,
                 RecipeDrafts = new RecipeDraftStoreOptions(executionPolicy),
                 CameraSetup = new CameraSetupStoreOptions(),
+                CameraRecovery = enableImports ? new CameraRecoveryStoreOptions() : null,
+                ImagingSetup = enableImports ? new ImagingSetupStoreOptions() : null,
+                CalibrationSessions = enableImports ? new CalibrationSessionStoreOptions
+                {
+                    EvidenceRoot = calibrationEvidenceRoot
+                } : null,
+                CalibrationGovernance = enableImports ? new CalibrationGovernanceStoreOptions() : null,
                 RecipeReleases = new RecipeReleaseStoreOptions(governance),
                 PlcResultContracts = new PlcResultContractStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
-                PreviewSessions = enablePreview ? new PreviewSessionStoreOptions() : null,
+                PreviewSessions = previewEnabled ? new PreviewSessionStoreOptions() : null,
+                CalibrationImports = enableImports ? new CalibrationImportStoreOptions
+                {
+                    Artifacts = new CalibrationTransferArtifactOptions(calibrationArtifactRoot)
+                } : null,
                 CommitTimeout = TimeSpan.FromSeconds(8),
                 QueryTimeout = TimeSpan.FromSeconds(8),
                 QueueCapacity = 32
@@ -578,6 +618,19 @@ public sealed partial class RecipeActivationServiceTests
 
             var services = new ServiceCollection();
             services.AddSingleton<IVisionAlgorithmFactory>(factory);
+            CalibrationImportProcedureFixture? importProcedure = null;
+            if (enableImports)
+            {
+                importProcedure = new CalibrationImportProcedureFixture(importPhysicalRequired);
+                services.AddSharpInspectCalibrationProcedure(importProcedure);
+                if (importPhysicalRequired)
+                {
+                    var physical = new ImportPhysicalProcedureFixture(importProcedure.Policy.PhysicalVerification);
+                    services.AddSingleton(physical);
+                    services.AddSharpInspectImportedCalibrationPhysicalVerification(
+                        new ImportedCalibrationPhysicalVerificationRegistry(new[] { physical }));
+                }
+            }
             services.AddSharpInspectCameraProvider(cameraProvider);
             services.AddSharpInspectCameraSetup(new CameraSetupOptions
             {
@@ -636,7 +689,7 @@ public sealed partial class RecipeActivationServiceTests
                     identity, sessions, authorization, runtime, camera, drafts, releases,
                     releaseHistory, contracts, contractHistory, activations, activationHistory,
                     preparation, preparationOptions, framePool, factory, cameraProvider,
-                    null!, null!);
+                    null!, null!, importProcedure);
                 await harness.ConfigureCameraAsync(password);
                 var source = await harness.CreateAndReleaseRecipeAsync(password);
                 harness.Source = source.Source;

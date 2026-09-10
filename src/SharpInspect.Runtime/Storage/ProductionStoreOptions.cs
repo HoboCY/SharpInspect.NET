@@ -67,4 +67,9 @@ public sealed class ProductionStoreOptions
     /// Requires local identity, audit integrity, recipe drafts, camera setup, released recipes,
     /// and recipe activations. Preview records no frames and never grants production authority.</summary>
     public PreviewSessionStoreOptions? PreviewSessions { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 20 bounded calibration-import provenance ledger.
+    /// Requires the complete schema 19 preview stack plus calibration governance, sessions,
+    /// and imaging setup. Imported bytes remain untrusted until the import workflow verifies them.</summary>
+    public CalibrationImportStoreOptions? CalibrationImports { get; init; }
 }

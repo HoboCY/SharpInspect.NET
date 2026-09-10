@@ -206,10 +206,13 @@ internal sealed partial class SqliteCommandStore
             record.Candidate != command.Candidate || record.ReleaseId != command.ReleaseId ||
             record.ReleaseRecordContentHash != command.ReleaseRecordContentHash ||
             record.AuthorizationTarget != command.AuthorizationTarget ||
+            !Equals(record.HistoricalSelection, command.HistoricalSelection) ||
             update.Events[0].OperationId != command.OperationId)
             throw new InvalidOperationException("RecipeActivationIdentityMutationMismatch");
         var fact = update.CommandFacts[0];
-        AuditChainDatabase.Require(fact.CommandKind == AuditedCommandKind.ActivateRecipe &&
+        var expectedCommandKind = command.HistoricalSelection is null ? AuditedCommandKind.ActivateRecipe :
+            AuditedCommandKind.SelectHistoricalCalibration;
+        AuditChainDatabase.Require(fact.CommandKind == expectedCommandKind &&
             fact.CorrelationId == command.CorrelationId, "RecipeActivationCommandBindingMismatch");
         if (record.Outcome.State == RecipeActivationOutcomeState.Admitted)
             AuditChainDatabase.Require(fact.Phase == CommandAuditPhase.Outcome &&
@@ -489,7 +492,8 @@ internal sealed partial class SqliteCommandStore
             terminal.ActorAuthorizationRevision != admission.ActorAuthorizationRevision ||
             !ContractReferenceEquals(terminal.AuthorizationPolicy, admission.AuthorizationPolicy) ||
             terminal.AuthorizationTarget != admission.AuthorizationTarget ||
-            terminal.ChangeReason != admission.ChangeReason)
+            terminal.ChangeReason != admission.ChangeReason ||
+            !Equals(terminal.HistoricalSelection, admission.HistoricalSelection))
             throw new InvalidOperationException("RecipeActivationTerminalAdmissionMismatch");
     }
 
@@ -957,8 +961,10 @@ internal sealed partial class SqliteCommandStore
                 ReadActivationEnum<CommandAuditPhase>(SqliteNative.ColumnInt64(statement, 3), "RecipeActivationCommandPhaseInvalid"),
                 disposition is null ? null : ReadActivationEnum<CommandDisposition>(disposition.Value, "RecipeActivationCommandDispositionInvalid"));
         }, eventId.ToString("D")).SingleOrDefault();
+        var expectedCommandKind = record.HistoricalSelection is null ? AuditedCommandKind.ActivateRecipe :
+            AuditedCommandKind.SelectHistoricalCalibration;
         if (result is null || result.CorrelationId != record.OperationId ||
-            result.CommandKind != AuditedCommandKind.ActivateRecipe ||
+            result.CommandKind != expectedCommandKind ||
             (record.Outcome.State == RecipeActivationOutcomeState.Admitted &&
                 (result.Phase != CommandAuditPhase.Outcome || result.Disposition != CommandDisposition.Accepted)))
             throw new InvalidOperationException("RecipeActivationCommandAuditBindingMismatch");
@@ -991,7 +997,7 @@ internal sealed partial class SqliteCommandStore
                 IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId, schema);
                 if (Guid.TryParseExact(IdentityAuditEvent.DecodeEventId(payload), "D", out var parsed) && parsed == eventId &&
                     IdentityAuditEvent.MatchesRecipeActivationAuthorization(payload, row.Ordinal,
-                        stationId, record))
+                        stationId, record, schema))
                     matches.Add(new ActivationAuthorizationAuditReference(row.Sequence, row.Hash));
             }
             catch (Exception exception) when (exception is ArgumentException or FormatException or InvalidOperationException)

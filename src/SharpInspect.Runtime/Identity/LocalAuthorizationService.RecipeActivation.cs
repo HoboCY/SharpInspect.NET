@@ -44,10 +44,17 @@ internal sealed partial class LocalAuthorizationService
                     var previous = ActivationCurrent(state.Records, admitted.EvidenceKind);
                     if (previous?.Reference != admitted.PreviousActivation || previous?.SuccessfulSnapshot?.ContentHash !=
                         admitted.PreviousSnapshotContentHash) return Refuse("RecipeActivationCurrentConflict");
+                    if (!Equals(admitted.HistoricalSelection, command.HistoricalSelection))
+                        return Refuse("RecipeActivationHistoricalSelectionChanged");
+                    if (ValidateHistoricalSelection(command, previous) is { } selectionFailure)
+                        return Refuse(selectionFailure);
                     if (callerCancellation.IsCancellationRequested) return Refuse("RecipeActivationCancelled");
                     if (!TryLease(command.Invocation, out lease, out var reason)) return Refuse(reason);
                     var actor = Find(identity, lease!.Identity.PrincipalId);
                     if (actor is not { Enabled: true } || !actor.Permissions.Contains(Permission.ActivateRecipe))
+                        return Refuse("PermissionDenied");
+                    if (command.HistoricalSelection is not null &&
+                        !actor.Permissions.Contains(Permission.SelectHistoricalCalibration))
                         return Refuse("PermissionDenied");
                     if (actor.PrincipalId != admitted.ActorPrincipalId || lease.SessionId != admitted.ActorSessionId ||
                         actor.AuthorizationRevision != admitted.ActorAuthorizationRevision ||
@@ -158,6 +165,8 @@ internal sealed partial class LocalAuthorizationService
                     if (lease is not null) actor = Find(identity, lease.Identity.PrincipalId);
                     if (reason == "Authorized" && (actor is not { Enabled: true } ||
                         !actor.Permissions.Contains(Permission.ActivateRecipe))) reason = "PermissionDenied";
+                    if (reason == "Authorized" && command.HistoricalSelection is not null &&
+                        !actor!.Permissions.Contains(Permission.SelectHistoricalCalibration)) reason = "PermissionDenied";
                     if (reason == "Authorized") reason = CheckGrant(command, actor!, lease!.SessionId, false, out _);
                     var authorized = reason == "Authorized";
                     var observed = ReplaceActivationCheck(checks, 1, authorized, authorized ? "RecipeActivationAuthorized" : reason);
@@ -167,6 +176,8 @@ internal sealed partial class LocalAuthorizationService
                     if (reason == "Authorized" && epoch == Guid.Empty) reason = "RecipeActivationRuntimeUnavailable";
                     if (reason == "Authorized" && state.PendingAdmission is not null) reason = "RecipeActivationRecoveryRequired";
                     if (reason == "Authorized" && command.ExpectedActive != previous?.Reference) reason = "RecipeActivationCurrentConflict";
+                    if (reason == "Authorized")
+                        reason = ValidateHistoricalSelection(command, previous) ?? "Authorized";
                     if (reason == "Authorized" && !state.Releases.Any(value => value.Recipe == command.Candidate &&
                         value.ReleaseId == command.ReleaseId && value.ContentHash == command.ReleaseRecordContentHash))
                         reason = "RecipeActivationExactReleaseMissing";
@@ -213,7 +224,10 @@ internal sealed partial class LocalAuthorizationService
     }
 
     internal ValueTask<RecipeActivationAccess> GetRecipeActivationAccessAsync(CommandInvocation invocation,
-        CancellationToken cancellationToken) => QueryAsync(async token =>
+        CancellationToken cancellationToken) => GetRecipeActivationAccessAsync(invocation, false, cancellationToken);
+
+    internal ValueTask<RecipeActivationAccess> GetRecipeActivationAccessAsync(CommandInvocation invocation,
+        bool historicalSelection, CancellationToken cancellationToken) => QueryAsync(async token =>
         {
             if (_store.RecipeActivationOptions is null)
                 return new RecipeActivationAccess(false, "RecipeActivationConfigurationRequired");
@@ -222,11 +236,14 @@ internal sealed partial class LocalAuthorizationService
             using (lease)
             {
                 var actor = Find(state, lease!.Identity.PrincipalId);
-                var allowed = actor is { Enabled: true } && actor.Permissions.Contains(Permission.ActivateRecipe);
+                var allowed = actor is { Enabled: true } && actor.Permissions.Contains(Permission.ActivateRecipe) &&
+                    (!historicalSelection || actor.Permissions.Contains(Permission.SelectHistoricalCalibration));
+                var requiredPermission = historicalSelection ? Permission.SelectHistoricalCalibration :
+                    Permission.ActivateRecipe;
                 return new(allowed, allowed ? "RecipeActivationAccessAvailable" : "PermissionDenied",
                     new(_options.AuthorizationPolicy.Id, _options.AuthorizationPolicy.Version,
                         _options.AuthorizationPolicy.ContentHash),
-                    _options.AuthorizationPolicy.RequiresStepUp(Permission.ActivateRecipe));
+                    _options.AuthorizationPolicy.RequiresStepUp(requiredPermission));
             }
         }, reason => new(false, reason), cancellationToken);
 
@@ -277,6 +294,68 @@ internal sealed partial class LocalAuthorizationService
     private static RecipeActivationRecord? ActivationCurrent(IReadOnlyList<RecipeActivationRecord> records,
         RecipeActivationEvidenceKind kind) => records.LastOrDefault(value => value.Outcome.Succeeded && value.EvidenceKind == kind);
 
+    private static string? ValidateHistoricalSelection(ActivateRecipeCommand command,
+        RecipeActivationRecord? previous)
+        => ValidateHistoricalCalibrationBindings(command, previous?.SuccessfulSnapshot?.CalibrationBindings);
+
+    internal static string? ValidateHistoricalCalibrationBindings(ActivateRecipeCommand command,
+        IReadOnlyList<CalibrationRunProfileBinding>? previousBindings)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (command.HistoricalSelection is null)
+        {
+            // Once an active recipe has a calibration binding, changing that
+            // selection must use the separately audited historical-selection route.
+            if (previousBindings is not null &&
+                !SelectionsMatchBindings(command.CalibrationSelections, previousBindings))
+                return "HistoricalCalibrationSelectionRequired";
+            return null;
+        }
+
+        if (previousBindings is null)
+            return "HistoricalCalibrationPreviousProfileRequired";
+        var previousExactProfile = command.HistoricalSelection.PreviousExactProfile;
+        if (previousExactProfile is null)
+            return "HistoricalCalibrationPreviousProfileRequired";
+        var previousProfiles = previousBindings;
+        if (previousProfiles.Count == 0 || !previousProfiles.Any(binding =>
+                ProfileEquals(binding.Profile, previousExactProfile)))
+            return "HistoricalCalibrationPreviousProfileConflict";
+        if (command.CalibrationSelections.Count == 0)
+            return "HistoricalCalibrationSelectionRequired";
+        // This intent carries one prior profile. Preserve all other requirement
+        // bindings so it cannot describe a different or additional replacement.
+        var changed = command.CalibrationSelections.Where(selection =>
+            !previousProfiles.Any(binding => binding.RequirementContentHash == selection.RequirementContentHash &&
+                ProfileEquals(binding.Profile, selection.Profile))).ToArray();
+        if (changed.Length != 1 || command.CalibrationSelections.Count != previousProfiles.Count ||
+            previousProfiles.Any(binding => !command.CalibrationSelections.Any(selection =>
+                selection.RequirementContentHash == binding.RequirementContentHash)))
+            return "HistoricalCalibrationSingleReplacementRequired";
+        var replaced = previousProfiles.Single(binding =>
+            binding.RequirementContentHash == changed[0].RequirementContentHash);
+        if (!ProfileEquals(replaced.Profile, previousExactProfile))
+            return "HistoricalCalibrationPreviousProfileConflict";
+        return null;
+    }
+
+    private static bool SelectionsMatchBindings(
+        IReadOnlyList<CalibrationProfileSelection> selections,
+        IReadOnlyList<CalibrationRunProfileBinding> bindings)
+    {
+        if (selections.Count != bindings.Count) return false;
+        var selected = selections.Select(value => (value.RequirementContentHash, value.Profile))
+            .OrderBy(value => value.RequirementContentHash, StringComparer.Ordinal).ToArray();
+        var current = bindings.Select(value => (value.RequirementContentHash, value.Profile))
+            .OrderBy(value => value.RequirementContentHash, StringComparer.Ordinal).ToArray();
+        return selected.Zip(current).All(pair => pair.First.RequirementContentHash == pair.Second.RequirementContentHash &&
+            ProfileEquals(pair.First.Profile, pair.Second.Profile));
+    }
+
+    private static bool ProfileEquals(CalibrationProfileReference left, CalibrationProfileReference right) =>
+        left.ProfileId == right.ProfileId && left.Version == right.Version &&
+        string.Equals(left.ContentHash, right.ContentHash, StringComparison.Ordinal);
+
     private static IReadOnlyList<RecipeActivationCheck> ReplaceActivationCheck(IReadOnlyList<RecipeActivationCheck> checks,
         int number, bool passed, string reason)
     {
@@ -302,11 +381,12 @@ internal sealed partial class LocalAuthorizationService
             id, attemptId, command.OperationId, command.Candidate, command.ReleaseId, command.ReleaseRecordContentHash,
             command.ExpectedActive, previousReference, previousRecipe, previousHash, command.CalibrationSelections,
             command.ChangeReason, actor!.Value, session!.Value, authorizationRevision!.Value, policy!,
-            command.AuthorizationTarget, evidenceKind, time) : null;
+            command.AuthorizationTarget, evidenceKind, time, command.HistoricalSelection) : null;
         return new(position, id, attemptId, command.OperationId, admission?.Reference, previousReference,
             previousRecipe, previousHash, command.Candidate, command.ReleaseId, command.ReleaseRecordContentHash,
             snapshot?.Recipe, new(outcome, reason), checks, restoration, snapshot, evidenceKind, actor, session,
-            authorizationRevision, policy, command.ChangeReason, command.AuthorizationTarget, time, intent);
+            authorizationRevision, policy, command.ChangeReason, command.AuthorizationTarget, time, intent,
+            command.HistoricalSelection);
     }
 
     private IdentityUpdate ActivationUpdate(IdentityAuthorityState identity, ActivateRecipeCommand command,
@@ -315,8 +395,10 @@ internal sealed partial class LocalAuthorizationService
     {
         var phase = record.Outcome.State == RecipeActivationOutcomeState.Admitted || record.AdmissionReference is null ?
             CommandAuditPhase.Outcome : record.Outcome.Succeeded ? CommandAuditPhase.Completed : CommandAuditPhase.Failed;
+        var commandKind = command.HistoricalSelection is null ? AuditedCommandKind.ActivateRecipe :
+            AuditedCommandKind.SelectHistoricalCalibration;
         var fact = new CommandAuditFact(Guid.NewGuid(), record.AttemptId, command.CorrelationId, epoch, record.RecordedAtUtc,
-            AuditedCommandKind.ActivateRecipe, Enum.IsDefined(typeof(CommandSource), command.Invocation.Source) ? command.Invocation.Source : null,
+            commandKind, Enum.IsDefined(typeof(CommandSource), command.Invocation.Source) ? command.Invocation.Source : null,
             command.Invocation.PrincipalId is { Length: <= 256 } claimed ? claimed : null,
             command.Invocation.SessionId, command.Invocation.StepUpGrantId, phase,
             phase == CommandAuditPhase.Outcome ? record.Outcome.State == RecipeActivationOutcomeState.Admitted ?
@@ -326,7 +408,7 @@ internal sealed partial class LocalAuthorizationService
         {
             if (admissionCommand is null || admissionCommand.AttemptId != record.AttemptId ||
                 admissionCommand.CorrelationId != command.CorrelationId ||
-                admissionCommand.CommandKind != AuditedCommandKind.ActivateRecipe ||
+                admissionCommand.CommandKind != commandKind ||
                 admissionCommand.Phase != CommandAuditPhase.Outcome ||
                 admissionCommand.Disposition != CommandDisposition.Accepted ||
                 admissionCommand.AuthenticatedHumanPrincipalId != record.ActorPrincipalId?.ToString("D"))

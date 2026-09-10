@@ -143,6 +143,18 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>Explicit verifier for unpublished imported candidates. Registration grants no production authority.</summary>
+    public static IServiceCollection AddSharpInspectImportedCalibrationPhysicalVerification(this IServiceCollection services,
+        ImportedCalibrationPhysicalVerificationRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(registry);
+        if (services.Any(item => item.ServiceType == typeof(ImportedCalibrationPhysicalVerificationRegistry)))
+            throw new ArgumentException("ImportedPhysicalVerificationRegistryAlreadyRegistered", nameof(services));
+        services.AddSingleton(registry);
+        return services;
+    }
+
     /// <summary>Explicit managed registration. The caller owns the service provider lifetime.</summary>
     public static IServiceCollection AddSharpInspectRuntime(this IServiceCollection services,
         TimeSpan? heartbeatInterval = null)
@@ -280,6 +292,7 @@ public static class ServiceCollectionExtensions
             if (options.PreviewSessions is not null)
                 runtime.ConfigurePreviewSessions(p.GetService<PreviewSessionOptions>() ?? new PreviewSessionOptions(),
                     p.GetRequiredService<RecipeDraftService>(), options);
+            runtime.ConfigureCalibrationImports(options, p.GetService<ImportedCalibrationPhysicalVerificationRegistry>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
@@ -300,6 +313,12 @@ public static class ServiceCollectionExtensions
 
     private static void RegisterCalibrationGovernance(IServiceCollection services)
     {
+        services.TryAddSingleton<ICalibrationImportRuntime>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationImportRuntime ??
+            throw new InvalidOperationException("CalibrationImportUnavailable"));
+        services.TryAddSingleton<ICalibrationImportQuery>(p =>
+            p.GetRequiredService<IStationRuntime>() as ICalibrationImportQuery ??
+            throw new InvalidOperationException("CalibrationImportUnavailable"));
         services.TryAddSingleton<IPreviewSessionService>(p =>
             p.GetRequiredService<IStationRuntime>() as IPreviewSessionService ??
             throw new InvalidOperationException("PreviewSessionServiceUnavailable"));

@@ -313,7 +313,7 @@ internal sealed partial class SqliteCommandStore
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         AuditChainDatabase.Require(schema is CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-            RecipeActivationStoreOptions.SchemaVersion,
+            RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
             "CalibrationGovernanceSchemaInvalid");
         RequireConfiguredCalibrationGovernance(database, options, deadline);
 
@@ -696,6 +696,10 @@ internal sealed partial class SqliteCommandStore
         CalibrationGovernanceCodec.CandidatePolicyEvaluated => AuditedCommandKind.EvaluateCalibrationCandidate,
         CalibrationGovernanceCodec.CalibrationProfilePublished => AuditedCommandKind.PublishCalibrationProfile,
         CalibrationGovernanceCodec.PhysicalVerificationRecorded => AuditedCommandKind.RecordPhysicalCalibrationVerification,
+        "ImportedCandidate" => AuditedCommandKind.ImportCalibrationPackage,
+        "LocalRevalidation" => AuditedCommandKind.RevalidateImportedCalibration,
+        "LocalPhysicalVerification" => AuditedCommandKind.VerifyImportedCalibration,
+        "LocalProfilePublication" => AuditedCommandKind.PublishImportedCalibration,
         _ => throw new InvalidOperationException("CalibrationGovernanceKindUnknown")
     };
 
@@ -706,6 +710,9 @@ internal sealed partial class SqliteCommandStore
             Permission.PublishCalibration,
         AuditedCommandKind.RecordPhysicalCalibrationVerification =>
             Permission.RecordPhysicalCalibrationVerification,
+        AuditedCommandKind.ImportCalibrationPackage or AuditedCommandKind.RevalidateImportedCalibration or
+            AuditedCommandKind.PublishImportedCalibration => Permission.PublishCalibration,
+        AuditedCommandKind.VerifyImportedCalibration => Permission.RecordPhysicalCalibrationVerification,
         _ => throw new InvalidOperationException("CalibrationGovernanceCommandKindInvalid")
     };
 

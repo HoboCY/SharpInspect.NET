@@ -91,6 +91,18 @@ Schema 14 显式启用标定证据扩展，依赖签名身份审计、Camera Set
 调用方必须显式声明原始像素域不需要内参校正；需要精确内参依赖的校正模式当前明确拒绝。
 当前候选不能发布或激活，详细范围见 [V1-26 记录](docs/verification/v1-26.md)。
 
+标定迁移通过 `ICalibrationImportQuery.ExportCalibrationAsync` 导出带完整性哈希的版本化证据包。
+宿主显式配置 `ProductionStoreOptions.CalibrationImports` 后，可用 `ICalibrationImportRuntime`
+依次导入、重新验证、执行所需本地物理验证并发布新的本地 Profile。每次写操作需要当前控制台身份、
+对应权限和绑定该操作的新鲜 Step-Up；导入得到的候选不继承来源工位权限。
+重新验证使用已注册的精确 `ICalibrationProcedure<TInput>`，重新读取图像并计算系数与政策指标。
+测量关键流程还需显式注册 `ImportedCalibrationPhysicalVerificationRegistry`，提供独立本地物理证据。
+当前发布结果保持 `DevelopmentOnly=true`，不能激活或自动 Ready。
+
+`SelectHistoricalCalibrationCommand` 通过既有 Recipe Activation 流程替换一项历史标定绑定，
+要求激活与历史选择权限、精确的旧版本和目标版本及操作理由；其余标定绑定必须保留。
+过期、政策已变或条件不兼容的版本仍会拒绝。开发验证范围见 [V1-34 记录](docs/verification/v1-34.md)。
+
 ## Camera Provider 契约验证
 
 Provider 维护者实现 `ICameraConformanceFixtureFactory`，提供固定身份、成像配置、规范像素摘要、

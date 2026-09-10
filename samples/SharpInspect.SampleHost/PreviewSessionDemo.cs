@@ -453,12 +453,12 @@ internal static class PreviewSessionDemo
                     "RecipeActivationStartupRecoveryPending", StringComparer.Ordinal) ||
                 snapshot.AdmissionBlockers.Contains(
                     "PreviewStartupRecoveryPending", StringComparer.Ordinal);
-            if (!pending)
-            {
-                Require(snapshot.AuditIntegrity?.State == AuditIntegrityState.Verified,
-                    "PreviewAuditStartupUnavailable");
+            // Recovery completion and audit projection are published independently.
+            // A heartbeat may still expose Verifying after recovery fences clear.
+            if (!pending && snapshot.AuditIntegrity?.State == AuditIntegrityState.Verified)
                 return snapshot;
-            }
+            Require(snapshot.AuditIntegrity?.State is not (AuditIntegrityState.Faulted or AuditIntegrityState.NotConfigured),
+                "PreviewAuditStartupUnavailable");
             await Task.Delay(20).ConfigureAwait(true);
         }
         throw new PreviewSessionDemoException("PreviewStartupFenceTimeout");

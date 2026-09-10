@@ -163,6 +163,7 @@ public sealed partial class StationRuntime
 
     private string? CheckCalibrationStartLocked()
     {
+        if (_importPhysicalReservation is not null) return "CalibrationImportPhysicalVerificationInProgress";
         if (_snapshot.Mode != ExclusiveMode.None || _calibrationCoordinator is { RestorationVerified: false } ||
             _calibrationWork is { IsCompleted: false }) return "CalibrationExclusiveWorkInProgress";
         if (_snapshot.Ready || _snapshot.ArmState != ProductionArmState.Disarmed || _snapshot.Busy ||

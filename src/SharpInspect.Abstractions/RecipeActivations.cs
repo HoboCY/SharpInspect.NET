@@ -152,7 +152,8 @@ public sealed class RecipeActivationAdmission
         IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
         Guid actorPrincipalId, Guid actorSessionId, long actorAuthorizationRevision,
         RecipeContractReference authorizationPolicy, string authorizationTarget,
-        RecipeActivationEvidenceKind evidenceKind, DateTimeOffset admittedAtUtc)
+        RecipeActivationEvidenceKind evidenceKind, DateTimeOffset admittedAtUtc,
+        HistoricalCalibrationSelectionIntent? historicalSelection = null)
     {
         if (position < 1 || activationId == Guid.Empty || attemptId == Guid.Empty || operationId == Guid.Empty)
             throw new ArgumentException("RecipeActivationAdmissionIdentityInvalid");
@@ -176,6 +177,10 @@ public sealed class RecipeActivationAdmission
             throw new ArgumentException("RecipeActivationPreviousBaselineRequired");
         CalibrationSelections = RecipeActivationValidation.CopySelections(calibrationSelections);
         ChangeReason = RecipeActivationValidation.Reason(changeReason, nameof(changeReason));
+        HistoricalSelection = historicalSelection;
+        if (HistoricalSelection is not null &&
+            !string.Equals(HistoricalSelection.Reason, ChangeReason, StringComparison.Ordinal))
+            throw new ArgumentException("RecipeActivationHistoricalReasonMismatch", nameof(changeReason));
         ActorPrincipalId = RecipeActivationValidation.RequiredGuid(actorPrincipalId, nameof(actorPrincipalId));
         ActorSessionId = RecipeActivationValidation.RequiredGuid(actorSessionId, nameof(actorSessionId));
         if (actorAuthorizationRevision < 0)
@@ -185,9 +190,10 @@ public sealed class RecipeActivationAdmission
         AuthorizationTarget = RecipeActivationValidation.Hash(authorizationTarget, nameof(authorizationTarget));
         EvidenceKind = AlgorithmConfigurationValidation.Enum(evidenceKind, nameof(evidenceKind));
         AdmittedAtUtc = RecipeActivationValidation.Utc(admittedAtUtc, nameof(admittedAtUtc));
-        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        var hashParts = new List<string?>
         {
-            "sharpinspect-recipe-activation-admission-v1", Position.ToString(CultureInfo.InvariantCulture),
+            HistoricalSelection is null ? "sharpinspect-recipe-activation-admission-v1" :
+                "sharpinspect-recipe-activation-admission-v2", Position.ToString(CultureInfo.InvariantCulture),
             ActivationId.ToString("D"), AttemptId.ToString("D"), OperationId.ToString("D"),
             Candidate.Id, Candidate.Version, Candidate.ContentHash, ReleaseId.ToString("D"),
             ReleaseRecordContentHash, ExpectedActive?.Position.ToString(CultureInfo.InvariantCulture),
@@ -196,14 +202,25 @@ public sealed class RecipeActivationAdmission
             PreviousActivation?.ActivationId.ToString("D"), PreviousActivation?.ContentHash,
             PreviousRecipe?.Id, PreviousRecipe?.Version, PreviousRecipe?.ContentHash,
             PreviousSnapshotContentHash, CalibrationSelections.Count.ToString(CultureInfo.InvariantCulture)
-        }.Concat(CalibrationSelections.Select(RecipeActivationValidation.SelectionHash))
-            .Concat(new[]
-            {
-                ChangeReason, ActorPrincipalId.ToString("D"), ActorSessionId.ToString("D"),
-                ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture),
-                AuthorizationPolicy.Id, AuthorizationPolicy.Version, AuthorizationPolicy.ContentHash,
-                AuthorizationTarget, EvidenceKind.ToString(), AdmittedAtUtc.ToString("O", CultureInfo.InvariantCulture)
-            }));
+        };
+        hashParts.AddRange(CalibrationSelections.Select(RecipeActivationValidation.SelectionHash));
+        if (HistoricalSelection is not null)
+        {
+            hashParts.Add(HistoricalSelection.Source);
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.ProfileId.ToString("D"));
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.Version.ToString(CultureInfo.InvariantCulture));
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.ContentHash);
+            hashParts.Add(HistoricalSelection.Reason);
+            hashParts.Add(HistoricalSelection.ContentHash);
+        }
+        hashParts.AddRange(new[]
+        {
+            ChangeReason, ActorPrincipalId.ToString("D"), ActorSessionId.ToString("D"),
+            ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture),
+            AuthorizationPolicy.Id, AuthorizationPolicy.Version, AuthorizationPolicy.ContentHash,
+            AuthorizationTarget, EvidenceKind.ToString(), AdmittedAtUtc.ToString("O", CultureInfo.InvariantCulture)
+        });
+        ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
 
     public long Position { get; }
@@ -219,6 +236,7 @@ public sealed class RecipeActivationAdmission
     public string? PreviousSnapshotContentHash { get; }
     public ReadOnlyCollection<CalibrationProfileSelection> CalibrationSelections { get; }
     public string ChangeReason { get; }
+    public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
     public Guid ActorPrincipalId { get; }
     public Guid ActorSessionId { get; }
     public long ActorAuthorizationRevision { get; }
@@ -292,12 +310,22 @@ public sealed class RecipeActivationSnapshot
 /// Public activation command. It carries only exact immutable identities and choices;
 /// gate results and successful snapshots can only be produced inside the Runtime.
 /// </summary>
-public sealed record ActivateRecipeCommand : RuntimeCommand
+public record ActivateRecipeCommand : RuntimeCommand
 {
     public ActivateRecipeCommand(Guid correlationId, CommandInvocation invocation, RecipeReference candidate,
         Guid releaseId, string releaseRecordContentHash, RecipeActivationReference? expectedActive,
         IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
-        Guid? operationId = null) : base(correlationId, invocation)
+        Guid? operationId = null) : this(correlationId, invocation, candidate, releaseId,
+            releaseRecordContentHash, expectedActive, calibrationSelections, changeReason,
+            historicalSelection: null, operationId: operationId)
+    {
+    }
+
+    internal ActivateRecipeCommand(Guid correlationId, CommandInvocation invocation, RecipeReference candidate,
+        Guid releaseId, string releaseRecordContentHash, RecipeActivationReference? expectedActive,
+        IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
+        HistoricalCalibrationSelectionIntent? historicalSelection, Guid? operationId = null)
+        : base(correlationId, invocation)
     {
         if (correlationId == Guid.Empty)
             throw new ArgumentException("RecipeActivationCorrelationRequired");
@@ -309,18 +337,24 @@ public sealed record ActivateRecipeCommand : RuntimeCommand
         ExpectedActive = RecipeActivationValidation.Reference(expectedActive);
         CalibrationSelections = RecipeActivationValidation.CopySelections(calibrationSelections);
         ChangeReason = RecipeActivationValidation.Reason(changeReason, nameof(changeReason));
+        HistoricalSelection = historicalSelection;
+        if (HistoricalSelection is not null &&
+            !string.Equals(HistoricalSelection.Reason, ChangeReason, StringComparison.Ordinal))
+            throw new ArgumentException("RecipeActivationHistoricalReasonMismatch", nameof(changeReason));
         OperationId = operationId ?? correlationId;
         if (OperationId == Guid.Empty)
             throw new ArgumentException("RecipeActivationOperationRequired", nameof(operationId));
         if (OperationId != correlationId)
             throw new ArgumentException("RecipeActivationOperationCorrelationMismatch", nameof(operationId));
         AuthorizationTarget = ComputeAuthorizationTarget(Candidate, ReleaseId,
-            ReleaseRecordContentHash, ExpectedActive, CalibrationSelections, ChangeReason);
+            ReleaseRecordContentHash, ExpectedActive, CalibrationSelections, ChangeReason,
+            HistoricalSelection);
     }
 
     internal static string ComputeAuthorizationTarget(RecipeReference candidate, Guid releaseId,
         string releaseRecordContentHash, RecipeActivationReference? expectedActive,
-        IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason)
+        IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
+        HistoricalCalibrationSelectionIntent? historicalSelection = null)
     {
         var candidateCopy = RecipeActivationValidation.Recipe(candidate, nameof(candidate));
         var releaseHash = RecipeActivationValidation.Hash(releaseRecordContentHash,
@@ -329,13 +363,23 @@ public sealed record ActivateRecipeCommand : RuntimeCommand
         var reason = RecipeActivationValidation.Reason(changeReason, nameof(changeReason));
         var parts = new List<string?>
         {
-            "sharpinspect-activate-recipe-command-v1", candidateCopy.Id, candidateCopy.Version,
+            historicalSelection is null ? "sharpinspect-activate-recipe-command-v1" :
+                "sharpinspect-select-historical-calibration-command-v1", candidateCopy.Id, candidateCopy.Version,
             candidateCopy.ContentHash, RecipeActivationValidation.RequiredGuid(releaseId, nameof(releaseId)).ToString("D"),
             releaseHash, expectedActive?.Position.ToString(CultureInfo.InvariantCulture),
             expectedActive?.ActivationId.ToString("D"), expectedActive?.ContentHash,
             selections.Count.ToString(CultureInfo.InvariantCulture)
         };
         parts.AddRange(selections.Select(RecipeActivationValidation.SelectionHash));
+        if (historicalSelection is not null)
+        {
+            parts.Add(historicalSelection.Source);
+            parts.Add(historicalSelection.PreviousExactProfile?.ProfileId.ToString("D"));
+            parts.Add(historicalSelection.PreviousExactProfile?.Version.ToString(CultureInfo.InvariantCulture));
+            parts.Add(historicalSelection.PreviousExactProfile?.ContentHash);
+            parts.Add(historicalSelection.Reason);
+            parts.Add(historicalSelection.ContentHash);
+        }
         parts.Add(reason);
         return AlgorithmContractValidation.HashParts(parts);
     }
@@ -347,6 +391,7 @@ public sealed record ActivateRecipeCommand : RuntimeCommand
     public RecipeActivationReference? ExpectedActive { get; }
     public ReadOnlyCollection<CalibrationProfileSelection> CalibrationSelections { get; }
     public string ChangeReason { get; }
+    public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
     public string AuthorizationTarget { get; }
 }
 
@@ -362,7 +407,8 @@ public sealed class RecipeActivationRecord
         RecipeActivationEvidenceKind evidenceKind, Guid? actorPrincipalId, Guid? actorSessionId,
         long? actorAuthorizationRevision, RecipeContractReference? authorizationPolicy,
         string changeReason, string authorizationTarget, DateTimeOffset recordedAtUtc,
-        RecipeActivationAdmission? admission = null)
+        RecipeActivationAdmission? admission = null,
+        HistoricalCalibrationSelectionIntent? historicalSelection = null)
     {
         if (position < 1 || activationId == Guid.Empty || attemptId == Guid.Empty || operationId == Guid.Empty)
             throw new ArgumentException("RecipeActivationRecordIdentityInvalid");
@@ -395,6 +441,13 @@ public sealed class RecipeActivationRecord
         AuthorizationTarget = RecipeActivationValidation.Hash(authorizationTarget, nameof(authorizationTarget));
         RecordedAtUtc = RecipeActivationValidation.Utc(recordedAtUtc, nameof(recordedAtUtc));
         Admission = admission;
+        HistoricalSelection = historicalSelection ?? admission?.HistoricalSelection;
+        if (HistoricalSelection is not null &&
+            !string.Equals(HistoricalSelection.Reason, ChangeReason, StringComparison.Ordinal))
+            throw new ArgumentException("RecipeActivationHistoricalReasonMismatch", nameof(changeReason));
+        if (admission is not null && historicalSelection is not null &&
+            !Equals(historicalSelection, admission.HistoricalSelection))
+            throw new ArgumentException("RecipeActivationHistoricalSelectionMismatch", nameof(historicalSelection));
 
         ValidateActor(actorPrincipalId, actorSessionId, actorAuthorizationRevision, authorizationPolicy,
             Outcome.State is RecipeActivationOutcomeState.Admitted or RecipeActivationOutcomeState.Succeeded);
@@ -439,7 +492,8 @@ public sealed class RecipeActivationRecord
 
         var hashParts = new List<string?>
         {
-            "sharpinspect-recipe-activation-record-v1", Position.ToString(CultureInfo.InvariantCulture),
+            HistoricalSelection is null ? "sharpinspect-recipe-activation-record-v1" :
+                "sharpinspect-recipe-activation-record-v2", Position.ToString(CultureInfo.InvariantCulture),
             ActivationId.ToString("D"), AttemptId.ToString("D"), OperationId.ToString("D"),
             Outcome.ContentHash, EvidenceKind.ToString(),
             PreviousActivation?.Position.ToString(CultureInfo.InvariantCulture),
@@ -448,13 +502,26 @@ public sealed class RecipeActivationRecord
             PreviousSnapshotContentHash, Candidate.Id, Candidate.Version, Candidate.ContentHash,
             ReleaseId.ToString("D"), ReleaseRecordContentHash,
             ResultingRecipe?.Id, ResultingRecipe?.Version, ResultingRecipe?.ContentHash,
-            ChangeReason, actorPrincipalId?.ToString("D"), actorSessionId?.ToString("D"),
+            ChangeReason
+        };
+        if (HistoricalSelection is not null)
+        {
+            hashParts.Add(HistoricalSelection.Source);
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.ProfileId.ToString("D"));
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.Version.ToString(CultureInfo.InvariantCulture));
+            hashParts.Add(HistoricalSelection.PreviousExactProfile?.ContentHash);
+            hashParts.Add(HistoricalSelection.Reason);
+            hashParts.Add(HistoricalSelection.ContentHash);
+        }
+        hashParts.AddRange(new[]
+        {
+            actorPrincipalId?.ToString("D"), actorSessionId?.ToString("D"),
             actorAuthorizationRevision?.ToString(CultureInfo.InvariantCulture),
             authorizationPolicy?.Id, authorizationPolicy?.Version, authorizationPolicy?.ContentHash,
             AuthorizationTarget, RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             Restoration.ContentHash, SuccessfulSnapshot?.ContentHash,
             Checks.Count.ToString(CultureInfo.InvariantCulture)
-        };
+        });
         if (Outcome.State != RecipeActivationOutcomeState.Admitted)
         {
             hashParts.Insert(7, AdmissionReference?.Position.ToString(CultureInfo.InvariantCulture));
@@ -487,7 +554,8 @@ public sealed class RecipeActivationRecord
             ActorAuthorizationRevision != admission.ActorAuthorizationRevision ||
             AuthorizationPolicy != admission.AuthorizationPolicy ||
             AuthorizationTarget != admission.AuthorizationTarget || ChangeReason != admission.ChangeReason ||
-            EvidenceKind != admission.EvidenceKind)
+            EvidenceKind != admission.EvidenceKind ||
+            !Equals(HistoricalSelection, admission.HistoricalSelection))
             throw new ArgumentException("RecipeActivationAdmissionRecordMismatch");
     }
 
@@ -527,6 +595,7 @@ public sealed class RecipeActivationRecord
     public RecipeActivationRestoration Restoration { get; }
     public RecipeActivationSnapshot? SuccessfulSnapshot { get; }
     public RecipeActivationAdmission? Admission { get; }
+    public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
     public RecipeActivationEvidenceKind EvidenceKind { get; }
     public Guid? ActorPrincipalId { get; }
     public Guid? ActorSessionId { get; }

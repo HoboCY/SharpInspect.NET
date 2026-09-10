@@ -146,9 +146,11 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == PreviewSessionStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
                 schema < PreviewSessionStoreOptions.SchemaVersion
                     ? "PreviewSessionGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if ((_options.CalibrationImports is not null) != (schema == CalibrationImportStoreOptions.SchemaVersion))
+                throw new InvalidOperationException("CalibrationImportConfigurationMismatch");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             VerifyDependencies(database, previewOptions, key, deadline);
 
@@ -209,7 +211,7 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: previewOptions);
+            previewOptions: previewOptions, importOptions: _options.CalibrationImports);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -239,6 +241,8 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             _options.CalibrationGovernance);
         AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
             previewOptions);
+        if (_options.CalibrationImports is not null)
+            AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
     }
 
     private async ValueTask VerifyExternalAnchorAsync(AuditCheckpoint? checkpoint,

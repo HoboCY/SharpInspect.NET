@@ -115,15 +115,26 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is PlcResultContractStoreOptions.SchemaVersion or
-                RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion,
+                RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
                 schema < PlcResultContractStoreOptions.SchemaVersion
                     ? "PlcResultContractGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
-            if (_options.PreviewSessions is null && schema == PreviewSessionStoreOptions.SchemaVersion)
+            if (_options.PreviewSessions is null &&
+                (schema == PreviewSessionStoreOptions.SchemaVersion || schema == CalibrationImportStoreOptions.SchemaVersion))
                 throw new InvalidOperationException("PreviewSessionConfigurationRequired");
+            if (_options.CalibrationImports is not null && schema < CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportGovernedMigrationRequired");
+            if (_options.CalibrationImports is null && schema == CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportConfigurationRequired");
+            if (schema == CalibrationImportStoreOptions.SchemaVersion &&
+                (_options.PreviewSessions is null || _options.CalibrationGovernance is null ||
+                    _options.CalibrationSessions is null || _options.ImagingSetup is null))
+                throw new InvalidOperationException("CalibrationImportsRequiresPreviewGovernanceCalibrationAndImagingSetup");
             contractOptions.Validate();
             SqliteCommandStore.RequireConfiguredPlcResultContracts(database, contractOptions, deadline);
+            if (schema == CalibrationImportStoreOptions.SchemaVersion)
+                SqliteCommandStore.RequireConfiguredCalibrationImports(database, _options.CalibrationImports!, deadline);
             var policy = _options.AuditIntegrityPolicy!;
             var full = new AuditVerificationRequest(0, policy.MaximumVerificationEntries);
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
@@ -135,8 +146,10 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
                 governanceOptions: _options.CalibrationGovernance, releaseOptions: _options.RecipeReleases,
                   contractOptions: contractOptions,
                   activationOptions: _options.RecipeActivations,
-                  previewOptions: schema == PreviewSessionStoreOptions.SchemaVersion
-                      ? _options.PreviewSessions : null);
+                  previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion
+                      ? _options.PreviewSessions : null,
+                  importOptions: schema == CalibrationImportStoreOptions.SchemaVersion
+                      ? _options.CalibrationImports : null);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -165,6 +178,9 @@ public sealed class SqlitePlcResultContractQuery : IPlcResultContractQuery
              if (_options.PreviewSessions is not null)
                  AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                      _options.PreviewSessions);
+             if (_options.CalibrationImports is not null)
+                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
+                     _options.CalibrationImports);
 
             var stored = SqliteCommandStore.ReadPlcResultContractRows(database, contractOptions, deadline);
             var through = stored.Count == 0 ? 0 : stored[^1].Revision.Position;

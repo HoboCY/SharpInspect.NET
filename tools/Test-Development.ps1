@@ -803,6 +803,9 @@ try {
     if ($Ticket -ge 33) {
         & (Join-Path $PSScriptRoot 'Test-PreviewSessionConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
+    if ($Ticket -ge 34) {
+        & (Join-Path $PSScriptRoot 'Test-CalibrationImportConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

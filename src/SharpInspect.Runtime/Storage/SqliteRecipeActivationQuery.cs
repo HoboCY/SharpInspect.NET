@@ -155,13 +155,15 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is RecipeActivationStoreOptions.SchemaVersion or
-                    PreviewSessionStoreOptions.SchemaVersion,
+                    PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
                 schema < RecipeActivationStoreOptions.SchemaVersion
                     ? "RecipeActivationGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
-            if (_options.PreviewSessions is null && schema == PreviewSessionStoreOptions.SchemaVersion)
+            if (_options.PreviewSessions is null && schema >= PreviewSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PreviewSessionConfigurationRequired");
+            if ((_options.CalibrationImports is not null) != (schema == CalibrationImportStoreOptions.SchemaVersion))
+                throw new InvalidOperationException("CalibrationImportConfigurationMismatch");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             activationOptions.Validate();
             SqliteCommandStore.RequireConfiguredRecipeActivations(database, activationOptions, deadline);
@@ -181,8 +183,8 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                  releaseOptions: releaseOptions,
                  contractOptions: contractOptions,
                  activationOptions: activationOptions,
-                 previewOptions: schema == PreviewSessionStoreOptions.SchemaVersion
-                     ? _options.PreviewSessions : null);
+                 previewOptions: schema >= PreviewSessionStoreOptions.SchemaVersion
+                     ? _options.PreviewSessions : null, importOptions: _options.CalibrationImports);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -213,6 +215,8 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
              if (_options.PreviewSessions is not null)
                  AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                      _options.PreviewSessions);
+             if (_options.CalibrationImports is not null)
+                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
 
             var profileResolver = SqliteCommandStore.CreateCalibrationProfileResolver(database,
                 _options.CalibrationGovernance, deadline);

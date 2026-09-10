@@ -96,20 +96,37 @@ public partial class IdentityPanel : UserControl
         LoginUserNameBox.Text = userName;
         // Exercise the native paste command used by clipboard-based password managers.
         // Only an isolated development fixture calls this; restore the user's clipboard.
-        var previousClipboard = Clipboard.GetDataObject();
+        IDataObject? previousClipboard = null;
+        await RetryClipboardSmokeAsync(() => previousClipboard = Clipboard.GetDataObject());
         try
         {
-            Clipboard.SetText(password);
-            System.Windows.Input.ApplicationCommands.Paste.Execute(null, LoginPasswordBox);
+            await RetryClipboardSmokeAsync(() => Clipboard.SetText(password));
+            await RetryClipboardSmokeAsync(() =>
+                System.Windows.Input.ApplicationCommands.Paste.Execute(null, LoginPasswordBox));
             if (LoginPasswordBox.Password != password) throw new InvalidOperationException("IdentityPasteInputChanged");
         }
         finally
         {
-            if (previousClipboard is null) Clipboard.Clear();
-            else Clipboard.SetDataObject(previousClipboard, true);
+            await RetryClipboardSmokeAsync(() =>
+            {
+                if (previousClipboard is null) Clipboard.Clear();
+                else Clipboard.SetDataObject(previousClipboard, true);
+            });
         }
         await AuthenticateFromInputsAsync();
         if (LoginPasswordBox.Password.Length != 0) throw new InvalidOperationException("IdentityPasswordInputNotCleared");
+    }
+
+    internal static async Task RetryClipboardSmokeAsync(Action action)
+    {
+        // Desktop clipboard ownership is shared with other processes. Retry only
+        // CLIPBRD_E_CANT_OPEN, preserving STA context and propagating persistent failure.
+        for (var attempt = 0; ; attempt++)
+        {
+            try { action(); return; }
+            catch (COMException exception) when (exception.HResult == unchecked((int)0x800401D0) && attempt < 19)
+            { await Task.Delay(50); }
+        }
     }
 
     private void RevealRecoveryKitClick(object sender, RoutedEventArgs e)

@@ -10,7 +10,8 @@ internal sealed record RecipeActivationCalibrationObservation(string CheckId, st
 internal sealed record RecipeActivationCalibrationEvaluation(bool Allowed, string ReasonCode,
     IReadOnlyList<RecipeActivationCalibrationObservation> Observations,
     IReadOnlyList<CalibrationRunProfileBinding> Bindings, long LedgerPosition = 0,
-    string? LedgerContentHash = null, ImagingSetupRevisionReference? ImagingSetup = null);
+    string? LedgerContentHash = null, ImagingSetupRevisionReference? ImagingSetup = null,
+    long ImportLedgerPosition = 0, string? ImportLedgerContentHash = null);
 
 /// <summary>
 /// Reads governed authority inside an already authorized Runtime activation. It never treats
@@ -30,6 +31,17 @@ internal sealed class RecipeActivationCalibrationEvaluator
         if (recipe.CalibrationRequirements.Count == 0)
             return new(true, "CalibrationNotRequired", Array.Empty<RecipeActivationCalibrationObservation>(),
                 Array.Empty<CalibrationRunProfileBinding>());
+
+        if (_store.CalibrationImportEnabled)
+        {
+            var selectedProfiles = selections.Select(value => value.Profile).Distinct().ToArray();
+            var catalog = await _store.ReadCalibrationImportActivationCatalogAsync(recipe.CameraRole,
+                selectedProfiles, cancellationToken).ConfigureAwait(false);
+            if (!catalog.Available)
+                return Failure(catalog.ReasonCode);
+            return EvaluateRecords(recipe, selections, camera, catalog.Imaging, catalog.GovernanceRecords,
+                atUtc, catalog.GovernancePosition, catalog.GovernanceContentHash, catalog);
+        }
 
         var ledger = await _store.ReadCalibrationGovernanceAsync(cancellationToken).ConfigureAwait(false);
         if (!ledger.Available) return Failure(ledger.ReasonCode);
@@ -54,7 +66,8 @@ internal sealed class RecipeActivationCalibrationEvaluator
     internal static RecipeActivationCalibrationEvaluation EvaluateRecords(RecipeDraftContent recipe,
         IReadOnlyList<CalibrationProfileSelection> selections, CameraSetupSnapshot? camera,
         ImagingSetupRevision? imaging, IReadOnlyList<object> records, DateTimeOffset atUtc,
-        long ledgerPosition = 0, string? ledgerContentHash = null)
+        long ledgerPosition = 0, string? ledgerContentHash = null,
+        CalibrationImportActivationCatalogSnapshot? importCatalog = null)
     {
         if (CheckInput(recipe, selections) is { } inputFailure) return Failure(inputFailure);
         ArgumentNullException.ThrowIfNull(records);
@@ -70,10 +83,107 @@ internal sealed class RecipeActivationCalibrationEvaluator
             void Observe(string id, bool passed, string passReason, string failureReason, string? hash = null) =>
                 observations.Add(new(id, subject, passed, passed ? passReason : failureReason, hash));
             var selection = selections.SingleOrDefault(value => value.RequirementContentHash == subject);
-            var profile = selection is null ? null : CalibrationGovernanceProjection.Profile(records, selection.Profile);
-            Observe("V132.K01", profile is not null, "CalibrationProfileExactVersionResolved",
+            CalibrationImportedProfileResolution? imported = null;
+            if (selection is not null && importCatalog is not null &&
+                importCatalog.TryGetImportedProfile(selection.Profile, out var importedResolution))
+                imported = importedResolution;
+            var profile = imported is null && selection is not null
+                ? CalibrationGovernanceProjection.Profile(records, selection.Profile) : null;
+            Observe("V132.K01", profile is not null || imported is not null,
+                "CalibrationProfileExactVersionResolved",
                 selection is null ? "CalibrationProfileSelectionRequired" : "CalibrationProfileExactVersionMissing",
-                profile?.ContentHash);
+                profile?.ContentHash ?? imported?.Profile.ContentHash);
+            if (profile is null && imported is null) continue;
+
+            if (imported is not null)
+            {
+                var importedProfile = imported.Profile;
+                var importedContent = importedProfile.Content;
+                var importedRequirement = importedContent.Requirement;
+                var importedCompatibleRequirement = importedRequirement.LogicalCameraRole == requirement.LogicalCameraRole &&
+                    importedRequirement.Kind == requirement.Kind &&
+                    importedRequirement.LogicalPurpose == requirement.LogicalPurpose &&
+                    importedRequirement.CoefficientContract == requirement.CoefficientContract &&
+                    importedContent.Coefficients.Format == requirement.CoefficientContract &&
+                    importedRequirement.AcceptancePolicy == requirement.AcceptancePolicy;
+                Observe("V132.K02", importedCompatibleRequirement, "CalibrationRequirementBound",
+                    "CalibrationRequirementMismatch", importedContent.ContentHash);
+
+                var importedPolicyHead = records.OfType<CalibrationAcceptancePolicyRevision>()
+                    .Where(value => value.Policy.Reference.Id == requirement.AcceptancePolicy.Id)
+                    .OrderBy(value => value.Position).LastOrDefault();
+                var importedPolicy = importedPolicyHead?.Policy;
+                var importedCurrentPolicy = importedPolicy is not null &&
+                    importedPolicy.Reference == requirement.AcceptancePolicy &&
+                    importedPolicy.Reference == importedRequirement.AcceptancePolicy &&
+                    importedPolicyHead is not null && importedPolicyHead.RecordedAtUtc <= now;
+                Observe("V132.K03", importedCurrentPolicy, "CalibrationCurrentPolicyBound",
+                    "CalibrationPolicyHeadChanged", importedPolicy?.Reference.ContentHash);
+
+                var importedEvaluation = imported.Evaluation;
+                var importedEvaluationValid = importedEvaluation.Passed &&
+                    importedEvaluation.Candidate == imported.Candidate.Reference &&
+                    importedEvaluation.Content.Requirement.ContentHash == importedContent.Requirement.ContentHash &&
+                    importedEvaluation.Content.Device == importedContent.Device &&
+                    importedEvaluation.Content.ImagingSetup == importedContent.ImagingSetup &&
+                    importedEvaluation.RecordedAtUtc <= importedProfile.RecordedAtUtc &&
+                    importedProfile.RecordedAtUtc <= now;
+                Observe("V132.K04", importedEvaluationValid, "CalibrationEvaluationBound",
+                    "CalibrationProfileEvaluationMismatch", importedEvaluation.ContentHash);
+
+                var physical = imported.PhysicalVerification;
+                var importedPhysicalNotRequired = importedCurrentPolicy && importedPolicy!.PhysicalVerification.Applicability ==
+                    CalibrationPolicyApplicability.NotApplicable;
+                var importedPhysicalCurrent = importedPhysicalNotRequired || importedCurrentPolicy && physical is { Passed: true } &&
+                    physical.Candidate == imported.Candidate.Reference &&
+                    physical.Evaluation == imported.Evaluation.Reference &&
+                    physical.RecordedAtUtc <= importedProfile.RecordedAtUtc &&
+                    importedProfile.RecordedAtUtc <= now &&
+                    physical.ValidUntilUtc is { } importedExpiry && now < importedExpiry;
+                var importedPhysicalFailure = !importedCurrentPolicy ? "CalibrationPolicyHeadChanged" :
+                    physical is null ? "CalibrationPhysicalVerificationMissing" :
+                    physical.Candidate != imported.Candidate.Reference ||
+                    physical.Evaluation != imported.Evaluation.Reference
+                        ? "CalibrationPhysicalVerificationPolicyMismatch" :
+                    !physical.Passed ? "CalibrationPhysicalVerificationFailed" :
+                    physical.RecordedAtUtc > now ? "CalibrationPhysicalVerificationTimeInvalid" :
+                    "CalibrationVerificationOverdue";
+                Observe("V132.K05", importedPhysicalCurrent,
+                    importedPhysicalNotRequired ? "CalibrationPhysicalVerificationNotRequired" :
+                        "CalibrationPhysicalVerificationCurrent", importedPhysicalFailure,
+                    physical?.ContentHash);
+
+                var importedDeviceMatches = camera?.Binding?.Target == importedContent.Device &&
+                    imported.Evaluation.Binding == camera?.Binding;
+                Observe("V132.K06", importedDeviceMatches, "CalibrationDeviceBound",
+                    "CalibrationDeviceIdentityMismatch", camera?.Binding?.RevisionHash);
+                var importedImagingReference = imaging is null ? null : ImagingSetupRevisionReference.FromRevision(imaging);
+                var importedImagingMatches = importedImagingReference == importedContent.ImagingSetup &&
+                    imaging?.Binding == camera?.Binding;
+                Observe("V132.K07", importedImagingMatches, "CalibrationImagingRevisionBound",
+                    "CalibrationImagingSetupRevisionMismatch", importedImagingReference?.RevisionHash);
+                var importedRequestedMatches = camera?.Requested is { } importedRequested &&
+                    CalibrationFrameGeometry.FromRequested(importedRequested) == importedContent.RequestedGeometry &&
+                    CalibrationFrameGeometry.FromRequested(recipe.Camera) == importedContent.RequestedGeometry;
+                Observe("V132.K08", importedRequestedMatches, "CalibrationRequestedGeometryBound",
+                    "CalibrationRequestedGeometryMismatch");
+                var importedEffectiveMatches = camera is { Effective: not null } &&
+                    camera.Health.Connection == CameraConnectionState.Open &&
+                    camera.Health.Configuration == CameraConfigurationState.Applied &&
+                    CalibrationFrameGeometry.FromEffective(camera.Effective) == importedContent.EffectiveGeometry;
+                Observe("V132.K09", importedEffectiveMatches, "CalibrationEffectiveGeometryBound",
+                    "CalibrationEffectiveGeometryMismatch");
+
+                // Imported profiles are intentionally local development artifacts. Their
+                // exact lineage is retained above, but it can never become production
+                // activation authority through this evaluator.
+                var importedAuthority = importedProfile.ProductionAuthority && importedProfile.CanActivate &&
+                    !importedProfile.DevelopmentOnly;
+                Observe("V132.K10", importedAuthority, "CalibrationProductionAuthorityVerified",
+                    "CalibrationProfileNotQualified", importedProfile.ContentHash);
+                continue;
+            }
+
             if (profile is null) continue;
 
             var compatibleRequirement = profile.Content.Requirement.LogicalCameraRole == requirement.LogicalCameraRole &&
@@ -149,7 +259,8 @@ internal sealed class RecipeActivationCalibrationEvaluator
         var failure = observations.FirstOrDefault(value => !value.Passed)?.ReasonCode;
         return new(failure is null, failure ?? "CalibrationActivationDependenciesVerified",
             observations.AsReadOnly(), bindings.AsReadOnly(), ledgerPosition, ledgerContentHash,
-            imaging is null ? null : ImagingSetupRevisionReference.FromRevision(imaging));
+            imaging is null ? null : ImagingSetupRevisionReference.FromRevision(imaging),
+            importCatalog?.ImportPosition ?? 0, importCatalog?.ImportContentHash);
     }
 
     private static RecipeActivationCalibrationEvaluation Failure(string reason) => new(false, reason,

@@ -58,13 +58,15 @@ internal static class Program
         var releaseQueryDirectory = Option("--recipe-release-query");
         var plcResultContractCheckDirectory = Option("--plc-result-contract-check");
         var plcResultContractQueryDirectory = Option("--plc-result-contract-query");
+        var calibrationImportCheckDirectory = Option("--calibration-import-check");
         var recipeActivationCheckDirectory = Option("--recipe-activation-check");
         var recipeActivationQueryDirectory = Option("--recipe-activation-query");
+        var calibrationImportEnabled = calibrationImportCheckDirectory is not null;
         var recipeActivationEnabled = recipeActivationCheckDirectory is not null ||
             recipeActivationQueryDirectory is not null;
         var previewCheckDirectory = Option("--preview-check");
         var previewUiEnabled = args.Contains("--preview-ui", StringComparer.OrdinalIgnoreCase);
-        var previewEnabled = previewCheckDirectory is not null || previewUiEnabled;
+        var previewEnabled = previewCheckDirectory is not null || previewUiEnabled || calibrationImportEnabled;
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -73,19 +75,22 @@ internal static class Program
         var cameraNetworkQueryDirectory = Option("--camera-network-query");
         var imagingCalibrationDirectory = Option("--imaging-calibration-check");
         var imagingCalibrationQueryDirectory = Option("--imaging-calibration-query");
-        var cameraRecoveryEnabled = cameraRecoveryDirectory is not null || cameraRecoveryQueryDirectory is not null;
+        var cameraRecoveryEnabled = cameraRecoveryDirectory is not null || cameraRecoveryQueryDirectory is not null ||
+            calibrationImportEnabled;
         var cameraNetworkEnabled = cameraNetworkDirectory is not null || cameraNetworkQueryDirectory is not null;
         var imagingCalibrationEnabled = imagingCalibrationDirectory is not null ||
-            imagingCalibrationQueryDirectory is not null;
+            imagingCalibrationQueryDirectory is not null || calibrationImportEnabled;
         var plcResultContractEnabled = plcResultContractCheckDirectory is not null ||
             plcResultContractQueryDirectory is not null ||
             recipeActivationEnabled ||
             previewEnabled ||
+            calibrationImportEnabled ||
             args.Contains("--plc-result-contracts", StringComparer.OrdinalIgnoreCase);
         var releaseEnabled = releaseCheckDirectory is not null || releaseQueryDirectory is not null ||
             plcResultContractEnabled ||
             recipeActivationEnabled ||
             previewEnabled ||
+            calibrationImportEnabled ||
             args.Contains("--recipe-releases", StringComparer.OrdinalIgnoreCase);
         var configuredReleaseMode = Option("--recipe-release-mode");
         var configuredReleasePolicy = Option("--recipe-release-policy");
@@ -99,7 +104,14 @@ internal static class Program
         var draftEnabled = releaseEnabled || draftCheckDirectory is not null || draftQueryDirectory is not null ||
             recipeActivationEnabled ||
             previewEnabled ||
+            calibrationImportEnabled ||
             args.Contains("--recipe-drafts", StringComparer.OrdinalIgnoreCase);
+        if (calibrationImportEnabled)
+        {
+            var importDirectory = Path.GetFullPath(calibrationImportCheckDirectory!);
+            Directory.CreateDirectory(Path.Combine(importDirectory, "calibration-evidence"));
+            Directory.CreateDirectory(Path.Combine(importDirectory, "calibration-artifacts"));
+        }
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
@@ -111,7 +123,8 @@ internal static class Program
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
             RecipeReleases = releasePolicy is null ? null : new RecipeReleaseStoreOptions(releasePolicy!),
             PlcResultContracts = plcResultContractEnabled ? new PlcResultContractStoreOptions() : null,
-            RecipeActivations = recipeActivationEnabled || previewEnabled ? new RecipeActivationStoreOptions() : null,
+            RecipeActivations = recipeActivationEnabled || previewEnabled || calibrationImportEnabled
+                ? new RecipeActivationStoreOptions() : null,
             CameraSetup = cameraSetupDirectory is not null || cameraSetupQueryDirectory is not null || cameraRecoveryEnabled || cameraNetworkEnabled
                 || imagingCalibrationEnabled || recipeActivationEnabled || previewEnabled
                 ? new CameraSetupStoreOptions() : null,
@@ -119,6 +132,16 @@ internal static class Program
             CameraRecovery = cameraRecoveryEnabled || cameraNetworkEnabled ? new CameraRecoveryStoreOptions() : null,
             CameraNetwork = cameraNetworkEnabled ? new CameraNetworkStoreOptions() : null,
             ImagingSetup = imagingCalibrationEnabled ? new ImagingSetupStoreOptions() : null,
+            CalibrationSessions = calibrationImportEnabled ? new CalibrationSessionStoreOptions
+            {
+                EvidenceRoot = Path.Combine(Path.GetFullPath(calibrationImportCheckDirectory!), "calibration-evidence")
+            } : null,
+            CalibrationGovernance = calibrationImportEnabled ? new CalibrationGovernanceStoreOptions() : null,
+            CalibrationImports = calibrationImportEnabled ? new CalibrationImportStoreOptions
+            {
+                Artifacts = new SharpInspect.Runtime.Calibration.CalibrationTransferArtifactOptions(
+                    Path.Combine(Path.GetFullPath(calibrationImportCheckDirectory!), "calibration-artifacts"))
+            } : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -131,6 +154,9 @@ internal static class Program
                 Option("--user-name"), Option("--expected-principal"));
         if (plcResultContractQueryDirectory is not null)
             return PlcResultContractGovernanceDemo.Query(storeOptions, plcResultContractQueryDirectory);
+        if (calibrationImportCheckDirectory is not null)
+            return CalibrationImportDemo.Run(storeOptions, calibrationImportCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
         if (recipeActivationCheckDirectory is not null)
             return RecipeActivationDemo.Run(storeOptions, recipeActivationCheckDirectory,
                 Option("--user-name"), Option("--expected-principal"));

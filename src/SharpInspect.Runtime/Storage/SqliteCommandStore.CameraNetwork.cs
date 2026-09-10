@@ -266,7 +266,7 @@ internal sealed partial class SqliteCommandStore
                  releaseOptions: _options.RecipeReleases,
                  contractOptions: _options.PlcResultContracts,
                  activationOptions: _options.RecipeActivations,
-                 previewOptions: _options.PreviewSessions);
+                 previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports);
         if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (archiveStore) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
         if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -293,6 +293,8 @@ internal sealed partial class SqliteCommandStore
           if (previewStore)
               AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                   _options.PreviewSessions);
+              if (_options.CalibrationImports is not null)
+                  AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
      }
 
     private StoreWriteResult AppendCameraNetworkAdmissionCore(sqlite3 database,
