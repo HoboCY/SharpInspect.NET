@@ -74,6 +74,8 @@ public sealed record AlgorithmResultSchema
             throw new ArgumentException("AlgorithmResultDefaultsForbidden", nameof(measurements));
         if (copiedMeasurements.Any(item => item.HelpText is not null))
             throw new ArgumentException("AlgorithmResultAuthoringHelpForbidden", nameof(measurements));
+        if (copiedMeasurements.Any(item => item.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly))
+            throw new ArgumentException("AlgorithmResultTransferClassificationForbidden", nameof(measurements));
 
         var copiedReasons = AlgorithmContractValidation.Copy(reasonCodes, nameof(reasonCodes), maximumCount: 256);
         foreach (var reason in copiedReasons)

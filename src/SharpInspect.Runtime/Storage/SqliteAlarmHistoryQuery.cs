@@ -83,10 +83,11 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             var schema21 = schema == ManualInspectionStoreOptions.SchemaVersion;
             var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
             var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
-            var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23;
+            var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
+            var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24;
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             StationQualificationReadGuard.RequireConfiguration(schema, _options);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23,
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
@@ -213,9 +214,11 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                     activationOptions: activationStore ? _options.RecipeActivations : null,
                     previewOptions: previewStore ? _options.PreviewSessions : null,
                      importOptions: importStore ? _options.CalibrationImports : null,
-                     manualOptions: schema21 || schema22 || schema23 ? _options.ManualInspections : null,
-                     productionAdmissionOptions: schema22 || schema23 ? _options.ProductionAdmission : null,
-                stationQualificationOptions: _options.StationQualifications);
+                     manualOptions: schema21 || schema22 || schema23 || schema24 ? _options.ManualInspections : null,
+                     productionAdmissionOptions: schema22 || schema23 || schema24 ? _options.ProductionAdmission : null,
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)
@@ -250,10 +253,10 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
               if (importStore)
                   AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
                       _options.CalibrationImports);
-              if ((schema21 || schema22 || schema23) && _options.ManualInspections is not null)
+              if ((schema21 || schema22 || schema23 || schema24) && _options.ManualInspections is not null)
                   AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                       _options.ManualInspections);
-              if ((schema22 || schema23) && _options.ProductionAdmission is not null)
+              if ((schema22 || schema23 || schema24) && _options.ProductionAdmission is not null)
                   AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
                       _options.ProductionAdmission);
              var persistedPolicy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
@@ -981,10 +984,11 @@ internal sealed partial class SqliteCommandStore
             var schema21 = schema == ManualInspectionStoreOptions.SchemaVersion;
             var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
             var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
-            var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23;
+            var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
+            var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24;
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             StationQualificationReadGuard.RequireConfiguration(schema, _options);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23,
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24,
                     schema < 7 ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
                 if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
@@ -1112,9 +1116,11 @@ internal sealed partial class SqliteCommandStore
                     activationOptions: activationStore ? _options.RecipeActivations : null,
                     previewOptions: previewStore ? _options.PreviewSessions : null,
                     importOptions: importStore ? _options.CalibrationImports : null,
-                     manualOptions: schema21 || schema22 || schema23 ? _options.ManualInspections : null,
-                     productionAdmissionOptions: schema22 || schema23 ? _options.ProductionAdmission : null,
-                stationQualificationOptions: _options.StationQualifications);
+                     manualOptions: schema21 || schema22 || schema23 || schema24 ? _options.ManualInspections : null,
+                     productionAdmissionOptions: schema22 || schema23 || schema24 ? _options.ProductionAdmission : null,
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveStore)
@@ -1153,10 +1159,10 @@ internal sealed partial class SqliteCommandStore
              if (importStore)
                  AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
                      _options.CalibrationImports);
-              if ((schema21 || schema22 || schema23) && _options.ManualInspections is not null)
+              if ((schema21 || schema22 || schema23 || schema24) && _options.ManualInspections is not null)
                   AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                       _options.ManualInspections);
-              if ((schema22 || schema23) && _options.ProductionAdmission is not null)
+              if ((schema22 || schema23 || schema24) && _options.ProductionAdmission is not null)
                   AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
                       _options.ProductionAdmission);
                 var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
@@ -1239,7 +1245,9 @@ internal sealed partial class SqliteCommandStore
                  importOptions: importStore ? _options.CalibrationImports : null,
                  manualOptions: manualStore ? _options.ManualInspections : null,
                  productionAdmissionOptions: _options.ProductionAdmission,
-                stationQualificationOptions: _options.StationQualifications);
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (archiveStore)

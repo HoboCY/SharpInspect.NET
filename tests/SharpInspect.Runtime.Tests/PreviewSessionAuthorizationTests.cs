@@ -1,6 +1,7 @@
 using System.Linq;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Identity;
+using SharpInspect.Runtime.Storage;
 using Xunit;
 
 namespace SharpInspect.Runtime.Tests;
@@ -58,7 +59,9 @@ public sealed partial class RecipeActivationServiceTests
         var wrong = await harness.Runtime.SubmitAsync(wrongTarget with
         { Invocation = invocation with { StepUpGrantId = wrongGrant.GrantId } });
         Assert.Equal(CommandDisposition.Rejected, wrong.Disposition);
-        Assert.Equal("StepUpInvalid", wrong.ReasonCode);
+        if (wrong.ReasonCode != "StepUpInvalid")
+            throw new Xunit.Sdk.XunitException($"Expected StepUpInvalid, actual {wrong.ReasonCode}; " +
+                await PreviewFailureContextAsync(harness, invocation, sessionId));
         await WaitForPreviewAsync(harness, invocation, sessionId,
             snapshot => snapshot.Phase == PreviewSessionPhase.Streaming,
             "PreviewStrictEditWrongBindingRecoveryUnavailable");
@@ -91,7 +94,9 @@ public sealed partial class RecipeActivationServiceTests
         var reusedOutcome = await harness.Runtime.SubmitAsync(reused with
         { Invocation = invocation with { StepUpGrantId = exactGrant.GrantId } });
         Assert.Equal(CommandDisposition.Rejected, reusedOutcome.Disposition);
-        Assert.Equal("StepUpInvalid", reusedOutcome.ReasonCode);
+        if (reusedOutcome.ReasonCode != "StepUpInvalid")
+            throw new Xunit.Sdk.XunitException($"Expected StepUpInvalid, actual {reusedOutcome.ReasonCode}; " +
+                await PreviewFailureContextAsync(harness, invocation, sessionId));
         await WaitForPreviewAsync(harness, invocation, sessionId,
             snapshot => snapshot.Phase == PreviewSessionPhase.Streaming,
             "PreviewStrictEditConsumedGrantRecoveryUnavailable");
@@ -187,5 +192,33 @@ public sealed partial class RecipeActivationServiceTests
         Assert.NotNull(grant.GrantId);
         await harness.WaitForVerifiedAsync();
         return grant;
+    }
+
+    private static async Task<string> PreviewFailureContextAsync(
+        ActivationHarness harness, CommandInvocation invocation, Guid sessionId)
+    {
+        try
+        {
+            var read = await ((IPreviewSessionService)harness.Runtime).GetSnapshotAsync(invocation);
+            var snapshot = read.Snapshot;
+            var history = await new SqlitePreviewSessionQuery(harness.Options).QueryAsync(
+                new PreviewSessionHistoryFilter(sessionId, PageSize: 128));
+            var tail = history.Events.LastOrDefault();
+            return $"snapshotAvailable={read.Available};snapshotReason={read.ReasonCode};" +
+                $"phase={snapshot?.Phase.ToString() ?? "<null>"};" +
+                $"snapshotPhaseReason={snapshot?.ReasonCode ?? "<null>"};" +
+                $"restoration={snapshot?.Restoration.ToString() ?? "<null>"};" +
+                $"recoveryRequired={snapshot?.RecoveryRequired.ToString() ?? "<null>"};" +
+                $"historyAvailable={history.Available};historyReason={history.ReasonCode};" +
+                $"historyCount={history.Events.Count};" +
+                $"tail={tail?.Phase.ToString() ?? "<null>"}/" +
+                $"{tail?.ReasonCode ?? "<null>"}/" +
+                $"{tail?.Restoration.ToString() ?? "<null>"}/" +
+                $"terminal={tail?.Terminal.ToString() ?? "<null>"}";
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return $"preview-diagnostic-failed={exception.GetType().Name}:{exception.Message}";
+        }
     }
 }

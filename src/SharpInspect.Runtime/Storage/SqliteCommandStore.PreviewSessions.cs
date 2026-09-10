@@ -367,7 +367,9 @@ internal sealed partial class SqliteCommandStore
              previewOptions: options, importOptions: _options.CalibrationImports,
              manualOptions: _options.ManualInspections,
              productionAdmissionOptions: _options.ProductionAdmission,
-                stationQualificationOptions: _options.StationQualifications);
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
@@ -557,7 +559,9 @@ internal sealed partial class SqliteCommandStore
                  previewOptions: options, importOptions: _options.CalibrationImports,
                  manualOptions: _options.ManualInspections,
                  productionAdmissionOptions: _options.ProductionAdmission,
-                stationQualificationOptions: _options.StationQualifications);
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
             RequireConfiguredPreviewSessions(database, options, deadline);
             if (_options.AlarmPolicy is not null)

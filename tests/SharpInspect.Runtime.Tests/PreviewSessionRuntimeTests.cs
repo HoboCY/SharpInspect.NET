@@ -655,6 +655,8 @@ public sealed partial class RecipeActivationServiceTests
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _previewReadCalls);
+            if (TryHoldNextPreviewReadUntilCancellation(cancellationToken, out var cancellationRead))
+                return cancellationRead;
             if (cancellationToken.IsCancellationRequested)
                 return ValueTask.FromResult(CameraPreviewFrameResult.Failure(
                     "PreviewOperationCancelled"));

@@ -287,11 +287,18 @@ internal sealed partial class SqliteCommandStore
                 var ordered = group.OrderBy(value => value.Position).ToArray();
                 return (Last: ordered[^1], PendingRun: ordered.Where(value => value.Run is not null)
                     .GroupBy(value => value.Run!.RunId.Value)
-                    .Any(run => !run.Last().Run!.Completed));
+                    .Any(run => !run.Last().Run!.Completed),
+                    ExitAccepted: ordered.Any(value => value.CommandKind ==
+                        AuditedCommandKind.ExitStationQualificationSession));
             })
             .ToArray();
+        // The first accepted Exit has its own identity, command and ledger
+        // footprint before restoration can spend the physical recovery tail.
+        // Reserve that row until it is accepted, including during a pending
+        // run or blocked recovery; unrelated writes cannot consume it.
         return checked(latest.Where(value => !value.Last.Terminal)
-            .Sum(value => StationQualificationFutureRows(value.Last, value.PendingRun)));
+            .Sum(value => checked(StationQualificationFutureRows(value.Last, value.PendingRun) +
+                (value.ExitAccepted ? 0 : 1))));
     }
 
     /// <summary>
@@ -395,7 +402,7 @@ internal sealed partial class SqliteCommandStore
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema == StationQualificationStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion,
                 schema < StationQualificationStoreOptions.SchemaVersion
                     ? "StationQualificationGovernedMigrationRequired" : "StoreSchemaTooNew");
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
@@ -411,7 +418,9 @@ internal sealed partial class SqliteCommandStore
                 previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                 manualOptions: _options.ManualInspections,
                 productionAdmissionOptions: _options.ProductionAdmission,
-                stationQualificationOptions: options);
+                stationQualificationOptions: options,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)

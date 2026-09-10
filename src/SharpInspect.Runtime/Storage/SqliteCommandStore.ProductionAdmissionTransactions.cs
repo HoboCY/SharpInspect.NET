@@ -245,7 +245,9 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
             importOptions: _options.CalibrationImports,
             manualOptions: _options.ManualInspections,
             productionAdmissionOptions: admissionOptions,
-                stationQualificationOptions: _options.StationQualifications);
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);

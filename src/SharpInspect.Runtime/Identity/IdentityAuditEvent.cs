@@ -66,7 +66,8 @@ internal enum IdentityEventKind
     ProductionAdmissionArmAuthorized,
     ProductionAdmissionCompleted,
     ProductionAdmissionFailed,
-    StationQualificationAuthorized
+    StationQualificationAuthorized,
+    RecipeTransferAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -145,14 +146,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > StationQualificationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeTransferStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > StationQualificationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeTransferStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -177,7 +178,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= StationQualificationStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= RecipeTransferStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -245,6 +246,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= StationQualificationStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.StationQualificationAuthorized,
                     "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.RecipeTransferAuthorized, "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -329,13 +332,15 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                       (schemaVersion >= CalibrationImportStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.ImportCalibrationPackage and <= AuditedCommandKind.PublishImportedCalibration)) &&
                     (schemaVersion >= ManualInspectionStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartManualInspectionSession and <= AuditedCommandKind.ExitManualInspectionSession)) &&
                     (schemaVersion >= StationQualificationStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartStationQualificationSession and <= AuditedCommandKind.ExitStationQualificationSession)) &&
+                    (schemaVersion >= RecipeTransferStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.ReplaceRecipeTrustStore and <= AuditedCommandKind.ImportRecipeTransfer)) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ? 36 :
+                var maximumPermissions = schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ? 38 :
+                    schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ? 36 :
                     schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ? 35 :
                     schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
                 AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
@@ -577,12 +582,48 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     }
 
     /// <summary>
-    /// Matches the durable identity authorization attached to one station
-    /// qualification event.  Qualification recovery reuses the original
-    /// admission evidence, so this matcher deliberately binds the complete
-    /// actor, policy, grant, command and session tuple instead of accepting a
-    /// correlation-only identity row.
+    /// Matches the durable human authorization, exact command target and policy for one Recipe transfer operation.
     /// </summary>
+    internal static bool MatchesRecipeTransferAuthorization(byte[] payload, long ordinal, string stationId,
+        CommandAuditFact accepted, string authorizationTarget, Guid principalId, Guid sessionId,
+        long authorizationRevision, RecipeContractReference authorizationPolicy)
+    {
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, RecipeTransferStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            var permission = accepted.CommandKind switch
+            {
+                AuditedCommandKind.ReplaceRecipeTrustStore => Permission.ManageRecipeTrustStore,
+                AuditedCommandKind.CreateRecipeSigningKey or AuditedCommandKind.RetireRecipeSigningKey => Permission.ManageRecipeSigningKeys,
+                AuditedCommandKind.ImportRecipeTransfer => Permission.ImportRecipe,
+                AuditedCommandKind.ExportRecipeTransfer => Permission.ExportRecipe,
+                _ => Permission.None
+            };
+            return permission != Permission.None && fields.Length == 49 &&
+                fields[2] == IdentityEventKind.RecipeTransferAuthorized.ToString() &&
+                fields[3] == accepted.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[9] == accepted.ReasonCode && accepted.ReasonCode == "RecipeTransferAuthorized" &&
+                accepted.Phase == CommandAuditPhase.Outcome && accepted.Disposition == CommandDisposition.Accepted &&
+                accepted.Source is { } source && Enum.IsDefined(source) && fields[4] == stationId &&
+                fields[5] == principalId.ToString("D") && fields[25] == sessionId.ToString("D") &&
+                fields[27] == authorizationPolicy.Id && fields[28] == authorizationPolicy.Version &&
+                fields[29] == authorizationPolicy.ContentHash && fields[30] == principalId.ToString("D") &&
+                fields[31] == accepted.CorrelationId.ToString("D") &&
+                fields[32] == accepted.ClaimedStepUpGrantId?.ToString("D") && fields[33] == permission.ToString() &&
+                fields[34] is null && fields[35] == authorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == authorizationTarget && fields[38] == accepted.CorrelationId.ToString("D") &&
+                fields[39] == accepted.CommandKind.ToString() && accepted.ClaimedPrincipalId == principalId.ToString("D") &&
+                accepted.ClaimedSessionId == sessionId && accepted.AuthenticatedHumanPrincipalId == principalId.ToString("D") &&
+                (permission is not (Permission.ManageRecipeTrustStore or Permission.ManageRecipeSigningKeys) ||
+                    accepted.ClaimedStepUpGrantId is not null);
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>Matches the complete actor, policy, grant, command and session tuple for a qualification event.</summary>
     internal static bool MatchesStationQualificationAuthorization(byte[] payload, long ordinal,
         string stationId, StationQualificationSessionEvent value,
         SharpInspect.Runtime.CommandAuditFact accepted)

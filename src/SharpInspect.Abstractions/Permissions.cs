@@ -51,7 +51,9 @@ public enum Permission : ushort
     /// <summary>Run an explicitly admitted non-production Preview session.</summary>
     RunPreview = 35,
     /// <summary>Run an explicitly admitted non-production Manual Inspection Session.</summary>
-    RunManualInspection = 36
+    RunManualInspection = 36,
+    ImportRecipe = 37,
+    ExportRecipe = 38
 }
 
 /// <summary>

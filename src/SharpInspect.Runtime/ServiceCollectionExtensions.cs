@@ -225,6 +225,14 @@ public static class ServiceCollectionExtensions
                     p.GetRequiredService<LocalAuthorizationService>(),
                     p.GetRequiredService<IRecipeDraftHistoryQuery>()));
                 services.TryAddSingleton<IRecipeDraftEditor>(p => p.GetRequiredService<RecipeDraftService>());
+                if (options.RecipeTransfers is not null)
+                {
+                    services.TryAddSingleton<IRecipeTransferHistoryQuery>(_ => new SqliteRecipeTransferQuery(options));
+                    services.TryAddSingleton<IRecipeTransferService>(p => new RecipeTransferService(options,
+                        p.GetRequiredService<LocalAuthorizationService>(), p.GetRequiredService<SqliteCommandStore>(),
+                        p.GetRequiredService<IRecipeDraftHistoryQuery>(), p.GetService<IReleasedRecipeQuery>(),
+                        p.GetRequiredService<IRecipeTransferHistoryQuery>(), p.GetRequiredService<RecipeDraftService>().Algorithms));
+                }
                 services.TryAddSingleton<AlgorithmConfigurationMigrationRegistry>(p =>
                     new AlgorithmConfigurationMigrationRegistry(p.GetServices<IAlgorithmConfigurationMigrator>(),
                         options.CommitTimeout));

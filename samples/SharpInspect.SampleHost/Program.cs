@@ -49,6 +49,10 @@ internal static class Program
             return StationQualificationDemo.Run(qualificationDirectory, queryOnly: false);
         if (Option("--station-qualification-query") is { } qualificationQueryDirectory)
             return StationQualificationDemo.Run(qualificationQueryDirectory, queryOnly: true);
+        if (Option("--recipe-transfer-check") is { } transferDirectory)
+            return RecipeTransferDemo.Run(transferDirectory, queryOnly: false);
+        if (Option("--recipe-transfer-query") is { } transferQueryDirectory)
+            return RecipeTransferDemo.Run(transferQueryDirectory, queryOnly: true);
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);

@@ -442,7 +442,7 @@ internal sealed partial class SqliteCommandStore
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
                 AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion,
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion,
                     schema < ManualInspectionStoreOptions.SchemaVersion
                         ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
                 var verification = AuditChainDatabase.Verify(database, _policy,
@@ -464,7 +464,9 @@ internal sealed partial class SqliteCommandStore
                      importOptions: _options.CalibrationImports,
                      manualOptions: options,
                      productionAdmissionOptions: _options.ProductionAdmission,
-                stationQualificationOptions: _options.StationQualifications);
+                stationQualificationOptions: _options.StationQualifications,
+                recipeTransferOptions: _options.RecipeTransfers);
+            RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
                 AuditChainDatabase.RequireFullManualInspectionVerification(database,
                     verification, deadline, options);

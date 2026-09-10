@@ -40,6 +40,9 @@ internal sealed partial class LocalAuthorizationService
             if (request.Binding?.CommandKind is (AuditedCommandKind.StartStationQualificationSession or
                 AuditedCommandKind.ExitStationQualificationSession) && !_store.StationQualificationEnabled)
                 return await RejectStepUpAsync(request, "StationQualificationConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding?.CommandKind is >= AuditedCommandKind.ReplaceRecipeTrustStore and <= AuditedCommandKind.ImportRecipeTransfer &&
+                !_store.RecipeTransferEnabled)
+                return await RejectStepUpAsync(request, "RecipeTransferConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.CorrelationId == Guid.Empty || request.Binding is null || !ValidBinding(request.Binding))
                 return await RejectStepUpAsync(request, "StepUpBindingInvalid", null, cancellationToken).ConfigureAwait(false);
             var before = await _store.ReadIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -156,7 +159,9 @@ internal sealed partial class LocalAuthorizationService
                     _store.PreviewSessionOptions is not null) &&
                 (request.Binding.CommandKind is not (AuditedCommandKind.StartManualInspectionSession or
                     AuditedCommandKind.RunManualInspection or AuditedCommandKind.ExitManualInspectionSession) ||
-                    _store.ManualInspectionOptions is not null) ? request.Binding : null,
+                    _store.ManualInspectionOptions is not null) &&
+                (request.Binding.CommandKind is not (>= AuditedCommandKind.ReplaceRecipeTrustStore and <= AuditedCommandKind.ImportRecipeTransfer) ||
+                    _store.RecipeTransferEnabled) ? request.Binding : null,
             actorId, actorId.HasValue ? request.Invocation?.SessionId : null,
             null, request.CorrelationId == Guid.Empty ? null : request.CorrelationId,
             actorId.HasValue ? Find(state, actorId.Value)?.AuthorizationRevision ?? 0 : 0);

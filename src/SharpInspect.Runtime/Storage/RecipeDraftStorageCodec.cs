@@ -12,7 +12,7 @@ namespace SharpInspect.Runtime.Storage;
 /// Strict canonical codec for one complete Recipe Draft content snapshot. Revision
 /// attribution is deliberately outside this codec; storage binds it to the revision hash.
 /// </summary>
-internal static class RecipeDraftStorageCodec
+internal static partial class RecipeDraftStorageCodec
 {
     internal const int MaximumPayloadBytes = 2 * 1024 * 1024;
     private const int FormatVersion = 1;
@@ -20,6 +20,7 @@ internal static class RecipeDraftStorageCodec
     private const int CalibrationRequirementFormatVersion = 3;
     private const int MigrationLineageFormatVersion = 4;
     private const int PartIdentityFormatVersion = 5;
+    private const int TransferClassificationFormatVersion = 6;
     private const int CanonicalizationVersion = 1;
     private const int MaximumDepth = 32;
 
@@ -162,8 +163,10 @@ internal static class RecipeDraftStorageCodec
 
     private static void WriteContent(Utf8JsonWriter writer, RecipeDraftContent content)
     {
+        var hasTransferClassification = content.Algorithm.ConfigurationSchema.Fields.Any(field =>
+            field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly);
         writer.WriteStartObject();
-        writer.WriteNumber("FormatVersion", content.PartIdentityRequirement is not null
+        writer.WriteNumber("FormatVersion", hasTransferClassification ? TransferClassificationFormatVersion : content.PartIdentityRequirement is not null
             ? PartIdentityFormatVersion : content.MigrationLineage is not null
             ? MigrationLineageFormatVersion : content.CalibrationRequirements.Count != 0
             ? CalibrationRequirementFormatVersion : content.CameraProviderExtension is null
@@ -195,10 +198,10 @@ internal static class RecipeDraftStorageCodec
             writer.WriteEndObject();
         }
         else if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
-            content.PartIdentityRequirement is not null)
+            content.PartIdentityRequirement is not null || hasTransferClassification)
             writer.WriteNull("CameraProviderExtension");
         if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
-            content.PartIdentityRequirement is not null)
+            content.PartIdentityRequirement is not null || hasTransferClassification)
         {
             writer.WritePropertyName("CalibrationRequirements");
             writer.WriteStartArray();
@@ -223,7 +226,7 @@ internal static class RecipeDraftStorageCodec
             writer.WritePropertyName("MigrationLineage");
             WriteMigrationLineage(writer, migration);
         }
-        else if (content.PartIdentityRequirement is not null)
+        else if (content.PartIdentityRequirement is not null || hasTransferClassification)
             writer.WriteNull("MigrationLineage");
         if (content.PartIdentityRequirement is { } partIdentity)
         {
@@ -237,6 +240,7 @@ internal static class RecipeDraftStorageCodec
             writer.WriteString("ContentHash", partIdentity.ContentHash);
             writer.WriteEndObject();
         }
+        else if (hasTransferClassification) writer.WriteNull("PartIdentityRequirement");
         writer.WriteNumber("AlgorithmExecutionTimeoutTicks", content.AlgorithmExecutionTimeout.Ticks);
         writer.WritePropertyName("AssetRequirements");
         writer.WriteStartArray();
@@ -295,6 +299,7 @@ internal static class RecipeDraftStorageCodec
 
     private static void WriteSchema(Utf8JsonWriter writer, AlgorithmConfigurationSchema schema)
     {
+        var classified = schema.Fields.Any(field => field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly);
         writer.WriteStartObject();
         writer.WriteString("Id", schema.Id);
         writer.WriteString("Version", schema.Version);
@@ -314,6 +319,7 @@ internal static class RecipeDraftStorageCodec
             WriteScalar(writer, field.AuthoringDefault);
             if (field.HelpText is null) writer.WriteNull("HelpText");
             else writer.WriteString("HelpText", field.HelpText);
+            if (classified) writer.WriteString("TransferClassification", field.TransferClassification.ToString());
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
@@ -460,17 +466,17 @@ internal static class RecipeDraftStorageCodec
     {
         if (root.ValueKind != JsonValueKind.Object) throw Invalid("RecipeDraftPayloadObjectInvalid");
         var format = Int32(root, "FormatVersion");
-        EnsureObject(root, format == PartIdentityFormatVersion ? PartIdentityTopProperties :
+        EnsureObject(root, format is PartIdentityFormatVersion or TransferClassificationFormatVersion ? PartIdentityTopProperties :
             format == MigrationLineageFormatVersion ? MigrationTopProperties :
             format == CalibrationRequirementFormatVersion ? CalibrationTopProperties :
             format == ProviderExtensionFormatVersion ? ExtendedTopProperties : TopProperties,
             "RecipeDraftPayload");
         var canonical = Int32(root, "CanonicalizationVersion");
         if (format is not (FormatVersion or ProviderExtensionFormatVersion or CalibrationRequirementFormatVersion or
-            MigrationLineageFormatVersion or PartIdentityFormatVersion) ||
+            MigrationLineageFormatVersion or PartIdentityFormatVersion or TransferClassificationFormatVersion) ||
             canonical != CanonicalizationVersion)
             throw Invalid("RecipeDraftPayloadVersionUnsupported");
-        var binding = ReadBinding(RequiredObject(root, "Algorithm"));
+        var binding = ReadBinding(RequiredObject(root, "Algorithm"), format == TransferClassificationFormatVersion);
         var configuration = ReadConfiguration(RequiredObject(root, "Configuration"));
         if (!string.Equals(configuration.SchemaId, binding.ConfigurationSchema.Id, StringComparison.Ordinal) ||
             !string.Equals(configuration.SchemaVersion, binding.ConfigurationSchema.Version, StringComparison.Ordinal) ||
@@ -492,7 +498,8 @@ internal static class RecipeDraftStorageCodec
                 ? ReadCameraExtension(RequiredObject(root, "CameraProviderExtension")) : null,
             format >= CalibrationRequirementFormatVersion
                 ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements"), format >= MigrationLineageFormatVersion) : null,
-            format == PartIdentityFormatVersion
+            format == PartIdentityFormatVersion || (format == TransferClassificationFormatVersion &&
+                RequiredValue(root, "PartIdentityRequirement").ValueKind != JsonValueKind.Null)
                 ? ReadPartIdentity(RequiredObject(root, "PartIdentityRequirement")) : null);
         var suppliedHash = RequiredString(root, "ContentHash");
         if (!string.Equals(suppliedHash, content.ContentHash, StringComparison.Ordinal))
@@ -524,20 +531,20 @@ internal static class RecipeDraftStorageCodec
             RequiredString(element, "ConfigurationContentHash"));
     }
 
-    private static RecipeAlgorithmBinding ReadBinding(JsonElement element)
+    private static RecipeAlgorithmBinding ReadBinding(JsonElement element, bool classified = false)
     {
         EnsureObject(element, BindingProperties, "RecipeDraftAlgorithm");
         var algorithmElement = RequiredObject(element, "Algorithm");
         EnsureObject(algorithmElement, AlgorithmProperties, "RecipeDraftAlgorithmIdentity");
         var algorithm = new AlgorithmIdentity(RequiredString(algorithmElement, "Id"),
             RequiredString(algorithmElement, "Version"));
-        var schema = ReadSchema(RequiredObject(element, "ConfigurationSchema"));
+        var schema = ReadSchema(RequiredObject(element, "ConfigurationSchema"), classified);
         return new RecipeAlgorithmBinding(algorithm, schema,
             ReadContractReference(RequiredObject(element, "ResultSchema")),
             ReadContractReference(RequiredObject(element, "OverlayContract")));
     }
 
-    private static AlgorithmConfigurationSchema ReadSchema(JsonElement element)
+    private static AlgorithmConfigurationSchema ReadSchema(JsonElement element, bool classified = false)
     {
         EnsureObject(element, SchemaProperties, "RecipeDraftConfigurationSchema");
         var fields = new List<AlgorithmFieldDefinition>();
@@ -545,9 +552,11 @@ internal static class RecipeDraftStorageCodec
         if (array.GetArrayLength() > 256) throw Invalid("RecipeDraftSchemaCapacityExceeded");
         foreach (var item in array.EnumerateArray())
         {
-            EnsureObject(item, FieldProperties, "RecipeDraftSchemaField");
+            EnsureObject(item, classified ? ClassifiedFieldProperties : FieldProperties, "RecipeDraftSchemaField");
             var type = ParseEnum<AlgorithmScalarType>(RequiredString(item, "Type"), "RecipeDraftScalarTypeInvalid");
-            fields.Add(new AlgorithmFieldDefinition(RequiredString(item, "Key"), type,
+            var classification = classified ? ParseEnum<AlgorithmConfigurationTransferClassification>(RequiredString(item, "TransferClassification"),
+                "RecipeDraftTransferClassificationInvalid") : AlgorithmConfigurationTransferClassification.LocalOnly;
+            fields.Add(new AlgorithmFieldDefinition(classification, RequiredString(item, "Key"), type,
                 RequiredString(item, "Unit"), Bool(item, "Required"),
                 ReadConstraints(RequiredValue(item, "Constraints"), type),
                 ReadScalar(RequiredValue(item, "AuthoringDefault"), type, allowNull: true),
@@ -1034,6 +1043,7 @@ internal static class RecipeDraftStorageCodec
     private static readonly string[] AlgorithmProperties = { "Id", "Version" };
     private static readonly string[] SchemaProperties = { "Id", "Version", "ContentHash", "Fields" };
     private static readonly string[] FieldProperties = { "Key", "Type", "Unit", "Required", "Constraints", "AuthoringDefault", "HelpText" };
+    private static readonly string[] ClassifiedFieldProperties = FieldProperties.Concat(new[] { "TransferClassification" }).ToArray();
     private static readonly string[] ConfigurationProperties = { "SchemaId", "SchemaVersion", "SchemaContentHash", "CanonicalizationVersion", "ContentHash", "Values" };
     private static readonly string[] EntryProperties = { "Key", "Unit", "Value" };
     private static readonly string[] ScalarProperties = { "Type", "Boolean", "Int64", "Float64", "Text" };

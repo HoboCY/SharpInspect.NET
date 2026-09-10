@@ -159,6 +159,10 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PreviewSessionCommand => Permission.RunPreview,
         ManualInspectionCommand => Permission.RunManualInspection,
         StationQualificationCommand => Permission.RunStationQualification,
+        ReplaceRecipeTrustStoreCommand => Permission.ManageRecipeTrustStore,
+        CreateRecipeSigningKeyCommand or RetireRecipeSigningKeyCommand => Permission.ManageRecipeSigningKeys,
+        ExportRecipeTransferCommand => Permission.ExportRecipe,
+        ImportRecipeTransferCommand => Permission.ImportRecipe,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -187,6 +191,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             PreviewSessionCommand preview => preview.AuthorizationTarget,
             ManualInspectionCommand manual => manual.AuthorizationTarget,
             StationQualificationCommand qualification => qualification.AuthorizationTarget,
+            RecipeTransferCommand transfer => transfer.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -231,6 +236,10 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             AuditedCommandKind.ExitStationQualificationSession => Permission.RunStationQualification,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
+        AuditedCommandKind.ReplaceRecipeTrustStore => Permission.ManageRecipeTrustStore,
+        AuditedCommandKind.CreateRecipeSigningKey or AuditedCommandKind.RetireRecipeSigningKey => Permission.ManageRecipeSigningKeys,
+        AuditedCommandKind.ExportRecipeTransfer => Permission.ExportRecipe,
+        AuditedCommandKind.ImportRecipeTransfer => Permission.ImportRecipe,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,
@@ -263,6 +272,11 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PublishImportedCalibrationCommand => AuditedCommandKind.PublishImportedCalibration,
         ChangePlcResultContractCommand => AuditedCommandKind.ChangePlcResultContract,
         ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
+        ReplaceRecipeTrustStoreCommand => AuditedCommandKind.ReplaceRecipeTrustStore,
+        CreateRecipeSigningKeyCommand => AuditedCommandKind.CreateRecipeSigningKey,
+        RetireRecipeSigningKeyCommand => AuditedCommandKind.RetireRecipeSigningKey,
+        ExportRecipeTransferCommand => AuditedCommandKind.ExportRecipeTransfer,
+        ImportRecipeTransferCommand => AuditedCommandKind.ImportRecipeTransfer,
         SelectHistoricalCalibrationCommand => AuditedCommandKind.SelectHistoricalCalibration,
         ActivateRecipeCommand => AuditedCommandKind.ActivateRecipe,
         StartPreviewSessionCommand => AuditedCommandKind.StartPreview,

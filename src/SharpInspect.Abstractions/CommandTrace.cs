@@ -51,7 +51,12 @@ public enum AuditedCommandKind
     RunManualInspection = 43,
     ExitManualInspectionSession = 44,
     StartStationQualificationSession = 45,
-    ExitStationQualificationSession = 46
+    ExitStationQualificationSession = 46,
+    ReplaceRecipeTrustStore = 47,
+    CreateRecipeSigningKey = 48,
+    RetireRecipeSigningKey = 49,
+    ExportRecipeTransfer = 50,
+    ImportRecipeTransfer = 51
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

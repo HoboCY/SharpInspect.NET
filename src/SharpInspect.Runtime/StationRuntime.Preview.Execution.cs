@@ -486,6 +486,10 @@ public sealed partial class StationRuntime
                 }
                 else if (read.Result is not { Succeeded: true, Frame: { } frame })
                 {
+                    // A joined provider can report cancellation as a result
+                    // instead of throwing. Pause owns this requested read
+                    // cancellation; it must not terminate the whole session.
+                    if (token.IsCancellationRequested) return;
                     var reason = read.Result?.ReasonCode ?? read.ReasonCode;
                     if (!IsTransientPreviewReadFailure(reason))
                     {

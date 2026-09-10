@@ -7,6 +7,14 @@ namespace SharpInspect.Abstractions;
 
 public enum AlgorithmScalarType { Boolean, Int64, Float64, String, Enum }
 
+/// <summary>Controls whether a configuration field may cross a governed transfer boundary.</summary>
+public enum AlgorithmConfigurationTransferClassification
+{
+    LocalOnly = 0,
+    PortableRecipeData = 1,
+    Sensitive = 2
+}
+
 /// <summary>One typed, immutable algorithm configuration scalar.</summary>
 public sealed class AlgorithmScalarValue : IEquatable<AlgorithmScalarValue>
 {
@@ -231,7 +239,18 @@ public sealed class AlgorithmFieldDefinition
     public AlgorithmFieldDefinition(string key, AlgorithmScalarType type, string unit, bool required,
         AlgorithmScalarConstraints? constraints = null, AlgorithmScalarValue? authoringDefault = null,
         string? helpText = null)
+        : this(AlgorithmConfigurationTransferClassification.LocalOnly, key, type, unit, required,
+            constraints, authoringDefault, helpText)
     {
+    }
+
+    public AlgorithmFieldDefinition(AlgorithmConfigurationTransferClassification transferClassification,
+        string key, AlgorithmScalarType type, string unit, bool required,
+        AlgorithmScalarConstraints? constraints = null, AlgorithmScalarValue? authoringDefault = null,
+        string? helpText = null)
+    {
+        TransferClassification = AlgorithmConfigurationValidation.Enum(transferClassification,
+            nameof(transferClassification));
         Key = AlgorithmConfigurationValidation.Identifier(key, nameof(key));
         Type = AlgorithmConfigurationValidation.Enum(type, nameof(type));
         Unit = AlgorithmConfigurationValidation.Identifier(unit, nameof(unit));
@@ -256,6 +275,7 @@ public sealed class AlgorithmFieldDefinition
     public bool Required { get; }
     public AlgorithmScalarConstraints? Constraints { get; }
     public AlgorithmScalarValue? AuthoringDefault { get; }
+    public AlgorithmConfigurationTransferClassification TransferClassification { get; }
     /// <summary>Optional literal authoring help, bound by the configuration schema hash.</summary>
     public string? HelpText { get; }
 }
@@ -491,6 +511,21 @@ internal static class AlgorithmConfigurationCanonical
             writer.String("sharpinspect-configuration-authoring-help-v1");
             writer.Int32(helpFields.Length);
             foreach (var field in helpFields) { writer.String(field.Key); writer.String(field.HelpText!); }
+        }
+
+        // The extension is deliberately absent for an all-LocalOnly schema so
+        // every historical schema hash remains byte-for-byte unchanged.
+        if (schema.Fields.Any(field =>
+                field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly))
+        {
+            writer.String("sharpinspect-configuration-transfer-classification-v1");
+            writer.String("v1");
+            writer.Int32(schema.Fields.Count);
+            foreach (var field in schema.Fields.OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                writer.String(field.Key);
+                writer.Byte((byte)field.TransferClassification);
+            }
         }
         return Convert.ToHexString(SHA256.HashData(writer.ToArray()));
     }

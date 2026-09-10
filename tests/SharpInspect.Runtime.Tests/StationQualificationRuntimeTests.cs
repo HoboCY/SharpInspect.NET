@@ -848,9 +848,11 @@ public sealed partial class ManualInspectionRuntimeTests
             bool blockStimulus = false, bool restoreFailure = false, bool blockWrite = false,
             int maximumRuns = 1,
             bool allowDisposeFailure = false, StationQualificationStoreOptions? ledgerOptions = null,
-            bool developmentFacility = true)
+            bool developmentFacility = true, RecipeTransferStoreOptions? recipeTransfers = null,
+            int? maximumAuditEntries = null)
         {
-            var fixture = await QualificationFixture.CreateAsync(allowQualification, ledgerOptions);
+            var fixture = await QualificationFixture.CreateAsync(allowQualification, ledgerOptions,
+                recipeTransfers, maximumAuditEntries);
             ServiceProvider? initialServices = null;
             ClockPump? initialPump = null;
             ServiceProvider? services = null;
@@ -863,7 +865,8 @@ public sealed partial class ManualInspectionRuntimeTests
                 var initialFactory = new ManualFactory();
                 initialServices = BuildServices(fixture.BaseOptions, fixture.Store,
                     fixture.Identity, fixture.Sessions, fixture.Authorization, initialFactory,
-                    initialProvider, initialClock, plan: null, facility: null);
+                    initialProvider, initialClock, plan: null, facility: null,
+                    heartbeatInterval: TimeSpan.FromSeconds(30));
                 initialPump = ClockPump.Start(initialClock);
                 var initialRuntime = initialServices.GetRequiredService<IStationRuntime>();
                 if (initialRuntime is not StationRuntime initialStation)
@@ -892,7 +895,11 @@ public sealed partial class ManualInspectionRuntimeTests
                 await initialPump.DisposeAsync();
                 initialPump = null;
                 var activation = await ActivateAsync(fixture, initialServices, released);
-                AssertAccepted(activation.Outcome, "activate qualification target");
+                AssertAccepted(activation.Outcome, "activate qualification target; " +
+                    $"state={activation.Record?.Outcome.State}; " +
+                    $"admission={activation.Record?.AdmissionReference?.Position}; " +
+                    $"restoration={activation.Record?.Restoration.State}/" +
+                    $"{activation.Record?.Restoration.ReasonCode}");
                 var activationQuery = new SqliteRecipeActivationQuery(fixture.BaseOptions);
                 var baseline = Assert.IsType<RecipeActivationRecord>(activation.Record);
                 var exact = await activationQuery.ReadAsync(baseline.Reference);
@@ -1027,7 +1034,7 @@ public sealed partial class ManualInspectionRuntimeTests
             ManualFactory factory, VirtualCameraProvider provider,
             VirtualCameraClock clock,
             StationQualificationPlan? plan, ControlledQualificationFacility? facility,
-            int maximumRuns = 1)
+            int maximumRuns = 1, TimeSpan? heartbeatInterval = null)
         {
             var registrations = new ServiceCollection();
             registrations.AddSingleton(options);
@@ -1055,7 +1062,11 @@ public sealed partial class ManualInspectionRuntimeTests
                 OperationTimeout = TimeSpan.FromSeconds(2),
                 ShutdownTimeout = TimeSpan.FromSeconds(2)
             });
-            registrations.AddSharpInspectSqliteRuntime(options, TimeSpan.FromMilliseconds(20));
+            // Baseline preparation has no running qualification workload. Its
+            // slow heartbeat avoids synthetic polling contention with activation;
+            // the actual qualification runtime retains the 20 ms heartbeat.
+            registrations.AddSharpInspectSqliteRuntime(options,
+                heartbeatInterval ?? TimeSpan.FromMilliseconds(20));
             registrations.AddSingleton<RecipeActivationService>(p => new RecipeActivationService(
                 p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<IReleasedRecipeQuery>(),
                 p.GetRequiredService<IPlcResultContractQuery>(), p.GetRequiredService<IRecipeActivationQuery>(),
@@ -1144,16 +1155,33 @@ public sealed partial class ManualInspectionRuntimeTests
             QualificationFixture fixture, ServiceProvider services, ReleasedRecipe released,
             RecipeActivationReference? expectedActive = null)
         {
-            var command = new ActivateRecipeCommand(Guid.NewGuid(), fixture.Invocation(),
-                released.Reference, released.Record.ReleaseId, released.Record.ContentHash,
-                expectedActive, null, "V137 activate qualification target");
-            var grant = await GrantAsync(fixture.Authorization, fixture.Password, command.Invocation,
-                Permission.ActivateRecipe, command.CorrelationId, command.AuthorizationTarget,
-                AuditedCommandKind.ActivateRecipe);
-            return await services.GetRequiredService<IRecipeActivationService>().ActivateAsync(command with
+            for (var attempt = 0; ; attempt++)
             {
-                Invocation = command.Invocation with { StepUpGrantId = grant.GrantId }
-            });
+                var command = new ActivateRecipeCommand(Guid.NewGuid(), fixture.Invocation(),
+                    released.Reference, released.Record.ReleaseId, released.Record.ContentHash,
+                    expectedActive, null, "V137 activate qualification target");
+                var grant = await GrantAsync(fixture.Authorization, fixture.Password, command.Invocation,
+                    Permission.ActivateRecipe, command.CorrelationId, command.AuthorizationTarget,
+                    AuditedCommandKind.ActivateRecipe);
+                var result = await services.GetRequiredService<IRecipeActivationService>().ActivateAsync(command with
+                {
+                    Invocation = command.Invocation with { StepUpGrantId = grant.GrantId }
+                });
+                // The Runtime heartbeat can legitimately win its non-blocking
+                // station lock while this fixture prepares a baseline. Retry
+                // only a persisted refusal before physical admission, using a
+                // new command and grant; any physical or business failure stays
+                // visible to the caller's assertion.
+                if (attempt >= 2 || result.Outcome is not
+                    { Disposition: CommandDisposition.Rejected, Audit: AuditPersistence.Persisted,
+                      ReasonCode: "RecipeActivationRuntimeBusy" } || result.Record is not
+                    { AdmissionReference: null, Admission: null, SuccessfulSnapshot: null,
+                      Outcome.State: RecipeActivationOutcomeState.Failed,
+                      Restoration.State: RecipeActivationRestorationState.NotRequired,
+                      Restoration.ReasonCode: "RecipeActivationHardwareUntouched" })
+                    return result;
+                await RecipeDraftStorageTests.Fixture.WaitForVerifiedAsync(fixture.Store);
+            }
         }
 
         private static async Task ConfigureQualificationCameraAsync(
@@ -1424,7 +1452,9 @@ public sealed partial class ManualInspectionRuntimeTests
             Sessions.Current.SessionId, grant);
 
         internal static async Task<QualificationFixture> CreateAsync(bool allowQualification,
-            StationQualificationStoreOptions? ledgerOptions = null)
+            StationQualificationStoreOptions? ledgerOptions = null,
+            RecipeTransferStoreOptions? recipeTransfers = null,
+            int? maximumAuditEntries = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Qualification SQLite fixture requires Windows machine key protection.");
@@ -1437,7 +1467,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 AllowInitialKeyCreation = true,
                 KeyDirectory = Path.Combine(directory, "keys"),
                 CheckpointEveryEntries = 2,
-                MaximumVerificationEntries = 10_000,
+                MaximumVerificationEntries = maximumAuditEntries ?? 10_000,
                 VerificationInterval = TimeSpan.FromSeconds(1)
             };
             var policy = CreateQualificationPolicy(allowQualification);
@@ -1461,6 +1491,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 PlcResultContracts = new PlcResultContractStoreOptions(),
                 CameraSetup = new CameraSetupStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
+                RecipeTransfers = recipeTransfers,
                 // Create schema-23 from the first provider.  The baseline
                 // provider intentionally has no registered facility, while
                 // the cold provider below adds the frozen plan and facility;
@@ -1562,6 +1593,7 @@ public sealed partial class ManualInspectionRuntimeTests
             RecipeReleases = source.RecipeReleases,
             PlcResultContracts = source.PlcResultContracts,
             RecipeActivations = source.RecipeActivations,
+            RecipeTransfers = source.RecipeTransfers,
             PreviewSessions = source.PreviewSessions,
             CalibrationImports = source.CalibrationImports,
             ManualInspections = source.ManualInspections,

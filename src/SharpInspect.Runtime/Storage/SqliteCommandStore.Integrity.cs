@@ -24,6 +24,7 @@ internal sealed partial class SqliteCommandStore
         if (_policy is null || !File.Exists(_databasePath) || new FileInfo(_databasePath!).Length == 0) return;
         using var read = SqliteNative.Open(_databasePath!, readOnly: true);
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
+        RecipeTransferReadGuard.RequireConfiguration(version, _options);
         if (_options.StationQualifications is null && version == StationQualificationStoreOptions.SchemaVersion)
             throw new InvalidOperationException("StationQualificationConfigurationRequired");
         if (_options.StationQualifications is not null && version < StationQualificationStoreOptions.SchemaVersion)

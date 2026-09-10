@@ -713,7 +713,8 @@ public sealed class CalibrationSessionRuntimeTests
             RecipeReleaseStoreOptions? recipeReleases = null,
             PlcResultContractStoreOptions? plcResultContracts = null,
             ManualInspectionStoreOptions? manualInspections = null,
-            IVisionAlgorithmFactory? manualFactory = null, bool withStationQualification = false)
+            IVisionAlgorithmFactory? manualFactory = null, bool withStationQualification = false,
+            RecipeTransferStoreOptions? recipeTransfers = null)
         {
             if ((manualInspections is null) != (manualFactory is null))
                 throw new ArgumentException("ManualInspectionFixtureFactoryRequired");
@@ -735,7 +736,7 @@ public sealed class CalibrationSessionRuntimeTests
                 MaximumVerificationEntries = 10_000
             };
             var authorizationPolicy = CreateAuthorizationPolicy(withCalibrationGovernance,
-                includeRecipeDraftAuthoring: recipeReleases is not null || manualInspections is not null,
+                includeRecipeDraftAuthoring: recipeReleases is not null || manualInspections is not null || recipeTransfers is not null,
                 includeManualInspection: manualInspections is not null);
             var identityOptions = new LocalIdentityOptions(audit.StationId,
                 new LocalPasswordPolicy
@@ -748,11 +749,12 @@ public sealed class CalibrationSessionRuntimeTests
             {
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
-                RecipeDrafts = recipeReleases is null && manualInspections is null ? null : new RecipeDraftStoreOptions(
+                RecipeDrafts = recipeReleases is null && manualInspections is null && recipeTransfers is null ? null : new RecipeDraftStoreOptions(
                     new AlgorithmExecutionPolicy("V130.Calibration.Release.Execution", "1",
                         TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
                         TimeSpan.FromSeconds(1))),
                 RecipeReleases = recipeReleases,
+                RecipeTransfers = recipeTransfers,
                 PlcResultContracts = plcResultContracts,
                 AlarmPolicy = CreateAlarmPolicy(manualInspections is not null),
                 CameraSetup = new CameraSetupStoreOptions(),

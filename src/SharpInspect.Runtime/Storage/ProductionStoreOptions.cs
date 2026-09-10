@@ -86,4 +86,8 @@ public sealed class ProductionStoreOptions
     /// It stores only bounded qualification session provenance and typed facility observations;
     /// it never produces a production result or activation.</summary>
     public StationQualificationStoreOptions? StationQualifications { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 24 signed recipe-transfer ledger.
+    /// Requires local identity, audit integrity, and recipe drafts.</summary>
+    public RecipeTransferStoreOptions? RecipeTransfers { get; init; }
 }

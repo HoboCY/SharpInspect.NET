@@ -484,6 +484,24 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-e
 验证真实控件编辑、追加两条修订、锁定后拒绝，以及另一进程按原 Schema 只读重开。
 依赖满足、发布、激活和生产资格仍未提供；有效草稿不构成生产许可。
 
+## 签名配方交换
+
+新空库可显式配置 `ProductionStoreOptions.RecipeTransfers`，同时提供本地身份、审计、Draft
+与版本化 `RecipeTransferPortablePolicy`，启用 schema 24。宿主通过 `IRecipeTransferService`
+管理 Recipe 签名键、本地信任版本、精确 Draft／Released 导出和新草稿导入。
+授权策略需明确授予 `ImportRecipe`／`ExportRecipe`；管理信任和签名键还要求对应权限及一次性 Step-Up。
+`SqliteRecipeTransferQuery` 可在独立进程核验和读取公共信任、键状态、操作历史及导入来源。
+
+交换字段须在算法 Schema 中显式声明 `PortableRecipeData`，并获本地可移植策略许可。
+原字段构造入口默认 `LocalOnly`；`Sensitive` 和本地字段不能由白名单提升为可导出字段。
+包只携带数据与依赖身份，接收端采用精确匹配的本地 Schema，签名根取自当前已批准信任版本。
+导入成功只产生新 DraftId、新 RecipeKey 和不可变来源，仍须经过本地验证、发布和激活。
+
+开发入口 `--recipe-transfer-check <new-local-directory>` 验证匿名导入拒绝；
+`--recipe-transfer-query <same-directory>` 在第二进程验证只读查询。
+认证人员的成功交换及故障回滚由受控 Runtime 测试覆盖，证据及未执行项见
+[V1-38](docs/verification/v1-38.md)。
+
 ## 开发结果归档与 Frame Pixel 查看器
 
 新空库显式设置 `ProductionStoreOptions.AlgorithmResultArchive = new AlgorithmResultArchiveOptions()`，

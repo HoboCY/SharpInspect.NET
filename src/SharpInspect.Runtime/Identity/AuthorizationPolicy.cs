@@ -36,7 +36,7 @@ public sealed class AuthorizationPolicy
             not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft and not Permission.RunCalibration and
             not Permission.ManageCalibrationAcceptancePolicy and
             not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
-            not Permission.RunManualInspection)
+            not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -196,7 +196,7 @@ public sealed class AuthorizationPolicy
             .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration and
                 not Permission.ManageCalibrationAcceptancePolicy and
                 not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
-                not Permission.RunManualInspection)
+                not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

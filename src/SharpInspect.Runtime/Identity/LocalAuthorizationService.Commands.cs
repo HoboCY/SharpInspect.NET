@@ -186,7 +186,8 @@ internal sealed partial class LocalAuthorizationService
         out StepUpGrant? grant)
     {
         grant = null;
-        if (command is not StartStationQualificationSessionCommand &&
+        if (command is not (StartStationQualificationSessionCommand or ReplaceRecipeTrustStoreCommand or
+            CreateRecipeSigningKeyCommand or RetireRecipeSigningKeyCommand) &&
             !_options.AuthorizationPolicy.RequiresStepUp(RequiredPermission(command))) return "Authorized";
         if (command.Invocation.StepUpGrantId is not { } id) return "StepUpRequired";
         lock (_grantSync)

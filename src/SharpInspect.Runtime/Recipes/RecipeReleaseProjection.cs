@@ -172,7 +172,7 @@ internal static class RecipeReleaseProjection
             throw Invalid("ContributionContentInvalid");
         using var document = JsonDocument.Parse(encoded!.PayloadJson);
         var root = document.RootElement;
-        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 5 ||
+        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 6 ||
             root.GetProperty("CanonicalizationVersion").GetInt32() != 1)
             throw Invalid("ContributionFormatUnsupported");
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
