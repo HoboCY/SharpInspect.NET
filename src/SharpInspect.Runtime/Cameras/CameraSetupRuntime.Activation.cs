@@ -712,7 +712,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             ICameraDevice? candidate;
             lock (this)
             {
-                if (_disposed || _previewOwned || !_candidatePrepared || _candidateDevice is null ||
+                if (_disposed || _previewOwned || _manualOwned || !_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot is null || _committed || _restoreSucceeded)
                     return false;
                 candidate = _candidateDevice;
@@ -753,6 +753,8 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             if (_lastRestore is { } previous) return previous;
             if (_disposed)
                 return RememberRestore(false, "CameraActivationLeaseDisposed", null);
+            if (!EnsureManualRetirementReady(out var manualRetirementReason))
+                return new(false, manualRetirementReason, null, HardwareTouched);
             if (_committed)
                 return RememberRestore(false, RecipeActivationCommitted, _restoredSnapshot);
             if (durableBaseline is null)
@@ -1006,9 +1008,16 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _leaseGate.WaitAsync().ConfigureAwait(false);
+        var releaseReservation = true;
         try
         {
             if (_disposed) return;
+            if (!EnsureManualRetirementReady(out var manualRetirementReason))
+            {
+                ReasonCode = manualRetirementReason;
+                releaseReservation = false;
+                return;
+            }
             _disposed = true;
             if (!_committed && !_restoreSucceeded && !_safeClosed)
             {
@@ -1040,7 +1049,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
         finally
         {
             _leaseGate.Release();
-            ReleaseOwnerReservation();
+            if (releaseReservation) ReleaseOwnerReservation();
         }
     }
 

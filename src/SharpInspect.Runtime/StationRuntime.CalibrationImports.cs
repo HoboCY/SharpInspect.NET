@@ -130,6 +130,7 @@ public sealed partial class StationRuntime
         if (_importPhysicalReservation is not null) return "CalibrationImportPhysicalVerificationInProgress";
         if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
         if (PreviewConfigurationBlockedLocked) return "PreviewSessionInProgress";
+        if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
         if (_snapshot.Ready || _snapshot.ArmState != ProductionArmState.Disarmed || _snapshot.Busy ||
             _snapshot.CurrentExecution is not null || _executionGuard.IsHung ||
             _snapshot.Evidence.PendingDeliveries != 0 || _snapshot.Evidence.PendingRequiredImages != 0 ||

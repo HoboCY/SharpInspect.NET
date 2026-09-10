@@ -103,7 +103,7 @@ internal sealed partial class SqliteCommandStore
                   releaseOptions: _options.RecipeReleases,
                   contractOptions: _options.PlcResultContracts,
                   activationOptions: _options.RecipeActivations,
-                  previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports);
+                  previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
             AuditChainDatabase.RequireFullCameraSetupVerification(database, verification, deadline,
                 _options.CameraSetup);
             if (_options.CameraRecovery is not null)
@@ -129,6 +129,8 @@ internal sealed partial class SqliteCommandStore
                      _options.PreviewSessions);
                  if (_options.CalibrationImports is not null)
                      AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+                     if (_options.ManualInspections is not null)
+                         AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
              var state = ReadImagingSetupState(database, logicalCameraRole, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return new ImagingSetupReadResult(state);

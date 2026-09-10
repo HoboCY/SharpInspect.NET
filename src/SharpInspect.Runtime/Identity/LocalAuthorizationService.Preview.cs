@@ -234,6 +234,10 @@ internal sealed partial class LocalAuthorizationService
             if (reason == "Authorized" && (actor is not { Enabled: true } ||
                 !actor.Permissions.Contains(requiredPermission))) reason = "PermissionDenied";
             if (reason == "Authorized" && runtimeEpoch == Guid.Empty) reason = "PreviewRuntimeUnavailable";
+            // A rejected Runtime reservation does not read physical dependencies.
+            // Preserve that authenticated barrier instead of treating its absent
+            // admission input as a dependency change.
+            if (reason == "Authorized" && forcedRejection is not null) reason = forcedRejection;
 
             var current = state.Header;
             if (reason == "Authorized" && callerHeader is not null &&
@@ -272,7 +276,6 @@ internal sealed partial class LocalAuthorizationService
                     reason = "PreviewSessionDependencyChanged";
                 else reason = ValidatePreviewAction(command, current) ?? "Authorized";
             }
-            if (reason == "Authorized" && forcedRejection is not null) reason = forcedRejection;
             if (reason == "Authorized" && cancellationToken.IsCancellationRequested)
                 reason = "PreviewCommandCancelled";
             if (reason == "Authorized")

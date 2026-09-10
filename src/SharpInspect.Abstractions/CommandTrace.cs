@@ -46,7 +46,10 @@ public enum AuditedCommandKind
     ImportCalibrationPackage = 38,
     RevalidateImportedCalibration = 39,
     VerifyImportedCalibration = 40,
-    PublishImportedCalibration = 41
+    PublishImportedCalibration = 41,
+    StartManualInspectionSession = 42,
+    RunManualInspection = 43,
+    ExitManualInspectionSession = 44
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

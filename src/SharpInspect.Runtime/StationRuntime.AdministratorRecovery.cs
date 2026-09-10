@@ -43,6 +43,7 @@ public sealed partial class StationRuntime
     {
         if (_disposed || _shutdownRequested) return "RecoveryRuntimeStopped";
         if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
+        if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
         if (_snapshot.Ready || _snapshot.ArmState != ProductionArmState.Disarmed) return "RecoveryRequiresDisarmedStation";
         if (_snapshot.Busy || _snapshot.CurrentExecution is not null) return "RecoveryInspectionConflict";
         if (_snapshot.Evidence.PendingDeliveries != 0 ||

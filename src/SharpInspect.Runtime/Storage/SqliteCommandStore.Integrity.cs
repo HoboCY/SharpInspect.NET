@@ -24,6 +24,10 @@ internal sealed partial class SqliteCommandStore
         if (_policy is null || !File.Exists(_databasePath) || new FileInfo(_databasePath!).Length == 0) return;
         using var read = SqliteNative.Open(_databasePath!, readOnly: true);
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
+        if (_options.ManualInspections is null && version == ManualInspectionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ManualInspectionConfigurationRequired");
+        if (_options.ManualInspections is not null && version < ManualInspectionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
         if (_options.CalibrationImports is null && version == CalibrationImportStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationImportConfigurationRequired");
         if (_options.CalibrationImports is not null && version < CalibrationImportStoreOptions.SchemaVersion)

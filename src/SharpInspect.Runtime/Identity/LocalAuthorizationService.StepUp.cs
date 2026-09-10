@@ -33,6 +33,10 @@ internal sealed partial class LocalAuthorizationService
             if (request.Binding?.CommandKind is (AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
                 AuditedCommandKind.Freeze or AuditedCommandKind.Exit) && _store.PreviewSessionOptions is null)
                 return await RejectStepUpAsync(request, "PreviewSessionConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding?.CommandKind is (AuditedCommandKind.StartManualInspectionSession or
+                AuditedCommandKind.RunManualInspection or AuditedCommandKind.ExitManualInspectionSession) &&
+                _store.ManualInspectionOptions is null)
+                return await RejectStepUpAsync(request, "ManualInspectionConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             if (request.CorrelationId == Guid.Empty || request.Binding is null || !ValidBinding(request.Binding))
                 return await RejectStepUpAsync(request, "StepUpBindingInvalid", null, cancellationToken).ConfigureAwait(false);
             var before = await _store.ReadIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -146,7 +150,10 @@ internal sealed partial class LocalAuthorizationService
                     _store.CalibrationImportEnabled) &&
                 (request.Binding.CommandKind is not (AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
                     AuditedCommandKind.Freeze or AuditedCommandKind.Exit) ||
-                    _store.PreviewSessionOptions is not null) ? request.Binding : null,
+                    _store.PreviewSessionOptions is not null) &&
+                (request.Binding.CommandKind is not (AuditedCommandKind.StartManualInspectionSession or
+                    AuditedCommandKind.RunManualInspection or AuditedCommandKind.ExitManualInspectionSession) ||
+                    _store.ManualInspectionOptions is not null) ? request.Binding : null,
             actorId, actorId.HasValue ? request.Invocation?.SessionId : null,
             null, request.CorrelationId == Guid.Empty ? null : request.CorrelationId,
             actorId.HasValue ? Find(state, actorId.Value)?.AuthorizationRevision ?? 0 : 0);

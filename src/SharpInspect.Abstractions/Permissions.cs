@@ -49,7 +49,9 @@ public enum Permission : ushort
     /// <summary>Record independent physical calibration verification evidence.</summary>
     RecordPhysicalCalibrationVerification = 34,
     /// <summary>Run an explicitly admitted non-production Preview session.</summary>
-    RunPreview = 35
+    RunPreview = 35,
+    /// <summary>Run an explicitly admitted non-production Manual Inspection Session.</summary>
+    RunManualInspection = 36
 }
 
 /// <summary>

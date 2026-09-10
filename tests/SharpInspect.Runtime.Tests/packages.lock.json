@@ -181,6 +181,13 @@
       "SharpInspect.NET.Abstractions": {
         "type": "Project"
       },
+      "SharpInspect.NET.Cameras.Virtual": {
+        "type": "Project",
+        "dependencies": {
+          "SharpInspect.NET.Abstractions": "[0.1.0-dev.1, )",
+          "SharpInspect.NET.Runtime": "[0.1.0-dev.1, )"
+        }
+      },
       "SharpInspect.NET.Runtime": {
         "type": "Project",
         "dependencies": {

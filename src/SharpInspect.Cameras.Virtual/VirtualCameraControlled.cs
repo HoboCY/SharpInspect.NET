@@ -156,7 +156,7 @@ internal sealed partial class VirtualCameraDevice
                         // installed.  Script callbacks are already registered, but
                         // each callback below requires the matching Busy state before
                         // it can publish a frame.
-                        if (!control.AcknowledgePending(request))
+                        if (!control.AcknowledgePending(request, accepted))
                         {
                             var controlClosed = control.IsClosed;
                             if (!controlClosed)

@@ -364,7 +364,7 @@ internal sealed partial class SqliteCommandStore
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: options, importOptions: _options.CalibrationImports);
+            previewOptions: options, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -399,6 +399,8 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
         if (_options.CalibrationImports is not null)
             AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+            if (_options.ManualInspections is not null)
+                AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
     }
 
     private static CommandAuditFact? ReadPreviewDraftCommandFact(sqlite3 database,
@@ -544,7 +546,7 @@ internal sealed partial class SqliteCommandStore
                 releaseOptions: _options.RecipeReleases,
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
-                previewOptions: options, importOptions: _options.CalibrationImports);
+                previewOptions: options, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
             RequireConfiguredPreviewSessions(database, options, deadline);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
@@ -581,6 +583,8 @@ internal sealed partial class SqliteCommandStore
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
             if (_options.CalibrationImports is not null)
                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+                if (_options.ManualInspections is not null)
+                    AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
 
             var rows = ReadPreviewSessionRows(database, options, deadline);
             ValidatePreviewReplay(rows.Select(value => value.Event).ToArray(), options, database, deadline);

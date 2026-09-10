@@ -146,11 +146,20 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
+                ManualInspectionStoreOptions.SchemaVersion,
                 schema < PreviewSessionStoreOptions.SchemaVersion
                     ? "PreviewSessionGovernedMigrationRequired" : "StoreSchemaTooNew");
-            if ((_options.CalibrationImports is not null) != (schema == CalibrationImportStoreOptions.SchemaVersion))
-                throw new InvalidOperationException("CalibrationImportConfigurationMismatch");
+            if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
+            if (_options.ManualInspections is null && schema == ManualInspectionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ManualInspectionConfigurationRequired");
+            if (schema == ManualInspectionStoreOptions.SchemaVersion && _options.CameraSetup is null)
+                throw new InvalidOperationException("CameraSetupConfigurationRequired");
+            if (_options.CalibrationImports is not null && schema < CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportGovernedMigrationRequired");
+            if (_options.CalibrationImports is null && schema == CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             VerifyDependencies(database, previewOptions, key, deadline);
 
@@ -211,7 +220,8 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: previewOptions, importOptions: _options.CalibrationImports);
+            previewOptions: previewOptions, importOptions: _options.CalibrationImports,
+            manualOptions: _options.ManualInspections);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -241,8 +251,10 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             _options.CalibrationGovernance);
         AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
             previewOptions);
-        if (_options.CalibrationImports is not null)
-            AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+         if (_options.CalibrationImports is not null)
+             AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+         AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
+             _options.ManualInspections);
     }
 
     private async ValueTask VerifyExternalAnchorAsync(AuditCheckpoint? checkpoint,

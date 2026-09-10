@@ -84,6 +84,7 @@ public sealed partial class StationRuntime : IPreviewSessionService
         if (!_storeReady || _auditFault) return "PreviewAuditUnavailable";
         if (!IsPreviewAlarmMappingValid()) return "PreviewAlarmMappingUnavailable";
         if (RecipeActivationConfigurationBlockedLocked) return "RecipeActivationInProgress";
+        if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
         if (_importPhysicalReservation is not null) return "CalibrationImportPhysicalVerificationInProgress";
         if (_snapshot.Busy || _snapshot.CurrentExecution is not null || _executionGuard.IsHung)
             return "PreviewExecutionConflict";

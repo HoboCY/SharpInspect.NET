@@ -276,6 +276,8 @@ public static class ServiceCollectionExtensions
         }
         if (options.PreviewSessions is not null)
             services.TryAddSingleton<IPreviewSessionHistoryQuery>(_ => new SqlitePreviewSessionQuery(options));
+        if (options.ManualInspections is not null)
+            services.TryAddSingleton<IManualInspectionHistoryQuery>(_ => new SqliteManualInspectionQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -292,6 +294,13 @@ public static class ServiceCollectionExtensions
             if (options.PreviewSessions is not null)
                 runtime.ConfigurePreviewSessions(p.GetService<PreviewSessionOptions>() ?? new PreviewSessionOptions(),
                     p.GetRequiredService<RecipeDraftService>(), options);
+            if (options.ManualInspections is not null)
+                runtime.ConfigureManualInspectionSessions(
+                    p.GetService<SharpInspect.Runtime.Manual.ManualInspectionSessionOptions>() ??
+                        new SharpInspect.Runtime.Manual.ManualInspectionSessionOptions(),
+                    p.GetRequiredService<RecipeDraftService>(), p.GetService<IReleasedRecipeQuery>(),
+                    p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmPreparationOptions>(),
+                    p.GetService<AlgorithmExecutionOptions>(), options, p.GetService<IFrameAcquisitionClock>());
             runtime.ConfigureCalibrationImports(options, p.GetService<ImportedCalibrationPhysicalVerificationRegistry>());
             return runtime;
         });
@@ -322,6 +331,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IPreviewSessionService>(p =>
             p.GetRequiredService<IStationRuntime>() as IPreviewSessionService ??
             throw new InvalidOperationException("PreviewSessionServiceUnavailable"));
+        services.TryAddSingleton<IManualInspectionSessionService>(p =>
+            p.GetRequiredService<IStationRuntime>() as IManualInspectionSessionService ??
+            throw new InvalidOperationException("ManualInspectionSessionServiceUnavailable"));
         services.TryAddSingleton<ICalibrationGovernanceRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationGovernanceRuntime ??
             throw new InvalidOperationException("CalibrationGovernanceUnavailable"));

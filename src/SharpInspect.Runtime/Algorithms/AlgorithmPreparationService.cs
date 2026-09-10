@@ -144,8 +144,13 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
     public int OwnedInstanceCount { get { lock (_sync) return _owned.Count; } }
     public int PendingPreparationCount { get { lock (_sync) return _running.Count; } }
 
-    public async ValueTask<AlgorithmPreparationResult> PrepareAsync(AlgorithmPreparationRequest request,
-        CancellationToken cancellationToken = default)
+    public ValueTask<AlgorithmPreparationResult> PrepareAsync(AlgorithmPreparationRequest request,
+        CancellationToken cancellationToken = default) =>
+        PrepareOwnedAsync(request, cancellationToken, null, null);
+
+    // A logical timeout does not finish a callback or retire an unpublished instance.
+    internal async ValueTask<AlgorithmPreparationResult> PrepareOwnedAsync(AlgorithmPreparationRequest request,
+        CancellationToken cancellationToken, Func<IDisposable>? phaseFactory, Action<Task>? observeRetirement)
     {
         ArgumentNullException.ThrowIfNull(request);
         var startedAt = Stopwatch.GetTimestamp();
@@ -200,9 +205,10 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             lock (_sync)
             {
                 if (_disposed) return Failure("AlgorithmPreparationServiceDisposed");
-                var work = Task.Run(() => PrepareCoreAsync(registration, configuration, attempt));
+                var work = Task.Run(() => PrepareCoreAsync(registration, configuration, attempt, phaseFactory));
                 _running.Add(attempt, work);
                 started = true;
+                observeRetirement?.Invoke(work);
                 _ = ObserveCompletionAsync(attempt, work);
             }
             remaining = attempt.Remaining;
@@ -246,7 +252,8 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         }
     }
 
-    private async Task PrepareCoreAsync(Registration registration, AlgorithmConfigurationSnapshot configuration, Attempt attempt)
+    private async Task PrepareCoreAsync(Registration registration, AlgorithmConfigurationSnapshot configuration, Attempt attempt,
+        Func<IDisposable>? phaseFactory)
     {
         IVisionAlgorithm? algorithm = null;
         var owned = false;
@@ -257,7 +264,9 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         {
             if (RejectIfHung(attempt)) return;
             attempt.Token.ThrowIfCancellationRequested();
-            var issues = await registration.Factory.ValidateConfigurationAsync(configuration, attempt.Token).ConfigureAwait(false);
+            IReadOnlyList<AlgorithmValidationIssue> issues;
+            using (phaseFactory?.Invoke())
+                issues = await registration.Factory.ValidateConfigurationAsync(configuration, attempt.Token).ConfigureAwait(false);
             if (RejectIfHung(attempt)) return;
             if (issues is null || issues.Count != 0)
             {
@@ -275,7 +284,8 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
                 creationReserved = true;
             }
             if (RejectIfHung(attempt)) return;
-            algorithm = await registration.Factory.CreateAsync(configuration, attempt.Token).ConfigureAwait(false);
+            using (phaseFactory?.Invoke())
+                algorithm = await registration.Factory.CreateAsync(configuration, attempt.Token).ConfigureAwait(false);
             if (algorithm is null) throw new InvalidOperationException();
             lock (_sync)
             {
@@ -299,7 +309,8 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             attempt.Token.ThrowIfCancellationRequested();
             stage = "AlgorithmWarmUpFailed";
             if (RejectIfHung(attempt)) return;
-            await algorithm.WarmUpAsync(attempt.Token).ConfigureAwait(false);
+            using (phaseFactory?.Invoke())
+                await algorithm.WarmUpAsync(attempt.Token).ConfigureAwait(false);
             if (RejectIfHung(attempt)) return;
             attempt.Token.ThrowIfCancellationRequested();
             if (RejectIfHung(attempt)) return;
@@ -315,9 +326,12 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         {
             if (creationReserved) lock (_sync) _reservedCreations--;
             await attempt.FinishStageAsync().ConfigureAwait(false);
-            if (owned && !delivered && algorithm is not null) await RetireUnpublishedAsync(algorithm).ConfigureAwait(false);
-            _capacity.Release();
-            registration.Gate.Release();
+            try
+            {
+                if (owned && !delivered && algorithm is not null)
+                    await RetireUnpublishedAsync(algorithm).ConfigureAwait(false);
+            }
+            finally { _capacity.Release(); registration.Gate.Release(); }
         }
     }
 
@@ -337,7 +351,10 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             lock (_sync) _owned.Remove(algorithm);
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
-        { /* A failed retirement cannot prove that the object is safe to reuse. Keep its reservation. */ }
+        {
+            // Retain the reservation and let an explicit attempt owner observe failure.
+            throw new InvalidOperationException("AlgorithmUnpublishedRetirementFailed");
+        }
     }
 
     private async Task RetirePublishedAsync(IVisionAlgorithm algorithm, PreparedAlgorithm prepared)

@@ -449,6 +449,90 @@ public sealed class AlgorithmPreparationTests
         Assert.Equal(0, service.OwnedInstanceCount);
     }
 
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("create")]
+    [InlineData("warm")]
+    public async Task V135_PR01_LogicalCancellationRetainsTheExactPreparationUntilActualCleanup(string blockedStage)
+    {
+        var contract = CreateContract("ManualOwned" + blockedStage);
+        var entered = NewSignal();
+        var release = NewSignal();
+        var aborted = 0;
+        async Task BlockAsync(string stage)
+        {
+            if (stage != blockedStage) return;
+            entered.TrySetResult(true);
+            await release.Task;
+        }
+        var algorithm = new TestAlgorithm(warm: _ => BlockAsync("warm"));
+        var factory = new TestFactory(contract.Descriptor, async (_, _) =>
+        {
+            await BlockAsync("validate");
+            return Array.Empty<AlgorithmValidationIssue>();
+        }, async (_, _) => { await BlockAsync("create"); return algorithm; });
+        await using var service = Service(factory);
+        using var cancellation = new CancellationTokenSource();
+        Task? retirement = null;
+        var pending = service.PrepareOwnedAsync(Request(contract), cancellation.Token, () =>
+        {
+            if (Volatile.Read(ref aborted) != 0) throw new OperationCanceledException();
+            return new PreparationPhaseLease();
+        }, work => retirement = work).AsTask();
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Volatile.Write(ref aborted, 1);
+            cancellation.Cancel();
+            var result = await pending.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.False(result.Succeeded);
+            Assert.Null(result.Prepared);
+            Assert.NotNull(retirement);
+            Assert.False(retirement!.IsCompleted);
+            Assert.Equal(1, service.PendingPreparationCount);
+        }
+        finally { release.TrySetResult(true); }
+        await retirement!.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(blockedStage == "validate" ? 0 : 1, factory.CreateCalls);
+        Assert.Equal(blockedStage == "warm" ? 1 : 0, algorithm.WarmCalls);
+        Assert.Equal(blockedStage == "validate" ? 0 : 1, algorithm.DisposeCalls);
+        Assert.Equal(0, service.OwnedInstanceCount);
+    }
+
+    [Fact]
+    public async Task V135_PR02_UnpublishedDisposalFailureIsVisibleToTheOwningAttempt()
+    {
+        var contract = CreateContract("ManualRetirementFailure");
+        var entered = NewSignal();
+        var release = NewSignal();
+        var algorithm = new TestAlgorithm(warm: async _ =>
+        { entered.TrySetResult(true); await release.Task; },
+            dispose: () => throw new InvalidOperationException("test disposal failure"));
+        var factory = new TestFactory(contract.Descriptor, create: (_, _) => Task.FromResult<IVisionAlgorithm>(algorithm));
+        await using var service = Service(factory);
+        using var cancellation = new CancellationTokenSource();
+        Task? retirement = null;
+        var pending = service.PrepareOwnedAsync(Request(contract), cancellation.Token,
+            () => new PreparationPhaseLease(), work => retirement = work).AsTask();
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            cancellation.Cancel();
+            Assert.False((await pending.WaitAsync(TimeSpan.FromSeconds(3))).Succeeded);
+            Assert.False(retirement!.IsCompleted);
+        }
+        finally { release.TrySetResult(true); }
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => retirement!.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("AlgorithmUnpublishedRetirementFailed", error.Message);
+        Assert.Equal(1, service.OwnedInstanceCount);
+    }
+
+    private sealed class PreparationPhaseLease : IDisposable
+    {
+        public void Dispose() { }
+    }
+
     private static AlgorithmPreparationService Service(TestFactory factory,
         int maximumConcurrentPreparations = 4, TimeSpan? shutdownWaitTimeout = null) =>
         new(new[] { factory }, new AlgorithmPreparationOptions(TimeSpan.FromSeconds(5),

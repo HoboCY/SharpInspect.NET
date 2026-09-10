@@ -64,7 +64,7 @@ internal sealed partial class SqliteCommandStore
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema == CalibrationImportStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion,
                 schema < CalibrationImportStoreOptions.SchemaVersion
                     ? "CalibrationImportGovernedMigrationRequired" : "StoreSchemaTooNew");
             AuditChainDatabase.Require(_options.PreviewSessions is not null &&
@@ -89,7 +89,7 @@ internal sealed partial class SqliteCommandStore
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
                 previewOptions: _options.PreviewSessions,
-                importOptions: importOptions);
+                importOptions: importOptions, manualOptions: _options.ManualInspections);
 
             RequireFullCalibrationImportActivationVerification(database, verification, deadline);
 
@@ -173,5 +173,7 @@ internal sealed partial class SqliteCommandStore
         if (_options.CalibrationImports is not null)
             AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
                 _options.CalibrationImports);
+            if (_options.ManualInspections is not null)
+                AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
     }
 }

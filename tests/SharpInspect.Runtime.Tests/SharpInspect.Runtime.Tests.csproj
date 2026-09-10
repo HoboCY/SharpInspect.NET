@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Cameras.Virtual/SharpInspect.Cameras.Virtual.csproj" />
     <ProjectReference Include="../SharpInspect.AlgorithmHangProbe/SharpInspect.AlgorithmHangProbe.csproj"
                       ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

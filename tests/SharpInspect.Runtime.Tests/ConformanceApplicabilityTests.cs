@@ -5,6 +5,10 @@ using Xunit;
 
 namespace SharpInspect.Runtime.Tests;
 
+// Harness fingerprints include the process-wide loaded assembly set. Use the
+// existing isolation boundary so unrelated tests cannot load dependencies
+// between freezing and checking this fixture's context.
+[Collection("ConformanceAssemblyLoading")]
 public sealed class ConformanceApplicabilityTests
 {
     [Fact]

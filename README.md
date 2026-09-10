@@ -103,6 +103,19 @@ Schema 14 显式启用标定证据扩展，依赖签名身份审计、Camera Set
 要求激活与历史选择权限、精确的旧版本和目标版本及操作理由；其余标定绑定必须保留。
 过期、政策已变或条件不兼容的版本仍会拒绝。开发验证范围见 [V1-34 记录](docs/verification/v1-34.md)。
 
+独占手动检测通过 `IManualInspectionSessionService`、三个类型化 Runtime 命令及
+`ManualInspectionSessionViewModel` 进入、逐帧运行和退出；宿主显式启用
+`ProductionStoreOptions.ManualInspections`，并注册算法准备、执行、帧池、相机及恢复报警政策。
+当前本机用户需具有 `RunManualInspection` 权限。可选择精确已保存 Draft 或 Available Released，
+Draft 无需先发布或激活；存在 Active 算法实例时，宿主实例容量须同时容纳它与临时实例。
+Runtime 分配会话和 Run ID，复用既有采集、算法与超时治理；整个会话保持 Disarmed、Ready=false。
+
+`IManualInspectionHistoryQuery` 独立查询操作者、手工工件标识来源、帧证据及非生产结果。
+Graceful Exit 和本机停止等待已受理工作结束并恢复相机；取消等待实际资源退役，恢复失败保持阻塞。
+Manual 记录不产生生产 Inspection ID、PLC Result Payload、普通 Outbox 或资格效力。
+SampleHost 的 `--manual-inspection-ui` 显示面板，`--manual-inspection-check <absolute-directory>`
+用于带显式身份配置的 Virtual Camera 消费者检查。开发证据和适用范围见 [V1-35 记录](docs/verification/v1-35.md)。
+
 ## Camera Provider 契约验证
 
 Provider 维护者实现 `ICameraConformanceFixtureFactory`，提供固定身份、成像配置、规范像素摘要、

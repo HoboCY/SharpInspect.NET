@@ -1636,7 +1636,7 @@ internal sealed partial class SqliteCommandStore
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports);
+            previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -1666,6 +1666,8 @@ internal sealed partial class SqliteCommandStore
                 _options.PreviewSessions);
             if (_options.CalibrationImports is not null)
                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+                if (_options.ManualInspections is not null)
+                    AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
         ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline, _policy!.StationId);
     }
 

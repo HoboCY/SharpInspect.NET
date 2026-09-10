@@ -3,10 +3,14 @@
 using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime;
+using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Calibration;
 using SharpInspect.Runtime.Cameras;
+using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
+using SharpInspect.Runtime.Manual;
+using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Storage;
 using Xunit;
 using Xunit.Sdk;
@@ -638,6 +642,9 @@ public sealed class CalibrationSessionRuntimeTests
         private const string Role = "TopCamera";
         private readonly string _directory;
         private readonly AuditIntegrityPolicy _audit;
+        private readonly RecipeDraftService? _manualDrafts;
+        private readonly AlgorithmPreparationService? _manualPreparation;
+        private readonly FrameBufferPool? _manualFramePool;
         private bool _disposed;
 
         private Fixture(string directory, AuditIntegrityPolicy audit,
@@ -648,7 +655,10 @@ public sealed class CalibrationSessionRuntimeTests
             TestProcedure procedure, SignedIn user, CameraBindingRevision binding,
             ImagingSetupRevision imaging, CalibrationSessionPlan plan,
             EffectiveCameraConfiguration baselineEffective,
-            CalibrationAcceptancePolicy? governancePolicy)
+            CalibrationAcceptancePolicy? governancePolicy,
+            RecipeDraftService? manualDrafts = null,
+            AlgorithmPreparationService? manualPreparation = null,
+            FrameBufferPool? manualFramePool = null)
         {
             _directory = directory;
             _audit = audit;
@@ -668,6 +678,9 @@ public sealed class CalibrationSessionRuntimeTests
             Plan = plan;
             BaselineEffective = baselineEffective;
             GovernancePolicy = governancePolicy;
+            _manualDrafts = manualDrafts;
+            _manualPreparation = manualPreparation;
+            _manualFramePool = manualFramePool;
         }
 
         internal ProductionStoreOptions Options { get; }
@@ -686,6 +699,7 @@ public sealed class CalibrationSessionRuntimeTests
         internal CalibrationSessionPlan Plan { get; }
         internal EffectiveCameraConfiguration BaselineEffective { get; }
         internal CalibrationAcceptancePolicy? GovernancePolicy { get; }
+        internal RecipeDraftService? ManualDrafts => _manualDrafts;
         internal RequestedCameraConfiguration BaselineRequested { get; private init; } = null!;
 
         internal static async Task<Fixture> CreateAsync(bool withDevelopmentFixture,
@@ -695,8 +709,12 @@ public sealed class CalibrationSessionRuntimeTests
             PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
             double governanceSampleThreshold = 1,
             RecipeReleaseStoreOptions? recipeReleases = null,
-            PlcResultContractStoreOptions? plcResultContracts = null)
+            PlcResultContractStoreOptions? plcResultContracts = null,
+            ManualInspectionStoreOptions? manualInspections = null,
+            IVisionAlgorithmFactory? manualFactory = null)
         {
+            if ((manualInspections is null) != (manualFactory is null))
+                throw new ArgumentException("ManualInspectionFixtureFactoryRequired");
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Calibration session integration requires Windows machine protection.");
 
@@ -715,7 +733,8 @@ public sealed class CalibrationSessionRuntimeTests
                 MaximumVerificationEntries = 10_000
             };
             var authorizationPolicy = CreateAuthorizationPolicy(withCalibrationGovernance,
-                includeRecipeDraftAuthoring: recipeReleases is not null);
+                includeRecipeDraftAuthoring: recipeReleases is not null || manualInspections is not null,
+                includeManualInspection: manualInspections is not null);
             var identityOptions = new LocalIdentityOptions(audit.StationId,
                 new LocalPasswordPolicy
                 {
@@ -727,13 +746,13 @@ public sealed class CalibrationSessionRuntimeTests
             {
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
-                RecipeDrafts = recipeReleases is null ? null : new RecipeDraftStoreOptions(
+                RecipeDrafts = recipeReleases is null && manualInspections is null ? null : new RecipeDraftStoreOptions(
                     new AlgorithmExecutionPolicy("V130.Calibration.Release.Execution", "1",
                         TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2),
                         TimeSpan.FromSeconds(1))),
                 RecipeReleases = recipeReleases,
                 PlcResultContracts = plcResultContracts,
-                AlarmPolicy = CreateAlarmPolicy(),
+                AlarmPolicy = CreateAlarmPolicy(manualInspections is not null),
                 CameraSetup = new CameraSetupStoreOptions(),
                 CameraRecovery = new CameraRecoveryStoreOptions(),
                 ImagingSetup = new ImagingSetupStoreOptions(),
@@ -749,6 +768,7 @@ public sealed class CalibrationSessionRuntimeTests
                 CalibrationGovernance = withCalibrationGovernance
                     ? new CalibrationGovernanceStoreOptions()
                     : null,
+                ManualInspections = manualInspections,
                 CommitTimeout = TimeSpan.FromSeconds(5),
                 QueryTimeout = TimeSpan.FromSeconds(5),
                 QueueCapacity = 16
@@ -759,6 +779,11 @@ public sealed class CalibrationSessionRuntimeTests
             LocalAuthorizationService? authorization = null;
             CameraRecoveryService? recovery = null;
             StationRuntime? runtime = null;
+            RecipeDraftService? manualDrafts = null;
+            AlgorithmPreparationService? manualPreparation = null;
+            FrameBufferPool? manualFramePool = null;
+            AlgorithmPreparationOptions? manualPreparationOptions = null;
+            AlgorithmExecutionOptions? manualExecutionOptions = null;
             try
             {
                 store = new SqliteCommandStore(options);
@@ -829,15 +854,43 @@ public sealed class CalibrationSessionRuntimeTests
                 {
                     new RegisteredCalibrationProcedure<byte>(procedure)
                 });
+                if (manualInspections is not null)
+                {
+                    manualPreparationOptions = new AlgorithmPreparationOptions(
+                        TimeSpan.FromSeconds(5), maximumConcurrentPreparations: 1,
+                        maximumOwnedInstances: 4);
+                    manualPreparation = new AlgorithmPreparationService(
+                        new[] { manualFactory! }, manualPreparationOptions);
+                    manualExecutionOptions = new AlgorithmExecutionOptions(
+                        options.RecipeDrafts!.ExecutionPolicy, TimeSpan.FromSeconds(5));
+                    manualFramePool = new FrameBufferPool(new FrameBufferPoolOptions(
+                        2, 1024 * 1024, TimeSpan.FromSeconds(1)));
+                    manualDrafts = new RecipeDraftService(new[] { manualFactory! }, options,
+                        authorization, new SqliteRecipeDraftQuery(options));
+                }
                 runtime = new StationRuntime(store, TimeSpan.FromMilliseconds(20), sessions,
-                    authorization, cameraRecoveryService: recovery,
+                    authorization, frameBufferPool: manualFramePool,
+                    algorithmExecutionOptions: manualExecutionOptions,
+                    cameraProviders: manualInspections is null ? null : new[] { provider },
+                    cameraSetupOptions: manualInspections is null ? null : new CameraSetupOptions(),
+                    cameraRecoveryService: manualInspections is null ? recovery : null,
                     calibrationSessionOptions: calibrationOptions,
                     calibrationProcedures: registry, productionStoreOptions: options,
                     physicalCalibrationVerificationRegistry: physicalCalibrationVerificationRegistry);
 
+                if (manualInspections is not null)
+                {
+                    runtime.ConfigureManualInspectionSessions(new ManualInspectionSessionOptions(),
+                        manualDrafts!, releases: null, manualPreparation,
+                        manualPreparationOptions, manualExecutionOptions, options, clock);
+                    await runtime.WaitForManualInspectionStartupAsync()
+                        .WaitAsync(TimeSpan.FromSeconds(30));
+                }
+
                 var fixture = new Fixture(directory, audit, options, store, identity, sessions,
                     authorization, runtime, provider, initial, recovery, procedure, user, binding,
-                    imaging, plan, baselineEffective, governancePolicy)
+                    imaging, plan, baselineEffective, governancePolicy, manualDrafts,
+                    manualPreparation, manualFramePool)
                 {
                     BaselineRequested = baselineRequested
                 };
@@ -846,6 +899,9 @@ public sealed class CalibrationSessionRuntimeTests
             catch
             {
                 if (runtime is not null) await runtime.DisposeAsync();
+                if (manualDrafts is not null) await manualDrafts.DisposeAsync();
+                if (manualPreparation is not null) await manualPreparation.DisposeAsync();
+                manualFramePool?.Dispose();
                 if (recovery is not null) await recovery.DisposeAsync();
                 authorization?.Dispose();
                 if (sessions is not null) await sessions.DisposeAsync();
@@ -1107,7 +1163,7 @@ public sealed class CalibrationSessionRuntimeTests
             new RegionOfInterest(0, 0, 2, 2), VisionPixelFormat.Mono8, null, 100, 0, null);
 
         private static AuthorizationPolicy CreateAuthorizationPolicy(bool includeGovernance = false,
-            bool includeRecipeDraftAuthoring = false)
+            bool includeRecipeDraftAuthoring = false, bool includeManualInspection = false)
         {
             var development = AuthorizationPolicy.Development;
             var roles = development.RoleBundles.ToDictionary(item => item.Key,
@@ -1121,11 +1177,14 @@ public sealed class CalibrationSessionRuntimeTests
                         .Concat(includeRecipeDraftAuthoring
                             ? new[] { Permission.EditRecipeDraft }
                             : Array.Empty<Permission>())
+                        .Concat(includeManualInspection
+                            ? new[] { Permission.RunManualInspection }
+                            : Array.Empty<Permission>())
                     : item.Value.AsEnumerable());
             return new AuthorizationPolicy("v124-calibration", "1", roles);
         }
 
-        private static AlarmPolicy CreateAlarmPolicy()
+        private static AlarmPolicy CreateAlarmPolicy(bool includeManualInspection = false)
         {
             const AlarmResetPrerequisites prerequisites = AlarmResetPrerequisites.RecoveryComplete |
                 AlarmResetPrerequisites.NoActiveExecution | AlarmResetPrerequisites.NoPendingDelivery;
@@ -1147,6 +1206,18 @@ public sealed class CalibrationSessionRuntimeTests
                 rules.Add(new(code, "Runtime.CameraAcquisition", AlarmSeverity.Error,
                     ProductionImpact.BlockNewTriggers, true, AlarmNotification.UntilCleared, null,
                     ResetPrerequisites: prerequisites));
+            if (includeManualInspection)
+            {
+                rules.Add(new("ManualInspectionRecoveryRequired", "Runtime.ManualInspection",
+                    AlarmSeverity.Warning, ProductionImpact.BlockNewTriggers, true,
+                    AlarmNotification.UntilCleared, null, ResetPrerequisites: prerequisites));
+                rules.Add(new("AlgorithmHung", "Runtime.AlgorithmExecution",
+                    AlarmSeverity.Critical, ProductionImpact.BlockNewTriggers, true,
+                    AlarmNotification.UntilCleared, null, 110));
+                rules.Add(new("FrameBufferExhausted", "Runtime.FrameBufferPool",
+                    AlarmSeverity.Error, ProductionImpact.BlockNewTriggers, true,
+                    AlarmNotification.UntilCleared, null, 200, ResetPrerequisites: prerequisites));
+            }
             return new AlarmPolicy("v124-calibration", "1", rules, TimeSpan.FromSeconds(10));
         }
 
@@ -1172,13 +1243,22 @@ public sealed class CalibrationSessionRuntimeTests
                 (failure.Message == "CalibrationShutdownIncomplete") { }
             finally
             {
-                try { await Recovery.DisposeAsync(); }
+                try { if (_manualDrafts is not null) await _manualDrafts.DisposeAsync(); }
                 finally
                 {
-                    Authorization.Dispose();
-                    await Sessions.DisposeAsync();
-                    await Store.DisposeAsync();
-                    Cleanup(_directory, _audit);
+                    try { if (_manualPreparation is not null) await _manualPreparation.DisposeAsync(); }
+                    finally
+                    {
+                        _manualFramePool?.Dispose();
+                        try { await Recovery.DisposeAsync(); }
+                        finally
+                        {
+                            Authorization.Dispose();
+                            await Sessions.DisposeAsync();
+                            await Store.DisposeAsync();
+                            Cleanup(_directory, _audit);
+                        }
+                    }
                 }
             }
         }

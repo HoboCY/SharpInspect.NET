@@ -123,6 +123,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
         ConfigureRecipeActivationStartup(productionStoreOptions?.RecipeActivations is not null);
         ConfigurePreviewStartup(productionStoreOptions?.PreviewSessions is not null);
+        ConfigureManualInspectionStartup(productionStoreOptions?.ManualInspections is not null);
         _storeInitialization = InitializeStoreAsync();
         _heartbeat = PublishHeartbeatAsync(interval);
     }
@@ -152,6 +153,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             PublishLocked(_snapshot with { Session = current });
             ScheduleCalibrationSessionExitLocked(current);
             SchedulePreviewSessionExitLocked(current);
+            ScheduleManualInspectionSessionExitLocked(current);
             if (current.State != InteractiveSessionState.Authenticated) _importPhysicalReservation?.Cancel();
         }
     }
@@ -167,6 +169,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         PublishLocked(_snapshot with { Session = current });
         ScheduleCalibrationSessionExitLocked(current);
         SchedulePreviewSessionExitLocked(current);
+        ScheduleManualInspectionSessionExitLocked(current);
     }
 
     public async IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(
@@ -205,6 +208,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (command is ManualInspectionCommand manual)
+            return await SubmitManualInspectionAsync(manual, cancellationToken).ConfigureAwait(false);
         if (command is PreviewSessionCommand preview)
             return await SubmitPreviewAsync(preview, cancellationToken).ConfigureAwait(false);
         if (command is ActivateRecipeCommand activate)
@@ -245,6 +250,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             }
             CancelRecipeActivation();
             RequestPreviewStop("PreviewLocalStop");
+            RequestManualInspectionStop("ManualLocalStop", abort: false);
         }
         else if (Interlocked.Increment(ref _queuedCommands) > 64)
         {
@@ -559,12 +565,25 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private async Task CompletePendingStopAsync()
     {
         Task? physicalRetirement;
-        lock (_sync) physicalRetirement = _importPhysicalReservation?.Retirement;
+        Task? manualRetirement;
+        lock (_sync)
+        {
+            physicalRetirement = _importPhysicalReservation?.Retirement;
+            manualRetirement = _manualOwner?.Retired.Task;
+        }
         if (physicalRetirement is not null)
         {
             // A plugin can outlive cancellation. Keep Stop pending until its actual
             // device lease retires, without occupying the command gate or blocking shutdown.
             try { await physicalRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        }
+        if (manualRetirement is not null)
+        {
+            // Manual exit owns the same camera/algorithm resources and completes its
+            // durable session terminal only after restoration. Wait before taking the
+            // command gate so the exit worker can finish its own terminal transaction.
+            try { await manualRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         }
         await _commandGate.WaitAsync().ConfigureAwait(false);
@@ -599,6 +618,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         next = ApplyCameraAcquisitionStateLocked(next);
         next = ApplyCameraRecoveryStateLocked(next);
         next = ProjectPreviewStateLocked(next);
+        next = ProjectManualInspectionStateLocked(next);
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
@@ -621,6 +641,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await ShutdownManualInspectionAsync().ConfigureAwait(false);
         await ShutdownPreviewAsync().ConfigureAwait(false);
         await ShutdownRecipeActivationAsync().ConfigureAwait(false);
         // Activation owns its camera transaction through bounded restoration.

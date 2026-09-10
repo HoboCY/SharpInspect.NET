@@ -32,6 +32,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     private TaskCompletionSource<bool>? _admissionCompletion;
     private long _nextProtocolSequence = 1;
     private bool _calibrationEnabled;
+    private bool _manualEnabled;
 
     public CameraAcquisitionService(IControlledCameraDevice device,
         EffectiveCameraConfiguration effectiveConfiguration, IFrameAcquisitionClock clock,
@@ -113,7 +114,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     {
         lock (_sync)
         {
-            if (_disposed || _attempt is not null || _admissionInProgress)
+            if (_disposed || _attempt is not null || _admissionInProgress || _manualEnabled)
                 throw new InvalidOperationException("CameraCalibrationAcquisitionUnavailable");
             _calibrationEnabled = true;
         }
@@ -255,11 +256,16 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             return Rejected("CameraAcquisitionExecutionKindInvalid");
         if (suppliedCorrelation is null && kind != ExecutionKind.Qualification)
             return Rejected("ProductionAcquisitionUnavailable");
-        if (suppliedCorrelation is not null &&
-            (kind != ExecutionKind.Calibration ||
-             suppliedCorrelation.Kind != ExecutionKind.Calibration ||
-             suppliedCorrelation.Value == Guid.Empty))
-            return Rejected("CameraCalibrationCorrelationInvalid");
+        if (suppliedCorrelation is not null)
+        {
+            var correlationValid = suppliedCorrelation.Value != Guid.Empty &&
+                suppliedCorrelation.Kind == kind &&
+                kind is ExecutionKind.Calibration or ExecutionKind.Manual;
+            if (!correlationValid)
+                return Rejected(kind == ExecutionKind.Manual
+                    ? "CameraManualCorrelationInvalid"
+                    : "CameraCalibrationCorrelationInvalid");
+        }
         if (cancellationToken.IsCancellationRequested)
             return Rejected("CameraAcquisitionCancelledBeforeStart");
 
@@ -282,8 +288,11 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             if (_disposed) return Rejected("CameraAcquisitionServiceDisposed");
             if (kind == ExecutionKind.Calibration && !_calibrationEnabled)
                 return Rejected("CameraCalibrationLeaseRequired");
-            if (kind == ExecutionKind.Qualification && _calibrationEnabled)
-                return Rejected("CameraCalibrationControlledOnly");
+            if (kind == ExecutionKind.Manual && !_manualEnabled)
+                return Rejected("CameraManualLeaseRequired");
+            if (kind == ExecutionKind.Qualification && (_calibrationEnabled || _manualEnabled))
+                return Rejected(_manualEnabled ? "CameraManualControlledOnly" :
+                    "CameraCalibrationControlledOnly");
             if (_attempt is not null || _admissionInProgress || HasPendingHealthReadLocked())
             {
                 AppendProtocolLocked(CameraProtocolViolationKind.TriggerWhileBusy,
@@ -855,7 +864,15 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
 
             try
             {
-                var busyAt = _service._clock.GetTimePoint();
+                var busyAt = _control.PendingInstalledAt;
+                if (busyAt is null)
+                {
+                    LatchFailureLocked(CameraAcquisitionFailureKind.ProtocolViolation,
+                        "CameraAcquisitionPendingTimestampMissing", signalCancellation: true);
+                    CompletePhysicalLocked();
+                    return;
+                }
+
                 var deadline = AddDuration(busyAt.MonotonicTimestamp,
                     TimeSpan.FromMilliseconds(_service._configuration.AcquisitionTimeoutMs),
                     _service._clock.Frequency);

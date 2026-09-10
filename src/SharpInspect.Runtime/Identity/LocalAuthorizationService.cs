@@ -157,6 +157,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ActivateRecipeCommand => Permission.ActivateRecipe,
         SavePreviewToDraftCommand => Permission.EditRecipeDraft,
         PreviewSessionCommand => Permission.RunPreview,
+        ManualInspectionCommand => Permission.RunManualInspection,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -183,6 +184,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             SelectHistoricalCalibrationCommand historical => historical.AuthorizationTarget,
             ActivateRecipeCommand activation => activation.AuthorizationTarget,
             PreviewSessionCommand preview => preview.AuthorizationTarget,
+            ManualInspectionCommand manual => manual.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -221,6 +223,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
             AuditedCommandKind.Freeze or AuditedCommandKind.Exit => Permission.RunPreview,
         AuditedCommandKind.SaveRecipeDraft => Permission.EditRecipeDraft,
+        AuditedCommandKind.StartManualInspectionSession or AuditedCommandKind.RunManualInspection or
+            AuditedCommandKind.ExitManualInspectionSession => Permission.RunManualInspection,
         AuditedCommandKind.MigrateAlgorithmConfiguration => Permission.EditRecipeDraft,
         AuditedCommandKind.ReleaseRecipe => Permission.ReleaseRecipe,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -263,6 +267,10 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         SavePreviewToDraftCommand => AuditedCommandKind.SaveRecipeDraft,
         ExitPreviewSessionCommand => AuditedCommandKind.Exit,
         PreviewSessionContinuationCommand continuation => continuation.OriginalCommandKind,
+        StartManualInspectionSessionCommand => AuditedCommandKind.StartManualInspectionSession,
+        RunManualInspectionCommand => AuditedCommandKind.RunManualInspection,
+        ExitManualInspectionSessionCommand => AuditedCommandKind.ExitManualInspectionSession,
+        ManualInspectionContinuationCommand continuation => continuation.OriginalCommandKind,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey => AuditedCommandKind.RotateSigningKey,

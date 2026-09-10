@@ -58,7 +58,11 @@ internal enum IdentityEventKind
     PreviewSessionStartAuthorized,
     PreviewSessionActionAuthorized,
     PreviewSessionCompleted,
-    PreviewSessionFailed
+    PreviewSessionFailed,
+    ManualInspectionSessionStartAuthorized,
+    ManualInspectionSessionActionAuthorized,
+    ManualInspectionSessionCompleted,
+    ManualInspectionSessionFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -137,14 +141,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > CalibrationImportStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ManualInspectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > CalibrationImportStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ManualInspectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -169,7 +173,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= CalibrationImportStoreOptions.SchemaVersion => 49, _ => 0 };
+                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ManualInspectionStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -225,6 +229,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.PreviewSessionActionAuthorized or
                         IdentityEventKind.PreviewSessionCompleted or
                         IdentityEventKind.PreviewSessionFailed), "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.ManualInspectionSessionStartAuthorized or
+                        IdentityEventKind.ManualInspectionSessionActionAuthorized or
+                        IdentityEventKind.ManualInspectionSessionCompleted or
+                        IdentityEventKind.ManualInspectionSessionFailed), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -307,13 +316,15 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= CalibrationImportStoreOptions.SchemaVersion ||
                         actionKind != AuditedCommandKind.SelectHistoricalCalibration) &&
                       (schemaVersion >= CalibrationImportStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.ImportCalibrationPackage and <= AuditedCommandKind.PublishImportedCalibration)) &&
+                      (schemaVersion >= ManualInspectionStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartManualInspectionSession and <= AuditedCommandKind.ExitManualInspectionSession)) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ? 35 :
+                var maximumPermissions = schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ? 36 :
+                    schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ? 35 :
                     schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;
                 AuditChainDatabase.Require(IsPermissionSet(fields[40], maximumPermissions) &&
                     IsPermissionSet(fields[41], maximumPermissions),
@@ -505,6 +516,43 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 fields[30] == value.ActorPrincipalId.ToString("D") &&
                 fields[31] == value.CommandCorrelationId.ToString("D") &&
                 fields[33] == Permission.RunPreview.ToString() &&
+                fields[35] == value.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == value.AuthorizationTarget &&
+                fields[38] == value.CommandCorrelationId.ToString("D") &&
+                fields[39] == value.CommandKind.ToString() &&
+                fields[42] == value.SessionId.ToString("D");
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool MatchesManualInspectionAuthorization(byte[] payload, long ordinal,
+        string stationId, ManualInspectionSessionEvent value,
+        SharpInspect.Runtime.CommandAuditFact? accepted = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, ManualInspectionStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            return accepted is not null && fields.Length == 49 && fields[4] == stationId &&
+                (fields[2] is nameof(IdentityEventKind.ManualInspectionSessionStartAuthorized) or
+                 nameof(IdentityEventKind.ManualInspectionSessionActionAuthorized) or
+                 nameof(IdentityEventKind.ManualInspectionSessionCompleted) or
+                 nameof(IdentityEventKind.ManualInspectionSessionFailed)) &&
+                fields[3] == value.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[5] == value.ActorPrincipalId.ToString("D") &&
+                fields[9] == value.ReasonCode &&
+                fields[25] == value.ActorSessionId.ToString("D") &&
+                fields[27] == value.Header.AuthorizationPolicy.Id &&
+                fields[28] == value.Header.AuthorizationPolicy.Version &&
+                fields[29] == value.Header.AuthorizationPolicy.ContentHash &&
+                fields[30] == value.ActorPrincipalId.ToString("D") &&
+                fields[31] == value.CommandCorrelationId.ToString("D") &&
+                fields[32] == accepted.ClaimedStepUpGrantId?.ToString("D") &&
+                fields[33] == Permission.RunManualInspection.ToString() &&
+                fields[34] == value.ActorPrincipalId.ToString("D") &&
                 fields[35] == value.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
                 fields[37] == value.AuthorizationTarget &&
                 fields[38] == value.CommandCorrelationId.ToString("D") &&

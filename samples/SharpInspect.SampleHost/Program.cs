@@ -66,7 +66,10 @@ internal static class Program
             recipeActivationQueryDirectory is not null;
         var previewCheckDirectory = Option("--preview-check");
         var previewUiEnabled = args.Contains("--preview-ui", StringComparer.OrdinalIgnoreCase);
-        var previewEnabled = previewCheckDirectory is not null || previewUiEnabled || calibrationImportEnabled;
+        var manualCheckDirectory = Option("--manual-inspection-check");
+        var manualUiEnabled = args.Contains("--manual-inspection-ui", StringComparer.OrdinalIgnoreCase);
+        var manualEnabled = manualCheckDirectory is not null || manualUiEnabled;
+        var previewEnabled = previewCheckDirectory is not null || previewUiEnabled || calibrationImportEnabled || manualEnabled;
         var cameraSetupDirectory = Option("--camera-setup-check");
         var cameraSetupQueryDirectory = Option("--camera-setup-query");
         var cameraRecoveryDirectory = Option("--camera-recovery-check");
@@ -115,9 +118,10 @@ internal static class Program
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
-            AlarmPolicy = PreviewSessionDemo.EnsureRecoveryAlarmPolicy(
-                Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
-                previewEnabled),
+            AlarmPolicy = ManualInspectionDemo.EnsureRecoveryAlarmPolicy(
+                PreviewSessionDemo.EnsureRecoveryAlarmPolicy(
+                    Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
+                    previewEnabled), manualEnabled),
             AlgorithmResultArchive = args.Contains("--algorithm-result-archive", StringComparer.OrdinalIgnoreCase)
                 ? new AlgorithmResultArchiveOptions() : null,
             RecipeDrafts = draftEnabled ? new RecipeDraftStoreOptions(RecipeDraftDemo.ExecutionPolicy) : null,
@@ -129,6 +133,7 @@ internal static class Program
                 || imagingCalibrationEnabled || recipeActivationEnabled || previewEnabled
                 ? new CameraSetupStoreOptions() : null,
             PreviewSessions = previewEnabled ? new PreviewSessionStoreOptions() : null,
+            ManualInspections = manualEnabled ? new ManualInspectionStoreOptions() : null,
             CameraRecovery = cameraRecoveryEnabled || cameraNetworkEnabled ? new CameraRecoveryStoreOptions() : null,
             CameraNetwork = cameraNetworkEnabled ? new CameraNetworkStoreOptions() : null,
             ImagingSetup = imagingCalibrationEnabled ? new ImagingSetupStoreOptions() : null,
@@ -162,6 +167,9 @@ internal static class Program
                 Option("--user-name"), Option("--expected-principal"));
         if (recipeActivationQueryDirectory is not null)
             return RecipeActivationDemo.Query(storeOptions, recipeActivationQueryDirectory);
+        if (manualCheckDirectory is not null)
+            return ManualInspectionDemo.Run(storeOptions, manualCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
         if (previewCheckDirectory is not null)
             return PreviewSessionDemo.Run(storeOptions, previewCheckDirectory,
                 Option("--user-name"), Option("--expected-principal"));
@@ -224,8 +232,10 @@ internal static class Program
             ? PreviewClockPump.Start(previewClock = new SharpInspect.Cameras.Virtual.VirtualCameraClock(
                 new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)))
             : null;
-        if (draftEnabled) services.AddSingleton(RecipeDraftDemo.CreateFactory());
-        if (previewEnabled)
+        if (manualEnabled)
+            ManualInspectionDemo.ConfigureRuntimeServices(services, previewClock!);
+        else if (draftEnabled) services.AddSingleton(RecipeDraftDemo.CreateFactory());
+        if (previewEnabled && !manualEnabled)
         {
             services.AddSingleton(new SharpInspect.Runtime.Preview.PreviewSessionOptions());
             services.AddSingleton(previewClock!);
@@ -268,11 +278,18 @@ internal static class Program
             p.GetService<IIdentityAdministrationQuery>(), p.GetService<IStepUpAuthentication>(),
             p.GetService<IAlarmHistoryQuery>(), new DispatcherUiDispatcher(app.Dispatcher),
             acknowledgeRequiresStepUp: storeOptions.LocalIdentity?.AuthorizationPolicy.RequiresStepUp(Permission.AcknowledgeAlarm) == true));
-        if (previewUiEnabled)
+        if (previewUiEnabled || manualUiEnabled)
             services.AddSingleton<PreviewSessionViewModel>(p => new PreviewSessionViewModel(
                 p.GetRequiredService<StationShellViewModel>(), p.GetRequiredService<IStationRuntime>(),
                 p.GetRequiredService<IPreviewSessionService>(), p.GetService<IInteractiveSessionService>(),
                 new DispatcherUiDispatcher(app.Dispatcher)));
+        if (manualUiEnabled)
+            services.AddSingleton<ManualInspectionSessionViewModel>(p => new ManualInspectionSessionViewModel(
+                p.GetRequiredService<IStationRuntime>(), p.GetRequiredService<IManualInspectionSessionService>(),
+                p.GetService<IInteractiveSessionService>(), p.GetService<IRecipeDraftHistoryQuery>(),
+                p.GetService<IReleasedRecipeQuery>(), p.GetService<IRecipeActivationQuery>(),
+                new DispatcherUiDispatcher(app.Dispatcher), p.GetService<IStepUpAuthentication>(),
+                p.GetService<IManualInspectionHistoryQuery>()));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -282,7 +299,12 @@ internal static class Program
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
         var alarms = provider.GetRequiredService<AlarmViewModel>();
-        var window = previewUiEnabled
+        var window = manualUiEnabled
+            ? ShellWindow.CreateWithManualInspection(vm, provider.GetRequiredService<ManualInspectionSessionViewModel>(),
+                provider.GetRequiredService<PreviewSessionViewModel>(), trace, integrity, identity,
+                identityAdministration, recovery, alarms, provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
+                provider.GetRequiredService<RecipeDraftEditorViewModel>())
+            : previewUiEnabled
             ? ShellWindow.CreateWithPreviewSession(vm, provider.GetRequiredService<PreviewSessionViewModel>(),
                 trace, integrity, identity, identityAdministration, recovery, alarms,
                 provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),

@@ -61,6 +61,7 @@ public partial class ShellWindow : Window
     private readonly AlgorithmResultHistoryViewModel? _algorithmResultViewModel;
     private readonly RecipeDraftEditorViewModel? _recipeDraftViewModel;
     private readonly PreviewSessionViewModel? _previewSessionViewModel;
+    private readonly ManualInspectionSessionViewModel? _manualInspectionViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -71,6 +72,7 @@ public partial class ShellWindow : Window
     private bool _alarmSelectionLoaded;
     private bool _recipeDraftSelectionLoaded;
     private bool _previewSelectionLoaded;
+    private bool _manualSelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
@@ -110,13 +112,32 @@ public partial class ShellWindow : Window
             identityAdministrationViewModel, administratorRecoveryViewModel, alarmViewModel,
             algorithmResultViewModel, recipeDraftViewModel, previewSessionViewModel);
 
+    /// <summary>Attaches the explicit Manual inspection command surface.</summary>
+    public static ShellWindow CreateWithManualInspection(
+        StationShellViewModel viewModel,
+        ManualInspectionSessionViewModel manualInspectionViewModel,
+        PreviewSessionViewModel? previewSessionViewModel = null,
+        CommandTraceViewModel? traceViewModel = null,
+        AuditIntegrityViewModel? integrityViewModel = null,
+        IdentityViewModel? identityViewModel = null,
+        IdentityAdministrationViewModel? identityAdministrationViewModel = null,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null,
+        AlarmViewModel? alarmViewModel = null,
+        AlgorithmResultHistoryViewModel? algorithmResultViewModel = null,
+        RecipeDraftEditorViewModel? recipeDraftViewModel = null) =>
+        new ShellWindow(viewModel, traceViewModel, integrityViewModel, identityViewModel,
+            identityAdministrationViewModel, administratorRecoveryViewModel, alarmViewModel,
+            algorithmResultViewModel, recipeDraftViewModel, previewSessionViewModel,
+            manualInspectionViewModel);
+
     private ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel,
         AuditIntegrityViewModel? integrityViewModel, IdentityViewModel? identityViewModel,
         IdentityAdministrationViewModel? identityAdministrationViewModel,
         AdministratorRecoveryViewModel? administratorRecoveryViewModel,
         AlarmViewModel? alarmViewModel, AlgorithmResultHistoryViewModel? algorithmResultViewModel,
         RecipeDraftEditorViewModel? recipeDraftViewModel,
-        PreviewSessionViewModel? previewSessionViewModel)
+        PreviewSessionViewModel? previewSessionViewModel,
+        ManualInspectionSessionViewModel? manualInspectionViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -129,6 +150,7 @@ public partial class ShellWindow : Window
         _algorithmResultViewModel = algorithmResultViewModel;
         _recipeDraftViewModel = recipeDraftViewModel;
         _previewSessionViewModel = previewSessionViewModel;
+        _manualInspectionViewModel = manualInspectionViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -140,6 +162,7 @@ public partial class ShellWindow : Window
         AlgorithmResultsPanel.DataContext = algorithmResultViewModel;
         RecipeDraftEditorPanel.DataContext = recipeDraftViewModel;
         PreviewPanel.DataContext = previewSessionViewModel;
+        ManualInspectionPanel.DataContext = manualInspectionViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -152,6 +175,7 @@ public partial class ShellWindow : Window
         if (alarmViewModel is not null) alarmViewModel.PropertyChanged += AlarmChanged;
         if (recipeDraftViewModel is not null) recipeDraftViewModel.PropertyChanged += RecipeDraftChanged;
         if (previewSessionViewModel is not null) previewSessionViewModel.PropertyChanged += PreviewChanged;
+        if (manualInspectionViewModel is not null) manualInspectionViewModel.PropertyChanged += ManualInspectionChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -239,6 +263,7 @@ public partial class ShellWindow : Window
         AlarmPanel.ClearSensitiveInputs();
         RecipeDraftEditorPanel.ClearSensitiveInputs();
         PreviewPanel.ClearSensitiveInputs();
+        ManualInspectionPanel.Deactivate();
         _previewSelectionLoaded = false;
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
@@ -374,6 +399,7 @@ public partial class ShellWindow : Window
         if (_alarmViewModel is not null) _alarmViewModel.PropertyChanged -= AlarmChanged;
         if (_recipeDraftViewModel is not null) _recipeDraftViewModel.PropertyChanged -= RecipeDraftChanged;
         if (_previewSessionViewModel is not null) _previewSessionViewModel.PropertyChanged -= PreviewChanged;
+        if (_manualInspectionViewModel is not null) _manualInspectionViewModel.PropertyChanged -= ManualInspectionChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
@@ -382,6 +408,7 @@ public partial class ShellWindow : Window
         AlarmPanel.ClearSensitiveInputs();
         RecipeDraftEditorPanel.ClearSensitiveInputs();
         PreviewPanel.ClearSensitiveInputs();
+        ManualInspectionPanel.Deactivate();
         base.OnClosed(e);
     }
 
@@ -394,6 +421,7 @@ public partial class ShellWindow : Window
     private void AlarmChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void RecipeDraftChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void PreviewChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void ManualInspectionChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -431,6 +459,21 @@ public partial class ShellWindow : Window
         RecipeDraftEditorPanel.Visibility = recipeSelected ? Visibility.Visible : Visibility.Collapsed;
         PreviewPanel.Visibility = engineeringSelected && _previewSessionViewModel is not null
             ? Visibility.Visible : Visibility.Collapsed;
+        ManualInspectionPanel.Visibility = engineeringSelected && _manualInspectionViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!engineeringSelected || IsPrivacyLocked)
+        {
+            if (_manualSelectionLoaded)
+            {
+                _manualSelectionLoaded = false;
+                ManualInspectionPanel.Deactivate();
+            }
+        }
+        else if (_manualInspectionViewModel is not null && !_manualSelectionLoaded)
+        {
+            _manualSelectionLoaded = true;
+            _ = _manualInspectionViewModel.RefreshAsync();
+        }
         if (!recipeSelected)
         {
             if (_recipeDraftSelectionLoaded)

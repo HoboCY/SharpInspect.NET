@@ -533,7 +533,10 @@ public sealed class RecipeDraftStorageTests
             bool enableArchive = false, int? maximumRevisionCount = null,
             TimeSpan? verificationInterval = null, RecipeReleaseStoreOptions? recipeReleases = null,
             AlarmPolicy? alarmPolicy = null, PlcResultContractStoreOptions? plcResultContracts = null,
-            IExternalAuditAnchor? externalAuditAnchor = null, bool requireExternalAnchor = false)
+            IExternalAuditAnchor? externalAuditAnchor = null, bool requireExternalAnchor = false,
+            AuthorizationPolicy? authorizationPolicy = null, CameraSetupStoreOptions? cameraSetup = null,
+            RecipeActivationStoreOptions? recipeActivations = null, PreviewSessionStoreOptions? previewSessions = null,
+            ManualInspectionStoreOptions? manualInspections = null, int? maximumAuditEntries = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -548,6 +551,7 @@ public sealed class RecipeDraftStorageTests
                 AllowInitialKeyCreation = true,
                 KeyDirectory = Path.Combine(directory, "keys"),
                 CheckpointEveryEntries = 2,
+                MaximumVerificationEntries = maximumAuditEntries ?? 10_000,
                 VerificationInterval = verificationInterval ?? TimeSpan.FromSeconds(1),
                 RequireExternalAnchor = requireExternalAnchor,
                 ExternalAnchorRouteId = requireExternalAnchor ? "v131-query-anchor" : null,
@@ -560,7 +564,7 @@ public sealed class RecipeDraftStorageTests
             };
             var identityOptions = new LocalIdentityOptions(station, passwordPolicy,
                 new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development,
-                RecipeDraftTestPolicies.Authoring);
+                authorizationPolicy ?? RecipeDraftTestPolicies.Authoring);
             var execution = new AlgorithmExecutionPolicy("V115.Draft.Execution", "1",
                 TimeSpan.FromMilliseconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1));
             var draftOptions = new RecipeDraftStoreOptions(execution)
@@ -577,6 +581,10 @@ public sealed class RecipeDraftStorageTests
                 RecipeDrafts = draftOptions,
                 RecipeReleases = recipeReleases,
                 PlcResultContracts = plcResultContracts,
+                CameraSetup = cameraSetup,
+                RecipeActivations = recipeActivations,
+                PreviewSessions = previewSessions,
+                ManualInspections = manualInspections,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };

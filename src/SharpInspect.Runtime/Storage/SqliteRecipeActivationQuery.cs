@@ -155,15 +155,23 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is RecipeActivationStoreOptions.SchemaVersion or
-                    PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion,
+                    PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
+                    ManualInspectionStoreOptions.SchemaVersion,
                 schema < RecipeActivationStoreOptions.SchemaVersion
                     ? "RecipeActivationGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
+            if (_options.ManualInspections is null && schema == ManualInspectionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ManualInspectionConfigurationRequired");
             if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
-            if (_options.PreviewSessions is null && schema >= PreviewSessionStoreOptions.SchemaVersion)
+            if (_options.PreviewSessions is null &&
+                (schema == PreviewSessionStoreOptions.SchemaVersion || schema == CalibrationImportStoreOptions.SchemaVersion))
                 throw new InvalidOperationException("PreviewSessionConfigurationRequired");
-            if ((_options.CalibrationImports is not null) != (schema == CalibrationImportStoreOptions.SchemaVersion))
-                throw new InvalidOperationException("CalibrationImportConfigurationMismatch");
+            if (_options.CalibrationImports is not null && schema < CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportGovernedMigrationRequired");
+            if (_options.CalibrationImports is null && schema == CalibrationImportStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("CalibrationImportConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             activationOptions.Validate();
             SqliteCommandStore.RequireConfiguredRecipeActivations(database, activationOptions, deadline);
@@ -183,8 +191,12 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                  releaseOptions: releaseOptions,
                  contractOptions: contractOptions,
                  activationOptions: activationOptions,
-                 previewOptions: schema >= PreviewSessionStoreOptions.SchemaVersion
-                     ? _options.PreviewSessions : null, importOptions: _options.CalibrationImports);
+                  previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
+                      ManualInspectionStoreOptions.SchemaVersion
+                      ? _options.PreviewSessions : null,
+                  importOptions: _options.CalibrationImports,
+                  manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion
+                      ? _options.ManualInspections : null);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -215,8 +227,11 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
              if (_options.PreviewSessions is not null)
                  AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                      _options.PreviewSessions);
-             if (_options.CalibrationImports is not null)
-                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+              if (_options.CalibrationImports is not null)
+                  AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+              if (_options.ManualInspections is not null)
+                  AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
+                      _options.ManualInspections);
 
             var profileResolver = SqliteCommandStore.CreateCalibrationProfileResolver(database,
                 _options.CalibrationGovernance, deadline);

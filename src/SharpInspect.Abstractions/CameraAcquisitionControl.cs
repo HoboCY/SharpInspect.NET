@@ -47,6 +47,7 @@ public sealed class FrameAcquisitionControl
     private readonly object _sync = new();
     private readonly TaskCompletionSource<bool> _pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<FrameAcquisitionStart> _busy = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private FrameTimePoint? _pendingInstalledAt;
     private FrameAcquisitionStart? _start;
     private bool _closed;
 
@@ -62,14 +63,77 @@ public sealed class FrameAcquisitionControl
     public bool IsClosed { get { lock (_sync) return _closed; } }
     public FrameAcquisitionStart? Start { get { lock (_sync) return _start; } }
 
+    /// <summary>
+    /// The immutable clock point at which the adapter installed and acknowledged
+    /// this pending request.  Runtime uses this point for both Busy and deadline
+    /// construction so an asynchronous acknowledgement cannot move the interval.
+    /// </summary>
+    public FrameTimePoint? PendingInstalledAt
+    {
+        get { lock (_sync) return _pendingInstalledAt; }
+    }
+
     public bool AcknowledgePending(FrameAcquisitionRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         lock (_sync)
         {
-            if (_closed || request != Request) return false;
-            return _pending.TrySetResult(true);
+            if (!CanAcknowledgePendingLocked(request)) return false;
+            FrameTimePoint installedAt;
+            try
+            {
+                installedAt = Clock.GetTimePoint();
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                return false;
+            }
+
+            return CommitPendingLocked(installedAt);
         }
+    }
+
+    /// <summary>
+    /// Acknowledges an installed request with the adapter's already captured clock
+    /// point.  The point is published before completing the pending task, making it
+    /// impossible for a Runtime continuation to observe an acknowledged request
+    /// without its installation time.
+    /// </summary>
+    public bool AcknowledgePending(FrameAcquisitionRequest request,
+        FrameTimePoint installedAt)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(installedAt);
+        lock (_sync)
+        {
+            if (!CanAcknowledgePendingLocked(request)) return false;
+
+            FrameTimePoint current;
+            try
+            {
+                current = Clock.GetTimePoint();
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                return false;
+            }
+
+            // Monotonic time is the only ordering authority here.  Adapter and
+            // host UTC observations can legitimately have different offsets.
+            if (installedAt.MonotonicTimestamp > current.MonotonicTimestamp)
+                return false;
+
+            return CommitPendingLocked(installedAt);
+        }
+    }
+
+    private bool CanAcknowledgePendingLocked(FrameAcquisitionRequest request) =>
+        !_closed && request == Request && !_pending.Task.IsCompleted;
+
+    private bool CommitPendingLocked(FrameTimePoint installedAt)
+    {
+        _pendingInstalledAt = installedAt;
+        return _pending.TrySetResult(true);
     }
 
     public Task<FrameAcquisitionStart> WaitForBusyAsync(CancellationToken cancellationToken = default) =>

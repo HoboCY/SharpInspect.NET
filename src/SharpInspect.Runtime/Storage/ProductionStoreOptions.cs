@@ -72,4 +72,7 @@ public sealed class ProductionStoreOptions
     /// Requires the complete schema 19 preview stack plus calibration governance, sessions,
     /// and imaging setup. Imported bytes remain untrusted until the import workflow verifies them.</summary>
     public CalibrationImportStoreOptions? CalibrationImports { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 21 independent non-production Manual Inspection ledger.</summary>
+    public ManualInspectionStoreOptions? ManualInspections { get; init; }
 }

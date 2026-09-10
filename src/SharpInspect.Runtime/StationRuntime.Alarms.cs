@@ -129,7 +129,8 @@ public sealed partial class StationRuntime
     }
 
     private async ValueTask<AlarmObservationOutcome> ObserveAlarmCoreAsync(AlarmObservation observation,
-        CancellationToken cancellationToken, bool previewRestorationDuringShutdown = false)
+        CancellationToken cancellationToken, bool previewRestorationDuringShutdown = false,
+        bool manualRestorationDuringShutdown = false)
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null)
             return new(false, "AlarmPolicyUnavailable", AuditPersistence.NotAttempted);
@@ -138,6 +139,8 @@ public sealed partial class StationRuntime
         Guid epoch;
         var trustedPreviewRetirement = previewRestorationDuringShutdown &&
             observation.Code == PreviewAlarmCode && observation.Source == PreviewAlarmSource &&
+            !observation.SourceHealthy || manualRestorationDuringShutdown &&
+            observation.Code == ManualInspectionAlarmCode && observation.Source == ManualInspectionAlarmSource &&
             !observation.SourceHealthy;
         lock (_sync)
         {
@@ -232,6 +235,8 @@ public sealed partial class StationRuntime
             {
                 if (_disposed) return;
                 var blocking = current.Instances.Any(instance => instance.ProductionImpact != ProductionImpact.None);
+                if (current.Instances.Any(instance => instance.ProductionImpact == ProductionImpact.FaultAbort))
+                    RequestManualInspectionStop("ManualInspectionFaultAbort", abort: true);
                 var blockers = _snapshot.AdmissionBlockers.Where(code => code is not
                     ("AlarmProductionBlocked" or "AlarmAuthorityUnavailable")).ToList();
                 if (blocking) blockers.Add("AlarmProductionBlocked");

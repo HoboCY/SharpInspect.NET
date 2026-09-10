@@ -297,7 +297,7 @@ internal sealed partial class SqliteCommandStore
                       releaseOptions: _options.RecipeReleases,
                       contractOptions: _options.PlcResultContracts,
                       activationOptions: _options.RecipeActivations,
-                      previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports);
+                      previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
                 if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftStore) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -329,6 +329,8 @@ internal sealed partial class SqliteCommandStore
                          _options.PreviewSessions);
                      if (_options.CalibrationImports is not null)
                          AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
+                         if (_options.ManualInspections is not null)
+                             AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
              }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
