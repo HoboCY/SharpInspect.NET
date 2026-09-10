@@ -79,7 +79,8 @@ public enum SystemPermission : byte
     DeliverOutbox = 2,
     FinalizeEvidence = 3,
     ScrubEvidence = 4,
-    CleanupRetention = 5
+    CleanupRetention = 5,
+    RecordPlcCommunication = 6
 }
 
 /// <summary>
@@ -93,6 +94,7 @@ public static class SystemPrincipalId
     public const string EvidenceFinalizer = "SharpInspect.EvidenceFinalizer";
     public const string EvidenceScrubber = "SharpInspect.EvidenceScrubber";
     public const string RetentionCleanup = "SharpInspect.RetentionCleanup";
+    public const string PlcAdapter = "SharpInspect.PlcAdapter";
 }
 
 /// <summary>One fixed system identity and its single responsibility.</summary>
@@ -139,8 +141,12 @@ public static class SystemPrincipalCatalog
         SystemPrincipalId.RetentionCleanup, "Retention cleanup",
         new[] { SystemPermission.CleanupRetention });
 
+    public static SystemPrincipalDescriptor PlcAdapter { get; } = new(
+        SystemPrincipalId.PlcAdapter, "PLC communication facts",
+        new[] { SystemPermission.RecordPlcCommunication });
+
     private static readonly ReadOnlyCollection<SystemPrincipalDescriptor> s_all =
-        new(new[] { Runtime, Outbox, EvidenceFinalizer, EvidenceScrubber, RetentionCleanup });
+        new(new[] { Runtime, Outbox, EvidenceFinalizer, EvidenceScrubber, RetentionCleanup, PlcAdapter });
 
     public static IReadOnlyList<SystemPrincipalDescriptor> All => s_all;
 }

@@ -24,6 +24,12 @@ internal sealed record ModbusRuntimeSignals(
     bool ProtocolViolation,
     bool ProductionReady);
 
+/// <summary>Mutual-heartbeat values read from the dedicated communication block.</summary>
+internal sealed record ModbusCommunicationSignals(
+    uint ControllerHeartbeat,
+    Guid RuntimeEpochEcho,
+    uint RuntimeHeartbeatEcho);
+
 /// <summary>
 /// Narrow Modbus TCP transport for a registered qualification facility. The channel owns only
 /// protocol I/O. It does not advance Runtime state, execute algorithms, or persist results.
@@ -39,6 +45,8 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private const int ControlRegisterCount = 6;
 
     private readonly ModbusQualificationProfile _profile;
+    private readonly Func<Func<Task>, Task>? _startCycleWrite;
+    private readonly Func<Func<Task>, Task>? _startOwnedRequest;
     private readonly SemaphoreSlim _transportGate = new(1, 1);
     private readonly object _stateGate = new();
     private TcpClient? _client;
@@ -47,9 +55,12 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private bool _disposed;
     private ushort _transactionId;
 
-    internal ModbusQualificationChannel(ModbusQualificationProfile profile)
+    internal ModbusQualificationChannel(ModbusQualificationProfile profile,
+        Func<Func<Task>, Task>? startCycleWrite = null, Func<Func<Task>, Task>? startOwnedRequest = null)
     {
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
+        _startCycleWrite = startCycleWrite;
+        _startOwnedRequest = startOwnedRequest;
     }
 
     internal Task ConnectAsync(CancellationToken cancellationToken = default) =>
@@ -58,8 +69,20 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     internal Task<ModbusControllerSignals> ReadAsync(CancellationToken cancellationToken = default) =>
         ReadCoreAsync(cancellationToken);
 
+    /// <summary>Reads only the controller epoch for the pre-communication atomicity check.</summary>
+    internal Task<uint> ReadControllerEpochAsync(CancellationToken cancellationToken = default) =>
+        ReadControllerEpochCoreAsync(cancellationToken);
+
     internal Task<ModbusRuntimeSignals> ReadRuntimeStateAsync(CancellationToken cancellationToken = default) =>
         ReadRuntimeStateCoreAsync(cancellationToken);
+
+    internal Task<ModbusCommunicationSignals> ReadCommunicationAsync(
+        CancellationToken cancellationToken = default) =>
+        ReadCommunicationCoreAsync(cancellationToken);
+
+    internal Task WriteHeartbeatAsync(Guid runtimeEpoch, uint heartbeat,
+        CancellationToken cancellationToken = default) =>
+        WriteHeartbeatCoreAsync(runtimeEpoch, heartbeat, cancellationToken);
 
     internal Task WriteStateAsync(bool qualificationReady, bool busy, bool resultValid,
         bool cycleFault, bool protocolViolation, CancellationToken cancellationToken = default) =>
@@ -224,6 +247,85 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
         }
     }
 
+    private async Task<uint> ReadControllerEpochCoreAsync(CancellationToken cancellationToken)
+    {
+        var epochAddress = checked((ushort)(_profile.ControllerStartAddress + 2));
+        var body = await ExecuteRequestAsync(
+            ReadHoldingRegistersFunction,
+            BuildReadRequest(epochAddress, 2),
+            expectedMbapLength: 7,
+            cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (body.Length != 6 || body[0] != ReadHoldingRegistersFunction || body[1] != 4)
+                throw ProtocolFailure("ModbusQualificationControllerEpochResponseInvalid");
+            return BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(2, 4));
+        }
+        catch (ModbusProtocolException exception)
+        {
+            FaultChannel();
+            throw new InvalidOperationException(exception.Message, exception);
+        }
+    }
+
+    private async Task<ModbusCommunicationSignals> ReadCommunicationCoreAsync(
+        CancellationToken cancellationToken)
+    {
+        var binding = RequireCommunicationBinding();
+        var body = await ExecuteRequestAsync(
+            ReadHoldingRegistersFunction,
+            BuildReadRequest(binding.ControllerStartAddress,
+                ModbusCommunicationBinding.ControllerRegisterCount),
+            expectedMbapLength: 27,
+            cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            if (body.Length != 26 || body[0] != ReadHoldingRegistersFunction || body[1] != 24)
+                throw ProtocolFailure("ModbusCommunicationReadResponseLengthInvalid");
+
+            var controllerHeartbeat = BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(2, 4));
+            var runtimeEpochEcho = new Guid(body.AsSpan(6, 16));
+            var runtimeHeartbeatEcho = BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(22, 4));
+            return new ModbusCommunicationSignals(controllerHeartbeat, runtimeEpochEcho,
+                runtimeHeartbeatEcho);
+        }
+        catch (ModbusProtocolException exception)
+        {
+            FaultChannel();
+            throw new InvalidOperationException(exception.Message, exception);
+        }
+    }
+
+    private async Task WriteHeartbeatCoreAsync(Guid runtimeEpoch, uint heartbeat,
+        CancellationToken cancellationToken)
+    {
+        if (runtimeEpoch == Guid.Empty)
+            throw new ArgumentException("ModbusCommunicationRuntimeEpochRequired",
+                nameof(runtimeEpoch));
+        var binding = RequireCommunicationBinding();
+        var bytes = new byte[ModbusCommunicationBinding.RuntimeRegisterCount * 2];
+        runtimeEpoch.ToByteArray().CopyTo(bytes, 0);
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16, 4), heartbeat);
+        var body = await ExecuteRequestAsync(
+            WriteMultipleRegistersFunction,
+            BuildWriteMultipleRequest(binding.RuntimeStartAddress, bytes,
+                ModbusCommunicationBinding.RuntimeRegisterCount),
+            expectedMbapLength: 6,
+            cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ValidateWriteMultipleResponse(body, binding.RuntimeStartAddress,
+                ModbusCommunicationBinding.RuntimeRegisterCount);
+        }
+        catch (ModbusProtocolException exception)
+        {
+            FaultChannel();
+            throw new InvalidOperationException(exception.Message, exception);
+        }
+    }
+
     private async Task WriteStateCoreAsync(bool qualificationReady, bool busy, bool resultValid,
         bool cycleFault, bool protocolViolation, CancellationToken cancellationToken)
     {
@@ -239,7 +341,8 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
             WriteMultipleRegistersFunction,
             BuildWriteMultipleRequest(_profile.RuntimeStartAddress, registers),
             expectedMbapLength: 6,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, requiresCycleAuthority: qualificationReady || busy || resultValid && !cycleFault,
+            allowAfterExit: !qualificationReady && !busy && (!resultValid || cycleFault)).ConfigureAwait(false);
         try
         {
             ValidateWriteMultipleResponse(body, _profile.RuntimeStartAddress, ControlRegisterCount);
@@ -310,7 +413,7 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
                     WriteMultipleRegistersFunction,
                     BuildWriteMultipleRequest(address, bytes, registerCount),
                     expectedMbapLength: 6,
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken, requiresCycleAuthority: true).ConfigureAwait(false);
                 try
                 {
                     ValidateWriteMultipleResponse(body, address, registerCount);
@@ -326,7 +429,8 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     }
 
     private async Task<byte[]> ExecuteRequestAsync(byte function, byte[] pdu,
-        ushort expectedMbapLength, CancellationToken cancellationToken)
+        ushort expectedMbapLength, CancellationToken cancellationToken, bool requiresCycleAuthority = false,
+        bool allowAfterExit = false)
     {
         await _transportGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var requestStarted = false;
@@ -345,9 +449,19 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
             if (cancellationToken.IsCancellationRequested)
                 cancellationToken.ThrowIfCancellationRequested();
 
-            requestStarted = true;
             using (var writeToken = CreateIoToken(cancellationToken, deadline))
-                await stream.WriteAsync(frame.AsMemory(), writeToken.Token).ConfigureAwait(false);
+            {
+                Task StartWrite()
+                {
+                    requestStarted = true;
+                    return stream.WriteAsync(frame.AsMemory(), writeToken.Token).AsTask();
+                }
+                Task StartAuthorizedWrite() => requiresCycleAuthority && _startCycleWrite is not null ?
+                    _startCycleWrite(StartWrite) : StartWrite();
+                var sent = !allowAfterExit && _startOwnedRequest is not null ?
+                    _startOwnedRequest(StartAuthorizedWrite) : StartAuthorizedWrite();
+                await sent.ConfigureAwait(false);
+            }
 
             var header = new byte[7];
             await ReadExactAsync(stream, header, deadline, cancellationToken).ConfigureAwait(false);
@@ -379,6 +493,12 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
         {
             throw;
         }
+        catch (InvalidOperationException) when (!requestStarted)
+        {
+            // A revoked physical claim sent no request. Preserve its stable
+            // communication reason and permit a best-effort Ready revocation.
+            throw;
+        }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             FaultChannel();
@@ -400,8 +520,18 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
         {
             if (range.Overlaps(controller) || range.Overlaps(runtime))
                 throw new ArgumentException("ModbusQualificationPayloadOverlapsControlBlock");
+            if (_profile.CommunicationBinding is { } binding &&
+                (range.Overlaps(new RegisterInterval(binding.ControllerStartAddress,
+                        binding.ControllerEndAddressExclusive)) ||
+                    range.Overlaps(new RegisterInterval(binding.RuntimeStartAddress,
+                        binding.RuntimeEndAddressExclusive))))
+                throw new ArgumentException("ModbusQualificationPayloadOverlapsCommunicationBlock");
         }
     }
+
+    private ModbusCommunicationBinding RequireCommunicationBinding() =>
+        _profile.CommunicationBinding ??
+        throw new InvalidOperationException("ModbusCommunicationBindingRequired");
 
     private static void ValidatePayloadSegment(PlcRegisterSegment segment,
         IReadOnlyList<RegisterInterval> contractRanges)

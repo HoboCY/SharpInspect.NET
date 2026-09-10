@@ -488,8 +488,10 @@ public sealed partial class StationRuntime
                     ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "CameraHealthAvailable")
                     : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                         "CameraHealthUnavailable"),
-                ProductionAdmissionGate.PlcCommunication => HealthGate(gate, state.Plc.Connection,
-                    "PlcCommunicationHealthy", "PlcCommunicationHealthUnavailable"),
+                ProductionAdmissionGate.PlcCommunication => state.PlcCommunication is { Healthy: true }
+                    ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "PlcCommunicationHealthy")
+                    : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                        state.PlcCommunication?.ReasonCode ?? "PlcCommunicationHealthUnavailable"),
                 ProductionAdmissionGate.ControllerSynchronization => HealthGate(gate, state.Plc.Synchronization,
                     "ControllerSynchronizationHealthy", "ControllerSynchronizationUnavailable"),
                 ProductionAdmissionGate.Recovery => state.Recovery switch

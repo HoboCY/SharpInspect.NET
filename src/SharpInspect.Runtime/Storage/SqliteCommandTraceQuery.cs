@@ -82,21 +82,21 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
         SqliteNative.ConfigureSqliteLimit(database, options, schemaVersion);
         TraceStoragePolicyReadGuard.RequireConfiguration(schemaVersion, options);
         StationQualificationReadGuard.RequireConfiguration(schemaVersion, options);
-        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26)) throw new InvalidOperationException("StoreSchemaUnavailable");
+        if (schemaVersion is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26 or 27)) throw new InvalidOperationException("StoreSchemaUnavailable");
         if (options.ManualInspections is not null && schemaVersion < ManualInspectionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
         if (options.ManualInspections is null && schemaVersion == ManualInspectionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ManualInspectionConfigurationRequired");
         if ((schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
+                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
             options.RecipeDrafts is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if ((schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
+                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
             options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if ((schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
+                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
             (options.LocalIdentity is null || options.AuditIntegrityPolicy is null))
             throw new InvalidOperationException("ManualInspectionsRequiresCameraDraftsIdentityAndAudit");
         if (options.PlcResultContracts is not null && schemaVersion < PlcResultContractStoreOptions.SchemaVersion)
@@ -129,7 +129,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 schemaVersion == PreviewSessionStoreOptions.SchemaVersion ||
                 schemaVersion == CalibrationImportStoreOptions.SchemaVersion ||
                 schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
+                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null) &&
             options.RecipeDrafts is null)
             throw new InvalidOperationException("RecipeDraftConfigurationRequired");
         if ((schemaVersion == RecipeActivationStoreOptions.SchemaVersion ||
@@ -156,6 +156,13 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             (options.PreviewSessions is null || options.CalibrationGovernance is null ||
                 options.CalibrationSessions is null || options.ImagingSetup is null))
             throw new InvalidOperationException("CalibrationImportsRequiresPreviewGovernanceCalibrationAndImagingSetup");
+        if (options.PlcCommunication is not null && schemaVersion < PlcCommunicationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcCommunicationGovernedMigrationRequired");
+        if (options.PlcCommunication is null && schemaVersion == PlcCommunicationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("PlcCommunicationConfigurationRequired");
+        if (schemaVersion == PlcCommunicationStoreOptions.SchemaVersion &&
+            (options.LocalIdentity is null || options.AuditIntegrityPolicy is null))
+            throw new InvalidOperationException("PlcCommunicationRequiresIdentityAndAudit");
         if (options.CalibrationSessions is not null && schemaVersion < CalibrationSessionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
         if (options.CalibrationSessions is null &&
@@ -172,7 +179,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
             CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion) ||
-            ((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null)) &&
+            ((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null)) &&
             options.CameraSetup is null)
             throw new InvalidOperationException("CameraSetupConfigurationRequired");
         if (schemaVersion < CameraSetupStoreOptions.SchemaVersion && options.CameraSetup is not null)
@@ -295,7 +302,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 SqliteCommandStore.RequireConfiguredCalibrationGovernance(database, options.CalibrationGovernance, deadline);
         }
         if (schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && options.ManualInspections is not null)
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion) && options.ManualInspections is not null)
         {
             Integrity.AuditChainDatabase.RequireReleaseLedgerPresence(database, deadline,
                 options.AlgorithmResultArchive is not null, camera: true,
@@ -310,7 +317,10 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 manualInspection: true,
                 productionAdmission: options.ProductionAdmission is not null,
                 stationQualification: options.StationQualifications is not null,
-                recipeTransfer: options.RecipeTransfers is not null);
+                recipeTransfer: options.RecipeTransfers is not null,
+            traceStoragePolicy: options.TraceStoragePolicies is not null,
+            qualificationCycle: options.QualificationCycles is not null,
+            plcCommunication: options.PlcCommunication is not null);
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, options.RecipeDrafts!, deadline);
             SqliteCommandStore.RequireConfiguredCameraSetup(database, options.CameraSetup!, deadline);
             SqliteCommandStore.RequireConfiguredManualInspections(database, options.ManualInspections!, deadline);
@@ -357,7 +367,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
             SqliteCommandStore.RequireConfiguredProductionAdmission(database,
                 options.ProductionAdmission!, deadline);
         }
-        if (schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion)
+        if (schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or
+            TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion)
             AuditChainDatabase.RequireReleaseLedgerPresence(database, deadline,
                 options.AlgorithmResultArchive is not null, options.CameraSetup is not null,
                 options.CameraRecovery is not null, options.CameraNetwork is not null,
@@ -369,7 +380,10 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 manualInspection: options.ManualInspections is not null,
                 productionAdmission: options.ProductionAdmission is not null,
                 stationQualification: options.StationQualifications is not null,
-                recipeTransfer: options.RecipeTransfers is not null);
+                recipeTransfer: options.RecipeTransfers is not null,
+            traceStoragePolicy: options.TraceStoragePolicies is not null,
+            qualificationCycle: options.QualificationCycles is not null,
+            plcCommunication: options.PlcCommunication is not null);
         VerifyConfiguredLedgers(database, schemaVersion, options, deadline, cancellationToken);
         var latestPosition = SqliteNative.WithStatement(database, "SELECT COALESCE(MAX(Position),0) FROM command_facts;",
             deadline, statement =>
@@ -454,7 +468,8 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 stationQualificationOptions: options.StationQualifications,
                 recipeTransferOptions: options.RecipeTransfers,
                 traceStoragePolicyOptions: options.TraceStoragePolicies,
-                qualificationCycleOptions: options.QualificationCycles);
+                qualificationCycleOptions: options.QualificationCycles,
+                plcCommunicationOptions: options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, report, deadline, options);
             TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
             StationQualificationReadGuard.RequireVerified(database, report, deadline, options);
@@ -497,6 +512,9 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
         if (options.ProductionAdmission is not null)
             AuditChainDatabase.RequireFullProductionAdmissionVerification(database, report, deadline,
                 options.ProductionAdmission);
+        if (options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, report, deadline,
+                options.PlcCommunication);
     }
 
     private static void RequireImagingSchemaConfiguration(SQLitePCL.sqlite3 database,

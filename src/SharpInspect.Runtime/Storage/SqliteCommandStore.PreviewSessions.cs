@@ -370,8 +370,12 @@ internal sealed partial class SqliteCommandStore
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles);
+                qualificationCycleOptions: _options.QualificationCycles,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+        if (_options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
+                _options.PlcCommunication);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
         if (_options.AlarmPolicy is not null)
@@ -565,8 +569,12 @@ internal sealed partial class SqliteCommandStore
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles);
+                qualificationCycleOptions: _options.QualificationCycles,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+        if (_options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
+                _options.PlcCommunication);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
             RequireConfiguredPreviewSessions(database, options, deadline);

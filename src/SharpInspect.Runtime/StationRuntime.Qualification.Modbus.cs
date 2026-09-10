@@ -12,7 +12,11 @@ public sealed partial class StationRuntime
     {
         var profile = _qualificationModbusProfile!;
         var coordinator = owner.CycleCoordinator = new InspectionCycleCoordinator<StationQualificationPayload>();
-        await using var channel = new ModbusQualificationChannel(profile);
+        var communication = profile.CommunicationBinding is null ? null :
+            CreateQualificationCommunicationOwner(owner, profile);
+        await using var channel = new ModbusQualificationChannel(profile,
+            communication is null ? null : communication.StartCycleWrite,
+            communication is null ? null : start => StartQualificationModbusRequest(owner, start));
         var output = new InspectionCycleOutputLatch(channel.WriteStateAsync);
         Task? execution = null;
         var stateInitialized = false;
@@ -47,18 +51,25 @@ public sealed partial class StationRuntime
                 await output.ChangeAsync(owner.Cancellation.Token).ConfigureAwait(false);
                 stateInitialized = true;
             }
-            observer = new(channel.ReadAsync, profile.PollInterval, knownKeys,
+            if (communication is not null)
+            {
+                using var bootstrap = CancellationTokenSource.CreateLinkedTokenSource(
+                    owner.Cancellation.Token, owner.StimulusCancellation.Token);
+                await communication.SynchronizeAsync(channel, bootstrap.Token).ConfigureAwait(false);
+            }
+            observer = new(communication is null ? channel.ReadAsync : token => communication.ReadAsync(channel, token),
+                profile.PollInterval, knownKeys,
                 () => coordinator.SetPhase(InspectionCyclePhase.Accepted),
                 reason =>
                 {
                     lock (_sync) RequestStationQualificationExitLocked(owner, reason, abort: true);
-                }, owner.Cancellation.Token);
+                }, owner.Cancellation.Token, communication is null ? null : communication.RequireHealthy);
             lock (_sync)
             {
                 owner.CycleObserver = observer;
-                if (owner.ExitRequested) observer.RevokeAdmission();
+                if (owner.ExitRequested) throw new OperationCanceledException("QualificationModbusBootstrapRevoked");
+                observer.Start();
             }
-            observer.Start();
             while (observer.Latest.Sequence == 0)
             {
                 observer.RequireHealthy();
@@ -176,11 +187,24 @@ public sealed partial class StationRuntime
         {
             if (observer is not null) await observer.DisposeAsync().ConfigureAwait(false);
             lock (_sync) owner.CycleObserver = null;
+            if (communication is not null)
+            {
+                try { await communication.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception exception) when (exception is not OutOfMemoryException)
+                { MarkAuditFault("PlcCommunicationAuditUnavailable", alarmAuthorityUnavailable: true); }
+            }
         }
 
         async Task HandleFaultAsync(Exception exception)
         {
             observer?.StopAccepting();
+            if (communication is not null && communication.Failure is null &&
+                (exception.Message.StartsWith("ModbusQualification", StringComparison.Ordinal) ||
+                 exception.Message is "PlcSynchronizationTimedOut" or "QualificationControllerEpochChanged" or
+                     "PlcControllerHeartbeatStale" or "PlcRuntimeHeartbeatUnobserved"))
+                communication.Fail(exception.Message is "QualificationControllerEpochChanged" or
+                    "PlcControllerHeartbeatStale" or "PlcRuntimeHeartbeatUnobserved" ? exception.Message :
+                    "PlcCommunicationTransportLost");
             var hadUnresolvedCycle = owner.ModbusRecoveryRequired;
             var timedOut = exception is InspectionCycleAckTimeoutException;
             var traceFailure = coordinator.Phase == InspectionCyclePhase.Committing ||
@@ -194,12 +218,18 @@ public sealed partial class StationRuntime
                 _stationQualificationRecoveryBlocked = true;
                 owner.Restoration = StationQualificationRestorationState.RecoveryBlocked;
                 RequestStationQualificationExitLocked(owner, controllerChanged ? "QualificationControllerEpochChanged" :
+                    communication?.Failure is { } communicationReason ? communicationReason :
                     timedOut ? "QualificationResultAckTimeout" :
                     traceFailure ? "QualificationCycleTracePersistenceFailed" : "QualificationCycleInterrupted", abort: true);
             }
             // Preserve ResultValid and the payload. If the channel is uncertain
             // it is already sealed and this update performs no replay.
-            try { await output.ChangeAsync(CancellationToken.None, ready: false, busy: false, fault: true).ConfigureAwait(false); }
+            try
+            {
+                if (stateInitialized)
+                    await output.ChangeAsync(CancellationToken.None, ready: false, busy: false,
+                        fault: communication is null || hadUnresolvedCycle).ConfigureAwait(false);
+            }
             catch (Exception fault) when (fault is not OutOfMemoryException) { }
             if (execution is not null)
             {
@@ -207,6 +237,9 @@ public sealed partial class StationRuntime
                 catch (Exception pending) when (pending is not OutOfMemoryException) { }
                 execution = null;
             }
+            // Observer disposal awaits its actual FC03/heartbeat request. New
+            // channels are created only after both readers and cycle writes retire.
+            if (observer is not null) await observer.DisposeAsync().ConfigureAwait(false);
             try
             {
                 await RecordStationQualificationProgressAsync(owner, StationQualificationSessionPhase.RecoveryBlocked,
@@ -218,6 +251,16 @@ public sealed partial class StationRuntime
             { MarkAuditFault("QualificationCycleFaultJournalUnavailable", alarmAuthorityUnavailable: true); }
             await LatchQualificationCycleAlarmAsync(timedOut ? QualificationCycleAlarmCodes.ResultAckTimeout :
                 traceFailure ? QualificationCycleAlarmCodes.TracePersistenceFailed : QualificationCycleAlarmCodes.Interrupted).ConfigureAwait(false);
+            if (communication?.Failure is not null)
+            {
+                try
+                {
+                    await communication.RecoverAsync(channel, hadUnresolvedCycle, _lifetime.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+                catch (Exception recovery) when (recovery is not OutOfMemoryException)
+                { MarkAuditFault("PlcCommunicationRecoveryAuditUnavailable", alarmAuthorityUnavailable: true); }
+            }
         }
         async Task FlushRejectionsAsync()
         {

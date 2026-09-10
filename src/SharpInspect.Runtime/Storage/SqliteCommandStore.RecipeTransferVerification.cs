@@ -44,7 +44,8 @@ internal sealed partial class SqliteCommandStore
             stationQualificationOptions: options.StationQualifications,
              recipeTransferOptions: options.RecipeTransfers,
              traceStoragePolicyOptions: options.TraceStoragePolicies,
-                qualificationCycleOptions: options.QualificationCycles);
+                qualificationCycleOptions: options.QualificationCycles,
+                plcCommunicationOptions: options.PlcCommunication);
         TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
 
         if (options.AlgorithmResultArchive is not null)
@@ -94,6 +95,9 @@ internal sealed partial class SqliteCommandStore
                 options.StationQualifications);
         AuditChainDatabase.RequireFullRecipeTransferVerification(database, report, deadline,
             options.RecipeTransfers);
+        if (options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, report, deadline,
+                options.PlcCommunication);
     }
 
     internal static void VerifyRecipeTransferActivationPayload(sqlite3 database, byte[] payload,

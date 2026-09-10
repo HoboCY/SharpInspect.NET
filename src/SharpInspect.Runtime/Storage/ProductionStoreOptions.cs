@@ -98,4 +98,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 26 isolated qualification-cycle ledger.</summary>
     public QualificationCycleStoreOptions? QualificationCycles { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 27 append-only PLC communication ledger.</summary>
+    public PlcCommunicationStoreOptions? PlcCommunication { get; init; }
 }

@@ -442,8 +442,8 @@ internal sealed partial class SqliteCommandStore
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
                 AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
-                    schema < ManualInspectionStoreOptions.SchemaVersion
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion,
+                    schema < PlcCommunicationStoreOptions.SchemaVersion
                         ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
                 var verification = AuditChainDatabase.Verify(database, _policy,
                     _signingKey.KeyId, _signingKey.PublicKeyBase64,
@@ -467,8 +467,12 @@ internal sealed partial class SqliteCommandStore
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles);
+                qualificationCycleOptions: _options.QualificationCycles,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+        if (_options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
+                _options.PlcCommunication);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
                 AuditChainDatabase.RequireFullManualInspectionVerification(database,

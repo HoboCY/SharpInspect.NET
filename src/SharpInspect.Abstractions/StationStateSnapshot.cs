@@ -57,6 +57,9 @@ public sealed record StationStateSnapshot(
 {
     /// <summary>Read-only admission evidence attached without changing the legacy constructor ABI.</summary>
     public ProductionAdmissionReport? ProductionAdmission { get; init; }
+
+    /// <summary>Observed mutual liveness and synchronization; absent bindings never imply health.</summary>
+    public PlcCommunicationHealth? PlcCommunication { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>

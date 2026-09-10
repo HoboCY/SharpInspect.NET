@@ -12,7 +12,7 @@ namespace SharpInspect.Runtime.Tests;
 /// only answers protocol requests and exposes the controller input/output state;
 /// it does not call Runtime transitions or manufacture qualification events.
 /// </summary>
-internal sealed class ModbusQualificationTestServer : IAsyncDisposable
+internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
 {
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _shutdown = new();
@@ -261,8 +261,9 @@ internal sealed class ModbusQualificationTestServer : IAsyncDisposable
                     try { await ServeClientAsync(stream, _shutdown.Token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
                     catch (EndOfStreamException) { }
-                    catch (IOException) when (_shutdown.IsCancellationRequested || IsDisconnected()) { }
-                    catch (SocketException) when (_shutdown.IsCancellationRequested || IsDisconnected()) { }
+                    catch (IOException) { }
+                    catch (SocketException) { }
+                    catch (ObjectDisposedException) { }
                     finally { lock (_stateSync) _stream = null; }
                 }
             }
@@ -328,6 +329,7 @@ internal sealed class ModbusQualificationTestServer : IAsyncDisposable
 
     private byte[] ReadRegisters(ModbusRequest request, ModbusQualificationProfile profile)
     {
+        if (TryReadCommunication(request, profile, out var communication)) return communication;
         if (request.Pdu.Length != 5 || ReadUInt16(request.Pdu, 3) != 6)
             return ExceptionResponse(request, 0x03, 0x03);
         var start = ReadUInt16(request.Pdu, 1);
@@ -367,6 +369,10 @@ internal sealed class ModbusQualificationTestServer : IAsyncDisposable
         var address = ReadUInt16(request.Pdu, 1);
         var value = ReadUInt16(request.Pdu, 3);
         _writes.Enqueue(new(address, new[] { checked((byte)(value >> 8)), checked((byte)value) }, 0x06));
+        lock (_stateSync)
+        {
+            if (address == profile.RuntimeStartAddress && value == 0) _qualificationReady = false;
+        }
         return Response(request, 0x06, request.Pdu.AsSpan(1, 4).ToArray());
     }
 
@@ -381,7 +387,8 @@ internal sealed class ModbusQualificationTestServer : IAsyncDisposable
             return ExceptionResponse(request, 0x10, 0x03);
         var data = request.Pdu.AsSpan(6, bytes).ToArray();
         _writes.Enqueue(new(address, data, 0x10));
-        if (address == profile.RuntimeStartAddress && count == 6)
+        if (TryWriteHeartbeat(profile, address, count, data)) { }
+        else if (address == profile.RuntimeStartAddress && count == 6)
         {
             bool resultValid;
             bool ackToSet = false;
@@ -443,7 +450,8 @@ internal sealed class ModbusQualificationTestServer : IAsyncDisposable
     {
         if (request.Pdu.Length < 6 || request.Pdu[0] != 0x10) return false;
         var profile = _profile;
-        if (profile is null || ReadUInt16(request.Pdu, 1) == profile.RuntimeStartAddress) return false;
+        if (profile is null || ReadUInt16(request.Pdu, 1) == profile.RuntimeStartAddress ||
+            ReadUInt16(request.Pdu, 1) == profile.CommunicationBinding?.RuntimeStartAddress) return false;
         lock (_stateSync)
         {
             if (!_dropNextPayloadResponse) return false;

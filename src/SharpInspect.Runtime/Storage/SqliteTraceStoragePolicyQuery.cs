@@ -114,8 +114,8 @@ public sealed class SqliteTraceStoragePolicyQuery : ITraceStoragePolicyHistoryQu
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema is not (TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
-                throw new InvalidOperationException(schema > TraceStoragePolicyStoreOptions.SchemaVersion
+            if (schema is not (TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion))
+                throw new InvalidOperationException(schema > PlcCommunicationStoreOptions.SchemaVersion
                     ? "TraceStoragePolicyGovernedMigrationRequired"
                     : "TraceStoragePolicyConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);

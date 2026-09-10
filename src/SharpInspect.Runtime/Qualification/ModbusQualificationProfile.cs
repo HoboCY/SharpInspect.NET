@@ -32,6 +32,34 @@ public sealed class ModbusQualificationProfile
         TimeSpan transportTimeout,
         TimeSpan acknowledgementTimeout,
         QualificationEvidenceCaptureMode evidenceMode)
+        : this(id, version, scenarioId, loopbackAddress, port, unitId,
+            controllerStartAddress, runtimeStartAddress, tracePolicyVersion,
+            tracePolicySnapshotHash, pollInterval, transportTimeout,
+            acknowledgementTimeout, evidenceMode, communicationBinding: null)
+    {
+    }
+
+    /// <summary>
+    /// Creates a profile with an explicit mutual-heartbeat communication
+    /// binding.  The original constructor remains available and retains its
+    /// v1 profile hash when no binding is supplied.
+    /// </summary>
+    public ModbusQualificationProfile(
+        string id,
+        string version,
+        string scenarioId,
+        string loopbackAddress,
+        int port,
+        byte unitId,
+        ushort controllerStartAddress,
+        ushort runtimeStartAddress,
+        long tracePolicyVersion,
+        string tracePolicySnapshotHash,
+        TimeSpan pollInterval,
+        TimeSpan transportTimeout,
+        TimeSpan acknowledgementTimeout,
+        QualificationEvidenceCaptureMode evidenceMode,
+        ModbusCommunicationBinding? communicationBinding)
     {
         Id = AlgorithmContractValidation.Identifier(id, nameof(id));
         Version = AlgorithmContractValidation.Identifier(version, nameof(version));
@@ -70,11 +98,36 @@ public sealed class ModbusQualificationProfile
             throw new ArgumentOutOfRangeException(nameof(evidenceMode), "QualificationEvidenceNoneRequired");
         EvidenceMode = evidenceMode;
 
+        if (communicationBinding is not null)
+        {
+            if (pollInterval != communicationBinding.Policy.PollInterval)
+                throw new ArgumentException("ModbusCommunicationPolicyPollIntervalMismatch",
+                    nameof(pollInterval));
+            if (transportTimeout != communicationBinding.Policy.OperationTimeout)
+                throw new ArgumentException("ModbusCommunicationPolicyOperationTimeoutMismatch",
+                    nameof(transportTimeout));
+
+            if (ModbusCommunicationBinding.Overlaps(controllerStartAddress,
+                    ControllerRegisterCount, communicationBinding.ControllerStartAddress,
+                    ModbusCommunicationBinding.ControllerRegisterCount) ||
+                ModbusCommunicationBinding.Overlaps(controllerStartAddress,
+                    ControllerRegisterCount, communicationBinding.RuntimeStartAddress,
+                    ModbusCommunicationBinding.RuntimeRegisterCount) ||
+                ModbusCommunicationBinding.Overlaps(runtimeStartAddress,
+                    RuntimeRegisterCount, communicationBinding.ControllerStartAddress,
+                    ModbusCommunicationBinding.ControllerRegisterCount) ||
+                ModbusCommunicationBinding.Overlaps(runtimeStartAddress,
+                    RuntimeRegisterCount, communicationBinding.RuntimeStartAddress,
+                    ModbusCommunicationBinding.RuntimeRegisterCount))
+                throw new ArgumentException("ModbusCommunicationRegisterBlocksOverlapControl");
+        }
+
         Port = port;
         UnitId = unitId;
         ControllerStartAddress = controllerStartAddress;
         RuntimeStartAddress = runtimeStartAddress;
         TracePolicyVersion = tracePolicyVersion;
+        CommunicationBinding = communicationBinding;
 
         EndpointBindingHash = AlgorithmContractValidation.HashParts(new[]
         {
@@ -83,7 +136,7 @@ public sealed class ModbusQualificationProfile
             Port.ToString(CultureInfo.InvariantCulture),
             UnitId.ToString(CultureInfo.InvariantCulture)
         });
-        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        var profileParts = new List<string?>
         {
             "sharpinspect-modbus-qualification-profile-v1",
             Id,
@@ -101,7 +154,10 @@ public sealed class ModbusQualificationProfile
             TransportTimeout.ToString("c", CultureInfo.InvariantCulture),
             AcknowledgementTimeout.ToString("c", CultureInfo.InvariantCulture),
             EvidenceMode.ToString()
-        });
+        };
+        if (communicationBinding is not null)
+            profileParts.Add(communicationBinding.BindingHash);
+        ContentHash = AlgorithmContractValidation.HashParts(profileParts);
     }
 
     public string Id { get; }
@@ -118,6 +174,8 @@ public sealed class ModbusQualificationProfile
     public TimeSpan TransportTimeout { get; }
     public TimeSpan AcknowledgementTimeout { get; }
     public QualificationEvidenceCaptureMode EvidenceMode { get; }
+    public ModbusCommunicationBinding? CommunicationBinding { get; }
+    public PlcCommunicationPolicy? CommunicationPolicy => CommunicationBinding?.Policy;
     public string EndpointBindingHash { get; }
     public string ContentHash { get; }
 

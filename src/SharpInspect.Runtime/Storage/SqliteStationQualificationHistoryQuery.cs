@@ -129,8 +129,8 @@ public sealed class SqliteStationQualificationHistoryQuery : IStationQualificati
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
-            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
-                schema < StationQualificationStoreOptions.SchemaVersion
+            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion,
+                schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "StationQualificationGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             var policy = _options.AuditIntegrityPolicy!;
@@ -149,8 +149,12 @@ public sealed class SqliteStationQualificationHistoryQuery : IStationQualificati
                 stationQualificationOptions: options,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles);
+                qualificationCycleOptions: _options.QualificationCycles,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+        if (_options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
+                _options.PlcCommunication);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullStationQualificationVerification(database, verification,
                 deadline, options);

@@ -22,7 +22,7 @@ public sealed class AuthorizationPolicyTests
         Assert.Equal("SharpInspect.EvidenceScrubber", SystemPrincipalId.EvidenceScrubber);
         Assert.Equal("SharpInspect.RetentionCleanup", SystemPrincipalId.RetentionCleanup);
 
-        Assert.Equal(5, SystemPrincipalCatalog.All.Count);
+        Assert.Equal(6, SystemPrincipalCatalog.All.Count);
         Assert.Equal(SystemPrincipalId.Runtime, SystemPrincipalCatalog.Runtime.Id);
         Assert.Equal(new[] { SystemPermission.RecordCommand },
             SystemPrincipalCatalog.Runtime.Permissions);
@@ -34,6 +34,9 @@ public sealed class AuthorizationPolicyTests
             SystemPrincipalCatalog.EvidenceScrubber.Permissions);
         Assert.Equal(new[] { SystemPermission.CleanupRetention },
             SystemPrincipalCatalog.RetentionCleanup.Permissions);
+        Assert.Equal("SharpInspect.PlcAdapter", SystemPrincipalCatalog.PlcAdapter.Id);
+        Assert.Equal(new[] { SystemPermission.RecordPlcCommunication },
+            SystemPrincipalCatalog.PlcAdapter.Permissions);
         Assert.DoesNotContain(SystemPrincipalCatalog.All,
             principal => principal.Permissions.Contains(SystemPermission.None));
     }

@@ -294,21 +294,29 @@ public sealed class AlgorithmPreparationTests
 
         var firstFour = Enumerable.Range(0, 4).Select(index =>
             service.PrepareAsync(Request(contracts[index], TimeSpan.FromMilliseconds(120))).AsTask()).ToArray();
-        await Task.WhenAll(started.Select(signal => signal.Task.WaitAsync(TimeSpan.FromSeconds(2))));
-        var fifthResult = await service.PrepareAsync(Request(contracts[4], TimeSpan.FromMilliseconds(120)));
-
-        Assert.False(fifthResult.Succeeded);
-        Assert.Equal("AlgorithmPreparationTimedOut", fifthResult.ReasonCode);
-        Assert.Equal(0, factories[4].CreateCalls);
-
-        foreach (var release in releases) release.TrySetResult(true);
-        var firstResults = await Task.WhenAll(firstFour);
-        Assert.All(firstResults, result =>
+        try
         {
-            Assert.False(result.Succeeded);
-            Assert.Equal("AlgorithmPreparationTimedOut", result.ReasonCode);
-            Assert.Null(result.Prepared);
-        });
+            await Task.WhenAll(started.Select(signal => signal.Task.WaitAsync(TimeSpan.FromSeconds(2))));
+            // Observe all four logical timeouts while their actual factories
+            // remain blocked. A separate wait's timeout is not proof that
+            // these four requests have reached their own deadlines.
+            var firstResults = await Task.WhenAll(firstFour).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.All(firstResults, result =>
+            {
+                Assert.False(result.Succeeded);
+                Assert.Equal("AlgorithmPreparationTimedOut", result.ReasonCode);
+                Assert.Null(result.Prepared);
+            });
+            Assert.Equal(4, service.PendingPreparationCount);
+            var fifthResult = await service.PrepareAsync(Request(contracts[4], TimeSpan.FromMilliseconds(120)));
+            Assert.False(fifthResult.Succeeded);
+            Assert.Equal("AlgorithmPreparationTimedOut", fifthResult.ReasonCode);
+            Assert.Equal(0, factories[4].CreateCalls);
+        }
+        finally
+        {
+            foreach (var release in releases) release.TrySetResult(true);
+        }
         foreach (var algorithm in algorithms)
             await EventuallyAsync(() => algorithm.DisposeCalls == 1);
         await EventuallyAsync(() => service.PendingPreparationCount == 0);

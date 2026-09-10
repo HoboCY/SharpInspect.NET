@@ -887,13 +887,14 @@ public sealed partial class ManualInspectionRuntimeTests
             bool enableQualificationCycles = false,
             ModbusAlgorithmOutcomeMode? modbusAlgorithmOutcome = null,
             QualificationCycleStoreOptions? qualificationCycleOptions = null,
-            IVisionAlgorithmFactory? qualificationExecutionFactory = null)
+            IVisionAlgorithmFactory? qualificationExecutionFactory = null,
+            bool enablePlcCommunication = false)
         {
             enableQualificationCycles |= profileFactory is not null ||
                 qualificationCycleOptions is not null;
             var fixture = await QualificationFixture.CreateAsync(allowQualification, ledgerOptions,
                 recipeTransfers, maximumAuditEntries, profileFactory, enableQualificationCycles,
-                qualificationCycleOptions);
+                qualificationCycleOptions, enablePlcCommunication);
             ServiceProvider? initialServices = null;
             ClockPump? initialPump = null;
             ServiceProvider? services = null;
@@ -1051,6 +1052,7 @@ public sealed partial class ManualInspectionRuntimeTests
             }
 
             internal ControlledQualificationFacility Facility { get; }
+            internal IStationRuntime Runtime => _services.GetRequiredService<IStationRuntime>();
             internal IStationQualificationSessionService Qualification { get; }
             internal IStationQualificationHistoryQuery History { get; }
 
@@ -1600,7 +1602,8 @@ public sealed partial class ManualInspectionRuntimeTests
             int? maximumAuditEntries = null,
             Func<TraceStoragePolicySnapshot, ModbusQualificationProfile>? profileFactory = null,
             bool enableQualificationCycles = false,
-            QualificationCycleStoreOptions? qualificationCycleOptions = null)
+            QualificationCycleStoreOptions? qualificationCycleOptions = null,
+            bool enablePlcCommunication = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Qualification SQLite fixture requires Windows machine key protection.");
@@ -1652,6 +1655,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 StationQualifications = ledgerOptions ?? new StationQualificationStoreOptions(),
                 QualificationCycles = traceEnabled ? qualificationCycleOptions ??
                     new QualificationCycleStoreOptions() : null,
+                PlcCommunication = enablePlcCommunication ? new PlcCommunicationStoreOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4),
                 QueryTimeout = TimeSpan.FromSeconds(4),
                 QueueCapacity = 8
@@ -1772,6 +1776,7 @@ public sealed partial class ManualInspectionRuntimeTests
             PlcResultContracts = source.PlcResultContracts,
             RecipeActivations = source.RecipeActivations,
             RecipeTransfers = source.RecipeTransfers,
+            PlcCommunication = source.PlcCommunication,
             TraceStoragePolicies = source.TraceStoragePolicies is { } trace
                 ? new TraceStoragePolicyStoreOptions
                 {

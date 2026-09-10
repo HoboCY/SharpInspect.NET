@@ -155,8 +155,8 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
-            AuditChainDatabase.Require(schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
-                schema < ProductionAdmissionStoreOptions.SchemaVersion
+            AuditChainDatabase.Require(schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion,
+                schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "ProductionAdmissionGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             StationQualificationReadGuard.RequireConfiguration(schema, _options);
@@ -233,8 +233,12 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles);
+                qualificationCycleOptions: _options.QualificationCycles,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+        if (_options.PlcCommunication is not null)
+            AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
+                _options.PlcCommunication);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)

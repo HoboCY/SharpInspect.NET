@@ -300,6 +300,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IStationQualificationHistoryQuery>(_ => new SqliteStationQualificationHistoryQuery(options));
         if (options.QualificationCycles is not null)
             services.TryAddSingleton<IQualificationCycleHistoryQuery>(_ => new SqliteQualificationCycleHistoryQuery(options));
+        if (options.PlcCommunication is not null)
+            services.TryAddSingleton<IPlcCommunicationHistoryQuery>(_ => new SqlitePlcCommunicationHistoryQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,

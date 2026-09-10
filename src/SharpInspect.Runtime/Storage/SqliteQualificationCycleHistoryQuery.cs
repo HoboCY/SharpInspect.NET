@@ -121,8 +121,8 @@ public sealed class SqliteQualificationCycleHistoryQuery : IQualificationCycleHi
         try
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema == QualificationCycleStoreOptions.SchemaVersion,
-                schema < QualificationCycleStoreOptions.SchemaVersion
+            AuditChainDatabase.Require(schema is QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion,
+                schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "QualificationCycleConfigurationRequired" :
                     "QualificationCycleGovernedMigrationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -141,11 +141,15 @@ public sealed class SqliteQualificationCycleHistoryQuery : IQualificationCycleHi
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: options);
+                qualificationCycleOptions: options,
+                plcCommunicationOptions: _options.PlcCommunication);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullQualificationCycleVerification(database, verification,
                 deadline, options);
+            if (_options.PlcCommunication is not null)
+                AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification,
+                    deadline, _options.PlcCommunication);
             var rows = SqliteCommandStore.ReadQualificationCycleRows(database, options, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             committed = true;

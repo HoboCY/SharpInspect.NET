@@ -16,6 +16,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     private readonly Func<CancellationToken, Task<ModbusControllerSignals>> _read;
     private readonly Action _onAccepted;
     private readonly Action<string> _onFailure;
+    private readonly Action? _requireCommunicationHealthy;
     private readonly TimeSpan _interval;
     private readonly CancellationTokenSource _stop;
     private readonly SemaphoreSlim _sampleGate = new(1, 1);
@@ -38,9 +39,10 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
 
     internal InspectionCycleRequestObserver(Func<CancellationToken, Task<ModbusControllerSignals>> read,
         TimeSpan interval, IEnumerable<PlcControllerCycle> knownKeys, Action onAccepted,
-        Action<string> onFailure, CancellationToken cancellationToken)
+        Action<string> onFailure, CancellationToken cancellationToken, Action? requireCommunicationHealthy = null)
     {
         _read = read; _interval = interval; _onAccepted = onAccepted; _onFailure = onFailure;
+        _requireCommunicationHealthy = requireCommunicationHealthy;
         _seen = new(knownKeys); _stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     }
 
@@ -53,6 +55,15 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         }
     }
     internal void StopAccepting() { lock (_sync) _accepting = false; }
+    internal void StopObserving()
+    {
+        lock (_sync) { _closing = true; _accepting = false; _admissionRevoked = true; }
+        _ = Task.Run(() =>
+        {
+            try { _stop.Cancel(); }
+            catch (ObjectDisposedException) { }
+        });
+    }
     internal void RevokeAdmission()
     {
         lock (_sync)
@@ -131,7 +142,10 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     { lock (_sync) { ThrowIfFailed(); return _rejections.Count > 0 ? _rejections.Dequeue() : null; } }
     internal void RequireHealthy() { lock (_sync) ThrowIfFailed(); }
     private void ThrowIfFailed()
-    { if (_failure is not null) throw new InvalidOperationException(_failure); }
+    {
+        if (_failure is not null) throw new InvalidOperationException(_failure);
+        _requireCommunicationHealthy?.Invoke();
+    }
 
     private async Task PollAsync()
     {
@@ -142,6 +156,8 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 await _sampleGate.WaitAsync(_stop.Token).ConfigureAwait(false);
                 try
                 {
+                    lock (_sync)
+                        if (_closing) throw new OperationCanceledException("InspectionCycleObserverStopped");
                     var signals = await _read(_stop.Token).ConfigureAwait(false);
                     lock (_sync)
                     {
@@ -190,8 +206,9 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         catch (OperationCanceledException) when (_closing || _stop.IsCancellationRequested) { }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            var reason = exception.Message == "QualificationControllerEpochChanged" ?
-                "QualificationControllerEpochChanged" : "QualificationControllerObservationFailed";
+            var reason = exception.Message is "QualificationControllerEpochChanged" or "PlcControllerHeartbeatStale" or
+                "PlcRuntimeHeartbeatUnobserved" or "PlcCommunicationTransportLost" ?
+                exception.Message : "QualificationControllerObservationFailed";
             lock (_sync) _failure = reason;
             _onFailure(reason);
         }

@@ -130,8 +130,7 @@ public sealed partial class StationRuntime
             var admitted = owner.CurrentRun ?? throw new InvalidOperationException("StationQualificationRunAdmissionMissing");
             lock (_sync)
                 if (owner.Aborted)
-                { status = ExecutionStatus.Cancelled; reason = owner.ExitReason == "QualificationControllerEpochChanged" ?
-                    owner.ExitReason : "StationQualificationAbortedBeforeTerminal"; payload = null; }
+                { status = ExecutionStatus.Cancelled; reason = QualificationAbortReason(owner); payload = null; }
             string? json = null;
             string? hash = null;
             if (status == ExecutionStatus.Success)
@@ -183,10 +182,13 @@ public sealed partial class StationRuntime
         return new(proposed.Position, proposed.RunId, proposed.SessionId, proposed.StimulusSequence,
             proposed.ScenarioId, proposed.ContextHash, proposed.ControllerEpoch, proposed.CycleSequence,
             proposed.AdmittedAtUtc, proposed.CompletedAtUtc, ExecutionStatus.Cancelled,
-            InspectionDecision.Unknown, owner.ExitReason == "QualificationControllerEpochChanged" ?
-                owner.ExitReason : "StationQualificationAbortedBeforeTerminal",
+            InspectionDecision.Unknown, QualificationAbortReason(owner),
             proposed.FrameMetadata, proposed.FrameProvenance, null, null, null, proposed.Timing);
     }
+
+    private static string QualificationAbortReason(StationQualificationOwner owner) => owner.ExitReason is
+        "QualificationControllerEpochChanged" or "PlcControllerHeartbeatStale" or "PlcRuntimeHeartbeatUnobserved" or
+        "PlcCommunicationTransportLost" ? owner.ExitReason : "StationQualificationAbortedBeforeTerminal";
 
     private async Task FinishStationQualificationAsync(StationQualificationOwner owner, bool restored, string reason)
     {

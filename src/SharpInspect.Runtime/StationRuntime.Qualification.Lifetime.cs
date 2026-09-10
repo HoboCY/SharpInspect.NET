@@ -27,6 +27,7 @@ public sealed partial class StationRuntime
         owner.ExitRequested = true;
         owner.Aborted |= abort;
         owner.CycleObserver?.RevokeAdmission();
+        if (owner.CurrentRunId is null) owner.CycleObserver?.StopObserving();
         owner.ExitReason = reason;
         CancelStationQualification(owner, abort);
         PublishStationQualificationLocked(owner, _stationQualificationSnapshot?.Phase ?? StationQualificationSessionPhase.Restoring, reason);

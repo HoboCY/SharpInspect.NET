@@ -98,6 +98,9 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
             (_stationQualificationStoreOptions?.QualificationCycles is null ||
              _stationQualificationStoreOptions.TraceStoragePolicies is null || !IsQualificationCycleAlarmMappingValid()))
             return "QualificationModbusDependenciesUnavailable";
+        if (_qualificationModbusProfile?.CommunicationBinding is not null &&
+            _stationQualificationStoreOptions?.PlcCommunication is null)
+            return "QualificationPlcCommunicationStoreUnavailable";
         if (_qualificationModbusProfile is not null && HasActiveQualificationCycleAlarmLocked())
             return "QualificationCycleAlarmBlocksAdmission";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
