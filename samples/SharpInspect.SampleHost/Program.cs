@@ -61,9 +61,13 @@ internal static class Program
         var calibrationImportCheckDirectory = Option("--calibration-import-check");
         var recipeActivationCheckDirectory = Option("--recipe-activation-check");
         var recipeActivationQueryDirectory = Option("--recipe-activation-query");
+        var productionAdmissionCheckDirectory = Option("--production-admission-check");
+        var productionAdmissionQueryDirectory = Option("--production-admission-query");
         var calibrationImportEnabled = calibrationImportCheckDirectory is not null;
         var recipeActivationEnabled = recipeActivationCheckDirectory is not null ||
             recipeActivationQueryDirectory is not null;
+        var productionAdmissionEnabled = productionAdmissionCheckDirectory is not null ||
+            productionAdmissionQueryDirectory is not null;
         var previewCheckDirectory = Option("--preview-check");
         var previewUiEnabled = args.Contains("--preview-ui", StringComparer.OrdinalIgnoreCase);
         var manualCheckDirectory = Option("--manual-inspection-check");
@@ -147,6 +151,7 @@ internal static class Program
                 Artifacts = new SharpInspect.Runtime.Calibration.CalibrationTransferArtifactOptions(
                     Path.Combine(Path.GetFullPath(calibrationImportCheckDirectory!), "calibration-artifacts"))
             } : null,
+            ProductionAdmission = productionAdmissionEnabled ? new ProductionAdmissionStoreOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -167,6 +172,11 @@ internal static class Program
                 Option("--user-name"), Option("--expected-principal"));
         if (recipeActivationQueryDirectory is not null)
             return RecipeActivationDemo.Query(storeOptions, recipeActivationQueryDirectory);
+        if (productionAdmissionCheckDirectory is not null)
+            return ProductionAdmissionDemo.Run(storeOptions, productionAdmissionCheckDirectory,
+                Option("--user-name"), Option("--expected-principal"));
+        if (productionAdmissionQueryDirectory is not null)
+            return ProductionAdmissionDemo.Query(storeOptions, productionAdmissionQueryDirectory);
         if (manualCheckDirectory is not null)
             return ManualInspectionDemo.Run(storeOptions, manualCheckDirectory,
                 Option("--user-name"), Option("--expected-principal"));

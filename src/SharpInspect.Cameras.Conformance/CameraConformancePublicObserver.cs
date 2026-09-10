@@ -342,6 +342,20 @@ internal static class CameraConformancePublicObserver
         if (!lateObserved)
             throw new BlockedObservationException("CameraCancellationLateFrameUnavailable");
 
+        // A bounded cancellation result and its late-frame observation do not
+        // retire the provider call or its cancellation callbacks. The public Busy
+        // projection keeps that owner visible as CleanupPending until it exits.
+        // Do not submit the reuse request while it still owns the device.
+        var retirementStarted = Stopwatch.GetTimestamp();
+        while (session.Acquisition!.Busy is not null)
+        {
+            if (Stopwatch.GetTimestamp() - retirementStarted >=
+                PublicOperationBudget.TotalSeconds * Stopwatch.Frequency)
+                throw new BlockedObservationException("CameraCancellationQuiescenceUnavailable");
+            await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+        }
+        context.Add("cancellationAttemptQuiescedBeforeReuse", true);
+
         var second = await AcquireAndStimulateAsync(session, context, hardware: false,
             CameraConformanceStimulusKind.AdvanceOrWait, declaration.FrameDelay,
             CancellationToken.None, cancellationToken).ConfigureAwait(false);

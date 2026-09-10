@@ -720,8 +720,8 @@ internal static partial class CalibrationConsumer
                 var preStart = await runtime.GetSnapshotAsync().ConfigureAwait(true);
                 Require(IsDevelopmentSafetyStop(preStart) && viewModel.CanStart,
                     "phase-b-start-precondition-invalid");
-                startOutcome = await viewModel.StartCalibrationSessionAsync(password)
-                    .ConfigureAwait(true);
+                startOutcome = await StartFixtureWhenCameraIdleAsync(
+                    viewModel, runtime, provider, password).ConfigureAwait(true);
                 Require(startOutcome is { Disposition: CommandDisposition.Accepted,
                     Audit: AuditPersistence.Persisted },
                     "phase-b-start-rejected-" + startOutcome?.ReasonCode);
@@ -963,6 +963,42 @@ internal static partial class CalibrationConsumer
         Require(result.Succeeded && result.GrantId is not null,
             "step-up-failed-" + result.ReasonCode);
         return result;
+    }
+
+    private static async Task<RuntimeCommandOutcome?> StartFixtureWhenCameraIdleAsync(
+        CalibrationSessionViewModel viewModel, IStationRuntime runtime,
+        VirtualCameraProvider provider, string password)
+    {
+        // The healthy projection does not reserve the camera against health probes.
+        // Retry only a durable busy rejection with no session or physical changes;
+        // each VM call performs fresh Step-Up for its newly generated correlation.
+        var before = provider.GetDiagnostics();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            var outcome = await viewModel.StartCalibrationSessionAsync(password)
+                .ConfigureAwait(true);
+            if (outcome is not { Disposition: CommandDisposition.Rejected,
+                    Audit: AuditPersistence.Persisted, ReasonCode: "CameraCalibrationBusy" })
+                return outcome;
+
+            var rejectedState = await runtime.GetSnapshotAsync().ConfigureAwait(true);
+            var after = provider.GetDiagnostics();
+            Require(rejectedState.CalibrationSession is null &&
+                IsDevelopmentSafetyStop(rejectedState) &&
+                after.IsDisposed == before.IsDisposed &&
+                after.InfrastructureFailures == before.InfrastructureFailures &&
+                after.Devices.SequenceEqual(before.Devices),
+                "phase-b-busy-rejection-has-side-effects");
+            if (elapsed.Elapsed >= TimeSpan.FromSeconds(15)) return outcome;
+
+            await WaitForRuntimeAsync(runtime, state =>
+                state.AuditIntegrity?.State == AuditIntegrityState.Verified)
+                .ConfigureAwait(true);
+            await Task.Delay(10).ConfigureAwait(true);
+            await viewModel.RefreshAsync().ConfigureAwait(true);
+            Require(viewModel.CanStart, "phase-b-retry-precondition-invalid");
+        }
     }
 
     private static async Task SignInAsync(IInteractiveSessionService sessions,

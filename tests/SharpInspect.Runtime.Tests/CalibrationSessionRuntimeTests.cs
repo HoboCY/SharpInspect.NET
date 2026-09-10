@@ -86,8 +86,7 @@ public sealed class CalibrationSessionRuntimeTests
         Assert.Equal("StepUpRequired", withoutStepUp.ReasonCode);
         Assert.Equal(0, fixture.Provider.OpenCount);
 
-        var start = await fixture.CreateAuthorizedStartCommandAsync();
-        var accepted = await fixture.Runtime.SubmitAsync(start);
+        var (start, accepted) = await fixture.StartSessionWhenCameraIdleAsync();
         Assert.True(accepted.Disposition == CommandDisposition.Accepted, accepted.ReasonCode);
         Assert.Equal("CalibrationSessionStartAuthorized", accepted.ReasonCode);
 
@@ -105,6 +104,9 @@ public sealed class CalibrationSessionRuntimeTests
         var evidence = await fixture.QueryEvidenceAsync(sessionId);
         Assert.True(evidence.Available, evidence.ReasonCode);
         Assert.Equal(sessionId, evidence.Evidence!.State.SessionId);
+        Assert.Equal(start.CorrelationId, evidence.Evidence.Header.Command.CorrelationId);
+        Assert.Equal(start.Invocation.StepUpGrantId,
+            evidence.Evidence.Header.Command.Invocation.StepUpGrantId);
         Assert.Equal(CalibrationSessionOutcome.Pending, evidence.Evidence!.State.Outcome);
         Assert.NotNull(evidence.Evidence!.TemporaryConfiguration);
         Assert.Equal(fixture.Plan.TemporaryConfiguration,
@@ -364,7 +366,7 @@ public sealed class CalibrationSessionRuntimeTests
         try
         {
             await fixture.WaitForHealthySourceAsync();
-            var accepted = await fixture.StartRestartFixtureWhenCameraIdleAsync();
+            var (_, accepted) = await fixture.StartSessionWhenCameraIdleAsync();
             Assert.True(accepted.Disposition == CommandDisposition.Accepted, accepted.ReasonCode);
 
             // Do not simulate the restart while Start is still changing physical state.
@@ -943,10 +945,10 @@ public sealed class CalibrationSessionRuntimeTests
         internal async Task<CalibrationSessionQueryResult> QueryEvidenceAsync(Guid sessionId) =>
             await Runtime.QueryCalibrationSessionAsync(sessionId, User.Invocation);
 
-        internal async Task<RuntimeCommandOutcome> StartRestartFixtureWhenCameraIdleAsync()
+        internal async Task<(StartCalibrationSessionCommand Command, RuntimeCommandOutcome Outcome)>
+            StartSessionWhenCameraIdleAsync()
         {
-            // This test needs one admitted session before simulating a crash. A healthy
-            // cached projection does not reserve the camera against heartbeat probes.
+            // A healthy cached projection does not reserve the camera against heartbeat probes.
             // Retry only a persisted busy rejection with no session or physical effect,
             // using a fresh audited command and Step-Up; never retry an accepted operation.
             var elapsed = Stopwatch.StartNew();
@@ -956,7 +958,7 @@ public sealed class CalibrationSessionRuntimeTests
                 var outcome = await Runtime.SubmitAsync(command);
                 if (outcome.Disposition != CommandDisposition.Rejected ||
                     outcome.ReasonCode != "CameraCalibrationBusy")
-                    return outcome;
+                    return (command, outcome);
 
                 Assert.Equal(AuditPersistence.Persisted, outcome.Audit);
                 Assert.Null((await Runtime.GetSnapshotAsync()).CalibrationSession);
@@ -966,7 +968,7 @@ public sealed class CalibrationSessionRuntimeTests
                 Assert.Equal(0, Initial.AcquireCount);
                 await WaitForVerifiedAsync(Store);
                 await Task.Delay(10);
-                if (elapsed.Elapsed >= TimeSpan.FromSeconds(15)) return outcome;
+                if (elapsed.Elapsed >= TimeSpan.FromSeconds(15)) return (command, outcome);
             }
         }
 

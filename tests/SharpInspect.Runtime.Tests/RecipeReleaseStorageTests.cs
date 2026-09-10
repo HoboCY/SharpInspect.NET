@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Tests;
 /// tests use a complete record; the query test uses the real draft, identity,
 /// audit and release writer before closing that writer and reading again.
 /// </summary>
-public sealed class RecipeReleaseStorageTests
+public sealed partial class RecipeReleaseStorageTests
 {
     private static readonly Guid AuthorA = Guid.Parse("a1100000-0000-0000-0000-000000000001");
     private static readonly Guid AuthorB = Guid.Parse("b2200000-0000-0000-0000-000000000002");
@@ -332,11 +332,12 @@ public sealed class RecipeReleaseStorageTests
         internal RecipeDraftRevision Source { get; set; }
         internal SqliteReleasedRecipeQuery Query { get; private set; }
 
-        internal static async Task<ReleaseHarness> CreateAsync()
+        internal static async Task<ReleaseHarness> CreateAsync(bool productionAdmission = false)
         {
             var storage = await RecipeDraftStorageTests.Fixture.CreateAsync(recipeReleases:
                 new RecipeReleaseStoreOptions(new("V130.Storage.Release", "1",
-                    RecipeGovernanceMode.SingleApproverRelease)));
+                    RecipeGovernanceMode.SingleApproverRelease)), productionAdmission:
+                    productionAdmission ? new ProductionAdmissionStoreOptions() : null);
             var saved = await storage.SaveAsync(Guid.NewGuid(), Guid.NewGuid(), 0, null,
                 storage.Document("First release"), "first release");
             Assert.True(saved.Saved, saved.ReasonCode);
@@ -344,7 +345,8 @@ public sealed class RecipeReleaseStorageTests
             var drafts = new RecipeDraftService(new[] { new Factory(saved.Revision!.Content) },
                 storage.Options, storage.Authorization, new SqliteRecipeDraftQuery(storage.Options));
             var runtime = new StationRuntime(storage.Store, TimeSpan.FromMilliseconds(500),
-                storage.Sessions, storage.Authorization);
+                storage.Sessions, storage.Authorization, productionStoreOptions:
+                    productionAdmission ? storage.Options : null);
             var releases = new RecipeReleaseService(drafts, storage.Authorization,
                 new SqliteReleasedRecipeQuery(storage.Options), storage.Options,
                 () => runtime.GetSnapshotAsync());

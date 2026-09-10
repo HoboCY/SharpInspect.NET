@@ -156,13 +156,17 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion,
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion,
                 schema < RecipeActivationStoreOptions.SchemaVersion
                     ? "RecipeActivationGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
             if (_options.ManualInspections is null && schema == ManualInspectionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ManualInspectionConfigurationRequired");
+            if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionGovernedMigrationRequired");
+            if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             if (_options.PreviewSessions is not null && schema < PreviewSessionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("PreviewSessionGovernedMigrationRequired");
             if (_options.PreviewSessions is null &&
@@ -192,11 +196,12 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                  contractOptions: contractOptions,
                  activationOptions: activationOptions,
                   previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                      ManualInspectionStoreOptions.SchemaVersion
+                      ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion
                       ? _options.PreviewSessions : null,
                   importOptions: _options.CalibrationImports,
-                  manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion
-                      ? _options.ManualInspections : null);
+                  manualOptions: schema is ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion
+                      ? _options.ManualInspections : null,
+                  productionAdmissionOptions: _options.ProductionAdmission);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
@@ -232,6 +237,9 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
               if (_options.ManualInspections is not null)
                   AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                       _options.ManualInspections);
+              if (_options.ProductionAdmission is not null)
+                  AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                      _options.ProductionAdmission);
 
             var profileResolver = SqliteCommandStore.CreateCalibrationProfileResolver(database,
                 _options.CalibrationGovernance, deadline);

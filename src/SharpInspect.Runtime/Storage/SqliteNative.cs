@@ -50,9 +50,12 @@ internal static class SqliteNative
         CancellationToken cancellationToken = default)
     {
         EnsureDeadline(deadline, cancellationToken);
+        var afterCommit = sql.Trim().Equals("COMMIT;", StringComparison.OrdinalIgnoreCase)
+            ? ProductionAdmissionCommitFence.BeforeCommit(database, deadline) : null;
         using var scope = new SqliteDeadlineScope(database, deadline, cancellationToken);
         var result = SQLitePCL.raw.sqlite3_exec(database, sql);
         ThrowIfFailed(database, result, deadline, cancellationToken, "TraceStoreSqlFailed");
+        afterCommit?.Invoke();
     }
 
     public static T WithStatement<T>(
@@ -144,6 +147,8 @@ internal static class SqliteNative
             limit = Math.Max(limit, CalibrationImportStoreOptions.SqliteValueLimitBytes);
         if (options.ManualInspections is not null)
             limit = Math.Max(limit, ManualInspectionStoreOptions.SqliteValueLimitBytes);
+        if (options.ProductionAdmission is not null)
+            limit = Math.Max(limit, ProductionAdmissionStoreOptions.SqliteValueLimitBytes);
         // Read-only audit consumers may omit identity configuration. Preserve
         // the historical schema's payload budget after reading its version,
         // without reducing a larger limit from another configured ledger.
@@ -191,6 +196,15 @@ internal static class SqliteNative
                 PreviewSessionStoreOptions.SqliteValueLimitBytes),
                 CalibrationImportStoreOptions.SqliteValueLimitBytes),
                 ManualInspectionStoreOptions.SqliteValueLimitBytes),
+            22 => Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(Math.Max(CalibrationSessionStoreOptions.SqliteValueLimitBytes,
+                    CalibrationGovernanceStoreOptions.SqliteValueLimitBytes),
+                RecipeReleaseStoreOptions.SqliteValueLimitBytes),
+                PlcResultContractStoreOptions.SqliteValueLimitBytes),
+                RecipeActivationStoreOptions.SqliteValueLimitBytes),
+                PreviewSessionStoreOptions.SqliteValueLimitBytes),
+                CalibrationImportStoreOptions.SqliteValueLimitBytes),
+                ManualInspectionStoreOptions.SqliteValueLimitBytes),
+                ProductionAdmissionStoreOptions.SqliteValueLimitBytes),
             _ => 65536
         };
         limit = Math.Max(limit, schemaLimit);

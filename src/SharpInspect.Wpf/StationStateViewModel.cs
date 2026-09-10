@@ -36,6 +36,17 @@ public sealed class StationStateViewModel : ObservableObject
     public InteractiveSession Session => _rawSnapshot?.Session ?? UnauthenticatedSession;
     public CommandProgress? LastCommand => _rawSnapshot?.LastCommand;
     public AdmissionBlockers AdmissionBlockers => _rawSnapshot?.AdmissionBlockers ?? EmptyBlockers;
+    public ProductionAdmissionReport? ProductionAdmission => _rawSnapshot?.ProductionAdmission;
+
+    /// <summary>
+    /// Admission evidence is shown only while the complete station snapshot is
+    /// fresh.  A retained raw report remains inspectable, but cannot be read as
+    /// current after the snapshot becomes stale.
+    /// </summary>
+    public ProductionAdmissionReport? DisplayedProductionAdmission =>
+        IsFresh && _rawSnapshot is { } snapshot && ProductionAdmission is { } report &&
+        report.RuntimeEpoch == snapshot.RuntimeEpoch && report.SnapshotRevision == snapshot.Revision
+            ? report : null;
 
     /// <summary>Visible Ready is false whenever presentation freshness is not trusted.</summary>
     public bool Ready => IsFresh && (_rawSnapshot?.Ready ?? false);
@@ -82,6 +93,7 @@ public sealed class StationStateViewModel : ObservableObject
         OnPropertyChanged(nameof(DisplayedQualification));
         OnPropertyChanged(nameof(DisplayedPerformance));
         OnPropertyChanged(nameof(DisplayedPerformanceBudgetViolation));
+        OnPropertyChanged(nameof(DisplayedProductionAdmission));
     }
 
     private static readonly CameraHealth UnknownCamera =

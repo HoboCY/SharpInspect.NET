@@ -603,6 +603,8 @@ internal sealed partial class SqliteCommandStore
     private static ContractAuthorizationAuditReference ReadPlcResultContractAuthorizationReference(sqlite3 database,
         Guid eventId, PlcResultContractRevision revision, string stationId, StoreDeadline deadline)
     {
+        var schemaVersion = checked((int)AuditChainDatabase.Scalar(database,
+            "PRAGMA user_version;", deadline));
         var rows = AuditChainDatabase.Read(database, @"
             SELECT Sequence,IdentityPosition,Payload,Hash FROM audit_entries
             WHERE Kind='IdentityEvent' AND IdentityPosition IS NOT NULL ORDER BY Sequence;", deadline,
@@ -617,8 +619,7 @@ internal sealed partial class SqliteCommandStore
                 var payload = Convert.FromBase64String(row.Payload);
                 if (!string.Equals(Convert.ToBase64String(payload), row.Payload, StringComparison.Ordinal) ||
                     !IsContractHash(row.Hash)) continue;
-                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId,
-                    PlcResultContractStoreOptions.SchemaVersion);
+                IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, stationId, schemaVersion);
                 var fields = DecodeContractIdentityFields(payload);
                 if (fields.Length != 49 || !Guid.TryParseExact(fields[1], "D", out var parsedEvent) || parsedEvent != eventId)
                     continue;

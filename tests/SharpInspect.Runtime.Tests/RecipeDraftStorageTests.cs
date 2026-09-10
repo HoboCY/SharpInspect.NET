@@ -536,7 +536,8 @@ public sealed class RecipeDraftStorageTests
             IExternalAuditAnchor? externalAuditAnchor = null, bool requireExternalAnchor = false,
             AuthorizationPolicy? authorizationPolicy = null, CameraSetupStoreOptions? cameraSetup = null,
             RecipeActivationStoreOptions? recipeActivations = null, PreviewSessionStoreOptions? previewSessions = null,
-            ManualInspectionStoreOptions? manualInspections = null, int? maximumAuditEntries = null)
+            ManualInspectionStoreOptions? manualInspections = null, int? maximumAuditEntries = null,
+            ProductionAdmissionStoreOptions? productionAdmission = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -585,6 +586,7 @@ public sealed class RecipeDraftStorageTests
                 RecipeActivations = recipeActivations,
                 PreviewSessions = previewSessions,
                 ManualInspections = manualInspections,
+                ProductionAdmission = productionAdmission,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };

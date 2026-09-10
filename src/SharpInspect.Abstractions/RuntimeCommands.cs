@@ -25,7 +25,11 @@ public sealed record GovernedAuditChangeCommand(Guid CorrelationId, CommandInvoc
 
 /// <summary>Acceptance is admission of responsibility, not completion; query subsequent snapshots.</summary>
 public sealed record RuntimeCommandOutcome(Guid CorrelationId, CommandDisposition Disposition, string ReasonCode,
-    AuditPersistence Audit = AuditPersistence.NotAttempted, Guid? AttemptId = null);
+    AuditPersistence Audit = AuditPersistence.NotAttempted, Guid? AttemptId = null)
+{
+    /// <summary>Exact attempted admission evidence; this projection cannot authorize a later command.</summary>
+    public ProductionAdmissionReport? ProductionAdmission { get; init; }
+}
 
 public interface IStationRuntime
 {

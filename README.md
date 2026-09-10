@@ -116,6 +116,16 @@ Manual 记录不产生生产 Inspection ID、PLC Result Payload、普通 Outbox 
 SampleHost 的 `--manual-inspection-ui` 显示面板，`--manual-inspection-check <absolute-directory>`
 用于带显式身份配置的 Virtual Camera 消费者检查。开发证据和适用范围见 [V1-35 记录](docs/verification/v1-35.md)。
 
+生产武装使用独立的 `ArmProductionCommand` 权限与审计路径。`StationStateSnapshot.ProductionAdmission`
+列出固定的完整准入门、阻塞原因、期望与观察指纹及资格记录引用；报告只读，不能作为后续请求的授权输入。
+WPF 仅展示与当前新鲜快照 epoch/revision 相同的准入结论。宿主显式配置
+`ProductionStoreOptions.ProductionAdmission` 启用 schema22 准入报告账本，
+`IProductionAdmissionHistoryQuery` 可独立查询过去尝试；历史通过不表示当前配置仍可投产。
+
+Runtime 精确匹配当前配置与 Framework、Provider、Performance、Station Acceptance 及适用断电证据，
+并检查全部普通健康、恢复与政策门。缺失的生产能力或正式资格继续阻塞，DevelopmentOnly 证据不能授予生产权。
+本地门逻辑与隔离测试的适用范围见 [V1-36 记录](docs/verification/v1-36.md)。
+
 ## Camera Provider 契约验证
 
 Provider 维护者实现 `ICameraConformanceFixtureFactory`，提供固定身份、成像配置、规范像素摘要、

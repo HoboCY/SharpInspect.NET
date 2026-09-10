@@ -28,9 +28,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal bool PreviewSessionEnabled => _options.PreviewSessions is not null;
     internal bool CalibrationImportEnabled => _options.CalibrationImports is not null;
     internal bool ManualInspectionEnabled => _options.ManualInspections is not null;
+    internal bool ProductionAdmissionEnabled => _options.ProductionAdmission is not null;
     private bool RecipeDraftEnabled => _options.RecipeDrafts is not null;
     private bool AlgorithmArchiveEnabled => _options.AlgorithmResultArchive is not null;
-    private int SchemaVersion => ManualInspectionEnabled ? ManualInspectionStoreOptions.SchemaVersion :
+    private int SchemaVersion => ProductionAdmissionEnabled ? ProductionAdmissionStoreOptions.SchemaVersion :
+        ManualInspectionEnabled ? ManualInspectionStoreOptions.SchemaVersion :
         CalibrationImportEnabled ? CalibrationImportStoreOptions.SchemaVersion :
         PreviewSessionEnabled ? PreviewSessionStoreOptions.SchemaVersion :
         RecipeActivationEnabled ? RecipeActivationStoreOptions.SchemaVersion :
@@ -77,6 +79,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal PreviewSessionStoreOptions? PreviewSessionOptions => _options.PreviewSessions;
     internal CalibrationImportStoreOptions? CalibrationImportOptions => _options.CalibrationImports;
     internal ManualInspectionStoreOptions? ManualInspectionOptions => _options.ManualInspections;
+    internal ProductionAdmissionStoreOptions? ProductionAdmissionOptions => _options.ProductionAdmission;
 
     public SqliteCommandStore(ProductionStoreOptions options) : this(options, ReadFileLength) { }
 
@@ -100,6 +103,10 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         options.PreviewSessions?.Validate();
         options.CalibrationImports?.Validate();
         options.ManualInspections?.Validate();
+        options.ProductionAdmission?.Validate();
+        if (options.ProductionAdmission is not null &&
+            (options.LocalIdentity is null || _policy is null))
+            throw new ArgumentException("ProductionAdmissionRequiresIdentityAndAudit", nameof(options));
         if (options.CalibrationGovernance is not null && options.CalibrationSessions is null)
             throw new ArgumentException("CalibrationGovernanceRequiresCalibrationSessions", nameof(options));
         if (options.RecipeReleases is not null &&
@@ -294,6 +301,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 connection = SqliteNative.Open(_databasePath!, readOnly: false);
                 SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
                 initializationResult = InitializeDatabase(connection);
+                if (initializationResult.Committed && ProductionAdmissionEnabled)
+                    RegisterProductionAdmissionCommitFence(connection.Handle!);
                 initialized = initializationResult.Committed;
                 if (initialized && _policy is not null)
                 {
@@ -337,6 +346,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     ex.Message.StartsWith("RecipeActivation", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("PreviewSession", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("ManualInspection", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("ProductionAdmission", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("GovernedAlarm", StringComparison.Ordinal))
                     ? ex.Message : "TraceStoreUnavailable";
                 SetIntegrityFault(reason);
@@ -446,7 +456,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
-    private string MigrationReason(int existingVersion) => ManualInspectionEnabled
+    private string MigrationReason(int existingVersion) => ProductionAdmissionEnabled
+        ? "ProductionAdmissionGovernedMigrationRequired"
+        : ManualInspectionEnabled
         ? "ManualInspectionGovernedMigrationRequired"
         : CalibrationImportEnabled
         ? "CalibrationImportGovernedMigrationRequired"
@@ -502,7 +514,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion)
             return new StoreWriteResult(false,
-                !ManualInspectionEnabled && version == ManualInspectionStoreOptions.SchemaVersion
+                !ProductionAdmissionEnabled && version == ProductionAdmissionStoreOptions.SchemaVersion
+                    ? "ProductionAdmissionConfigurationRequired"
+                    : !ManualInspectionEnabled && version == ManualInspectionStoreOptions.SchemaVersion
                     ? "ManualInspectionConfigurationRequired"
                     : !CalibrationImportEnabled && version == CalibrationImportStoreOptions.SchemaVersion
                     ? "CalibrationImportConfigurationRequired"
@@ -537,6 +551,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             return new StoreWriteResult(false, "PreviewSessionConfigurationRequired");
         if (version == ManualInspectionStoreOptions.SchemaVersion && !ManualInspectionEnabled)
             return new StoreWriteResult(false, "ManualInspectionConfigurationRequired");
+        if (version == ProductionAdmissionStoreOptions.SchemaVersion && !ProductionAdmissionEnabled)
+            return new StoreWriteResult(false, "ProductionAdmissionConfigurationRequired");
         if (version == CalibrationImportStoreOptions.SchemaVersion && !CalibrationImportEnabled)
             return new StoreWriteResult(false, "CalibrationImportConfigurationRequired");
         if (version == RecipeActivationStoreOptions.SchemaVersion && !RecipeActivationEnabled)
@@ -559,7 +575,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                         PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                         PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                        ManualInspectionStoreOptions.SchemaVersion);
+                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion);
                 var alarmSchema = version >= 7 && _options.AlarmPolicy is not null;
                 var draftSchema = RecipeDraftEnabled &&
                     (version is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
@@ -568,59 +584,70 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                         PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                         PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                        ManualInspectionStoreOptions.SchemaVersion);
+                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion);
                 var cameraSchema = CameraSetupEnabled &&
                     (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                          CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                          RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion);
+                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                         ProductionAdmissionStoreOptions.SchemaVersion);
                 var recoverySchema = CameraRecoveryEnabled &&
                     (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
                         ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                          CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                          PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                         ManualInspectionStoreOptions.SchemaVersion);
+                         ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion);
                 var networkSchema = CameraNetworkEnabled &&
                     (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                          RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion);
+                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                         ProductionAdmissionStoreOptions.SchemaVersion);
                 var imagingSchema = ImagingSetupEnabled &&
                     (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                          CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                          PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                         ManualInspectionStoreOptions.SchemaVersion);
+                         ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion);
                 var calibrationSchema = CalibrationSessionsEnabled &&
                     (version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                       RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                        RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                       CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion);
+                       CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                       ProductionAdmissionStoreOptions.SchemaVersion);
                 var releaseSchema = RecipeReleaseEnabled &&
                     (version is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion);
+                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                         ProductionAdmissionStoreOptions.SchemaVersion);
                 var contractSchema = PlcResultContractEnabled &&
                      (version is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                         ManualInspectionStoreOptions.SchemaVersion);
+                         ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion);
                 var activationSchema = RecipeActivationEnabled &&
                      (version is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion);
+                         CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                         ProductionAdmissionStoreOptions.SchemaVersion);
                 var previewSchema = PreviewSessionEnabled &&
                     (version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-                        version == ManualInspectionStoreOptions.SchemaVersion);
+                        version == ManualInspectionStoreOptions.SchemaVersion ||
+                        version == ProductionAdmissionStoreOptions.SchemaVersion);
                 var calibrationImportSchema = CalibrationImportEnabled &&
-                    (version == CalibrationImportStoreOptions.SchemaVersion || version == ManualInspectionStoreOptions.SchemaVersion);
-                var manualSchema = ManualInspectionEnabled && version == ManualInspectionStoreOptions.SchemaVersion;
+                    (version == CalibrationImportStoreOptions.SchemaVersion || version == ManualInspectionStoreOptions.SchemaVersion ||
+                        version == ProductionAdmissionStoreOptions.SchemaVersion);
+                var manualSchema = ManualInspectionEnabled &&
+                    (version == ManualInspectionStoreOptions.SchemaVersion ||
+                     version == ProductionAdmissionStoreOptions.SchemaVersion);
+                var productionAdmissionSchema = ProductionAdmissionEnabled &&
+                    version == ProductionAdmissionStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                      archiveSchema || alarmSchema || draftSchema || cameraSchema || recoverySchema || networkSchema || imagingSchema || calibrationSchema || releaseSchema || contractSchema || activationSchema || previewSchema || calibrationImportSchema || manualSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                      new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema && !cameraSchema && !recoverySchema && !networkSchema && !imagingSchema && !calibrationSchema && !releaseSchema && !contractSchema && !activationSchema && !previewSchema && !calibrationImportSchema && !manualSchema, deadline,
+                      archiveSchema || alarmSchema || draftSchema || cameraSchema || recoverySchema || networkSchema || imagingSchema || calibrationSchema || releaseSchema || contractSchema || activationSchema || previewSchema || calibrationImportSchema || manualSchema || productionAdmissionSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                      new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema && !cameraSchema && !recoverySchema && !networkSchema && !imagingSchema && !calibrationSchema && !releaseSchema && !contractSchema && !activationSchema && !previewSchema && !calibrationImportSchema && !manualSchema && !productionAdmissionSchema, deadline,
                     validateAnchorReceipt: false, archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
                     recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null,
                     cameraSetupOptions: cameraSchema ? _options.CameraSetup : null,
@@ -634,7 +661,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                       activationOptions: activationSchema ? _options.RecipeActivations : null,
                       previewOptions: previewSchema ? _options.PreviewSessions : null,
                       importOptions: calibrationImportSchema ? _options.CalibrationImports : null,
-                      manualOptions: manualSchema ? _options.ManualInspections : null);
+                      manualOptions: manualSchema ? _options.ManualInspections : null,
+                      productionAdmissionOptions: productionAdmissionSchema ? _options.ProductionAdmission : null);
                 if (alarmSchema) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
                 if (draftSchema) AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -662,6 +690,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 if (manualSchema)
                     AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                         _options.ManualInspections);
+                if (productionAdmissionSchema)
+                    AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                        _options.ProductionAdmission);
             }
             if (version >= 7) _ = ReadIdentityState(database, deadline);
         }
@@ -677,7 +708,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
              version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion)
+              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+              ProductionAdmissionStoreOptions.SchemaVersion)
         {
             if (AlgorithmArchiveEnabled)
                 SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
@@ -688,7 +720,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
              CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
              PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion) &&
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion) &&
             RecipeDraftEnabled)
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, _options.RecipeDrafts!, deadline);
           if (CameraSetupEnabled && (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
@@ -696,30 +728,32 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
               CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion))
+              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+              ProductionAdmissionStoreOptions.SchemaVersion))
              SqliteCommandStore.RequireConfiguredCameraSetup(database, _options.CameraSetup!, deadline);
           if (CameraRecoveryEnabled && (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
               ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraRecovery(database, _options.CameraRecovery!, deadline);
           if (CameraNetworkEnabled && (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
               CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraNetwork(database, _options.CameraNetwork!, deadline);
            if (ImagingSetupEnabled && (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-               ManualInspectionStoreOptions.SchemaVersion))
+               ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredImagingSetup(database, _options.ImagingSetup!, deadline);
           if (CalibrationSessionsEnabled && (version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion))
+              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+              ProductionAdmissionStoreOptions.SchemaVersion))
         {
             SqliteCommandStore.RequireConfiguredCalibrationSessions(database, _options.CalibrationSessions!, deadline);
             SqliteCommandStore.ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline,
@@ -729,30 +763,35 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
          if (CalibrationGovernanceEnabled && (version is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
              PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion))
             ValidateCalibrationGovernanceHistory(database, _options.CalibrationGovernance!, deadline);
          if (RecipeReleaseEnabled && (version is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
              RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-             CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion))
+             CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+             ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredRecipeReleases(database, _options.RecipeReleases!, deadline);
         if (PlcResultContractEnabled && (version == PlcResultContractStoreOptions.SchemaVersion ||
             version == RecipeActivationStoreOptions.SchemaVersion ||
             version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredPlcResultContracts(database, _options.PlcResultContracts!, deadline);
         if (RecipeActivationEnabled && (version == RecipeActivationStoreOptions.SchemaVersion ||
             version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredRecipeActivations(database, _options.RecipeActivations!, deadline);
         if (PreviewSessionEnabled &&
             (version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-             version == ManualInspectionStoreOptions.SchemaVersion))
+             version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredPreviewSessions(database, _options.PreviewSessions!, deadline);
         if (CalibrationImportEnabled && (version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredCalibrationImports(database, _options.CalibrationImports!, deadline);
-        if (ManualInspectionEnabled && version == ManualInspectionStoreOptions.SchemaVersion)
+        if (ManualInspectionEnabled &&
+            (version == ManualInspectionStoreOptions.SchemaVersion ||
+             version == ProductionAdmissionStoreOptions.SchemaVersion))
             RequireConfiguredManualInspections(database, _options.ManualInspections!, deadline);
+        if (ProductionAdmissionEnabled && version == ProductionAdmissionStoreOptions.SchemaVersion)
+            RequireConfiguredProductionAdmission(database, _options.ProductionAdmission!, deadline);
 
         if (!ConfigureProductionProfile(database, deadline))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
@@ -832,6 +871,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             if (ManualInspectionEnabled)
                 InitializeManualInspectionSchema(database, _options.ManualInspections!, deadline,
                     _policy!, _signingKey!);
+            if (ProductionAdmissionEnabled)
+                InitializeProductionAdmissionSchema(database, _options.ProductionAdmission!, deadline,
+                    _policy!, _signingKey!);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
             return new StoreWriteResult(true, "TraceStoreReady");
@@ -904,11 +946,12 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     var activationStore = _options.RecipeActivations is not null;
                     var previewStore = _options.PreviewSessions is not null;
                     var importStore = _options.CalibrationImports is not null;
+                    var productionAdmissionStore = _options.ProductionAdmission is not null;
                     var verification = AuditChainDatabase.Verify(database, _policy, _signingKey!.KeyId,
                         _signingKey.PublicKeyBase64,
-                        archiveStore || alarmStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || importStore ?
+                        archiveStore || alarmStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || importStore || productionAdmissionStore ?
                             new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                            new AuditVerificationRequest(), !archiveStore && !alarmStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !importStore, deadline,
+                            new AuditVerificationRequest(), !archiveStore && !alarmStore && !draftStore && !cameraStore && !recoveryStore && !networkStore && !imagingStore && !calibrationStore && !releaseStore && !contractStore && !activationStore && !previewStore && !importStore && !productionAdmissionStore, deadline,
                         validateAnchorReceipt: false, archiveOptions: archiveStore ? _options.AlgorithmResultArchive : null,
                         recipeDraftOptions: draftStore ? _options.RecipeDrafts : null,
                         cameraSetupOptions: cameraStore ? _options.CameraSetup : null,
@@ -922,7 +965,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                           activationOptions: activationStore ? _options.RecipeActivations : null,
                           previewOptions: previewStore ? _options.PreviewSessions : null,
                           importOptions: importStore ? _options.CalibrationImports : null,
-                          manualOptions: _options.ManualInspections);
+                          manualOptions: _options.ManualInspections,
+                          productionAdmissionOptions: productionAdmissionStore ? _options.ProductionAdmission : null);
                     if (alarmStore)
                         AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                     if (archiveStore)
@@ -961,6 +1005,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     if (ManualInspectionEnabled)
                         AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                             _options.ManualInspections);
+                    if (productionAdmissionStore)
+                        AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                            _options.ProductionAdmission);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -1242,6 +1289,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (PreviewSessionEnabled) SqliteNative.Execute(canonicalDatabase, PreviewSessionSchemaSql, deadline);
         if (CalibrationImportEnabled) SqliteNative.Execute(canonicalDatabase, CalibrationImportSchemaSql, deadline);
         if (ManualInspectionEnabled) SqliteNative.Execute(canonicalDatabase, ManualInspectionSchemaSql, deadline);
+        if (ProductionAdmissionEnabled) SqliteNative.Execute(canonicalDatabase, ProductionAdmissionSchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;

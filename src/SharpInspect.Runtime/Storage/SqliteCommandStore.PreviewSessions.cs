@@ -364,7 +364,9 @@ internal sealed partial class SqliteCommandStore
             releaseOptions: _options.RecipeReleases,
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
-            previewOptions: options, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
+             previewOptions: options, importOptions: _options.CalibrationImports,
+             manualOptions: _options.ManualInspections,
+             productionAdmissionOptions: _options.ProductionAdmission);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -399,8 +401,11 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
         if (_options.CalibrationImports is not null)
             AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
-            if (_options.ManualInspections is not null)
-                AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+             if (_options.ManualInspections is not null)
+                 AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+             if (_options.ProductionAdmission is not null)
+                 AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                     _options.ProductionAdmission);
     }
 
     private static CommandAuditFact? ReadPreviewDraftCommandFact(sqlite3 database,
@@ -462,6 +467,8 @@ internal sealed partial class SqliteCommandStore
     private static AuditIdentityReference ReadPreviewDraftAuthorizationReference(sqlite3 database,
         PreviewSessionEvent value, Guid? expectedStepUpGrantId, StoreDeadline deadline)
     {
+        var schemaVersion = checked((int)AuditChainDatabase.Scalar(database,
+            "PRAGMA user_version;", deadline));
         var station = AuditChainDatabase.Text(database,
             "SELECT StationId FROM audit_policy WHERE Id=1;", deadline) ?? string.Empty;
         var rows = AuditChainDatabase.Read(database, @"
@@ -479,8 +486,7 @@ internal sealed partial class SqliteCommandStore
             byte[] payload;
             try { payload = Convert.FromBase64String(row.Payload); }
             catch (FormatException) { throw new InvalidOperationException("PreviewSessionAuthorizationAuditMissing"); }
-            IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, station,
-                PreviewSessionStoreOptions.SchemaVersion);
+            IdentityAuditEvent.VerifyPayload(payload, row.Ordinal, station, schemaVersion);
             if (IdentityAuditEvent.MatchesPreviewDraftAuthorization(payload, row.Ordinal, station,
                     value, expectedStepUpGrantId))
                 return new AuditIdentityReference(row.Sequence, row.Hash, row.Payload);
@@ -546,7 +552,9 @@ internal sealed partial class SqliteCommandStore
                 releaseOptions: _options.RecipeReleases,
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
-                previewOptions: options, importOptions: _options.CalibrationImports, manualOptions: _options.ManualInspections);
+                 previewOptions: options, importOptions: _options.CalibrationImports,
+                 manualOptions: _options.ManualInspections,
+                 productionAdmissionOptions: _options.ProductionAdmission);
             RequireConfiguredPreviewSessions(database, options, deadline);
             if (_options.AlarmPolicy is not null)
                 AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
@@ -583,8 +591,11 @@ internal sealed partial class SqliteCommandStore
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
             if (_options.CalibrationImports is not null)
                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
-                if (_options.ManualInspections is not null)
-                    AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+                 if (_options.ManualInspections is not null)
+                     AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+                 if (_options.ProductionAdmission is not null)
+                     AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                         _options.ProductionAdmission);
 
             var rows = ReadPreviewSessionRows(database, options, deadline);
             ValidatePreviewReplay(rows.Select(value => value.Event).ToArray(), options, database, deadline);
@@ -1414,6 +1425,8 @@ internal sealed partial class SqliteCommandStore
     private static bool ReadIdentityAuditReference(sqlite3 database, long sequence,
         string hash, PreviewSessionEvent value, StoreDeadline deadline)
     {
+        var schemaVersion = checked((int)AuditChainDatabase.Scalar(database,
+            "PRAGMA user_version;", deadline));
         var row = AuditChainDatabase.Read(database,
             "SELECT Kind,Hash,Payload FROM audit_entries WHERE Sequence=? AND Kind='IdentityEvent' LIMIT 2;",
             deadline, statement => (Kind: SqliteNative.ColumnText(statement, 0),
@@ -1428,8 +1441,7 @@ internal sealed partial class SqliteCommandStore
                 sequence.ToString(CultureInfo.InvariantCulture));
             var station = AuditChainDatabase.Text(database,
                 "SELECT StationId FROM audit_policy WHERE Id=1;", deadline) ?? string.Empty;
-            IdentityAuditEvent.VerifyPayload(payload, ordinal, station,
-                PreviewSessionStoreOptions.SchemaVersion);
+            IdentityAuditEvent.VerifyPayload(payload, ordinal, station, schemaVersion);
             Guid? stepUpGrantId = null;
             if (value.CommandKind == AuditedCommandKind.SaveRecipeDraft)
             {

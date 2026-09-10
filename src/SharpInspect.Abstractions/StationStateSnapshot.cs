@@ -53,7 +53,11 @@ public sealed record StationStateSnapshot(
     AlarmStateSnapshot? AlarmState = null,
     CameraSetupState? CameraSetup = null,
     CameraRecoverySnapshot? CameraRecovery = null,
-    CalibrationSessionState? CalibrationSession = null);
+    CalibrationSessionState? CalibrationSession = null)
+{
+    /// <summary>Read-only admission evidence attached without changing the legacy constructor ABI.</summary>
+    public ProductionAdmissionReport? ProductionAdmission { get; init; }
+}
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>
 public sealed class AdmissionBlockers : System.Collections.ObjectModel.ReadOnlyCollection<string>

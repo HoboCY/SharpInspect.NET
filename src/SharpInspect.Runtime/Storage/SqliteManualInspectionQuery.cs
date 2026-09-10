@@ -159,9 +159,14 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            AuditChainDatabase.Require(schema == ManualInspectionStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
+                ProductionAdmissionStoreOptions.SchemaVersion,
                 schema < ManualInspectionStoreOptions.SchemaVersion
                     ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
+            if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionGovernedMigrationRequired");
+            if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             ManualInspectionStoreOptions.ConfigureSqliteLimit(database);
             VerifyDependencies(database, manualOptions, key, deadline);
@@ -225,7 +230,8 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
             activationOptions: _options.RecipeActivations,
             previewOptions: _options.PreviewSessions,
             importOptions: _options.CalibrationImports,
-            manualOptions: manualOptions);
+            manualOptions: manualOptions,
+            productionAdmissionOptions: _options.ProductionAdmission);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -265,6 +271,9 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
                 deadline, _options.CalibrationImports);
         AuditChainDatabase.RequireFullManualInspectionVerification(database, verification,
             deadline, manualOptions);
+        if (_options.ProductionAdmission is not null)
+            AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification,
+                deadline, _options.ProductionAdmission);
     }
 
     private async ValueTask VerifyExternalAnchorAsync(AuditCheckpoint? checkpoint,

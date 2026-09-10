@@ -127,6 +127,10 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                 throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
             if (_options.ManualInspections is null && schema == ManualInspectionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ManualInspectionConfigurationRequired");
+            if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionGovernedMigrationRequired");
+            if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             if (schema == CalibrationImportStoreOptions.SchemaVersion &&
                 (_options.PreviewSessions is null || _options.CalibrationGovernance is null ||
                     _options.CalibrationSessions is null || _options.ImagingSetup is null))
@@ -171,7 +175,8 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                  CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                  RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                  RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                 CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion,
+                  CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                  ProductionAdmissionStoreOptions.SchemaVersion,
                 schema < RecipeDraftStoreOptions.SchemaVersion
                     ? "RecipeDraftGovernedMigrationRequired"
                     : schema > RecipeDraftStoreOptions.SchemaVersion
@@ -187,22 +192,27 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                 governanceOptions: schema is CalibrationGovernanceStoreOptions.SchemaVersion or
                     RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                     RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                    CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion
+                    CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                    ProductionAdmissionStoreOptions.SchemaVersion
                     ? _options.CalibrationGovernance : null,
                 releaseOptions: schema is RecipeReleaseStoreOptions.SchemaVersion or
                     PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion
                     ? _options.RecipeReleases : null,
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
                 previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion
                     ? _options.PreviewSessions : null,
-                importOptions: schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion
+                importOptions: schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                    ProductionAdmissionStoreOptions.SchemaVersion
                     ? _options.CalibrationImports : null,
-                manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion
-                    ? _options.ManualInspections : null);
+                manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion ||
+                    (schema == ProductionAdmissionStoreOptions.SchemaVersion && _options.ManualInspections is not null)
+                    ? _options.ManualInspections : null,
+                productionAdmissionOptions: schema == ProductionAdmissionStoreOptions.SchemaVersion
+                    ? _options.ProductionAdmission : null);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             AuditChainDatabase.RequireFullRecipeDraftVerification(database, verification, deadline,
@@ -223,12 +233,14 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
                 (schema is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                     PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion))
+                    ManualInspectionStoreOptions.SchemaVersion or
+                    ProductionAdmissionStoreOptions.SchemaVersion))
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
                 if ((schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                      RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                     CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion) &&
+                     CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
+                     ProductionAdmissionStoreOptions.SchemaVersion) &&
                 _options.RecipeReleases is not null)
                 AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);
@@ -248,6 +260,9 @@ public sealed class SqliteRecipeDraftQuery : IRecipeDraftHistoryQuery
              if (_options.ManualInspections is not null)
                  AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
                      _options.ManualInspections);
+             if (_options.ProductionAdmission is not null)
+                 AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                     _options.ProductionAdmission);
 
             var latest = AuditChainDatabase.Scalar(database,
                 "SELECT COALESCE(MAX(Position),0) FROM recipe_draft_revisions;", deadline);

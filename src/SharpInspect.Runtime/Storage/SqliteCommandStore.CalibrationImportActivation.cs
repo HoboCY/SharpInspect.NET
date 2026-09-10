@@ -64,7 +64,8 @@ internal sealed partial class SqliteCommandStore
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is CalibrationImportStoreOptions.SchemaVersion or
+                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion,
                 schema < CalibrationImportStoreOptions.SchemaVersion
                     ? "CalibrationImportGovernedMigrationRequired" : "StoreSchemaTooNew");
             AuditChainDatabase.Require(_options.PreviewSessions is not null &&
@@ -89,7 +90,8 @@ internal sealed partial class SqliteCommandStore
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
                 previewOptions: _options.PreviewSessions,
-                importOptions: importOptions, manualOptions: _options.ManualInspections);
+                importOptions: importOptions, manualOptions: _options.ManualInspections,
+                productionAdmissionOptions: _options.ProductionAdmission);
 
             RequireFullCalibrationImportActivationVerification(database, verification, deadline);
 
@@ -170,10 +172,13 @@ internal sealed partial class SqliteCommandStore
         if (_options.PreviewSessions is not null)
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                 _options.PreviewSessions);
-        if (_options.CalibrationImports is not null)
-            AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
-                _options.CalibrationImports);
+            if (_options.CalibrationImports is not null)
+                AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline,
+                    _options.CalibrationImports);
             if (_options.ManualInspections is not null)
                 AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline, _options.ManualInspections);
+            if (_options.ProductionAdmission is not null)
+                AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                    _options.ProductionAdmission);
     }
 }

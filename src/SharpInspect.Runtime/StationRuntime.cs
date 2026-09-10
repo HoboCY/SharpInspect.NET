@@ -6,6 +6,7 @@ using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Calibration;
+using SharpInspect.Runtime.Admission;
 using SharpInspect.Runtime.Storage;
 
 namespace SharpInspect.Runtime;
@@ -58,7 +59,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CalibrationSessionOptions? calibrationSessionOptions = null,
         CalibrationProcedureRegistry? calibrationProcedures = null,
         ProductionStoreOptions? productionStoreOptions = null,
-        PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null)
+        PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
+        IProductionAdmissionFactsSource? productionAdmissionFactsSource = null)
     {
         _audit = audit;
         _sessions = sessions;
@@ -120,6 +122,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     _snapshot = _snapshot with { Session = initialSession };
             }
         }
+        ConfigureProductionAdmission(productionStoreOptions, productionAdmissionFactsSource);
         ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
         ConfigureRecipeActivationStartup(productionStoreOptions?.RecipeActivations is not null);
         ConfigurePreviewStartup(productionStoreOptions?.PreviewSessions is not null);
@@ -220,6 +223,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
         if (command is CalibrationImportCommand import)
             return await SubmitCalibrationImportAsync(import, cancellationToken).ConfigureAwait(false);
+        if (command is ArmProductionCommand productionArm && ProductionAdmissionEnabled)
+            return await SubmitProductionArmAsync(productionArm, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         var attempt = Guid.NewGuid();
         RuntimeCommandOutcome Unavailable(string reason) => new(command.CorrelationId,
@@ -548,6 +553,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     if (integrityBlocked) blockers = blockers.Append("AuditIntegrityUnavailable");
                     var next = _snapshot with { AuditIntegrity = integrity,
                         AdmissionBlockers = new AdmissionBlockers(blockers) };
+                    // The built-in source is a synchronous projection of the
+                    // authoritative runtime axes.  Refresh its immutable facts on
+                    // each heartbeat so store/health/recovery changes are evaluated
+                    // by the fixed engine instead of merely rebinding an old report.
+                    if (_productionAdmissionEnabled &&
+                        _productionAdmissionFactsSource is CurrentStationFactsSource)
+                        _lastAdmissionFacts = CaptureDefaultFactsLocked(next);
                     if (next.LastCommand is { State: OperationState.Pending })
                     {
                         if (_completion is null) _completion = Task.Run(CompletePendingStopAsync);
@@ -611,7 +623,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         finally { _commandGate.Release(); }
     }
 
-    private void PublishLocked(StationStateSnapshot next)
+    private void PublishLocked(StationStateSnapshot next, bool completingProductionArm = false)
     {
         next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
@@ -619,11 +631,58 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         next = ApplyCameraRecoveryStateLocked(next);
         next = ProjectPreviewStateLocked(next);
         next = ProjectManualInspectionStateLocked(next);
+        var previousAdmission = _snapshot.ProductionAdmission;
+        var generationBeforeObservation = _admissionGeneration;
+        if (_productionAdmissionEnabled && _productionAdmissionFactsSource is CurrentStationFactsSource)
+            _lastAdmissionFacts = CaptureDefaultFactsLocked(next);
+        if (_productionAdmissionEnabled && _audit?.Integrity?.State == AuditIntegrityState.Verified &&
+            _lastAdmissionFacts?.RuntimeGates.TryGetValue(ProductionAdmissionGate.StoreIntegrity, out var storeGate) == true &&
+            storeGate.Status == ProductionAdmissionGateStatus.Passed)
+            _lastVerifiedStoreIntegrityGate = storeGate;
+        ObserveProductionAdmissionStateLocked(next);
+        if (_productionAdmissionEnabled && _admissionGeneration != generationBeforeObservation)
+            next = next with { Ready = false, ArmState = ProductionArmState.Disarmed };
         var revision = checked(_snapshot.Revision + 1);
         var alarms = next.AlarmState is { } current
             ? new AlarmStateSnapshot(current.Available, current.ReasonCode, next.RuntimeEpoch, revision,
                 current.Policy, current.Instances, current.Plc) : null;
-        _snapshot = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow, AlarmState = alarms };
+        ProductionAdmissionReport? admission = null;
+        if (next.ProductionAdmission is { } requested)
+        {
+            // Every published snapshot gets a fresh fixed-engine projection.  The
+            // report is still immutable; only its snapshot metadata is rebound.  Do
+            // not leave the field null when another material runtime axis changed.
+            admission = RebindProductionAdmissionReport(requested, next.RuntimeEpoch, revision,
+                _admissionGeneration);
+
+            // A report's snapshot revision is presentation metadata.  Its effective
+            // evidence is not: the fixed engine must be run again at the current UTC
+            // instant so an expiring qualification cannot stay Passed merely because
+            // heartbeat rebound the old report to a newer revision.  Refresh already
+            // advanced the generation when captured facts changed; a time-only change
+            // is detected here and advances it exactly once.
+            if (previousAdmission is { } previous && admission is { } rebound &&
+                !string.Equals(MaterialAdmissionEvidenceHash(previous),
+                    MaterialAdmissionEvidenceHash(rebound), StringComparison.Ordinal))
+            {
+                if (_admissionGeneration == generationBeforeObservation)
+                    _admissionGeneration = checked(_admissionGeneration + 1);
+                admission = RebindProductionAdmissionReport(rebound, next.RuntimeEpoch, revision,
+                    _admissionGeneration);
+                next = next with { Ready = false, ArmState = ProductionArmState.Disarmed };
+            }
+        }
+        if (admission is { CanArm: false })
+            next = next with { Ready = false, ArmState = ProductionArmState.Disarmed };
+        if (completingProductionArm && (!next.Ready || next.ArmState != ProductionArmState.Armed) &&
+            next.LastCommand is { } armProgress)
+            next = next with { LastCommand = armProgress with
+                { State = OperationState.Failed, ReasonCode = "ProductionAdmissionChanged" } };
+        var published = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow,
+            AlarmState = alarms, ProductionAdmission = admission };
+        _snapshot = published;
+        if (_productionAdmissionEnabled)
+            _admissionStateHash = ComputeAdmissionStateHash(published);
         foreach (var subscriber in _subscribers) subscriber.Writer.TryWrite(_snapshot);
     }
 
@@ -638,6 +697,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // the command gate settles first; shutdown never rewrites an immutable terminal fact.
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
+        if (_productionAdmissionEnabled && _audit is SqliteCommandStore admissionStore)
+            admissionStore.ProductionAdmissionMaterialChanging -= OnProductionAdmissionMaterialChanging;
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);

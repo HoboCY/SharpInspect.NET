@@ -372,7 +372,7 @@ public sealed partial class ManualInspectionRuntimeTests
             string? preparationBarrierStage = null, bool failUnpublishedDispose = false,
             TimeSpan? shutdownTimeout = null, bool requireManualStepUp = false,
             bool minimalStore = false, ManualInspectionStoreOptions? manualStoreOptions = null,
-            int? maximumAuditEntries = null, bool activationReadyDraft = false)
+            int? maximumAuditEntries = null, bool activationReadyDraft = false, bool productionAdmission = false)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             var alarm = CreateAlarmPolicy();
@@ -385,7 +385,8 @@ public sealed partial class ManualInspectionRuntimeTests
                 cameraSetup: new CameraSetupStoreOptions(),
                 recipeActivations: minimalStore ? null : new RecipeActivationStoreOptions(),
                 manualInspections: manualStoreOptions ?? new ManualInspectionStoreOptions(),
-                maximumAuditEntries: maximumAuditEntries);
+                maximumAuditEntries: maximumAuditEntries,
+                productionAdmission: productionAdmission ? new ProductionAdmissionStoreOptions() : null);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;

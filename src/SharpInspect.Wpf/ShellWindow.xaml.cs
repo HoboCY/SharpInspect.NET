@@ -8,6 +8,8 @@ using SharpInspect.Abstractions;
 namespace SharpInspect.Wpf;
 
 internal sealed record StateRow(string Label, string Value);
+internal sealed record AdmissionGateRow(string Gate, string Status, string ReasonCode,
+    string ExpectedFingerprint, string ObservedFingerprint, string EvidenceRecordHash);
 
 public partial class ShellWindow : Window
 {
@@ -444,8 +446,11 @@ public partial class ShellWindow : Window
         var engineeringSelected = _viewModel.SelectedSection == "Engineering";
         if (maintenanceSelected) SectionLabel.Text = "维护 / 管理 · 身份引导、账号授权与恢复";
         if (recipeSelected) SectionLabel.Text = "配方 · 受限草稿编辑";
-        SnapshotPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected || recipeSelected ? Visibility.Collapsed : Visibility.Visible;
-        BlockersPanel.Visibility = traceSelected || maintenanceSelected || alarmSelected || recipeSelected ? Visibility.Collapsed : Visibility.Visible;
+        var snapshotVisible = traceSelected || maintenanceSelected || alarmSelected || recipeSelected
+            ? Visibility.Collapsed : Visibility.Visible;
+        SnapshotPanel.Visibility = snapshotVisible;
+        BlockersPanel.Visibility = snapshotVisible;
+        AdmissionPanel.Visibility = snapshotVisible;
         TracePanel.Visibility = traceSelected ? Visibility.Visible : Visibility.Collapsed;
         AlgorithmResultsPanel.Visibility = traceSelected && _algorithmResultViewModel is not null
             ? Visibility.Visible : Visibility.Collapsed;
@@ -616,6 +621,18 @@ public partial class ShellWindow : Window
             new StateRow("相机恢复原因", recovery.ReasonCode)
         } : Array.Empty<StateRow>());
         BlockersLabel.Text = s is null ? "当前状态未知，等待新的完整快照。" : string.Join(" · ", s.AdmissionBlockers);
+        var admission = _viewModel.State.DisplayedProductionAdmission;
+        AdmissionSummaryLabel.Text = admission is null
+            ? "等待当前完整准入报告。"
+            : (admission.CanArm ? "当前准入门已满足，武装仍需当前权限确认。" :
+                $"当前有 {admission.Gates.Count(gate => gate.Status is not (ProductionAdmissionGateStatus.Passed or ProductionAdmissionGateStatus.NotApplicable))} 项准入阻塞，生产保持禁用。") +
+                $"\n准入代次 {admission.AdmissionGeneration} · 报告哈希 {admission.ContentHash}";
+        AdmissionRows.ItemsSource = admission is null
+            ? Array.Empty<AdmissionGateRow>()
+            : admission.Gates.Select(gate => new AdmissionGateRow(
+                AdmissionGateLabel(gate.Gate), AdmissionStatusLabel(gate.Status), gate.ReasonCode,
+                gate.ExpectedFingerprint ?? "无", gate.ObservedFingerprint ?? "无",
+                gate.EvidenceRecordHashes.Count == 0 ? "无" : string.Join(", ", gate.EvidenceRecordHashes))).ToArray();
         var outcome = _viewModel.LastCommandOutcome;
         OutcomeLabel.Text = _viewModel.CommandFailureCode is not null
             ? $"本次命令状态不可确认：{_viewModel.CommandFailureCode}，等待 Runtime 确认。"
@@ -625,4 +642,46 @@ public partial class ShellWindow : Window
         ProgressLabel.Text = progress is null ? "最终状态：等待新的关联快照" :
             $"关联操作状态：{progress.State} / {progress.ReasonCode} · {progress.CorrelationId}";
     }
+
+    private static string AdmissionGateLabel(ProductionAdmissionGate gate) => gate switch
+    {
+        ProductionAdmissionGate.DeploymentPolicies => "部署政策",
+        ProductionAdmissionGate.VersionPolicy => "版本政策",
+        ProductionAdmissionGate.ActiveRecipe => "当前活动配方",
+        ProductionAdmissionGate.PreparedAlgorithm => "算法准备",
+        ProductionAdmissionGate.RecipeAssets => "配方资产",
+        ProductionAdmissionGate.CameraBinding => "相机绑定",
+        ProductionAdmissionGate.CameraConfiguration => "相机配置",
+        ProductionAdmissionGate.CameraHealth => "相机健康",
+        ProductionAdmissionGate.PlcCommunication => "PLC 通信",
+        ProductionAdmissionGate.ControllerSynchronization => "控制器同步",
+        ProductionAdmissionGate.Recovery => "恢复状态",
+        ProductionAdmissionGate.ExclusiveWork => "独占工作",
+        ProductionAdmissionGate.Alarms => "报警",
+        ProductionAdmissionGate.StoreIntegrity => "存储完整性",
+        ProductionAdmissionGate.StoreCapacity => "存储容量",
+        ProductionAdmissionGate.EvidenceReconciliation => "证据对账",
+        ProductionAdmissionGate.Backlog => "积压",
+        ProductionAdmissionGate.IdentityRecovery => "身份恢复方式",
+        ProductionAdmissionGate.FrameworkQualification => "框架资格",
+        ProductionAdmissionGate.ProviderQualification => "相机适配器资格",
+        ProductionAdmissionGate.PerformanceQualification => "性能资格",
+        ProductionAdmissionGate.StationAcceptance => "工位验收",
+        ProductionAdmissionGate.PowerLossQualification => "断电验收",
+        ProductionAdmissionGate.ProductionCycle => "生产周期",
+        _ => "未知准入门"
+    };
+
+    private static string AdmissionStatusLabel(ProductionAdmissionGateStatus status) => status switch
+    {
+        ProductionAdmissionGateStatus.Passed => "通过",
+        ProductionAdmissionGateStatus.Missing => "缺少证据",
+        ProductionAdmissionGateStatus.NotConfigured => "尚未配置",
+        ProductionAdmissionGateStatus.Mismatch => "不匹配",
+        ProductionAdmissionGateStatus.Expired => "已过期或未生效",
+        ProductionAdmissionGateStatus.Failed => "失败",
+        ProductionAdmissionGateStatus.Blocked => "阻塞",
+        ProductionAdmissionGateStatus.NotApplicable => "已证明不适用",
+        _ => "未知"
+    };
 }

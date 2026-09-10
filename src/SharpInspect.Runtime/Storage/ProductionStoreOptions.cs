@@ -75,4 +75,10 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 21 independent non-production Manual Inspection ledger.</summary>
     public ManualInspectionStoreOptions? ManualInspections { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 22 immutable production-admission report ledger.
+    /// Reports bind the evaluated gate set and current durable heads; they do not issue
+    /// qualification or change Runtime state. The ledger requires only local identity and
+    /// central audit integrity, while each missing required gate remains a rejection.</summary>
+    public ProductionAdmissionStoreOptions? ProductionAdmission { get; init; }
 }

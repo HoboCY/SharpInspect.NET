@@ -441,7 +441,8 @@ internal sealed partial class SqliteCommandStore
             try
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-                AuditChainDatabase.Require(schema == ManualInspectionStoreOptions.SchemaVersion,
+                AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
+                    ProductionAdmissionStoreOptions.SchemaVersion,
                     schema < ManualInspectionStoreOptions.SchemaVersion
                         ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
                 var verification = AuditChainDatabase.Verify(database, _policy,
@@ -458,12 +459,16 @@ internal sealed partial class SqliteCommandStore
                     governanceOptions: _options.CalibrationGovernance,
                     releaseOptions: _options.RecipeReleases,
                     contractOptions: _options.PlcResultContracts,
-                    activationOptions: _options.RecipeActivations,
-                    previewOptions: _options.PreviewSessions,
-                    importOptions: _options.CalibrationImports,
-                    manualOptions: options);
+                     activationOptions: _options.RecipeActivations,
+                     previewOptions: _options.PreviewSessions,
+                     importOptions: _options.CalibrationImports,
+                     manualOptions: options,
+                     productionAdmissionOptions: _options.ProductionAdmission);
                 AuditChainDatabase.RequireFullManualInspectionVerification(database,
                     verification, deadline, options);
+                if (_options.ProductionAdmission is not null)
+                    AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                        _options.ProductionAdmission);
                 var rows = ReadManualInspectionRows(database, options, deadline);
                 var projection = BuildManualRecoveryProjection(database, rows, deadline);
                 SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);

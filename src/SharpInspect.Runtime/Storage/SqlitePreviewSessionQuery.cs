@@ -147,7 +147,7 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             AuditChainDatabase.Require(schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                ManualInspectionStoreOptions.SchemaVersion,
+                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion,
                 schema < PreviewSessionStoreOptions.SchemaVersion
                     ? "PreviewSessionGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
@@ -160,6 +160,10 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
                 throw new InvalidOperationException("CalibrationImportGovernedMigrationRequired");
             if (_options.CalibrationImports is null && schema == CalibrationImportStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("CalibrationImportConfigurationRequired");
+            if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionGovernedMigrationRequired");
+            if (_options.ProductionAdmission is null && schema == ProductionAdmissionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             VerifyDependencies(database, previewOptions, key, deadline);
 
@@ -221,7 +225,8 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
             contractOptions: _options.PlcResultContracts,
             activationOptions: _options.RecipeActivations,
             previewOptions: previewOptions, importOptions: _options.CalibrationImports,
-            manualOptions: _options.ManualInspections);
+            manualOptions: _options.ManualInspections,
+            productionAdmissionOptions: _options.ProductionAdmission);
         if (_options.AlarmPolicy is not null)
             AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
         if (_options.AlgorithmResultArchive is not null)
@@ -255,6 +260,9 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
              AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
          AuditChainDatabase.RequireFullManualInspectionVerification(database, verification, deadline,
              _options.ManualInspections);
+         if (_options.ProductionAdmission is not null)
+             AuditChainDatabase.RequireFullProductionAdmissionVerification(database, verification, deadline,
+                 _options.ProductionAdmission);
     }
 
     private async ValueTask VerifyExternalAnchorAsync(AuditCheckpoint? checkpoint,

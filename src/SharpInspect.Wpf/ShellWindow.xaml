@@ -19,6 +19,24 @@
                 <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="#172B42" TextWrapping="Wrap" FontSize="12" />
             </Grid>
         </DataTemplate>
+        <DataTemplate x:Key="AdmissionGateRowTemplate">
+            <Grid Margin="0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="165" />
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="220" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Gate}" Foreground="#172B42" TextWrapping="Wrap" FontSize="11" />
+                <TextBlock Grid.Column="1" Text="{Binding Status}" Foreground="#172B42" TextWrapping="Wrap" FontSize="11" />
+                <TextBlock Grid.Column="2" Text="{Binding ReasonCode}" Foreground="#75531A" TextWrapping="Wrap" FontSize="11" />
+                <TextBlock Grid.Column="3" Text="{Binding ExpectedFingerprint}" Foreground="#556679" TextWrapping="Wrap" FontSize="10" />
+                <TextBlock Grid.Column="4" Text="{Binding ObservedFingerprint}" Foreground="#556679" TextWrapping="Wrap" FontSize="10" />
+                <TextBlock Grid.Column="5" Text="{Binding EvidenceRecordHash}" Foreground="#556679" TextWrapping="Wrap" FontSize="10" />
+            </Grid>
+        </DataTemplate>
     </Window.Resources>
     <DockPanel Background="#F3F5F7">
         <Border DockPanel.Dock="Top" Background="#172B42" Padding="26,20">
@@ -80,6 +98,31 @@
                         <StackPanel>
                             <TextBlock Text="当前生产阻塞原因" Foreground="#75531A" FontWeight="SemiBold" />
                             <TextBlock x:Name="BlockersLabel" Text="尚未收到完整快照" Foreground="#75531A" TextWrapping="Wrap" Margin="0,8,0,0" />
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="AdmissionPanel" Background="White" BorderBrush="#DAE1E8" BorderThickness="1" Padding="18" Margin="0,16,0,0">
+                        <StackPanel>
+                            <TextBlock Text="生产准入门报告 · 只读证据" Foreground="#172B42" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock x:Name="AdmissionSummaryLabel"
+                                       Text="准入报告未知或当前快照已陈旧；不能据此声称可武装生产。"
+                                       Foreground="#75531A" TextWrapping="Wrap" Margin="0,8,0,12" />
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="165" />
+                                    <ColumnDefinition Width="110" />
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="220" />
+                                    <ColumnDefinition Width="220" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="门" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="状态" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                                <TextBlock Grid.Column="2" Text="原因码" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                                <TextBlock Grid.Column="3" Text="预期指纹" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                                <TextBlock Grid.Column="4" Text="观测指纹" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                                <TextBlock Grid.Column="5" Text="证据记录哈希" Foreground="#556679" FontWeight="SemiBold" FontSize="11" />
+                            </Grid>
+                            <ItemsControl x:Name="AdmissionRows" ItemTemplate="{StaticResource AdmissionGateRowTemplate}" />
                         </StackPanel>
                     </Border>
                     <local:AlarmPanel x:Name="AlarmPanel" Visibility="Collapsed" Margin="0,16,0,0" />

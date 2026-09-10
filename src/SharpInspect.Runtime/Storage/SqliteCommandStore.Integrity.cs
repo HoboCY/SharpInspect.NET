@@ -28,6 +28,10 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("ManualInspectionConfigurationRequired");
         if (_options.ManualInspections is not null && version < ManualInspectionStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
+        if (_options.ProductionAdmission is null && version == ProductionAdmissionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ProductionAdmissionConfigurationRequired");
+        if (_options.ProductionAdmission is not null && version < ProductionAdmissionStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ProductionAdmissionGovernedMigrationRequired");
         if (_options.CalibrationImports is null && version == CalibrationImportStoreOptions.SchemaVersion)
             throw new InvalidOperationException("CalibrationImportConfigurationRequired");
         if (_options.CalibrationImports is not null && version < CalibrationImportStoreOptions.SchemaVersion)

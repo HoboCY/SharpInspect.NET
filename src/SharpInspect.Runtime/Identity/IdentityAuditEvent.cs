@@ -62,7 +62,10 @@ internal enum IdentityEventKind
     ManualInspectionSessionStartAuthorized,
     ManualInspectionSessionActionAuthorized,
     ManualInspectionSessionCompleted,
-    ManualInspectionSessionFailed
+    ManualInspectionSessionFailed,
+    ProductionAdmissionArmAuthorized,
+    ProductionAdmissionCompleted,
+    ProductionAdmissionFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -141,14 +144,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > ManualInspectionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionAdmissionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > ManualInspectionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionAdmissionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -173,7 +176,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-                var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ManualInspectionStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionAdmissionStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -234,6 +237,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.ManualInspectionSessionActionAuthorized or
                         IdentityEventKind.ManualInspectionSessionCompleted or
                         IdentityEventKind.ManualInspectionSessionFailed), "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= ProductionAdmissionStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.ProductionAdmissionArmAuthorized or
+                        IdentityEventKind.ProductionAdmissionCompleted or IdentityEventKind.ProductionAdmissionFailed),
+                    "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -817,6 +824,34 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         catch (Exception ex) when (ex is EndOfStreamException or DecoderFallbackException or
             InvalidOperationException or FormatException)
         { return false; }
+    }
+
+    internal static bool MatchesProductionAdmission(byte[] payload, ProductionAdmissionHistoryEvent value,
+        string stationId)
+    {
+        try
+        {
+            var fields = DecodeFields(payload);
+            var expectedKind = value.Kind switch
+            {
+                ProductionAdmissionEventKind.Admitted => IdentityEventKind.ProductionAdmissionArmAuthorized,
+                ProductionAdmissionEventKind.Rejected => IdentityEventKind.ManagementRejected,
+                ProductionAdmissionEventKind.Completed => IdentityEventKind.ProductionAdmissionCompleted,
+                _ => IdentityEventKind.ProductionAdmissionFailed
+            };
+            return fields.Length == 49 && fields[2] == expectedKind.ToString() && fields[4] == stationId &&
+                fields[5] == value.ActorPrincipalId.ToString("D") && fields[9] == value.ReasonCode &&
+                fields[25] == value.ActorSessionId.ToString("D") && fields[27] == value.AuthorizationPolicy.Id &&
+                fields[28] == value.AuthorizationPolicy.Version && fields[29] == value.AuthorizationPolicy.ContentHash &&
+                fields[30] == value.ActorPrincipalId.ToString("D") && fields[31] == value.CorrelationId.ToString("D") &&
+                fields[32] == value.StepUpGrantId?.ToString("D") && fields[33] == Permission.ArmProduction.ToString() &&
+                fields[35] == value.ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == stationId && fields[38] == value.CorrelationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.ArmProduction.ToString() &&
+                fields[42] == (value.Kind == ProductionAdmissionEventKind.Rejected ? null : value.CorrelationId.ToString("D"));
+        }
+        catch (Exception exception) when (exception is EndOfStreamException or DecoderFallbackException or
+            InvalidOperationException or FormatException) { return false; }
     }
 
     internal static bool TryReadEventKind(byte[] payload, out IdentityEventKind kind)

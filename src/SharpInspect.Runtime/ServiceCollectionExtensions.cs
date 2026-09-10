@@ -278,6 +278,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IPreviewSessionHistoryQuery>(_ => new SqlitePreviewSessionQuery(options));
         if (options.ManualInspections is not null)
             services.TryAddSingleton<IManualInspectionHistoryQuery>(_ => new SqliteManualInspectionQuery(options));
+        if (options.ProductionAdmission is not null)
+            services.TryAddSingleton<IProductionAdmissionHistoryQuery>(_ => new SqliteProductionAdmissionHistoryQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
