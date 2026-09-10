@@ -502,6 +502,22 @@ dotnet run --project samples/SharpInspect.SampleHost -c Release -- --algorithm-e
 认证人员的成功交换及故障回滚由受控 Runtime 测试覆盖，证据及未执行项见
 [V1-38](docs/verification/v1-38.md)。
 
+## 追溯存储政策
+
+`ITraceStoragePolicyService` 通过 `PublishTraceStoragePolicyCommand` 发布完整、不可变的部署存储政策。
+必须具备 `ManageProductionPolicy` 权限并完成绑定精确内容和预期版本的一次性重新认证；审批主体、
+时间、政策版本、前一记录及冻结规则快照由同一 SQLite 事务记录。`ProductionStoreOptions.TraceStoragePolicies`
+显式启用独立账本，并提供已确认的 Required Route 清单；政策内容不进入 Recipe 或算法输入。
+
+政策包含各类证据、日志、导出和隔离暂存的保留规则，绝对与百分比磁盘储备，路由及图像积压三维上限，
+stage/commit 截止时间，以及 scrubber、checkpoint 和 WAL 预算。编辑器初始为空，不提供生产默认数值。
+可用 `ShellWindow.CreateWithTraceStoragePolicy` 将 `TraceStoragePolicyViewModel` 接入维护页面；
+SampleHost 的 `--trace-storage-policy-ui` 启用显式无 Required Route 的开发清单，仍需配置本地身份和审计。
+
+预检只报告实际观测和明确的未实现条件。完整政策不会使其他部署政策、积压核对、后台执行器或生产周期
+自动通过。发布新政策不改变旧规则快照；纯保留义务值支持延长和精确 Hold 谱系，实际每 Run 锁存与证据义务
+由后续周期实现，不在政策发布时虚构运行、图像或删除许可。验证边界见 [V1-39](docs/verification/v1-39.md)。
+
 ## 开发结果归档与 Frame Pixel 查看器
 
 新空库显式设置 `ProductionStoreOptions.AlgorithmResultArchive = new AlgorithmResultArchiveOptions()`，

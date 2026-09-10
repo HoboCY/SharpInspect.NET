@@ -65,6 +65,7 @@ public partial class ShellWindow : Window
     private readonly PreviewSessionViewModel? _previewSessionViewModel;
     private readonly ManualInspectionSessionViewModel? _manualInspectionViewModel;
     private readonly StationQualificationSessionViewModel? _qualificationViewModel;
+    private readonly TraceStoragePolicyViewModel? _traceStoragePolicyViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -77,6 +78,7 @@ public partial class ShellWindow : Window
     private bool _previewSelectionLoaded;
     private bool _manualSelectionLoaded;
     private bool _qualificationSelectionLoaded;
+    private bool _traceStoragePolicySelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
@@ -147,6 +149,19 @@ public partial class ShellWindow : Window
             administratorRecoveryViewModel, alarmViewModel, algorithmResultViewModel, recipeDraftViewModel,
             previewSessionViewModel, manualInspectionViewModel, qualificationViewModel);
 
+    /// <summary>Attaches the governed deployment storage-policy editor without changing existing constructor ABI.</summary>
+    public static ShellWindow CreateWithTraceStoragePolicy(StationShellViewModel viewModel,
+        TraceStoragePolicyViewModel traceStoragePolicyViewModel,
+        CommandTraceViewModel? traceViewModel = null, AuditIntegrityViewModel? integrityViewModel = null,
+        IdentityViewModel? identityViewModel = null, IdentityAdministrationViewModel? identityAdministrationViewModel = null,
+        AdministratorRecoveryViewModel? administratorRecoveryViewModel = null, AlarmViewModel? alarmViewModel = null,
+        AlgorithmResultHistoryViewModel? algorithmResultViewModel = null, RecipeDraftEditorViewModel? recipeDraftViewModel = null,
+        PreviewSessionViewModel? previewSessionViewModel = null, ManualInspectionSessionViewModel? manualInspectionViewModel = null,
+        StationQualificationSessionViewModel? qualificationViewModel = null) =>
+        new(viewModel, traceViewModel, integrityViewModel, identityViewModel, identityAdministrationViewModel,
+            administratorRecoveryViewModel, alarmViewModel, algorithmResultViewModel, recipeDraftViewModel,
+            previewSessionViewModel, manualInspectionViewModel, qualificationViewModel, traceStoragePolicyViewModel);
+
     private ShellWindow(StationShellViewModel viewModel, CommandTraceViewModel? traceViewModel,
         AuditIntegrityViewModel? integrityViewModel, IdentityViewModel? identityViewModel,
         IdentityAdministrationViewModel? identityAdministrationViewModel,
@@ -155,7 +170,8 @@ public partial class ShellWindow : Window
         RecipeDraftEditorViewModel? recipeDraftViewModel,
         PreviewSessionViewModel? previewSessionViewModel,
         ManualInspectionSessionViewModel? manualInspectionViewModel = null,
-        StationQualificationSessionViewModel? qualificationViewModel = null)
+        StationQualificationSessionViewModel? qualificationViewModel = null,
+        TraceStoragePolicyViewModel? traceStoragePolicyViewModel = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
@@ -170,6 +186,7 @@ public partial class ShellWindow : Window
         _previewSessionViewModel = previewSessionViewModel;
         _manualInspectionViewModel = manualInspectionViewModel;
         _qualificationViewModel = qualificationViewModel;
+        _traceStoragePolicyViewModel = traceStoragePolicyViewModel;
         DataContext = viewModel;
         TracePanel.DataContext = traceViewModel;
         IntegrityPanel.DataContext = integrityViewModel;
@@ -183,6 +200,7 @@ public partial class ShellWindow : Window
         PreviewPanel.DataContext = previewSessionViewModel;
         ManualInspectionPanel.DataContext = manualInspectionViewModel;
         QualificationPanel.DataContext = qualificationViewModel;
+        TraceStoragePolicyPanel.DataContext = traceStoragePolicyViewModel;
         viewModel.PropertyChanged += Refresh;
         viewModel.State.PropertyChanged += Refresh;
         if (traceViewModel is not null) traceViewModel.PropertyChanged += TraceChanged;
@@ -197,6 +215,7 @@ public partial class ShellWindow : Window
         if (previewSessionViewModel is not null) previewSessionViewModel.PropertyChanged += PreviewChanged;
         if (manualInspectionViewModel is not null) manualInspectionViewModel.PropertyChanged += ManualInspectionChanged;
         if (qualificationViewModel is not null) qualificationViewModel.PropertyChanged += QualificationChanged;
+        if (traceStoragePolicyViewModel is not null) traceStoragePolicyViewModel.PropertyChanged += TraceStoragePolicyChanged;
         PreviewMouseDown += ReportInputActivity;
         PreviewKeyDown += ReportInputActivity;
         SystemEvents.SessionSwitch += OperatingSystemSessionSwitch;
@@ -286,6 +305,7 @@ public partial class ShellWindow : Window
         PreviewPanel.ClearSensitiveInputs();
         ManualInspectionPanel.Deactivate();
         QualificationPanel.Deactivate();
+        TraceStoragePolicyPanel.Deactivate();
         _previewSelectionLoaded = false;
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
@@ -423,6 +443,7 @@ public partial class ShellWindow : Window
         if (_previewSessionViewModel is not null) _previewSessionViewModel.PropertyChanged -= PreviewChanged;
         if (_manualInspectionViewModel is not null) _manualInspectionViewModel.PropertyChanged -= ManualInspectionChanged;
         if (_qualificationViewModel is not null) _qualificationViewModel.PropertyChanged -= QualificationChanged;
+        if (_traceStoragePolicyViewModel is not null) _traceStoragePolicyViewModel.PropertyChanged -= TraceStoragePolicyChanged;
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
@@ -433,6 +454,7 @@ public partial class ShellWindow : Window
         PreviewPanel.ClearSensitiveInputs();
         ManualInspectionPanel.Deactivate();
         QualificationPanel.Deactivate();
+        TraceStoragePolicyPanel.Deactivate();
         base.OnClosed(e);
     }
 
@@ -447,6 +469,7 @@ public partial class ShellWindow : Window
     private void PreviewChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void ManualInspectionChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void QualificationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void TraceStoragePolicyChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -578,6 +601,21 @@ public partial class ShellWindow : Window
         IdentityPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         IdentityAdministrationPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
         AdministratorRecoveryPanel.Visibility = maintenanceSelected ? Visibility.Visible : Visibility.Collapsed;
+        TraceStoragePolicyPanel.Visibility = maintenanceSelected && _traceStoragePolicyViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!maintenanceSelected || IsPrivacyLocked)
+        {
+            if (_traceStoragePolicySelectionLoaded)
+            {
+                _traceStoragePolicySelectionLoaded = false;
+                TraceStoragePolicyPanel.Deactivate();
+            }
+        }
+        else if (_traceStoragePolicyViewModel is not null && !_traceStoragePolicySelectionLoaded)
+        {
+            _traceStoragePolicySelectionLoaded = true;
+            _ = _traceStoragePolicyViewModel.RefreshAsync();
+        }
         if (!alarmSelected)
         {
             if (_alarmSelectionLoaded)

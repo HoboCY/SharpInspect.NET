@@ -67,7 +67,8 @@ internal enum IdentityEventKind
     ProductionAdmissionCompleted,
     ProductionAdmissionFailed,
     StationQualificationAuthorized,
-    RecipeTransferAuthorized
+    RecipeTransferAuthorized,
+    TraceStoragePolicyAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -146,14 +147,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > RecipeTransferStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > TraceStoragePolicyStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > RecipeTransferStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > TraceStoragePolicyStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -178,7 +179,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= RecipeTransferStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= TraceStoragePolicyStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -248,6 +249,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.RecipeTransferAuthorized, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.TraceStoragePolicyAuthorized, "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -333,6 +336,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= ManualInspectionStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartManualInspectionSession and <= AuditedCommandKind.ExitManualInspectionSession)) &&
                     (schemaVersion >= StationQualificationStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartStationQualificationSession and <= AuditedCommandKind.ExitStationQualificationSession)) &&
                     (schemaVersion >= RecipeTransferStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.ReplaceRecipeTrustStore and <= AuditedCommandKind.ImportRecipeTransfer)) &&
+                    (schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.PublishTraceStoragePolicy) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -617,6 +621,37 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 accepted.ClaimedSessionId == sessionId && accepted.AuthenticatedHumanPrincipalId == principalId.ToString("D") &&
                 (permission is not (Permission.ManageRecipeTrustStore or Permission.ManageRecipeSigningKeys) ||
                     accepted.ClaimedStepUpGrantId is not null);
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    internal static bool MatchesTraceStoragePolicyAuthorization(byte[] payload, long ordinal, string stationId,
+        CommandAuditFact accepted, string authorizationTarget, Guid principalId, Guid sessionId,
+        long authorizationRevision, RecipeContractReference authorizationPolicy)
+    {
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, TraceStoragePolicyStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            return fields.Length == 49 &&
+                fields[2] == IdentityEventKind.TraceStoragePolicyAuthorized.ToString() &&
+                fields[3] == accepted.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[9] == accepted.ReasonCode && accepted.ReasonCode == "TraceStoragePolicyAuthorized" &&
+                accepted.CommandKind == AuditedCommandKind.PublishTraceStoragePolicy &&
+                accepted.Phase == CommandAuditPhase.Outcome && accepted.Disposition == CommandDisposition.Accepted &&
+                accepted.Source is { } source && Enum.IsDefined(source) && fields[4] == stationId &&
+                fields[5] == principalId.ToString("D") && fields[25] == sessionId.ToString("D") &&
+                fields[27] == authorizationPolicy.Id && fields[28] == authorizationPolicy.Version &&
+                fields[29] == authorizationPolicy.ContentHash && fields[30] == principalId.ToString("D") &&
+                fields[31] == accepted.CorrelationId.ToString("D") &&
+                accepted.ClaimedStepUpGrantId is not null && fields[32] == accepted.ClaimedStepUpGrantId.Value.ToString("D") &&
+                fields[33] == Permission.ManageProductionPolicy.ToString() && fields[34] is null &&
+                fields[35] == authorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == authorizationTarget && fields[38] == accepted.CorrelationId.ToString("D") &&
+                fields[39] == accepted.CommandKind.ToString() && accepted.ClaimedPrincipalId == principalId.ToString("D") &&
+                accepted.ClaimedSessionId == sessionId && accepted.AuthenticatedHumanPrincipalId == principalId.ToString("D");
         }
         catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
             DecoderFallbackException or InvalidOperationException or FormatException)

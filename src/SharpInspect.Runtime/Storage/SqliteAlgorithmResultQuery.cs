@@ -99,6 +99,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
             StationQualificationReadGuard.RequireConfiguration(schema, _options);
             if (_options.RecipeReleases is not null && schema < RecipeReleaseStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("RecipeReleaseGovernedMigrationRequired");
@@ -173,7 +174,7 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                  CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                  PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                  PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                 ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion,
+                 ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
                 schema < AlgorithmResultArchiveOptions.SchemaVersion
                     ? "AlgorithmResultArchiveGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (schema == RecipeDraftStoreOptions.SchemaVersion)
@@ -194,29 +195,31 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                     RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                     RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                     CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
                     ? _options.CalibrationGovernance : null,
                 releaseOptions: schema is RecipeReleaseStoreOptions.SchemaVersion or
                     PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
                     ? _options.RecipeReleases : null,
                 contractOptions: _options.PlcResultContracts,
                 activationOptions: _options.RecipeActivations,
                 previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
                     ? _options.PreviewSessions : null,
                 importOptions: schema is CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
                     ? _options.CalibrationImports : null,
                 manualOptions: schema == ManualInspectionStoreOptions.SchemaVersion ||
-                    ((schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion) && _options.ManualInspections is not null)
+                    ((schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) && _options.ManualInspections is not null)
                     ? _options.ManualInspections : null,
-                productionAdmissionOptions: schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion
+                productionAdmissionOptions: schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
                     ? _options.ProductionAdmission : null,
                 stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers);
+                 recipeTransferOptions: _options.RecipeTransfers,
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
             if (_options.RecipeDrafts is not null)
@@ -238,13 +241,13 @@ public sealed class SqliteAlgorithmResultQuery : IAlgorithmResultQuery
                 (schema is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                     PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion))
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
                 AuditChainDatabase.RequireFullCalibrationGovernanceVerification(database, verification, deadline,
                     _options.CalibrationGovernance);
                 if ((schema is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                      RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                      CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                     ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion) &&
+                     ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) &&
                  _options.RecipeReleases is not null)
                 AuditChainDatabase.RequireFullRecipeReleaseVerification(database, verification, deadline,
                     _options.RecipeReleases, _options.RecipeDrafts, _options.CalibrationGovernance);

@@ -165,8 +165,10 @@ internal sealed partial class SqliteCommandStore
                  manualOptions: _options.ManualInspections,
                  productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers);
+                 recipeTransferOptions: _options.RecipeTransfers,
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);
             if (_options.AlarmPolicy is not null) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -446,7 +448,7 @@ internal sealed partial class SqliteCommandStore
              CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
              RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
              RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-             ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion;
+             ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
@@ -504,7 +506,7 @@ internal sealed partial class SqliteCommandStore
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
             RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion);
+            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
         return auditPayload;
     }
 

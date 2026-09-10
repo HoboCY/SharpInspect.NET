@@ -163,6 +163,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         CreateRecipeSigningKeyCommand or RetireRecipeSigningKeyCommand => Permission.ManageRecipeSigningKeys,
         ExportRecipeTransferCommand => Permission.ExportRecipe,
         ImportRecipeTransferCommand => Permission.ImportRecipe,
+        PublishTraceStoragePolicyCommand => Permission.ManageProductionPolicy,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -192,6 +193,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             ManualInspectionCommand manual => manual.AuthorizationTarget,
             StationQualificationCommand qualification => qualification.AuthorizationTarget,
             RecipeTransferCommand transfer => transfer.AuthorizationTarget,
+            PublishTraceStoragePolicyCommand traceStorage => traceStorage.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -240,6 +242,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.CreateRecipeSigningKey or AuditedCommandKind.RetireRecipeSigningKey => Permission.ManageRecipeSigningKeys,
         AuditedCommandKind.ExportRecipeTransfer => Permission.ExportRecipe,
         AuditedCommandKind.ImportRecipeTransfer => Permission.ImportRecipe,
+        AuditedCommandKind.PublishTraceStoragePolicy => Permission.ManageProductionPolicy,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,
@@ -277,6 +280,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         RetireRecipeSigningKeyCommand => AuditedCommandKind.RetireRecipeSigningKey,
         ExportRecipeTransferCommand => AuditedCommandKind.ExportRecipeTransfer,
         ImportRecipeTransferCommand => AuditedCommandKind.ImportRecipeTransfer,
+        PublishTraceStoragePolicyCommand => AuditedCommandKind.PublishTraceStoragePolicy,
         SelectHistoricalCalibrationCommand => AuditedCommandKind.SelectHistoricalCalibration,
         ActivateRecipeCommand => AuditedCommandKind.ActivateRecipe,
         StartPreviewSessionCommand => AuditedCommandKind.StartPreview,

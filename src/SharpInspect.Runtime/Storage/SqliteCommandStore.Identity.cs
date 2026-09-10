@@ -96,8 +96,10 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers);
+                recipeTransferOptions: _options.RecipeTransfers,
+                traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -179,8 +181,10 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers);
+                recipeTransferOptions: _options.RecipeTransfers,
+                traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -552,8 +556,10 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers);
+                recipeTransferOptions: _options.RecipeTransfers,
+                traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             if (alarmStore) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
             if (_options.AlgorithmResultArchive is not null)
                 AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);

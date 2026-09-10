@@ -128,7 +128,8 @@ public sealed class SqliteStationQualificationHistoryQuery : IStationQualificati
         try
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion,
+            TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
+            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
                 schema < StationQualificationStoreOptions.SchemaVersion
                     ? "StationQualificationGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -146,8 +147,10 @@ public sealed class SqliteStationQualificationHistoryQuery : IStationQualificati
                 manualOptions: _options.ManualInspections,
                 productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: options,
-                recipeTransferOptions: _options.RecipeTransfers);
+                recipeTransferOptions: _options.RecipeTransfers,
+                traceStoragePolicyOptions: _options.TraceStoragePolicies);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
+            TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullStationQualificationVerification(database, verification,
                 deadline, options);
             var rows = SqliteCommandStore.ReadStationQualificationRows(database, options, deadline);

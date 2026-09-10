@@ -11,6 +11,7 @@ using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Calibration;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Preview;
+using SharpInspect.Runtime.StoragePolicies;
 
 namespace SharpInspect.Runtime;
 
@@ -215,6 +216,13 @@ public static class ServiceCollectionExtensions
                 options.LocalIdentity, p.GetRequiredService<IIdentityProvider>(), p.GetRequiredService<IInteractiveSessionService>()));
             services.TryAddSingleton<IStepUpAuthentication>(p => p.GetRequiredService<LocalAuthorizationService>());
             services.TryAddSingleton<IIdentityAdministrationQuery>(p => p.GetRequiredService<LocalAuthorizationService>());
+            if (options.TraceStoragePolicies is not null)
+            {
+                services.TryAddSingleton<ITraceStoragePolicyHistoryQuery>(_ => new SqliteTraceStoragePolicyQuery(options));
+                services.TryAddSingleton<ITraceStoragePolicyService>(p => new TraceStoragePolicyService(options,
+                    p.GetRequiredService<LocalAuthorizationService>(), p.GetRequiredService<SqliteCommandStore>(),
+                    p.GetRequiredService<ITraceStoragePolicyHistoryQuery>()));
+            }
             if (options.RecipeDrafts is not null)
             {
                 // The history capability is an independent read-only connection; resolving it

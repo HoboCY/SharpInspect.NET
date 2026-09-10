@@ -19,7 +19,7 @@ internal sealed partial class SqliteCommandStore
         await Initialization.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         using var connection = SqliteNative.Open(_databasePath, readOnly: true);
-        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options, RecipeTransferStoreOptions.SchemaVersion);
+        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
         var deadline = new StoreDeadline(_options.QueryTimeout);
         SqliteNative.Execute(connection.Handle!, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
         try
@@ -45,7 +45,7 @@ internal sealed partial class SqliteCommandStore
         await Initialization.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         using var connection = SqliteNative.Open(_databasePath, readOnly: true);
-        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options, RecipeTransferStoreOptions.SchemaVersion);
+        SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
         var deadline = new StoreDeadline(_options.QueryTimeout);
         SqliteNative.Execute(connection.Handle!, "PRAGMA query_only=ON; BEGIN;", deadline, cancellationToken);
         try

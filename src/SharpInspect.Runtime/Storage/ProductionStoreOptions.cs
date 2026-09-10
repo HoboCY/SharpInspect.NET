@@ -90,4 +90,9 @@ public sealed class ProductionStoreOptions
     /// <summary>Explicit opt-in for the schema 24 signed recipe-transfer ledger.
     /// Requires local identity, audit integrity, and recipe drafts.</summary>
     public RecipeTransferStoreOptions? RecipeTransfers { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 25 versioned trace-storage-policy ledger.
+    /// Requires only local identity and central audit integrity; the policy is
+    /// deployment governance and is independent from recipe and camera ledgers.</summary>
+    public TraceStoragePolicyStoreOptions? TraceStoragePolicies { get; init; }
 }

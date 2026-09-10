@@ -538,7 +538,8 @@ public sealed class RecipeDraftStorageTests
             RecipeActivationStoreOptions? recipeActivations = null, PreviewSessionStoreOptions? previewSessions = null,
             ManualInspectionStoreOptions? manualInspections = null, int? maximumAuditEntries = null,
             ProductionAdmissionStoreOptions? productionAdmission = null,
-            RecipeTransferStoreOptions? recipeTransfers = null)
+            RecipeTransferStoreOptions? recipeTransfers = null,
+            TraceStoragePolicyStoreOptions? traceStoragePolicies = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -583,6 +584,7 @@ public sealed class RecipeDraftStorageTests
                 RecipeDrafts = draftOptions,
                 RecipeReleases = recipeReleases,
                 RecipeTransfers = recipeTransfers,
+                TraceStoragePolicies = traceStoragePolicies,
                 PlcResultContracts = plcResultContracts,
                 CameraSetup = cameraSetup,
                 RecipeActivations = recipeActivations,

@@ -60,6 +60,10 @@ internal static class Program
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
         if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         var auditKey = Option("--audit-key");
+        var traceStoragePolicyCheckDirectory = Option("--trace-storage-policy-check");
+        var traceStoragePolicyQueryDirectory = Option("--trace-storage-policy-query");
+        var traceStoragePolicyEnabled = traceStoragePolicyCheckDirectory is not null || traceStoragePolicyQueryDirectory is not null ||
+            args.Contains("--trace-storage-policy-ui", StringComparer.OrdinalIgnoreCase);
         var draftCheckDirectory = Option("--recipe-draft-check");
         var draftQueryDirectory = Option("--recipe-draft-query");
         var releaseCheckDirectory = Option("--recipe-release-check");
@@ -130,6 +134,7 @@ internal static class Program
         var storeOptions = new ProductionStoreOptions(databasePath)
         {
             LocalIdentity = Option("--identity-policy") is { } identityPolicy ? ReadIdentityOptions(identityPolicy) : null,
+            TraceStoragePolicies = traceStoragePolicyEnabled ? TraceStoragePolicyDemo.StoreOptions() : null,
             AlarmPolicy = ManualInspectionDemo.EnsureRecoveryAlarmPolicy(
                 PreviewSessionDemo.EnsureRecoveryAlarmPolicy(
                     Option("--alarm-policy") is { } alarmPolicy ? AlarmDemo.ReadPolicy(alarmPolicy) : null,
@@ -167,6 +172,10 @@ internal static class Program
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.AuditKeys")
             }
         };
+        if (traceStoragePolicyCheckDirectory is not null)
+            return TraceStoragePolicyDemo.Run(storeOptions, traceStoragePolicyCheckDirectory, Option("--user-name"), Option("--expected-principal"));
+        if (traceStoragePolicyQueryDirectory is not null)
+            return TraceStoragePolicyDemo.Query(storeOptions, traceStoragePolicyQueryDirectory);
         if (plcResultContractCheckDirectory is not null)
             return PlcResultContractGovernanceDemo.Run(storeOptions, plcResultContractCheckDirectory,
                 Option("--user-name"), Option("--expected-principal"));
@@ -308,6 +317,9 @@ internal static class Program
                 p.GetService<IReleasedRecipeQuery>(), p.GetService<IRecipeActivationQuery>(),
                 new DispatcherUiDispatcher(app.Dispatcher), p.GetService<IStepUpAuthentication>(),
                 p.GetService<IManualInspectionHistoryQuery>()));
+        if (traceStoragePolicyEnabled)
+            services.AddSingleton(p => new TraceStoragePolicyViewModel(p.GetService<ITraceStoragePolicyService>(),
+                p.GetService<IInteractiveSessionService>(), p.GetService<IStepUpAuthentication>(), new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -317,7 +329,12 @@ internal static class Program
         var identityAdministration = provider.GetRequiredService<IdentityAdministrationViewModel>();
         var recovery = provider.GetRequiredService<AdministratorRecoveryViewModel>();
         var alarms = provider.GetRequiredService<AlarmViewModel>();
-        var window = manualUiEnabled
+        var window = traceStoragePolicyEnabled
+            ? ShellWindow.CreateWithTraceStoragePolicy(vm, provider.GetRequiredService<TraceStoragePolicyViewModel>(),
+                trace, integrity, identity, identityAdministration, recovery, alarms,
+                provider.GetRequiredService<AlgorithmResultHistoryViewModel>(), provider.GetRequiredService<RecipeDraftEditorViewModel>(),
+                provider.GetService<PreviewSessionViewModel>(), provider.GetService<ManualInspectionSessionViewModel>())
+            : manualUiEnabled
             ? ShellWindow.CreateWithManualInspection(vm, provider.GetRequiredService<ManualInspectionSessionViewModel>(),
                 provider.GetRequiredService<PreviewSessionViewModel>(), trace, integrity, identity,
                 identityAdministration, recovery, alarms, provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),

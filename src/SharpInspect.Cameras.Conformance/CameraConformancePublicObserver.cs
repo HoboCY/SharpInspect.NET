@@ -1154,11 +1154,76 @@ internal static class CameraConformancePublicObserver
     {
         if (session.Recovery is null)
             throw new BlockedObservationException("CameraRecoverySurfaceUnavailable");
-        var task = session.Call(() => session.Recovery.RefreshAsync(CancellationToken.None));
-        await AwaitBoundedAsync(task, cancellationToken,
-            "CameraRecoveryHealthTimeout", "CameraRecoveryHealthFailed")
-            .ConfigureAwait(false);
-        context.Append("recoveryRefreshes", RecoveryFact.From(session.Recovery.GetSnapshot()));
+        var started = Stopwatch.GetTimestamp();
+        var limit = checked(started + (long)(PublicOperationBudget.TotalSeconds *
+            Stopwatch.Frequency));
+        var snapshot = session.Recovery.GetSnapshot();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var remaining = RemainingBudget(limit);
+            if (remaining <= TimeSpan.Zero)
+            {
+                context.Append("recoveryRefreshes", RecoveryFact.From(snapshot));
+                throw new BlockedObservationException("CameraRecoveryHealthTimeout");
+            }
+
+            var task = session.Call(() => session.Recovery.RefreshAsync(
+                CancellationToken.None));
+            try
+            {
+                await task.WaitAsync(remaining, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                context.Append("recoveryRefreshes",
+                    RecoveryFact.From(session.Recovery.GetSnapshot()));
+                throw new BlockedObservationException("CameraRecoveryHealthTimeout");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            { throw new BlockedObservationException("CameraConformanceCancelled"); }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                context.Append("recoveryRefreshes",
+                    RecoveryFact.From(session.Recovery.GetSnapshot()));
+                throw new BlockedObservationException("CameraRecoveryHealthFailed");
+            }
+
+            snapshot = session.Recovery.GetSnapshot();
+            if (!IsHealthUnavailable(snapshot))
+                break;
+
+            // A transient null health read is the one recoverable state. Give the
+            // retained physical probe/worker one bounded clock tick before asking
+            // for the next read; the retry remains inside this operation budget.
+            if (RemainingBudget(limit) <= TimeSpan.Zero)
+            {
+                context.Append("recoveryRefreshes", RecoveryFact.From(snapshot));
+                throw new BlockedObservationException("CameraRecoveryHealthTimeout");
+            }
+            var retryDelay = RemainingBudget(limit);
+            await Task.Delay(retryDelay < RecoveryTick ? retryDelay : RecoveryTick,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        context.Append("recoveryRefreshes", RecoveryFact.From(snapshot));
+    }
+
+    private static bool IsHealthUnavailable(CameraRecoverySnapshot snapshot) =>
+        snapshot.State == CameraRecoveryState.RecoveryRequired &&
+        !snapshot.SourceHealthy &&
+        StringComparer.Ordinal.Equals(snapshot.ReasonCode, "CameraHealthUnavailable");
+
+    private static TimeSpan RemainingBudget(long limit)
+    {
+        var remaining = limit - Stopwatch.GetTimestamp();
+        if (remaining <= 0) return TimeSpan.Zero;
+        var ticks = remaining * (double)TimeSpan.TicksPerSecond / Stopwatch.Frequency;
+        if (!double.IsFinite(ticks) || ticks <= 0) return TimeSpan.Zero;
+        return TimeSpan.FromTicks(Math.Min(TimeSpan.MaxValue.Ticks,
+            Math.Max(1, (long)Math.Ceiling(ticks))));
     }
 
     private static async Task<bool> DriveRecoveryAsync(ObservationSession session,
@@ -1958,12 +2023,12 @@ internal static class CameraConformancePublicObserver
     private sealed record ProtocolFact(long ThroughSequence, int ObservationCount,
         bool Overflowed);
     private sealed record RecoveryFact(string State, bool SourceHealthy,
-        bool HealthPresent, long Revision, int AttemptCount,
+        bool HealthPresent, int AttemptCount,
         int MaximumAttempts, long? NextAttemptTimestamp, string ReasonCode)
     {
         internal static RecoveryFact From(CameraRecoverySnapshot snapshot) => new(
             snapshot.State.ToString(), snapshot.SourceHealthy, snapshot.Health is not null,
-            snapshot.Revision, snapshot.AttemptCount, snapshot.MaximumAttempts,
+            snapshot.AttemptCount, snapshot.MaximumAttempts,
             snapshot.NextAttemptTimestamp, SafeReason(snapshot.ReasonCode,
                 "CameraRecoveryUnknown"));
     }
