@@ -7,6 +7,22 @@ public sealed partial class StationRuntime
 {
     private async Task RestoreStationQualificationAsync(StationQualificationOwner owner)
     {
+        if (owner.ModbusRecoveryRequired)
+        {
+            lock (_sync)
+            {
+                _stationQualificationRecoveryBlocked = true;
+                owner.ExitRequested = owner.Aborted = true;
+                owner.CycleFaultTerminated = true;
+                owner.Restoration = StationQualificationRestorationState.RecoveryBlocked;
+            }
+            // Retire actual owners without restoring the controller or releasing
+            // isolation. An unresolved ResultValid/Ack latch requires a separately
+            // governed recovery; neither Exit nor process restart supplies it.
+            owner.ResourcesRetired = await RetireStationQualificationAfterJournalFailureAsync(owner).ConfigureAwait(false);
+            await FinishStationQualificationAsync(owner, false, "QualificationModbusRecoveryRequired").ConfigureAwait(false);
+            return;
+        }
         var restored = false;
         var reason = owner.ExitReason;
         try
@@ -134,8 +150,9 @@ public sealed partial class StationRuntime
         }
     }
 
-    private async Task RetireStationQualificationAfterJournalFailureAsync(StationQualificationOwner owner)
+    private async Task<bool> RetireStationQualificationAfterJournalFailureAsync(StationQualificationOwner owner)
     {
+        var retired = true;
         CancelStationQualification(owner, abort: true);
         await RetireAsync(() => owner.PreparationRetirement, "StationQualificationPreparationRetirement").ConfigureAwait(false);
         if (owner.Prepared is { } prepared)
@@ -151,12 +168,14 @@ public sealed partial class StationRuntime
         owner.FacilityLostRegistration.Dispose();
         if (owner.Facility is { } facility)
             await RetireAsync(() => facility.DisposeAsync().AsTask(), "StationQualificationFacilityRetirement").ConfigureAwait(false);
+        return retired;
 
         async Task RetireAsync(Func<Task> retire, string retirementReason)
         {
             try { await WaitForStationQualificationRetirementAsync(owner, retire(), retirementReason).ConfigureAwait(false); }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
+                retired = false;
                 // Failure in one owner cannot suppress attempts to retire the
                 // remaining owners. The station fence remains in place.
                 lock (_sync) _stationQualificationRecoveryBlocked = true;

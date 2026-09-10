@@ -17,6 +17,11 @@ namespace SharpInspect.Runtime.Storage;
 /// </summary>
 internal sealed partial class SqliteCommandStore
 {
+    // Internal guard composition keeps the actual identity authorization and
+    // writer-thread lease. It cannot replace the request or mint authority.
+    internal Func<IIdentityTransactionGuard, IIdentityTransactionGuard>?
+        QualificationCoreCommitGuardDecorator { get; set; }
+
     internal const string StationQualificationStoreActivatedKind = "StationQualificationStoreActivated";
     internal const string StationQualificationEventKind = "StationQualificationEvent";
 
@@ -402,7 +407,7 @@ internal sealed partial class SqliteCommandStore
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
                 schema < StationQualificationStoreOptions.SchemaVersion
                     ? "StationQualificationGovernedMigrationRequired" : "StoreSchemaTooNew");
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
@@ -420,7 +425,8 @@ internal sealed partial class SqliteCommandStore
                 productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: options,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies);
+                traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                qualificationCycleOptions: _options.QualificationCycles);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             if (_options.AlarmPolicy is not null)
@@ -693,6 +699,10 @@ internal sealed partial class SqliteCommandStore
                 var originalRequest = work.Request;
                 var authorization = authorizeProgress(ReadIdentityState(database, deadline), originalRequest);
                 progressGuard = authorization?.Guard;
+                if (originalRequest.Cycle?.Kind == QualificationCycleEventKind.CoreCommitted &&
+                    progressGuard is not null && QualificationCoreCommitGuardDecorator is { } decorate)
+                    progressGuard = decorate(progressGuard) ??
+                        throw new InvalidOperationException("QualificationCycleCommitGuardRequired");
                 if (authorization?.Request is null)
                     throw new InvalidOperationException("StationQualificationProgressAuthorizationUnavailable");
                 RequireStationQualificationAuthorizationSubstitution(originalRequest, authorization.Request);
@@ -731,11 +741,29 @@ internal sealed partial class SqliteCommandStore
                 checked((last?.Position ?? 0) + 1), last?.ContentHash, last?.RecordedAtUtc,
                 commandAudit, authorizationAudit);
             var terminalFactCount = StationQualificationTerminalFactCount(work.Request);
+            // Both ledgers commit atomically. Spend this cycle transition's
+            // reserved tail now, while reserving its still-unwritten audit row.
+            // Using the previous cycle reserve here prevents Ack from closing
+            // a run once unrelated writes have filled their allowed budget.
+            long? cycleReserve = work.Request.Cycle is { } pendingCycle
+                ? checked(ReadQualificationCycleProgressAuditReserve(database,
+                    pendingCycle, eventValue, deadline) + 1)
+                : null;
             var capacityReserve = AuditChainDatabase.EnsureStationQualificationTransactionCapacity(
-                database, _policy!, checked(1 + terminalFactCount), eventValue, deadline);
+                database, _policy!, checked(1 + terminalFactCount), eventValue, deadline,
+                cycleReserve);
             var capacity = new StationQualificationWriteContext(capacityReserve);
             var persisted = AppendStationQualificationEventRecord(database, eventValue,
-                commandAudit, authorizationAudit, options, deadline, capacity.TakeReserve());
+                commandAudit, authorizationAudit, options, deadline, capacity.TakeReserve(),
+                cycleReserve);
+            QualificationCycleEvent? cycleEvent = null;
+            if (work.Request.Cycle is { } cycleRequest)
+            {
+                var cycleOptions = _options.QualificationCycles ??
+                    throw new InvalidOperationException("QualificationCycleConfigurationRequired");
+                cycleEvent = AppendQualificationCycleEventRecord(database, cycleRequest,
+                    persisted, cycleOptions, deadline);
+            }
             AppendStationQualificationTerminalFacts(database, work.Request, persisted, capacity, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -743,7 +771,7 @@ internal sealed partial class SqliteCommandStore
             work.Result = new(new(persisted.CommandCorrelationId,
                 CommandDisposition.Accepted, persisted.ReasonCode, AuditPersistence.Persisted,
                 persisted.AttemptId), persisted.Header, persisted, true,
-                eventValue.Position - 1, eventValue.PreviousHash, work.Request.CommandFact);
+                eventValue.Position - 1, eventValue.PreviousHash, work.Request.CommandFact, cycleEvent);
             Interlocked.Exchange(ref _lastCommittedAuditSequence, persisted.AuditSequence);
             return new(true, "StationQualificationEventPersisted", work.Request.CommandFact);
         }
@@ -784,8 +812,21 @@ internal sealed partial class SqliteCommandStore
             authorized.AttemptId == original.AttemptId && authorized.CommandKind == original.CommandKind &&
             authorized.Terminal == original.Terminal &&
             authorized.RecoveryAttempt?.ContentHash == original.RecoveryAttempt?.ContentHash &&
-            authorized.CommandAuthorizationTarget == original.CommandAuthorizationTarget,
+            authorized.CommandAuthorizationTarget == original.CommandAuthorizationTarget &&
+            SameQualificationCycleRequest(authorized.Cycle, original.Cycle),
             "StationQualificationProgressAuthorizationContextMismatch");
+    }
+
+    private static bool SameQualificationCycleRequest(QualificationCycleWriteRequest? left,
+        QualificationCycleWriteRequest? right)
+    {
+        if (left is null || right is null) return left is null && right is null;
+        return left.Kind == right.Kind && left.RunId?.Value == right.RunId?.Value &&
+            left.ProfileHash == right.ProfileHash && left.Policy?.ContentHash == right.Policy?.ContentHash &&
+            left.RejectedControllerEpoch == right.RejectedControllerEpoch &&
+            left.RejectedCycleSequence == right.RejectedCycleSequence &&
+            left.EndpointBindingHash == right.EndpointBindingHash && left.ReasonCode == right.ReasonCode &&
+            left.ControllerEpoch == right.ControllerEpoch && left.CycleSequence == right.CycleSequence;
     }
 
     private void AppendStationQualificationIdentityMutation(sqlite3 database,
@@ -960,13 +1001,17 @@ internal sealed partial class SqliteCommandStore
     private StationQualificationSessionEvent AppendStationQualificationEventRecord(
         sqlite3 database, StationQualificationSessionEvent value, AuditCommandReference command,
         AuditIdentityReference authorization, StationQualificationStoreOptions options,
-        StoreDeadline deadline, long? stationQualificationReserveOverride = null)
+        StoreDeadline deadline, long? stationQualificationReserveOverride = null,
+        long? qualificationCycleReserveOverride = null)
     {
         var rows = ReadStationQualificationRows(database, options, deadline);
         AuditChainDatabase.Require(rows.Count < options.MaximumEntries,
             "StationQualificationEntryCapacityExceeded");
         var semanticFailure = ValidateStationQualificationSemantics(rows.Select(row => row.Event).ToArray(), value);
         if (semanticFailure is not null) throw new InvalidOperationException(semanticFailure);
+        var previousSession = rows.LastOrDefault(row => row.Event.SessionId == value.SessionId)?.Event;
+        if (previousSession is not null)
+            RequireStationQualificationPhaseTransition(previousSession, value);
         var position = value.Position;
         AuditChainDatabase.Require(position == rows.Count + 1L,
             "StationQualificationPositionGap");
@@ -982,7 +1027,7 @@ internal sealed partial class SqliteCommandStore
             ReadStationQualificationAuditReserveAfter(rows, withReferences);
         var auditSequence = AuditChainDatabase.AppendStationQualificationLedgerEntry(database,
             _policy!, _signingKey!, position, auditPayload, options, deadline,
-            futureAuditReserve);
+            futureAuditReserve, qualificationCycleReserveOverride);
         var auditHash = AuditChainDatabase.Read(database,
             "SELECT Hash FROM audit_entries WHERE Sequence=? AND Kind=? AND StationQualificationPosition=? LIMIT 2;",
             deadline, statement => SqliteNative.ColumnText(statement, 0) ?? string.Empty,

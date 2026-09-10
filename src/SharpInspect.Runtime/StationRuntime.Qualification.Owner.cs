@@ -2,6 +2,7 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Qualification;
+using SharpInspect.Runtime.Cycles;
 
 namespace SharpInspect.Runtime;
 
@@ -39,6 +40,13 @@ public sealed partial class StationRuntime
         internal bool Aborted { get; set; }
         internal bool RestartRecovery { get; set; }
         internal bool ResourcesRetired { get; set; }
+        internal bool CycleExecuting { get; set; }
+        internal bool ModbusRecoveryRequired { get; set; }
+        internal bool CycleFaultTerminated { get; set; }
+        internal QualificationCycleEvent? LastCycleEvent { get; set; }
+        internal InspectionCycleCoordinator<StationQualificationPayload>? CycleCoordinator { get; set; }
+        internal InspectionCycleRequestObserver? CycleObserver { get; set; }
+        internal TraceStoragePolicySnapshot? CycleStoragePolicy { get; set; }
         internal string ExitReason { get; set; } = "StationQualificationExited";
         internal StationQualificationRestorationState Restoration { get; set; } = StationQualificationRestorationState.Pending;
         internal CancellationTokenSource Cancellation { get; } = new();

@@ -10,6 +10,26 @@ internal sealed record StationQualificationAdmissionInput(
     CameraSetupStoreSnapshot CurrentBinding);
 
 /// <summary>
+/// Internal bridge for the schema-26 cycle ledger.  It deliberately travels
+/// with the already-authorized qualification progress request so the cycle
+/// row and the StationQualification row share one writer transaction/cursor.
+/// </summary>
+internal sealed record QualificationCycleWriteRequest(
+    QualificationCycleEventKind Kind,
+    QualificationRunId? RunId,
+    string ProfileHash,
+    TraceStoragePolicySnapshot? Policy = null,
+    uint? RejectedControllerEpoch = null,
+    uint? RejectedCycleSequence = null,
+    string? EndpointBindingHash = null,
+    string? ReasonCode = null,
+    uint? ControllerEpoch = null,
+    uint? CycleSequence = null)
+{
+    internal bool IsProtocolRejection => Kind == QualificationCycleEventKind.ProtocolRequestRejected;
+}
+
+/// <summary>
 /// Bounded state read from the schema-23 ledger.  A pending header is projected
 /// from the last event of each session, never from a caller-selected row.
 /// </summary>
@@ -62,7 +82,8 @@ internal sealed record StationQualificationProgressRequest(
     StationQualificationRecoveryAttempt? RecoveryAttempt = null,
     string? CommandAuthorizationTarget = null,
     Func<IdentityAuthorityState, StationQualificationProgressRequest,
-        StationQualificationProgressAuthorization>? AuthorizeProgress = null);
+        StationQualificationProgressAuthorization>? AuthorizeProgress = null,
+    QualificationCycleWriteRequest? Cycle = null);
 
 /// <summary>Result returned by a station qualification storage transaction.</summary>
 internal sealed record StationQualificationTransactionResult(
@@ -72,7 +93,8 @@ internal sealed record StationQualificationTransactionResult(
     bool Accepted,
     long ExpectedLastPosition,
     string? ExpectedLastHash,
-    CommandAuditFact? CommandFact = null);
+    CommandAuditFact? CommandFact = null,
+    QualificationCycleEvent? CycleEvent = null);
 
 /// <summary>Durable startup state for a previously admitted qualification session.</summary>
 internal sealed record StationQualificationRecoveryState(

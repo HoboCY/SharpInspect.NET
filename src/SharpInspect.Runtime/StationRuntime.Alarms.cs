@@ -130,7 +130,7 @@ public sealed partial class StationRuntime
 
     private async ValueTask<AlarmObservationOutcome> ObserveAlarmCoreAsync(AlarmObservation observation,
         CancellationToken cancellationToken, bool previewRestorationDuringShutdown = false,
-        bool manualRestorationDuringShutdown = false)
+        bool manualRestorationDuringShutdown = false, bool qualificationCycleDuringShutdown = false)
     {
         if (AlarmStore is not { } store || ConfiguredAlarmPolicy is null)
             return new(false, "AlarmPolicyUnavailable", AuditPersistence.NotAttempted);
@@ -141,7 +141,9 @@ public sealed partial class StationRuntime
             observation.Code == PreviewAlarmCode && observation.Source == PreviewAlarmSource &&
             !observation.SourceHealthy || manualRestorationDuringShutdown &&
             observation.Code == ManualInspectionAlarmCode && observation.Source == ManualInspectionAlarmSource &&
-            !observation.SourceHealthy;
+            !observation.SourceHealthy || qualificationCycleDuringShutdown &&
+            observation.Source == SharpInspect.Runtime.Qualification.QualificationCycleAlarmCodes.Source &&
+            QualificationCycleCodes.Contains(observation.Code, StringComparer.Ordinal) && !observation.SourceHealthy;
         lock (_sync)
         {
             if ((_shutdownRequested && !trustedPreviewRetirement) || _disposed)
@@ -279,9 +281,10 @@ public sealed partial class StationRuntime
                 var required = instance.ResetPrerequisites;
                 if (_snapshot.Busy || _snapshot.CurrentExecution is not null)
                     unmet |= required & AlarmResetPrerequisites.NoActiveExecution;
-                if (_snapshot.Evidence.PendingDeliveries > 0 || _snapshot.Handshake != HandshakePhase.Idle)
+                if (_snapshot.Evidence.PendingDeliveries > 0 || _snapshot.Handshake != HandshakePhase.Idle ||
+                    _stationQualificationOwner?.ModbusRecoveryRequired == true)
                     unmet |= required & AlarmResetPrerequisites.NoPendingDelivery;
-                if (_snapshot.Recovery != RecoveryState.None ||
+                if (_snapshot.Recovery != RecoveryState.None || _stationQualificationRecoveryBlocked ||
                     (_cameraRecoveryService is not null &&
                      _cameraRecoveryService.GetSnapshot().State != CameraRecoveryState.Healthy))
                     unmet |= required & AlarmResetPrerequisites.RecoveryComplete;

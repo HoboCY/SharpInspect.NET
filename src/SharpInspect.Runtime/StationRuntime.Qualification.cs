@@ -10,6 +10,7 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
     private StationQualificationSessionOptions? _stationQualificationOptions;
     private StationQualificationPlan? _stationQualificationPlan;
     private IStationQualificationFacility? _stationQualificationFacility;
+    private ModbusQualificationProfile? _qualificationModbusProfile;
     private ProductionStoreOptions? _stationQualificationStoreOptions;
     private AlgorithmPreparationService? _stationQualificationPreparation;
     private AlgorithmExecutionOptions? _stationQualificationExecutionOptions;
@@ -37,7 +38,8 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
     internal void ConfigureStationQualificationSessions(StationQualificationSessionOptions options,
         StationQualificationPlan? plan, IStationQualificationFacility? facility,
         AlgorithmPreparationService? preparation, AlgorithmExecutionOptions? executionOptions,
-        ProductionStoreOptions storeOptions, IFrameAcquisitionClock? acquisitionClock)
+        ProductionStoreOptions storeOptions, IFrameAcquisitionClock? acquisitionClock,
+        ModbusQualificationProfile? modbusProfile = null)
     {
         options.Validate();
         if (executionOptions is not null && executionOptions.Policy.ContentHash != storeOptions.RecipeDrafts?.ExecutionPolicy.ContentHash)
@@ -48,6 +50,7 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
             _stationQualificationOptions = options;
             _stationQualificationPlan = plan;
             _stationQualificationFacility = facility;
+            _qualificationModbusProfile = modbusProfile;
             _stationQualificationPreparation = preparation;
             _stationQualificationExecutionOptions = executionOptions;
             _stationQualificationStoreOptions = storeOptions;
@@ -74,7 +77,8 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
         if (!access.CanRun) return new(false, access.ReasonCode, null);
         lock (_sync)
         {
-            if (_stationQualificationOwner is { } owner && invocation.SessionId != owner.Header.ActorSessionId)
+            if (_stationQualificationOwner is { RestartRecovery: false } owner &&
+                invocation.SessionId != owner.Header.ActorSessionId)
                 return new(false, "StationQualificationSessionActorChanged", null);
             return _stationQualificationSnapshot is { } state ? new(true, state.ReasonCode, state) :
                 new(false, "StationQualificationUnavailable", null);
@@ -90,6 +94,12 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
             return "StationQualificationUnavailable";
         if (_stationQualificationPlan.ContentHash != command.Plan.ContentHash ||
             _stationQualificationFacility.Identity != command.Plan.Harness) return "StationQualificationFrozenPlanMismatch";
+        if (_qualificationModbusProfile is not null &&
+            (_stationQualificationStoreOptions?.QualificationCycles is null ||
+             _stationQualificationStoreOptions.TraceStoragePolicies is null || !IsQualificationCycleAlarmMappingValid()))
+            return "QualificationModbusDependenciesUnavailable";
+        if (_qualificationModbusProfile is not null && HasActiveQualificationCycleAlarmLocked())
+            return "QualificationCycleAlarmBlocksAdmission";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
         if (_stationQualificationStartupPending) return "StationQualificationStartupRecoveryPending";
         if (_stationQualificationRecoveryBlocked) return "StationQualificationRecoveryRequired";

@@ -49,6 +49,10 @@ internal static class Program
             return StationQualificationDemo.Run(qualificationDirectory, queryOnly: false);
         if (Option("--station-qualification-query") is { } qualificationQueryDirectory)
             return StationQualificationDemo.Run(qualificationQueryDirectory, queryOnly: true);
+        if (Option("--modbus-qualification-check") is { } modbusQualificationDirectory)
+            return StationQualificationDemo.Run(modbusQualificationDirectory, queryOnly: false, modbus: true);
+        if (Option("--modbus-qualification-query") is { } modbusQualificationQueryDirectory)
+            return StationQualificationDemo.Run(modbusQualificationQueryDirectory, queryOnly: true, modbus: true);
         if (Option("--recipe-transfer-check") is { } transferDirectory)
             return RecipeTransferDemo.Run(transferDirectory, queryOnly: false);
         if (Option("--recipe-transfer-query") is { } transferQueryDirectory)

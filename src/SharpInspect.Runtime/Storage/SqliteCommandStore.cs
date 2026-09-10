@@ -31,10 +31,12 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal bool ProductionAdmissionEnabled => _options.ProductionAdmission is not null;
     internal bool StationQualificationEnabled => _options.StationQualifications is not null;
     internal bool TraceStoragePolicyEnabled => _options.TraceStoragePolicies is not null;
+    internal bool QualificationCycleEnabled => _options.QualificationCycles is not null;
     internal bool RecipeTransferEnabled => _options.RecipeTransfers is not null;
     private bool RecipeDraftEnabled => _options.RecipeDrafts is not null;
     private bool AlgorithmArchiveEnabled => _options.AlgorithmResultArchive is not null;
-    private int SchemaVersion => TraceStoragePolicyEnabled ? TraceStoragePolicyStoreOptions.SchemaVersion :
+    private int SchemaVersion => QualificationCycleEnabled ? QualificationCycleStoreOptions.SchemaVersion :
+        TraceStoragePolicyEnabled ? TraceStoragePolicyStoreOptions.SchemaVersion :
         RecipeTransferEnabled ? RecipeTransferStoreOptions.SchemaVersion :
         StationQualificationEnabled ? StationQualificationStoreOptions.SchemaVersion :
         ProductionAdmissionEnabled ? ProductionAdmissionStoreOptions.SchemaVersion :
@@ -88,6 +90,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     internal ProductionAdmissionStoreOptions? ProductionAdmissionOptions => _options.ProductionAdmission;
     internal StationQualificationStoreOptions? StationQualificationOptions => _options.StationQualifications;
     internal TraceStoragePolicyStoreOptions? TraceStoragePolicyOptions => _options.TraceStoragePolicies;
+    internal QualificationCycleStoreOptions? QualificationCycleOptions => _options.QualificationCycles;
     internal RecipeTransferStoreOptions? RecipeTransferOptions => _options.RecipeTransfers;
 
     public SqliteCommandStore(ProductionStoreOptions options) : this(options, ReadFileLength) { }
@@ -116,6 +119,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         options.StationQualifications?.Validate();
         options.TraceStoragePolicies?.Validate();
         options.RecipeTransfers?.Validate();
+        options.QualificationCycles?.Validate();
         if (options.TraceStoragePolicies is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("TraceStoragePoliciesRequiresIdentityAndAudit", nameof(options));
@@ -128,6 +132,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (options.StationQualifications is not null &&
             (options.LocalIdentity is null || _policy is null))
             throw new ArgumentException("StationQualificationRequiresIdentityAndAudit", nameof(options));
+        if (options.QualificationCycles is not null &&
+            (options.StationQualifications is null || options.TraceStoragePolicies is null ||
+                options.LocalIdentity is null || _policy is null))
+            throw new ArgumentException("QualificationCyclesRequiresStationQualificationPolicyIdentityAndAudit",
+                nameof(options));
         if (options.CalibrationGovernance is not null && options.CalibrationSessions is null)
             throw new ArgumentException("CalibrationGovernanceRequiresCalibrationSessions", nameof(options));
         if (options.RecipeReleases is not null &&
@@ -370,6 +379,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     ex.Message.StartsWith("ProductionAdmission", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("StationQualification", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("TraceStoragePolicy", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("QualificationCycle", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("RecipeTransfer", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("GovernedAlarm", StringComparison.Ordinal))
                     ? ex.Message : "TraceStoreUnavailable";
@@ -484,7 +494,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
     }
 
-    private string MigrationReason(int existingVersion) => TraceStoragePolicyEnabled
+    private string MigrationReason(int existingVersion) => QualificationCycleEnabled
+        ? "QualificationCycleGovernedMigrationRequired" : TraceStoragePolicyEnabled
         ? "TraceStoragePolicyGovernedMigrationRequired" : RecipeTransferEnabled
         ? "RecipeTransferGovernedMigrationRequired" : StationQualificationEnabled
         ? "StationQualificationGovernedMigrationRequired" : ProductionAdmissionEnabled
@@ -545,11 +556,13 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (version < 0) return new StoreWriteResult(false, "StoreSchemaUnsupported");
         if (version > SchemaVersion)
             return new StoreWriteResult(false,
-                !TraceStoragePolicyEnabled && version == TraceStoragePolicyStoreOptions.SchemaVersion
+                !QualificationCycleEnabled && version == QualificationCycleStoreOptions.SchemaVersion
+                    ? "QualificationCycleConfigurationRequired"
+                    : !TraceStoragePolicyEnabled && version == TraceStoragePolicyStoreOptions.SchemaVersion
                     ? "TraceStoragePolicyConfigurationRequired"
                     : !RecipeTransferEnabled && version == RecipeTransferStoreOptions.SchemaVersion
                     ? "RecipeTransferConfigurationRequired"
-                    : !StationQualificationEnabled && version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion
+                    : !StationQualificationEnabled && version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion
                     ? "StationQualificationConfigurationRequired"
                     : !ProductionAdmissionEnabled && version == ProductionAdmissionStoreOptions.SchemaVersion
                     ? "ProductionAdmissionConfigurationRequired"
@@ -584,6 +597,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                             ? "AlgorithmResultArchiveConfigurationRequired" : "StoreSchemaTooNew");
         if (version > 0 && version < SchemaVersion)
             return new StoreWriteResult(false, MigrationReason(version));
+        if (version == QualificationCycleStoreOptions.SchemaVersion && !QualificationCycleEnabled)
+            return new StoreWriteResult(false, "QualificationCycleConfigurationRequired");
         if (version == TraceStoragePolicyStoreOptions.SchemaVersion && !TraceStoragePolicyEnabled)
             return new StoreWriteResult(false, "TraceStoragePolicyConfigurationRequired");
         if (version == PreviewSessionStoreOptions.SchemaVersion && !PreviewSessionEnabled)
@@ -611,7 +626,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             _signingKey = WindowsMachineAuditKey.Open(_policy, version == 0, out _);
             if (version >= 2)
             {
-                var traceSchema = TraceStoragePolicyEnabled && version == TraceStoragePolicyStoreOptions.SchemaVersion;
+                var traceSchema = TraceStoragePolicyEnabled &&
+                    (version == TraceStoragePolicyStoreOptions.SchemaVersion ||
+                     version == QualificationCycleStoreOptions.SchemaVersion);
+                var qualificationCycleSchema = QualificationCycleEnabled &&
+                    version == QualificationCycleStoreOptions.SchemaVersion;
                 var archiveSchema = AlgorithmArchiveEnabled &&
                     (version == SchemaVersion || version is RecipeDraftStoreOptions.SchemaVersion or
                         CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
@@ -619,7 +638,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                         PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                         PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var alarmSchema = version >= 7 && _options.AlarmPolicy is not null;
                 var draftSchema = RecipeDraftEnabled &&
                     (version is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
@@ -628,7 +647,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                         CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                         PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                         PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                        ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var cameraSchema = CameraSetupEnabled &&
                     (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
                         CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
@@ -636,66 +655,66 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                          RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                          CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                         ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                         ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var recoverySchema = CameraRecoveryEnabled &&
                     (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
                         ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                          CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                          PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                          ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                          ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var networkSchema = CameraNetworkEnabled &&
                     (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
                         CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                          RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                          CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var imagingSchema = ImagingSetupEnabled &&
                     (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                          CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                          PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                         ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                         ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var calibrationSchema = CalibrationSessionsEnabled &&
                     (version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
                       RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                        RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                        CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                           ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                           ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var releaseSchema = RecipeReleaseEnabled &&
                     (version is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
                          RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                          CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var contractSchema = PlcResultContractEnabled &&
                      (version is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                          PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                          ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                          ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var activationSchema = RecipeActivationEnabled &&
                      (version is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
                          CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                          ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var previewSchema = PreviewSessionEnabled &&
                     (version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
                         version == ManualInspectionStoreOptions.SchemaVersion ||
-                         version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                         version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var calibrationImportSchema = CalibrationImportEnabled &&
                     (version == CalibrationImportStoreOptions.SchemaVersion || version == ManualInspectionStoreOptions.SchemaVersion ||
-                         version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                         version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var manualSchema = ManualInspectionEnabled &&
                     (version == ManualInspectionStoreOptions.SchemaVersion ||
-                      version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion);
+                      version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion);
                 var productionAdmissionSchema = ProductionAdmissionEnabled &&
-                      version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion;
+                      version is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion;
                 var stationQualificationSchema = StationQualificationEnabled &&
-                     version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion;
+                     version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion;
                 var recipeTransferSchema = RecipeTransferEnabled &&
-                    version is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion;
+                    version is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion;
                 var verification = AuditChainDatabase.Verify(database, _policy, _signingKey.KeyId,
                     _signingKey.PublicKeyBase64,
-                      archiveSchema || alarmSchema || draftSchema || cameraSchema || recoverySchema || networkSchema || imagingSchema || calibrationSchema || releaseSchema || contractSchema || activationSchema || previewSchema || calibrationImportSchema || manualSchema || productionAdmissionSchema || stationQualificationSchema || recipeTransferSchema || traceSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
-                      new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema && !cameraSchema && !recoverySchema && !networkSchema && !imagingSchema && !calibrationSchema && !releaseSchema && !contractSchema && !activationSchema && !previewSchema && !calibrationImportSchema && !manualSchema && !productionAdmissionSchema && !stationQualificationSchema && !recipeTransferSchema && !traceSchema, deadline,
+                      archiveSchema || alarmSchema || draftSchema || cameraSchema || recoverySchema || networkSchema || imagingSchema || calibrationSchema || releaseSchema || contractSchema || activationSchema || previewSchema || calibrationImportSchema || manualSchema || productionAdmissionSchema || stationQualificationSchema || recipeTransferSchema || traceSchema || qualificationCycleSchema ? new AuditVerificationRequest(0, _policy.MaximumVerificationEntries) :
+                      new AuditVerificationRequest(), !archiveSchema && !alarmSchema && !draftSchema && !cameraSchema && !recoverySchema && !networkSchema && !imagingSchema && !calibrationSchema && !releaseSchema && !contractSchema && !activationSchema && !previewSchema && !calibrationImportSchema && !manualSchema && !productionAdmissionSchema && !stationQualificationSchema && !recipeTransferSchema && !traceSchema && !qualificationCycleSchema, deadline,
                     validateAnchorReceipt: false, archiveOptions: archiveSchema ? _options.AlgorithmResultArchive : null,
                     recipeDraftOptions: draftSchema ? _options.RecipeDrafts : null,
                     cameraSetupOptions: cameraSchema ? _options.CameraSetup : null,
@@ -713,7 +732,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                       productionAdmissionOptions: productionAdmissionSchema ? _options.ProductionAdmission : null,
                        stationQualificationOptions: stationQualificationSchema ? _options.StationQualifications : null,
                        recipeTransferOptions: recipeTransferSchema ? _options.RecipeTransfers : null,
-                       traceStoragePolicyOptions: traceSchema ? _options.TraceStoragePolicies : null);
+                       traceStoragePolicyOptions: traceSchema ? _options.TraceStoragePolicies : null,
+                       qualificationCycleOptions: qualificationCycleSchema ? _options.QualificationCycles : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
                 if (alarmSchema) AuditChainDatabase.RequireFullAlarmVerification(database, verification, deadline);
                 if (archiveSchema) AuditChainDatabase.RequireFullAlgorithmResultVerification(database, verification, deadline);
@@ -754,6 +774,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 if (traceSchema)
                     AuditChainDatabase.RequireFullTraceStoragePolicyVerification(database, verification, deadline,
                         _options.TraceStoragePolicies!);
+                if (qualificationCycleSchema)
+                    AuditChainDatabase.RequireFullQualificationCycleVerification(database, verification, deadline,
+                        _options.QualificationCycles!);
             }
             if (version >= 7) _ = ReadIdentityState(database, deadline);
         }
@@ -770,7 +793,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
               CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
         {
             if (AlgorithmArchiveEnabled)
                 SqliteCommandStore.RequireConfiguredArchive(database, _options.AlgorithmResultArchive!, deadline);
@@ -781,7 +804,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
              CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
              PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) &&
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) &&
             RecipeDraftEnabled)
             SqliteCommandStore.RequireConfiguredRecipeDrafts(database, _options.RecipeDrafts!, deadline);
           if (CameraSetupEnabled && (version is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
@@ -790,31 +813,31 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
               CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
              SqliteCommandStore.RequireConfiguredCameraSetup(database, _options.CameraSetup!, deadline);
           if (CameraRecoveryEnabled && (version is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
               ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraRecovery(database, _options.CameraRecovery!, deadline);
           if (CameraNetworkEnabled && (version is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
               CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredCameraNetwork(database, _options.CameraNetwork!, deadline);
            if (ImagingSetupEnabled && (version is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-               ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+               ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             SqliteCommandStore.RequireConfiguredImagingSetup(database, _options.ImagingSetup!, deadline);
           if (CalibrationSessionsEnabled && (version is CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
               RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
               RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
               CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+              ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
         {
             SqliteCommandStore.RequireConfiguredCalibrationSessions(database, _options.CalibrationSessions!, deadline);
             SqliteCommandStore.ValidateCalibrationSessionHistory(database, _options.CalibrationSessions!, deadline,
@@ -824,41 +847,44 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
          if (CalibrationGovernanceEnabled && (version is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
              PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
               PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+              ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             ValidateCalibrationGovernanceHistory(database, _options.CalibrationGovernance!, deadline);
          if (RecipeReleaseEnabled && (version is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
              RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
              CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or
-             ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+             ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredRecipeReleases(database, _options.RecipeReleases!, deadline);
         if (PlcResultContractEnabled && (version == PlcResultContractStoreOptions.SchemaVersion ||
             version == RecipeActivationStoreOptions.SchemaVersion ||
             version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion || version == QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredPlcResultContracts(database, _options.PlcResultContracts!, deadline);
         if (RecipeActivationEnabled && (version == RecipeActivationStoreOptions.SchemaVersion ||
             version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion || version == QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredRecipeActivations(database, _options.RecipeActivations!, deadline);
         if (PreviewSessionEnabled &&
             (version == PreviewSessionStoreOptions.SchemaVersion || version == CalibrationImportStoreOptions.SchemaVersion ||
-             version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion))
+             version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion || version == QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredPreviewSessions(database, _options.PreviewSessions!, deadline);
         if (CalibrationImportEnabled && (version == CalibrationImportStoreOptions.SchemaVersion ||
-            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion))
+            version == ManualInspectionStoreOptions.SchemaVersion || version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion || version == QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredCalibrationImports(database, _options.CalibrationImports!, deadline);
         if (ManualInspectionEnabled &&
             (version == ManualInspectionStoreOptions.SchemaVersion ||
-             version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion))
+             version == ProductionAdmissionStoreOptions.SchemaVersion || version == TraceStoragePolicyStoreOptions.SchemaVersion || version == QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredManualInspections(database, _options.ManualInspections!, deadline);
-        if (ProductionAdmissionEnabled && version is ProductionAdmissionStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+        if (ProductionAdmissionEnabled && version is ProductionAdmissionStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
             RequireConfiguredProductionAdmission(database, _options.ProductionAdmission!, deadline);
-        if (StationQualificationEnabled && version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+        if (StationQualificationEnabled && version is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
             RequireConfiguredStationQualifications(database, _options.StationQualifications!, deadline);
-        if (RecipeTransferEnabled && version is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+        if (RecipeTransferEnabled && version is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
             RequireConfiguredRecipeTransfers(database, _options.RecipeTransfers!, deadline);
-        if (TraceStoragePolicyEnabled && version == TraceStoragePolicyStoreOptions.SchemaVersion)
+        if (TraceStoragePolicyEnabled &&
+            (version is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
             RequireConfiguredTraceStoragePolicies(database, _options.TraceStoragePolicies!, deadline);
+        if (QualificationCycleEnabled && version == QualificationCycleStoreOptions.SchemaVersion)
+            RequireConfiguredQualificationCycles(database, _options.QualificationCycles!, deadline);
 
         if (!ConfigureProductionProfile(database, deadline))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
@@ -949,6 +975,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     _policy!, _signingKey!);
             if (TraceStoragePolicyEnabled)
                 InitializeTraceStoragePolicySchema(database, _options.TraceStoragePolicies!, deadline,
+                    _policy!, _signingKey!);
+            if (QualificationCycleEnabled)
+                InitializeQualificationCycleSchema(database, _options.QualificationCycles!, deadline,
                     _policy!, _signingKey!);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -1046,7 +1075,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                           productionAdmissionOptions: productionAdmissionStore ? _options.ProductionAdmission : null,
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies);
+                traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                qualificationCycleOptions: _options.QualificationCycles);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                     if (alarmStore)
@@ -1093,6 +1123,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                     if (stationQualificationStore)
                         AuditChainDatabase.RequireFullStationQualificationVerification(database, verification, deadline,
                             _options.StationQualifications);
+                    if (QualificationCycleEnabled)
+                        AuditChainDatabase.RequireFullQualificationCycleVerification(database, verification, deadline,
+                            _options.QualificationCycles);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -1378,6 +1411,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (StationQualificationEnabled) SqliteNative.Execute(canonicalDatabase, StationQualificationSchemaSql, deadline);
         if (RecipeTransferEnabled) SqliteNative.Execute(canonicalDatabase, RecipeTransferSchemaSql, deadline);
         if (TraceStoragePolicyEnabled) SqliteNative.Execute(canonicalDatabase, TraceStoragePolicySchemaSql, deadline);
+        if (QualificationCycleEnabled) SqliteNative.Execute(canonicalDatabase, QualificationCycleSchemaSql, deadline);
         var actualDefinitions = ReadSchemaDefinitions(database, deadline);
         var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
         if (actualDefinitions.Count != expectedDefinitions.Count) return false;

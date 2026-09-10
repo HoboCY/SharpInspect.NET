@@ -11,6 +11,7 @@ using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Qualification;
 using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.StoragePolicies;
 using Xunit;
 using Xunit.Sdk;
 
@@ -264,7 +265,7 @@ public sealed partial class ManualInspectionRuntimeTests
     }
 
     [Fact]
-    public async Task V137_R10_AbortAfterRunAdmissionPersistsCancelledWithoutPayload()
+    public async Task V137_R10_AbortAfterCoreCommitPreservesCommittedPayload()
     {
         await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
 
@@ -282,7 +283,7 @@ public sealed partial class ManualInspectionRuntimeTests
             "station qualification terminal-cancel abort");
         await harness.WaitForSnapshotAsync(snapshot =>
             snapshot.SessionId == sessionId && snapshot.ExitRequested,
-            "station qualification abort was not projected before writer release");
+            "station qualification abort was not projected before physical publication release");
         harness.Facility.ReleaseWrite();
 
         var terminal = await harness.WaitForSnapshotAsync(snapshot =>
@@ -297,11 +298,11 @@ public sealed partial class ManualInspectionRuntimeTests
         Assert.True(page.Available, page.ReasonCode);
         var run = Assert.Single(page.Runs, value => value.SessionId == sessionId);
         Assert.True(run.Terminal);
-        Assert.Equal(ExecutionStatus.Cancelled, run.ExecutionStatus);
-        Assert.Equal(InspectionDecision.Unknown, run.Decision);
-        Assert.Null(run.ResultPayloadJson);
-        Assert.Null(run.ResultPayloadHash);
-        Assert.Null(run.QualificationPayload);
+        Assert.Equal(ExecutionStatus.Success, run.ExecutionStatus);
+        Assert.Equal(InspectionDecision.Pass, run.Decision);
+        Assert.NotNull(run.ResultPayloadJson);
+        Assert.NotNull(run.ResultPayloadHash);
+        Assert.NotNull(run.QualificationPayload);
     }
 
     [Fact]
@@ -373,7 +374,7 @@ public sealed partial class ManualInspectionRuntimeTests
             "station qualification graceful exit");
         await harness.WaitForSnapshotAsync(snapshot =>
             snapshot.SessionId == sessionId && snapshot.ExitRequested,
-            "station qualification graceful exit was not projected before writer release");
+            "station qualification graceful exit was not projected before physical publication release");
         harness.Facility.ReleaseWrite();
 
         var terminal = await harness.WaitForSnapshotAsync(snapshot =>
@@ -449,13 +450,10 @@ public sealed partial class ManualInspectionRuntimeTests
     }
 
     [Fact]
-    public async Task V137_R14_LocalStopDuringTerminalWritePersistsCancelledWithoutPayload()
+    public async Task V137_R14_LocalStopAfterCoreCommitPreservesCommittedPayload()
     {
-        // The controlled facility holds WriteQualificationResultAsync before
-        // CompleteStationQualificationRunAsync enters its SQLite terminal
-        // writer.  This is the observable deterministic barrier available to
-        // the public runtime path; the tests then release the physical write
-        // only after the stop decision has been accepted.
+        // The physical publication barrier is after SQLite Core COMMIT.
+        // Stop retires the facility but cannot rewrite that durable result.
         await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
         AssertAccepted(await harness.StartWithFreshStepUpAsync(),
             "station qualification local-stop terminal start");
@@ -476,15 +474,15 @@ public sealed partial class ManualInspectionRuntimeTests
                 value.Runs.Any(run => run.SessionId == sessionId && run.Terminal),
             "local stop did not finalize the blocked qualification write");
         var run = Assert.Single(page.Runs, value => value.SessionId == sessionId);
-        Assert.Equal(ExecutionStatus.Cancelled, run.ExecutionStatus);
-        Assert.Equal(InspectionDecision.Unknown, run.Decision);
-        Assert.Null(run.ResultPayloadJson);
-        Assert.Null(run.ResultPayloadHash);
-        Assert.Null(run.QualificationPayload);
+        Assert.Equal(ExecutionStatus.Success, run.ExecutionStatus);
+        Assert.Equal(InspectionDecision.Pass, run.Decision);
+        Assert.NotNull(run.ResultPayloadJson);
+        Assert.NotNull(run.ResultPayloadHash);
+        Assert.NotNull(run.QualificationPayload);
     }
 
     [Fact]
-    public async Task V137_R15_LogoutDuringTerminalWritePersistsCancelledWithoutPayload()
+    public async Task V137_R15_LogoutAfterCoreCommitPreservesCommittedPayload()
     {
         await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
         AssertAccepted(await harness.StartWithFreshStepUpAsync(),
@@ -495,10 +493,18 @@ public sealed partial class ManualInspectionRuntimeTests
             snapshot.CurrentRunId is not null,
             "station qualification did not admit the logout terminal run");
         var sessionId = Assert.IsType<Guid>(running.SessionId);
+        var committedPage = await harness.History.QueryAsync(new StationQualificationHistoryFilter(
+            SessionId: sessionId, PageSize: 128));
+        Assert.True(committedPage.Available, committedPage.ReasonCode);
+        var committedHash = Assert.Single(committedPage.Runs).ContentHash;
 
         var logout = await harness.LogoutAsync();
         Assert.True(logout.Succeeded, logout.ReasonCode);
-        Assert.True(logout.AuditPersisted);
+        Assert.Equal("SessionLoggedOut", logout.ReasonCode);
+        // Logout revokes authority synchronously even if its separate audit
+        // attempt is unavailable; the session audit tests cover that contract.
+        Assert.Equal(InteractiveSessionState.Unauthenticated, harness.Fixture.Sessions.Current.State);
+        Assert.Null(harness.Fixture.Sessions.Current.SessionId);
         harness.Facility.ReleaseWrite();
 
         var page = await harness.WaitForHistoryAsync(sessionId,
@@ -507,14 +513,15 @@ public sealed partial class ManualInspectionRuntimeTests
                 value.Runs.Any(run => run.SessionId == sessionId && run.Terminal),
             "logout did not finalize the blocked qualification write");
         var run = Assert.Single(page.Runs, value => value.SessionId == sessionId);
-        Assert.Equal(ExecutionStatus.Cancelled, run.ExecutionStatus);
-        Assert.Equal(InspectionDecision.Unknown, run.Decision);
-        Assert.Null(run.ResultPayloadJson);
-        Assert.Null(run.QualificationPayload);
+        Assert.Equal(committedHash, run.ContentHash);
+        Assert.Equal(ExecutionStatus.Success, run.ExecutionStatus);
+        Assert.Equal(InspectionDecision.Pass, run.Decision);
+        Assert.NotNull(run.ResultPayloadJson);
+        Assert.NotNull(run.QualificationPayload);
     }
 
     [Fact]
-    public async Task V137_R16_FaultAbortDuringTerminalWritePersistsCancelledWithoutPayload()
+    public async Task V137_R16_FaultAbortAfterCoreCommitPreservesCommittedPayload()
     {
         await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
         AssertAccepted(await harness.StartWithFreshStepUpAsync(),
@@ -537,10 +544,10 @@ public sealed partial class ManualInspectionRuntimeTests
                 value.Runs.Any(run => run.SessionId == sessionId && run.Terminal),
             "fault abort did not finalize the blocked qualification write");
         var run = Assert.Single(page.Runs, value => value.SessionId == sessionId);
-        Assert.Equal(ExecutionStatus.Cancelled, run.ExecutionStatus);
-        Assert.Equal(InspectionDecision.Unknown, run.Decision);
-        Assert.Null(run.ResultPayloadJson);
-        Assert.Null(run.QualificationPayload);
+        Assert.Equal(ExecutionStatus.Success, run.ExecutionStatus);
+        Assert.Equal(InspectionDecision.Pass, run.Decision);
+        Assert.NotNull(run.ResultPayloadJson);
+        Assert.NotNull(run.QualificationPayload);
     }
 
     private static AlarmPolicy CreateQualificationAlarmPolicy()
@@ -576,7 +583,31 @@ public sealed partial class ManualInspectionRuntimeTests
                     AlarmSeverity.Critical, ProductionImpact.FaultAbort, true,
                     AlarmNotification.UntilCleared, null,
                     ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
-                        AlarmResetPrerequisites.NoActiveExecution)
+                        AlarmResetPrerequisites.NoActiveExecution),
+                new AlarmPolicyRule(QualificationCycleAlarmCodes.TracePersistenceFailed,
+                    QualificationCycleAlarmCodes.Source, AlarmSeverity.Error,
+                    ProductionImpact.BlockNewTriggers, true, AlarmNotification.UntilCleared, null,
+                    ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
+                        AlarmResetPrerequisites.NoActiveExecution |
+                        AlarmResetPrerequisites.NoPendingDelivery),
+                new AlarmPolicyRule(QualificationCycleAlarmCodes.ResultAckTimeout,
+                    QualificationCycleAlarmCodes.Source, AlarmSeverity.Error,
+                    ProductionImpact.BlockNewTriggers, true, AlarmNotification.UntilCleared, null,
+                    ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
+                        AlarmResetPrerequisites.NoActiveExecution |
+                        AlarmResetPrerequisites.NoPendingDelivery),
+                new AlarmPolicyRule(QualificationCycleAlarmCodes.TriggerRejected,
+                    QualificationCycleAlarmCodes.Source, AlarmSeverity.Warning,
+                    ProductionImpact.BlockNewTriggers, true, AlarmNotification.UntilCleared, null,
+                    ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
+                        AlarmResetPrerequisites.NoActiveExecution |
+                        AlarmResetPrerequisites.NoPendingDelivery),
+                new AlarmPolicyRule(QualificationCycleAlarmCodes.Interrupted,
+                    QualificationCycleAlarmCodes.Source, AlarmSeverity.Error,
+                    ProductionImpact.BlockNewTriggers, true, AlarmNotification.UntilCleared, null,
+                    ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
+                        AlarmResetPrerequisites.NoActiveExecution |
+                        AlarmResetPrerequisites.NoPendingDelivery)
             }, TimeSpan.FromMinutes(1));
     }
 
@@ -674,6 +705,7 @@ public sealed partial class ManualInspectionRuntimeTests
         internal VirtualCameraProvider CameraProvider { get; }
         internal ManualFactory Factory => (ManualFactory)_services.GetRequiredService<IVisionAlgorithmFactory>();
         internal StationQualificationPlan Plan { get; }
+        internal ModbusQualificationProfile? ModbusProfile => _fixture.ModbusProfile;
         internal RecipeDraftRevision Draft { get; }
         internal RecipeReference? ActiveRecipe { get; }
         internal IStationRuntime Runtime { get; }
@@ -820,7 +852,8 @@ public sealed partial class ManualInspectionRuntimeTests
                     incompleteIsolationObservation: false, blockStimulus: false,
                     restoreFailure: false, blockWrite: false);
                 services = BuildServices(options, store, identity, sessions, authorization,
-                    factory, provider, clock, Plan, facility, maximumRuns: 1);
+                    factory, provider, clock, Plan, facility, maximumRuns: 1,
+                    modbusProfile: _fixture.ModbusProfile);
                 var runtime = services.GetRequiredService<IStationRuntime>();
                 if (runtime is not StationRuntime station)
                     throw new XunitException("V137 cold composition did not use StationRuntime");
@@ -849,10 +882,18 @@ public sealed partial class ManualInspectionRuntimeTests
             int maximumRuns = 1,
             bool allowDisposeFailure = false, StationQualificationStoreOptions? ledgerOptions = null,
             bool developmentFacility = true, RecipeTransferStoreOptions? recipeTransfers = null,
-            int? maximumAuditEntries = null)
+            int? maximumAuditEntries = null,
+            Func<TraceStoragePolicySnapshot, ModbusQualificationProfile>? profileFactory = null,
+            bool enableQualificationCycles = false,
+            ModbusAlgorithmOutcomeMode? modbusAlgorithmOutcome = null,
+            QualificationCycleStoreOptions? qualificationCycleOptions = null,
+            IVisionAlgorithmFactory? qualificationExecutionFactory = null)
         {
+            enableQualificationCycles |= profileFactory is not null ||
+                qualificationCycleOptions is not null;
             var fixture = await QualificationFixture.CreateAsync(allowQualification, ledgerOptions,
-                recipeTransfers, maximumAuditEntries);
+                recipeTransfers, maximumAuditEntries, profileFactory, enableQualificationCycles,
+                qualificationCycleOptions);
             ServiceProvider? initialServices = null;
             ClockPump? initialPump = null;
             ServiceProvider? services = null;
@@ -916,12 +957,28 @@ public sealed partial class ManualInspectionRuntimeTests
                     0, 0, 0, TimeSpan.Zero));
                 var provider = CreateQualificationProvider(clock, timeout: false);
                 var factory = new ManualFactory();
-                var plan = CreatePlan(baseline, developmentFacility);
+                // Freeze one profile reference for both plan construction and
+                // registration. The Modbus adapter binds the exact profile hash
+                // and endpoint hash; recreating either value independently can
+                // admit a plan for a different TCP endpoint.
+                var modbusProfile = fixture.ModbusProfile;
+                var plan = CreatePlan(baseline, developmentFacility, modbusProfile);
+                if (modbusProfile is not null)
+                {
+                    Assert.Equal(modbusProfile.ContentHash, plan.ProfileHash);
+                    Assert.Equal(modbusProfile.EndpointBindingHash,
+                        plan.TransientControllerConfiguration.EndpointBindingHash);
+                    Assert.Contains(modbusProfile.ScenarioId, plan.ScenarioIds);
+                }
                 var facility = new ControlledQualificationFacility(plan,
                     incompleteIsolationObservation, blockStimulus, restoreFailure, blockWrite);
+                IVisionAlgorithmFactory? executionFactory = modbusAlgorithmOutcome is { } outcome
+                    ? new ModbusOutcomeFactory(factory.Descriptor, outcome)
+                    : qualificationExecutionFactory;
                 services = BuildServices(fixture.Options, fixture.Store, fixture.Identity,
                     fixture.Sessions, fixture.Authorization, factory, provider, clock, plan, facility,
-                    maximumRuns);
+                    maximumRuns, modbusProfile: modbusProfile,
+                    executionFactory: executionFactory);
                 var runtime = services.GetRequiredService<IStationRuntime>();
                 if (runtime is not StationRuntime station)
                     throw new XunitException("V137 qualification composition did not use StationRuntime");
@@ -1034,7 +1091,9 @@ public sealed partial class ManualInspectionRuntimeTests
             ManualFactory factory, VirtualCameraProvider provider,
             VirtualCameraClock clock,
             StationQualificationPlan? plan, ControlledQualificationFacility? facility,
-            int maximumRuns = 1, TimeSpan? heartbeatInterval = null)
+            int maximumRuns = 1, TimeSpan? heartbeatInterval = null,
+            ModbusQualificationProfile? modbusProfile = null,
+            IVisionAlgorithmFactory? executionFactory = null)
         {
             var registrations = new ServiceCollection();
             registrations.AddSingleton(options);
@@ -1047,7 +1106,7 @@ public sealed partial class ManualInspectionRuntimeTests
             registrations.AddSingleton(authorization);
             registrations.AddSingleton<IStepUpAuthentication>(authorization);
             registrations.AddSingleton<IIdentityAdministrationQuery>(authorization);
-            registrations.AddSingleton<IVisionAlgorithmFactory>(factory);
+            registrations.AddSingleton<IVisionAlgorithmFactory>(executionFactory ?? factory);
             registrations.AddSingleton(clock);
             registrations.AddSingleton<IFrameAcquisitionClock>(clock);
             registrations.AddSharpInspectAlgorithmPreparation(
@@ -1082,29 +1141,37 @@ public sealed partial class ManualInspectionRuntimeTests
                 p.GetRequiredService<RecipeActivationService>());
             if (plan is not null && facility is not null)
             {
-                registrations.AddSharpInspectStationQualificationSessions(plan, facility,
-                    new StationQualificationSessionOptions
-                    {
-                        OperationTimeout = TimeSpan.FromSeconds(5),
-                        ShutdownTimeout = TimeSpan.FromSeconds(5),
-                        ObservationFreshness = TimeSpan.FromSeconds(2),
-                        MaximumRuns = maximumRuns
-                    });
+                var qualificationOptions = new StationQualificationSessionOptions
+                {
+                    OperationTimeout = TimeSpan.FromSeconds(5),
+                    ShutdownTimeout = TimeSpan.FromSeconds(5),
+                    ObservationFreshness = TimeSpan.FromSeconds(2),
+                    MaximumRuns = maximumRuns
+                };
+                if (modbusProfile is null)
+                    registrations.AddSharpInspectStationQualificationSessions(plan, facility,
+                        qualificationOptions);
+                else
+                    registrations.AddSharpInspectModbusStationQualificationSessions(plan, facility,
+                        modbusProfile, qualificationOptions);
             }
             return registrations.BuildServiceProvider();
         }
 
-        private static StationQualificationPlan CreatePlan(RecipeActivationRecord baseline, bool developmentFacility = true)
+        private static StationQualificationPlan CreatePlan(RecipeActivationRecord baseline,
+            bool developmentFacility = true, ModbusQualificationProfile? modbusProfile = null)
         {
             var identity = new QualificationHarnessIdentity("V137.Qualification.Facility", "1",
                 Hash('A'), Hash('B'), developmentOnly: developmentFacility);
             var target = new QualificationControllerConfiguration(Hash('C'), Hash('D'),
                 new byte[] { 1, 2, 3 });
-            var transient = new QualificationControllerConfiguration(Hash('E'), Hash('F'),
+            var transient = new QualificationControllerConfiguration(
+                modbusProfile?.EndpointBindingHash ?? Hash('E'), Hash('F'),
                 new byte[] { 4, 5, 6 });
             var snapshot = Assert.IsType<RecipeActivationSnapshot>(baseline.SuccessfulSnapshot);
-            return new StationQualificationPlan(baseline.Reference, Hash('1'),
-                snapshot.Release.ContentHash, baseline.ResultingRecipe!.ContentHash,
+            return new StationQualificationPlan(baseline.Reference,
+                Hash('1'), snapshot.Release.ContentHash,
+                modbusProfile?.ContentHash ?? baseline.ResultingRecipe!.ContentHash,
                 Hash('2'), identity, target, transient, new[]
                 {
                     new QualificationDestinationBinding(QualificationDestinationKind.ProductionPlcOutput,
@@ -1117,7 +1184,80 @@ public sealed partial class ManualInspectionRuntimeTests
                         "spc", Hash('6')),
                     new QualificationDestinationBinding(QualificationDestinationKind.Yield,
                         "yield", Hash('7'))
-                }, new[] { "V137.Scenario.A" });
+                }, new[] { modbusProfile?.ScenarioId ?? "V137.Scenario.A" });
+        }
+
+        private sealed class ModbusOutcomeFactory : IVisionAlgorithmFactory
+        {
+            private readonly ModbusAlgorithmOutcomeMode _mode;
+
+            internal ModbusOutcomeFactory(AlgorithmDescriptor descriptor,
+                ModbusAlgorithmOutcomeMode mode)
+            {
+                Descriptor = descriptor ?? throw new ArgumentNullException(nameof(descriptor));
+                _mode = mode;
+            }
+
+            public AlgorithmDescriptor Descriptor { get; }
+
+            public ValueTask<IReadOnlyList<AlgorithmValidationIssue>> ValidateConfigurationAsync(
+                AlgorithmConfigurationSnapshot configuration,
+                CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return ValueTask.FromResult<IReadOnlyList<AlgorithmValidationIssue>>(
+                    configuration.Validate(Descriptor.ConfigurationSchema));
+            }
+
+            public ValueTask<IVisionAlgorithm> CreateAsync(
+                AlgorithmConfigurationSnapshot configuration,
+                CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return ValueTask.FromResult<IVisionAlgorithm>(
+                    new ModbusOutcomeAlgorithm(_mode));
+            }
+        }
+
+        private sealed class ModbusOutcomeAlgorithm : IVisionAlgorithm
+        {
+            private readonly ModbusAlgorithmOutcomeMode _mode;
+
+            internal ModbusOutcomeAlgorithm(ModbusAlgorithmOutcomeMode mode)
+            {
+                _mode = mode;
+            }
+
+            public ValueTask WarmUpAsync(CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return ValueTask.CompletedTask;
+            }
+
+            public async ValueTask<AlgorithmResult> ExecuteAsync(
+                AlgorithmExecutionContext context,
+                CancellationToken cancellationToken = default)
+            {
+                switch (_mode)
+                {
+                    case ModbusAlgorithmOutcomeMode.Error:
+                        throw new InvalidOperationException("V140AlgorithmError");
+                    case ModbusAlgorithmOutcomeMode.Timeout:
+                        // A cooperative deadline expiry produces Timeout. A
+                        // callback that ignores cancellation past the grace
+                        // interval is AlgorithmHung, a separate process-level
+                        // fence already exercised by the hang-probe tests.
+                        await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan,
+                            cancellationToken).ConfigureAwait(false);
+                        throw new InvalidOperationException("V140AlgorithmTimeoutUnexpectedReturn");
+                    case ModbusAlgorithmOutcomeMode.SelfCancelled:
+                        throw new OperationCanceledException("V140AlgorithmSelfCancelled");
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
 
         private static async Task<ReleasedRecipe> ReleaseDraftAsync(
@@ -1427,7 +1567,8 @@ public sealed partial class ManualInspectionRuntimeTests
         private QualificationFixture(string directory, AuditIntegrityPolicy audit,
             ProductionStoreOptions baseOptions, SqliteCommandStore store,
             LocalIdentityService identity, InteractiveSessionService sessions,
-            LocalAuthorizationService authorization)
+            LocalAuthorizationService authorization,
+            ModbusQualificationProfile? modbusProfile)
         {
             _directory = directory;
             _audit = audit;
@@ -1437,6 +1578,7 @@ public sealed partial class ManualInspectionRuntimeTests
             Identity = identity;
             Sessions = sessions;
             Authorization = authorization;
+            ModbusProfile = modbusProfile;
         }
 
         internal ProductionStoreOptions BaseOptions { get; }
@@ -1445,6 +1587,7 @@ public sealed partial class ManualInspectionRuntimeTests
         internal LocalIdentityService Identity { get; private set; }
         internal InteractiveSessionService Sessions { get; private set; }
         internal LocalAuthorizationService Authorization { get; private set; }
+        internal ModbusQualificationProfile? ModbusProfile { get; }
         internal string Password => PasswordText;
 
         internal CommandInvocation Invocation(Guid? grant = null) => new(
@@ -1454,7 +1597,10 @@ public sealed partial class ManualInspectionRuntimeTests
         internal static async Task<QualificationFixture> CreateAsync(bool allowQualification,
             StationQualificationStoreOptions? ledgerOptions = null,
             RecipeTransferStoreOptions? recipeTransfers = null,
-            int? maximumAuditEntries = null)
+            int? maximumAuditEntries = null,
+            Func<TraceStoragePolicySnapshot, ModbusQualificationProfile>? profileFactory = null,
+            bool enableQualificationCycles = false,
+            QualificationCycleStoreOptions? qualificationCycleOptions = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Qualification SQLite fixture requires Windows machine key protection.");
@@ -1470,7 +1616,9 @@ public sealed partial class ManualInspectionRuntimeTests
                 MaximumVerificationEntries = maximumAuditEntries ?? 10_000,
                 VerificationInterval = TimeSpan.FromSeconds(1)
             };
-            var policy = CreateQualificationPolicy(allowQualification);
+            var traceEnabled = enableQualificationCycles || profileFactory is not null ||
+                qualificationCycleOptions is not null;
+            var policy = CreateQualificationPolicy(allowQualification, traceEnabled);
             var identityOptions = new LocalIdentityOptions(Station,
                 new LocalPasswordPolicy
                 {
@@ -1492,11 +1640,18 @@ public sealed partial class ManualInspectionRuntimeTests
                 CameraSetup = new CameraSetupStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
                 RecipeTransfers = recipeTransfers,
+                TraceStoragePolicies = traceEnabled ? new TraceStoragePolicyStoreOptions
+                {
+                    DeploymentScope = new TraceStorageDeploymentScope(
+                        "V140.Qualification.Deployment", "1", Array.Empty<TraceStorageRouteIdentity>())
+                } : null,
                 // Create schema-23 from the first provider.  The baseline
                 // provider intentionally has no registered facility, while
                 // the cold provider below adds the frozen plan and facility;
                 // reopening an older schema would be a governed migration.
                 StationQualifications = ledgerOptions ?? new StationQualificationStoreOptions(),
+                QualificationCycles = traceEnabled ? qualificationCycleOptions ??
+                    new QualificationCycleStoreOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4),
                 QueryTimeout = TimeSpan.FromSeconds(4),
                 QueueCapacity = 8
@@ -1526,8 +1681,31 @@ public sealed partial class ManualInspectionRuntimeTests
                 var authorization = new LocalAuthorizationService(store, identityOptions,
                     identity, sessions);
                 await RecipeDraftStorageTests.Fixture.WaitForVerifiedAsync(store);
+                ModbusQualificationProfile? modbusProfile = null;
+                if (traceEnabled)
+                {
+                    var policyService = new TraceStoragePolicyService(options, authorization, store,
+                        new SqliteTraceStoragePolicyQuery(options));
+                    var operation = Guid.NewGuid();
+                    var invocation = new CommandInvocation(CommandSource.PhysicalConsole,
+                        sessions.Current.PrincipalId, sessions.Current.SessionId);
+                    var definition = TraceStoragePolicyRuntimeTests.Policy();
+                    var command = new PublishTraceStoragePolicyCommand(operation, invocation, 0,
+                        definition, "V140 qualification cycle storage policy");
+                    var grant = await authorization.ReauthenticateAsync(new StepUpRequest(Guid.NewGuid(),
+                        invocation, new StepUpBinding(Permission.ManageProductionPolicy, operation,
+                            command.AuthorizationTarget, AuditedCommandKind.PublishTraceStoragePolicy), PasswordText));
+                    Assert.True(grant.Succeeded, grant.ReasonCode);
+                    var published = await policyService.PublishAsync(command with
+                    {
+                        Invocation = invocation with { StepUpGrantId = grant.GrantId }
+                    });
+                    Assert.True(published.Succeeded, published.Outcome.ReasonCode);
+                    Assert.NotNull(published.Snapshot);
+                    modbusProfile = profileFactory?.Invoke(published.Snapshot!);
+                }
                 return new QualificationFixture(directory, audit, options, store,
-                    identity, sessions, authorization);
+                    identity, sessions, authorization, modbusProfile);
             }
             catch
             {
@@ -1594,6 +1772,23 @@ public sealed partial class ManualInspectionRuntimeTests
             PlcResultContracts = source.PlcResultContracts,
             RecipeActivations = source.RecipeActivations,
             RecipeTransfers = source.RecipeTransfers,
+            TraceStoragePolicies = source.TraceStoragePolicies is { } trace
+                ? new TraceStoragePolicyStoreOptions
+                {
+                    MaximumEntries = trace.MaximumEntries,
+                    MaximumPayloadBytes = trace.MaximumPayloadBytes,
+                    MaximumTotalBytes = trace.MaximumTotalBytes,
+                    DeploymentScope = trace.DeploymentScope
+                }
+                : null,
+            QualificationCycles = source.QualificationCycles is { } cycles
+                ? new QualificationCycleStoreOptions
+                {
+                    MaximumEntries = cycles.MaximumEntries,
+                    MaximumPayloadBytes = cycles.MaximumPayloadBytes,
+                    MaximumTotalBytes = cycles.MaximumTotalBytes
+                }
+                : null,
             PreviewSessions = source.PreviewSessions,
             CalibrationImports = source.CalibrationImports,
             ManualInspections = source.ManualInspections,
@@ -1611,7 +1806,8 @@ public sealed partial class ManualInspectionRuntimeTests
             QueueCapacity = source.QueueCapacity
         };
 
-        private static AuthorizationPolicy CreateQualificationPolicy(bool allowQualification)
+        private static AuthorizationPolicy CreateQualificationPolicy(bool allowQualification,
+            bool allowTraceStoragePolicy = false)
         {
             var roles = AuthorizationPolicy.Development.RoleBundles.ToDictionary(
                 pair => pair.Key,
@@ -1619,12 +1815,16 @@ public sealed partial class ManualInspectionRuntimeTests
                     ? pair.Value.Where(permission => allowQualification || permission != Permission.RunStationQualification)
                         .Concat(new[] { Permission.EditRecipeDraft })
                         .Concat(allowQualification ? new[] { Permission.RunStationQualification } :
+                            Array.Empty<Permission>())
+                        .Concat(allowTraceStoragePolicy ? new[] { Permission.ManageProductionPolicy } :
                             Array.Empty<Permission>()).Distinct()
                     : pair.Value.Where(permission => allowQualification || permission != Permission.RunStationQualification));
             return new AuthorizationPolicy("V137.Qualification.Authorization", "1", roles,
                 AuthorizationPolicy.Development.StepUpPermissions
                     .Where(permission => allowQualification || permission != Permission.RunStationQualification).Concat(
                     allowQualification ? new[] { Permission.RunStationQualification } :
+                        Array.Empty<Permission>())
+                    .Concat(allowTraceStoragePolicy ? new[] { Permission.ManageProductionPolicy } :
                         Array.Empty<Permission>()).Distinct());
         }
 

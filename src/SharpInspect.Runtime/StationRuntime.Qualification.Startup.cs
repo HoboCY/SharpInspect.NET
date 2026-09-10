@@ -21,10 +21,19 @@ public sealed partial class StationRuntime
                 if (_activationStartupBlocked || _previewRecoveryBlocked || _manualRecoveryBlocked || !_storeReady || _auditFault)
                     throw new InvalidOperationException("StationQualificationStartupDependencyUnavailable");
             var recovered = await store.ReadStationQualificationRecoveryStateAsync(CancellationToken.None).ConfigureAwait(false);
+            var cycleRecoveryRequired = false;
+            if (_stationQualificationStoreOptions?.QualificationCycles is not null)
+            {
+                var cycles = await new SqliteQualificationCycleHistoryQuery(_stationQualificationStoreOptions)
+                    .ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
+                if (!cycles.Available) throw new InvalidOperationException("QualificationCycleStartupHistoryUnavailable");
+                cycleRecoveryRequired = cycles.RecoveryRequired;
+            }
             if (!recovered.Available || (recovered.RecoveryRequired && !recovered.RecoverablePending))
                 throw new InvalidOperationException("StationQualificationStartupRecoveryRequired");
             if (recovered.Header is null)
             {
+                if (cycleRecoveryRequired) throw new InvalidOperationException("QualificationCycleRecoveryRequired");
                 lock (_sync)
                 {
                     _stationQualificationStartupPending = false;
@@ -38,7 +47,9 @@ public sealed partial class StationRuntime
             owner = new(recovered.Header, recovered.LastEvent, recovered.StartFact)
             {
                 RestartRecovery = true, ExitRequested = true, Aborted = true,
-                ExitReason = "StationQualificationInterruptedByRestart"
+                ExitReason = "StationQualificationInterruptedByRestart",
+                ModbusRecoveryRequired = cycleRecoveryRequired || recovered.SessionEvents.Any(value =>
+                    value.ReasonCode == "QualificationModbusTransportSelected")
             };
             owner.ExitFact = recovered.CommandFacts.LastOrDefault(fact => fact.CommandKind == AuditedCommandKind.ExitStationQualificationSession &&
                 fact.Phase == CommandAuditPhase.Outcome && fact.Disposition == CommandDisposition.Accepted);

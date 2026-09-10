@@ -13,9 +13,11 @@ public sealed partial class ManualInspectionRuntimeTests
     [InlineData(true)]
     public async Task V137_R17_RevocationAfterSuccessQueuedBeforeWriterCommitClearsPayload(bool logout)
     {
-        await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
+        var factory = new QualificationWriterRaceFactory();
+        await using var harness = await QualificationHarness.CreateAsync(
+            qualificationExecutionFactory: factory);
         AssertAccepted(await harness.StartWithFreshStepUpAsync(), "writer race start");
-        await harness.Facility.WriteEntered.WaitAsync(TimeSpan.FromSeconds(15));
+        await factory.ExecutionEntered.WaitAsync(TimeSpan.FromSeconds(15));
         var running = await harness.WaitForSnapshotAsync(value =>
             value.CurrentRunId is not null, "writer race run was not admitted");
         var sessionId = Assert.IsType<Guid>(running.SessionId);
@@ -31,11 +33,12 @@ public sealed partial class ManualInspectionRuntimeTests
         try
         {
             Assert.True(await Task.Run(() => writerEntered.Wait(TimeSpan.FromSeconds(2))));
-            harness.Facility.ReleaseWrite();
+            factory.ReleaseExecution();
             // Peek the real serialized writer queue without consuming work. This
-            // proves Success was already proposed after the physical write;
-            // merely blocking the facility would exercise an earlier Abort check.
+            // proves Success was proposed after actual algorithm execution but
+            // before Core COMMIT. Physical publication must not have started.
             await WaitForQueuedQualificationSuccessAsync(harness.Fixture.Store);
+            Assert.Equal(0, harness.Facility.WriteCount);
             Task revocation;
             if (logout)
                 revocation = harness.LogoutAsync();
@@ -49,6 +52,7 @@ public sealed partial class ManualInspectionRuntimeTests
         }
         finally
         {
+            factory.ReleaseExecution();
             releaseWriter.Set();
             await barrier.WaitAsync(TimeSpan.FromSeconds(5));
         }
@@ -61,6 +65,45 @@ public sealed partial class ManualInspectionRuntimeTests
         Assert.Null(run.ResultPayloadJson);
         Assert.Null(run.ResultPayloadHash);
         Assert.Null(run.QualificationPayload);
+        Assert.Equal(0, harness.Facility.WriteCount);
+    }
+
+    private sealed class QualificationWriterRaceFactory : IVisionAlgorithmFactory
+    {
+        private readonly ManualFactory _inner = new();
+        private readonly TaskCompletionSource<bool> _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _released =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public AlgorithmDescriptor Descriptor => _inner.Descriptor;
+        internal Task ExecutionEntered => _entered.Task;
+        internal void ReleaseExecution() => _released.TrySetResult(true);
+
+        public ValueTask<IReadOnlyList<AlgorithmValidationIssue>> ValidateConfigurationAsync(
+            AlgorithmConfigurationSnapshot configuration, CancellationToken cancellationToken = default) =>
+            _inner.ValidateConfigurationAsync(configuration, cancellationToken);
+
+        public async ValueTask<IVisionAlgorithm> CreateAsync(AlgorithmConfigurationSnapshot configuration,
+            CancellationToken cancellationToken = default) =>
+            new GatedAlgorithm(this, await _inner.CreateAsync(configuration, cancellationToken));
+
+        private sealed class GatedAlgorithm : IVisionAlgorithm
+        {
+            private readonly QualificationWriterRaceFactory _owner;
+            private readonly IVisionAlgorithm _inner;
+            internal GatedAlgorithm(QualificationWriterRaceFactory owner, IVisionAlgorithm inner)
+            { _owner = owner; _inner = inner; }
+            public ValueTask WarmUpAsync(CancellationToken cancellationToken = default) =>
+                _inner.WarmUpAsync(cancellationToken);
+            public async ValueTask<AlgorithmResult> ExecuteAsync(AlgorithmExecutionContext context,
+                CancellationToken cancellationToken = default)
+            {
+                _owner._entered.TrySetResult(true);
+                await _owner._released.Task.WaitAsync(cancellationToken);
+                return await _inner.ExecuteAsync(context, cancellationToken);
+            }
+            public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        }
     }
 
     private static async Task WaitForQueuedQualificationSuccessAsync(SqliteCommandStore store)

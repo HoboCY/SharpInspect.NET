@@ -26,6 +26,7 @@ public sealed partial class StationRuntime
         if (!ReferenceEquals(_stationQualificationOwner, owner) || owner.Retired.Task.IsCompleted) return;
         owner.ExitRequested = true;
         owner.Aborted |= abort;
+        owner.CycleObserver?.RevokeAdmission();
         owner.ExitReason = reason;
         CancelStationQualification(owner, abort);
         PublishStationQualificationLocked(owner, _stationQualificationSnapshot?.Phase ?? StationQualificationSessionPhase.Restoring, reason);

@@ -102,10 +102,12 @@ public sealed partial class ManualInspectionRuntimeTests
     [Fact]
     public async Task V137_S12_SuccessWithoutResultFrameOrPayloadCannotFinalizeAdmittedRun()
     {
-        await using var harness = await QualificationHarness.CreateAsync(blockWrite: true);
+        var factory = new QualificationWriterRaceFactory();
+        await using var harness = await QualificationHarness.CreateAsync(
+            qualificationExecutionFactory: factory);
         AssertAccepted(await harness.StartWithFreshStepUpAsync(),
             "qualification semantic success-boundary start");
-        await harness.Facility.WriteEntered.WaitAsync(TimeSpan.FromSeconds(15));
+        await factory.ExecutionEntered.WaitAsync(TimeSpan.FromSeconds(15));
         var running = await harness.WaitForSnapshotAsync(snapshot =>
             snapshot.Phase == StationQualificationSessionPhase.Running &&
             snapshot.CurrentRunId is not null,
@@ -113,6 +115,7 @@ public sealed partial class ManualInspectionRuntimeTests
         var sessionId = Assert.IsType<Guid>(running.SessionId);
         var before = await LastQualificationEventAsync(harness, sessionId);
         var admitted = Assert.IsType<StationQualificationRunRecord>(before.Run);
+        Assert.False(admitted.Terminal);
         var incompleteSuccess = new StationQualificationRunRecord(
             admitted.Position, admitted.RunId, admitted.SessionId, admitted.StimulusSequence,
             admitted.ScenarioId, admitted.ContextHash, admitted.ControllerEpoch,
@@ -125,7 +128,7 @@ public sealed partial class ManualInspectionRuntimeTests
 
         AssertRejectedWithoutCursorAdvance(rejected, before,
             await LastQualificationEventAsync(harness, sessionId));
-        harness.Facility.ReleaseWrite();
+        factory.ReleaseExecution();
         var terminal = await harness.WaitForSnapshotAsync(snapshot =>
             snapshot.SessionId == sessionId &&
             snapshot.Phase is StationQualificationSessionPhase.Closed or

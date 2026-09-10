@@ -65,7 +65,7 @@ internal sealed partial class SqliteCommandStore
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
             AuditChainDatabase.Require(schema is CalibrationImportStoreOptions.SchemaVersion or
-                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+                ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
                 schema < CalibrationImportStoreOptions.SchemaVersion
                     ? "CalibrationImportGovernedMigrationRequired" : "StoreSchemaTooNew");
             AuditChainDatabase.Require(_options.PreviewSessions is not null &&
@@ -94,7 +94,8 @@ internal sealed partial class SqliteCommandStore
                 productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies);
+                traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                qualificationCycleOptions: _options.QualificationCycles);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
                 RequireStationQualificationWriteSnapshot(database, verification, deadline);

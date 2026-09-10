@@ -1,6 +1,7 @@
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.Cycles;
 
 namespace SharpInspect.Runtime;
 
@@ -8,27 +9,33 @@ public sealed partial class StationRuntime
 {
     private async Task RecordStationQualificationProgressAsync(StationQualificationOwner owner,
         StationQualificationSessionPhase phase, string reason, QualificationFacilityObservation? observation = null,
-        StationQualificationRunRecord? run = null, bool terminal = false)
+        StationQualificationRunRecord? run = null, bool terminal = false,
+        QualificationCycleWriteRequest? cycle = null)
     {
         if (!await _commandGate.WaitAsync(_audit!.CommitTimeout).ConfigureAwait(false))
-            throw new InvalidOperationException("StationQualificationProgressRuntimeBusy");
+            throw cycle is null ? new InvalidOperationException("StationQualificationProgressRuntimeBusy") :
+                new InspectionCyclePersistenceException("QualificationCycleProgressPersistenceBusy");
         try
         {
-            await AppendStationQualificationProgressLockedAsync(owner, phase, reason, observation, run, terminal).ConfigureAwait(false);
+            await AppendStationQualificationProgressLockedAsync(owner, phase, reason, observation, run, terminal, cycle: cycle).ConfigureAwait(false);
         }
         finally { _commandGate.Release(); }
     }
 
-    private async Task AppendStationQualificationProgressLockedAsync(StationQualificationOwner owner,
+    private async Task<StationQualificationTransactionResult> AppendStationQualificationProgressLockedAsync(StationQualificationOwner owner,
         StationQualificationSessionPhase phase, string reason, QualificationFacilityObservation? observation = null,
-        StationQualificationRunRecord? run = null, bool terminal = false)
+        StationQualificationRunRecord? run = null, bool terminal = false, StoreDeadline? deadline = null,
+        QualificationCycleWriteRequest? cycle = null)
     {
+        bool AllowCycleDrain() => cycle is not null && !owner.Aborted &&
+            (cycle.Kind == QualificationCycleEventKind.ProtocolRequestRejected || owner.CycleExecuting &&
+                owner.CurrentRunId?.Value == cycle.RunId?.Value && cycle.Kind != QualificationCycleEventKind.Admitted);
         lock (_sync)
         {
             if (!ReferenceEquals(_stationQualificationOwner, owner))
                 throw new OperationCanceledException("StationQualificationOwnerChanged");
             if (!terminal && phase is not (StationQualificationSessionPhase.Restoring or StationQualificationSessionPhase.RecoveryBlocked) && run is not { Terminal: true } &&
-                (owner.ExitRequested || owner.Aborted))
+                (owner.ExitRequested || owner.Aborted) && !AllowCycleDrain())
                 throw new OperationCanceledException("StationQualificationProgressRevoked");
             // This serialized progress admission precedes a later local Stop.
             // Stop can revoke physical work while the writer finishes recording
@@ -42,14 +49,22 @@ public sealed partial class StationRuntime
             RecoveryAttempt: owner.RecoveryAttempt,
             CommandAuthorizationTarget: fact.CommandKind == AuditedCommandKind.StartStationQualificationSession
                 ? owner.Header.AuthorizationTarget : owner.ExitAuthorizationTarget,
-            AuthorizeProgress: _authorization!.AuthorizeStationQualificationProgress);
+            AuthorizeProgress: _authorization!.AuthorizeStationQualificationProgress, Cycle: cycle);
         var result = await ((SqliteCommandStore)_audit!).AppendStationQualificationProgressAsync(request,
-            new StoreDeadline(_audit!.CommitTimeout), CancellationToken.None).ConfigureAwait(false);
+            deadline ?? new StoreDeadline(_audit!.CommitTimeout), CancellationToken.None).ConfigureAwait(false);
+        if (cycle is not null && result.Outcome.Audit != AuditPersistence.Persisted)
+            throw new InspectionCyclePersistenceException(result.Outcome.ReasonCode);
         if (result.Outcome.Audit != AuditPersistence.Persisted || result.Event is null || !result.Accepted)
             throw new InvalidOperationException(result.Outcome.ReasonCode);
         lock (_sync)
         {
             owner.LastEvent = result.Event;
+            if (cycle is not null)
+            {
+                owner.LastCycleEvent = result.CycleEvent ?? throw new InvalidOperationException("QualificationCycleCommitReceiptMissing");
+                if (cycle.Kind == QualificationCycleEventKind.Admitted) owner.ModbusRecoveryRequired = true;
+                if (cycle.Kind == QualificationCycleEventKind.AckReset) owner.ModbusRecoveryRequired = false;
+            }
             if (run is { Terminal: false })
             {
                 owner.CurrentRun = result.Event.Run ?? run;
@@ -57,10 +72,11 @@ public sealed partial class StationRuntime
             }
             if (!ReferenceEquals(_stationQualificationOwner, owner) ||
                 (!terminal && phase is not (StationQualificationSessionPhase.Restoring or StationQualificationSessionPhase.RecoveryBlocked) && run is not { Terminal: true } &&
-                    (owner.ExitRequested || owner.Aborted)))
+                    (owner.ExitRequested || owner.Aborted) && !AllowCycleDrain()))
                 throw new OperationCanceledException("StationQualificationProgressRevokedAfterCommit");
             PublishStationQualificationLocked(owner, phase, result.Event.Run?.ReasonCode ?? reason);
         }
+        return result;
     }
 
     private async Task AdmitStationQualificationRunAsync(StationQualificationOwner owner, QualificationFacilityStimulus stimulus,
@@ -84,7 +100,9 @@ public sealed partial class StationRuntime
                 now, null, null, InspectionDecision.Unknown, "StationQualificationRunAdmitted",
                 null, null, null, null, null, null);
             await AppendStationQualificationProgressLockedAsync(owner, StationQualificationSessionPhase.Running,
-                "StationQualificationRunAdmitted", observation: observation, run: run).ConfigureAwait(false);
+                "StationQualificationRunAdmitted", observation: observation, run: run,
+                cycle: owner.CycleStoragePolicy is null ? null : new(QualificationCycleEventKind.Admitted,
+                    run.RunId, owner.Header.Plan.ProfileHash, owner.CycleStoragePolicy)).ConfigureAwait(false);
             lock (_sync)
             {
                 owner.CurrentRun = run;
@@ -98,18 +116,22 @@ public sealed partial class StationRuntime
         finally { _commandGate.Release(); }
     }
 
-    private async Task CompleteStationQualificationRunAsync(StationQualificationOwner owner, AlgorithmExecutionOutcome? outcome,
+    private async Task<(StationQualificationRunRecord Run, QualificationCycleEvent? Cycle)> CompleteStationQualificationRunAsync(StationQualificationOwner owner, AlgorithmExecutionOutcome? outcome,
         ExecutionStatus status, string reason, FrameMetadata? metadata, FrameProvenance? provenance,
         StationQualificationPayload? payload)
     {
-        if (!await _commandGate.WaitAsync(_audit!.CommitTimeout).ConfigureAwait(false))
+        var timeout = owner.CycleStoragePolicy?.Policy.TraceCommitTimeout ?? _audit!.CommitTimeout;
+        if (timeout > _audit!.CommitTimeout) timeout = _audit.CommitTimeout;
+        var deadline = new StoreDeadline(timeout);
+        if (!await _commandGate.WaitAsync(PositiveRemaining(deadline)).ConfigureAwait(false))
             throw new InvalidOperationException("StationQualificationRunTerminalBusy");
         try
         {
             var admitted = owner.CurrentRun ?? throw new InvalidOperationException("StationQualificationRunAdmissionMissing");
             lock (_sync)
-                if (owner.Aborted && status == ExecutionStatus.Success)
-                { status = ExecutionStatus.Cancelled; reason = "StationQualificationAbortedBeforeTerminal"; }
+                if (owner.Aborted)
+                { status = ExecutionStatus.Cancelled; reason = owner.ExitReason == "QualificationControllerEpochChanged" ?
+                    owner.ExitReason : "StationQualificationAbortedBeforeTerminal"; payload = null; }
             string? json = null;
             string? hash = null;
             if (status == ExecutionStatus.Success)
@@ -126,17 +148,23 @@ public sealed partial class StationRuntime
                 admitted.StimulusSequence, admitted.ScenarioId, admitted.ContextHash, admitted.ControllerEpoch,
                 admitted.CycleSequence, admitted.AdmittedAtUtc, completedAt, status,
                 status == ExecutionStatus.Success ? outcome!.Decision : InspectionDecision.Unknown, reason,
-                metadata, provenance, json, hash, status == ExecutionStatus.Success ? payload : null, outcome?.Timing);
-            await AppendStationQualificationProgressLockedAsync(owner, owner.RecoveryAttempt is not null ?
+                metadata, provenance, json, hash, payload, outcome?.Timing);
+            var terminalTransaction = await AppendStationQualificationProgressLockedAsync(owner, owner.RecoveryAttempt is not null ?
                 StationQualificationSessionPhase.Restoring : StationQualificationSessionPhase.Running,
-                reason, run: run).ConfigureAwait(false);
+                reason, run: run, deadline: deadline,
+                cycle: owner.CycleStoragePolicy is null ? null : new(QualificationCycleEventKind.CoreCommitted,
+                    run.RunId, owner.Header.Plan.ProfileHash)).ConfigureAwait(false);
             lock (_sync)
             {
-                owner.CurrentRun = owner.LastEvent.Run ??
+                owner.CurrentRun = terminalTransaction.Event?.Run ??
                     throw new InvalidOperationException("StationQualificationRunTerminalMissing");
                 owner.LastRunId = owner.CurrentRun.RunId;
-                if (owner.Execution is null or { ActiveExecutionCount: 0 })
+                var committed = owner.CurrentRun;
+                if (owner.CycleStoragePolicy is not null && deadline.Expired)
+                    throw new TimeoutException("QualificationTraceCommitTimeout");
+                if (!owner.CycleExecuting && owner.Execution is (null or { ActiveExecutionCount: 0 }))
                 { owner.CurrentRun = null; owner.CurrentRunId = null; }
+                return (committed, terminalTransaction.CycleEvent);
             }
         }
         finally { _commandGate.Release(); }
@@ -145,7 +173,7 @@ public sealed partial class StationRuntime
     private StationQualificationRunRecord FinalizeStationQualificationRun(StationQualificationOwner owner,
         StationQualificationRunRecord proposed)
     {
-        if (proposed.ExecutionStatus != ExecutionStatus.Success) return proposed;
+        if (proposed.QualificationPayload is null) return proposed;
         // The serialized writer calls this after its fresh cursor check. Abort
         // fixes the terminal result here; graceful draining preserves success.
         bool aborted;
@@ -155,7 +183,8 @@ public sealed partial class StationRuntime
         return new(proposed.Position, proposed.RunId, proposed.SessionId, proposed.StimulusSequence,
             proposed.ScenarioId, proposed.ContextHash, proposed.ControllerEpoch, proposed.CycleSequence,
             proposed.AdmittedAtUtc, proposed.CompletedAtUtc, ExecutionStatus.Cancelled,
-            InspectionDecision.Unknown, "StationQualificationAbortedBeforeTerminal",
+            InspectionDecision.Unknown, owner.ExitReason == "QualificationControllerEpochChanged" ?
+                owner.ExitReason : "StationQualificationAbortedBeforeTerminal",
             proposed.FrameMetadata, proposed.FrameProvenance, null, null, null, proposed.Timing);
     }
 

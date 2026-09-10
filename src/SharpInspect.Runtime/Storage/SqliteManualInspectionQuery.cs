@@ -161,7 +161,7 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
             AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+                ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
                 schema < ManualInspectionStoreOptions.SchemaVersion
                     ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ProductionAdmission is not null && schema < ProductionAdmissionStoreOptions.SchemaVersion)
@@ -236,7 +236,8 @@ public sealed class SqliteManualInspectionQuery : IManualInspectionHistoryQuery
             productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies);
+                traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                qualificationCycleOptions: _options.QualificationCycles);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);

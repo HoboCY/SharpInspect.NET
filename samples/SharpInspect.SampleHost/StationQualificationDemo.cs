@@ -8,6 +8,7 @@ using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Qualification;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.StoragePolicies;
 
 namespace SharpInspect.SampleHost;
 
@@ -17,12 +18,12 @@ namespace SharpInspect.SampleHost;
 /// </summary>
 internal static class StationQualificationDemo
 {
-    internal static int Run(string directory, bool queryOnly)
+    internal static int Run(string directory, bool queryOnly, bool modbus = false)
     {
         try
         {
-            RunAsync(Path.GetFullPath(directory), queryOnly).GetAwaiter().GetResult();
-            Console.WriteLine(queryOnly
+            RunAsync(Path.GetFullPath(directory), queryOnly, modbus).GetAwaiter().GetResult();
+            Console.WriteLine(modbus ? "V140 independent Modbus qualification API PASS; production qualification NotRun" : queryOnly
                 ? "V137_N02 station-qualification-query PASS readOnly=true databaseUnchanged=true"
                 : "V137_N01 station-qualification PASS rejected=true facilityOpen=0 productionAuthority=false");
             return 0;
@@ -34,10 +35,11 @@ internal static class StationQualificationDemo
         }
     }
 
-    private static async Task RunAsync(string directory, bool queryOnly)
+    private static async Task RunAsync(string directory, bool queryOnly, bool modbus)
     {
         Directory.CreateDirectory(directory);
-        var options = Options(directory);
+        var options = Options(directory, modbus);
+        var evidenceName = modbus ? "modbus-qualification" : "station-qualification";
         if (queryOnly)
         {
             Require(File.Exists(options.DatabasePath), "QualificationConsumerDatabaseMissing");
@@ -48,10 +50,17 @@ internal static class StationQualificationDemo
             Require(current.Available && page.Available && !current.RecoveryRequired &&
                 current.Header is null && page.Events.Count == 0 && page.Runs.Count == 0,
                 "QualificationConsumerUnexpectedHistory");
-            Require(before == HashFile(options.DatabasePath), "QualificationConsumerReadChangedDatabase");
-            await WriteEvidenceAsync(directory, "station-qualification-restart.json", new
+            if (modbus)
             {
-                CaseId = "V137_N02", Result = "Pass", ReadOnly = true, WriterStarted = false,
+                var cycles = await new SqliteQualificationCycleHistoryQuery(options).ReadCurrentAsync();
+                var cyclePage = await new SqliteQualificationCycleHistoryQuery(options).QueryAsync(new(PageSize: 128));
+                Require(cycles.Available && !cycles.RecoveryRequired && cycles.LastEvent is null &&
+                    cyclePage.Available && cyclePage.Events.Count == 0, "QualificationConsumerUnexpectedCycleHistory");
+            }
+            Require(before == HashFile(options.DatabasePath), "QualificationConsumerReadChangedDatabase");
+            await WriteEvidenceAsync(directory, evidenceName + "-restart.json", new
+            {
+                CaseId = modbus ? "V140_N02" : "V137_N02", Result = "Pass", ReadOnly = true, WriterStarted = false,
                 DatabaseUnchanged = true, EventCount = page.Events.Count, RunCount = page.Runs.Count,
                 Ready = false, ProductionAuthority = false, PhysicalHardwareQualification = "NotRun"
             }).ConfigureAwait(false);
@@ -59,10 +68,14 @@ internal static class StationQualificationDemo
         }
 
         Require(!File.Exists(options.DatabasePath), "QualificationConsumerRequiresFreshDirectory");
-        var plan = Plan();
+        var profile = modbus ? new ModbusQualificationProfile("Sample.Modbus", "1", "PublicBoundary.Rejection",
+            "127.0.0.1", 15020, 1, 100, 200, 1, Hash('8'), TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), QualificationEvidenceCaptureMode.None) : null;
+        var plan = Plan(profile);
         var facility = new UnusedFacility(plan.QualificationHarnessIdentity);
         var services = new ServiceCollection();
-        services.AddSharpInspectStationQualificationSessions(plan, facility);
+        if (profile is not null) services.AddSharpInspectModbusStationQualificationSessions(plan, facility, profile);
+        else services.AddSharpInspectStationQualificationSessions(plan, facility);
         services.AddSharpInspectSqliteRuntime(options, TimeSpan.FromMilliseconds(100));
         RuntimeCommandOutcome outcome;
         StationStateSnapshot after;
@@ -95,10 +108,17 @@ internal static class StationQualificationDemo
                 .QueryAsync(new(PageSize: 20), timeout.Token).ConfigureAwait(false);
             Require(history.Available && history.Events.Count == 0 && history.Runs.Count == 0,
                 "QualificationConsumerRejectedSessionPersisted");
+            if (modbus)
+            {
+                var cycles = await provider.GetRequiredService<IQualificationCycleHistoryQuery>()
+                    .QueryAsync(new(PageSize: 128), timeout.Token);
+                Require(cycles.Available && cycles.Events.Count == 0 && !cycles.RecoveryRequired,
+                    "QualificationConsumerRejectedCyclePersisted");
+            }
         }
-        await WriteEvidenceAsync(directory, "station-qualification-evidence.json", new
+        await WriteEvidenceAsync(directory, evidenceName + "-evidence.json", new
         {
-            CaseId = "V137_N01", Result = "Pass", SchemaVersion = 23,
+            CaseId = modbus ? "V140_N01" : "V137_N01", Result = "Pass", SchemaVersion = modbus ? 26 : 23,
             ConsumerSha256 = HashFile(typeof(StationQualificationDemo).Assembly.Location),
             StartDisposition = outcome.Disposition.ToString(), Audit = outcome.Audit.ToString(),
             outcome.ReasonCode, outcome.CorrelationId, outcome.AttemptId,
@@ -110,7 +130,7 @@ internal static class StationQualificationDemo
         }).ConfigureAwait(false);
     }
 
-    private static ProductionStoreOptions Options(string directory)
+    private static ProductionStoreOptions Options(string directory, bool modbus)
     {
         var audit = new AuditIntegrityPolicy("SampleQualificationDevelopment", "development-v1",
             "SharpInspect.SampleQualification")
@@ -125,16 +145,19 @@ internal static class StationQualificationDemo
             {
                 Blocklist = PasswordBlocklist.Create("qualification-development", "1", new[] { "passwordpassword" })
             }, new Pbkdf2PasswordHasher(), AuthenticationPolicy.Development, AuthorizationPolicy.Development),
-            StationQualifications = new StationQualificationStoreOptions()
+            StationQualifications = new StationQualificationStoreOptions(),
+            QualificationCycles = modbus ? new QualificationCycleStoreOptions() : null,
+            TraceStoragePolicies = modbus ? new TraceStoragePolicyStoreOptions
+            { DeploymentScope = new("Sample.Modbus.Isolated", "1", Array.Empty<TraceStorageRouteIdentity>()) } : null
         };
     }
 
-    private static StationQualificationPlan Plan() => new(
+    private static StationQualificationPlan Plan(ModbusQualificationProfile? profile) => new(
         new RecipeActivationReference(1, Guid.Parse("b22c439b-1c0a-4a63-98da-c04392b13b72"), Hash('9')),
-        Hash('A'), Hash('B'), Hash('C'), Hash('D'),
+        Hash('A'), Hash('B'), profile?.ContentHash ?? Hash('C'), Hash('D'),
         new QualificationHarnessIdentity("Sample.UnusedQualificationFacility", "1", Hash('E'), Hash('F'), true),
         new QualificationControllerConfiguration(Hash('1'), Hash('2'), new byte[] { 1 }),
-        new QualificationControllerConfiguration(Hash('1'), Hash('2'), new byte[] { 2 }),
+        new QualificationControllerConfiguration(profile?.EndpointBindingHash ?? Hash('1'), Hash('2'), new byte[] { 2 }),
         new[]
         {
             new QualificationDestinationBinding(QualificationDestinationKind.ProductionPlcOutput, "plc", Hash('1')),

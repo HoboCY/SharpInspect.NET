@@ -1,6 +1,6 @@
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
-using SharpInspect.Runtime.Frames;
+using SharpInspect.Runtime.Cycles;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Qualification;
 
@@ -32,6 +32,13 @@ public sealed partial class StationRuntime
             await RecordStationQualificationProgressAsync(owner, StationQualificationSessionPhase.Isolating,
                 "StationQualificationIsolationVerified", isolated).ConfigureAwait(false);
             await PrepareStationQualificationPipelineAsync(owner).ConfigureAwait(false);
+            if (_qualificationModbusProfile is not null)
+            {
+                await RecordStationQualificationProgressAsync(owner, StationQualificationSessionPhase.Isolating,
+                    "QualificationModbusTransportSelected").ConfigureAwait(false);
+                await ExecuteModbusQualificationCyclesAsync(owner).ConfigureAwait(false);
+                return;
+            }
             while (true)
             {
                 lock (_sync) if (owner.ExitRequested) break;
@@ -134,62 +141,80 @@ public sealed partial class StationRuntime
 
     private async Task ExecuteStationQualificationRunAsync(StationQualificationOwner owner, QualificationFacilityStimulus stimulus)
     {
-        FrameBufferLease? frame = null;
-        FrameMetadata? metadata = null;
-        FrameProvenance? provenance = null;
-        AlgorithmExecutionOutcome? outcome = null;
-        StationQualificationPayload? payload = null;
-        var status = ExecutionStatus.Error;
-        var reason = "StationQualificationRunFailed";
+        var coordinator = new InspectionCycleCoordinator<StationQualificationPayload>();
+        coordinator.SetPhase(InspectionCyclePhase.Accepted);
+        await ExecuteStationQualificationCycleAsync(owner, stimulus, coordinator, async (receipt, token) =>
+        {
+            var written = await StartStationQualificationFacilityOperationAsync(owner,
+                () => owner.Facility!.WriteQualificationResultAsync(receipt.Payload, token).AsTask(),
+                "StationQualificationResultWrite").ConfigureAwait(false);
+            if (!written.Succeeded) throw new InvalidOperationException(written.ReasonCode);
+        }).ConfigureAwait(false);
+    }
+
+    private async Task ExecuteStationQualificationCycleAsync(StationQualificationOwner owner,
+        QualificationFacilityStimulus stimulus, InspectionCycleCoordinator<StationQualificationPayload> coordinator,
+        Func<InspectionCycleCommitReceipt<StationQualificationPayload>, CancellationToken, Task> publish)
+    {
+        var runId = owner.CurrentRunId ?? throw new InvalidOperationException("StationQualificationRunAdmissionMissing");
+        var baseline = owner.Header.TargetBaseline.SuccessfulSnapshot!;
+        var pipeline = new InspectionCyclePipeline<StationQualificationPayload>
+        {
+            Correlation = runId.Correlation,
+            Prepared = owner.Prepared!, Execution = owner.Execution!,
+            ExecutionRequest = new(baseline.Recipe, baseline.Release.Source.Content.AlgorithmExecutionTimeout),
+            GuardAsync = async () =>
+            {
+                await RequireStationQualificationAuthorityAsync(owner).ConfigureAwait(false);
+                await ObserveStationQualificationFacilityAsync(owner, isolated: true, targetController: false,
+                    owner.Cancellation.Token).ConfigureAwait(false);
+            },
+            AcquireAsync = token => owner.Camera!.AcquireQualificationFrameAsync(runId.Correlation,
+                _frameBufferPool!, _stationQualificationClock!, token,
+                () => ClaimStationQualificationPhysicalPhase(owner)),
+            ClaimExecution = () => ClaimStationQualificationPhysicalPhase(owner),
+            Encode = outcome =>
+            {
+                var encoded = new PlcResultPayloadEncoder().EncodeQualification(owner.Header.SessionId, runId,
+                    owner.Header.Plan.QualificationContextHash, baseline.PlcResultContract,
+                    stimulus.ControllerEpoch, stimulus.CycleSequence, outcome);
+                return (encoded.Payload, encoded.ReasonCode);
+            },
+            CommitAsync = async result =>
+            {
+                var transaction = await CompleteStationQualificationRunAsync(owner, result.Outcome, result.Status,
+                    result.ReasonCode, result.Metadata, result.Provenance, result.Payload).ConfigureAwait(false);
+                var committed = transaction.Run;
+                if (committed.QualificationPayload is null)
+                    return null;
+                if (committed.RunId.Value != runId.Value ||
+                    committed.QualificationPayload.ContentHash != result.Payload?.ContentHash)
+                    throw new InvalidOperationException("StationQualificationCommittedPayloadMismatch");
+                if (owner.CycleStoragePolicy is not null && (transaction.Cycle is not
+                    { Kind: QualificationCycleEventKind.CoreCommitted } receipt || receipt.RunId?.Value != runId.Value ||
+                    receipt.RunContentHash != committed.ContentHash ||
+                    receipt.PolicySnapshot?.ContentHash != owner.CycleStoragePolicy.ContentHash))
+                    throw new InvalidOperationException("QualificationCycleCommitReceiptMismatch");
+                return new(runId.Correlation, committed.ContentHash, committed.QualificationPayload);
+            },
+            PublishAsync = publish
+        };
+        lock (_sync) owner.CycleExecuting = true;
         try
         {
-            await RequireStationQualificationAuthorityAsync(owner).ConfigureAwait(false);
-            var acquired = await owner.Camera!.AcquireQualificationFrameAsync(owner.CurrentRunId!.Correlation,
-                _frameBufferPool!, _stationQualificationClock!, owner.Cancellation.Token,
-                () => ClaimStationQualificationPhysicalPhase(owner)).ConfigureAwait(false);
-            status = acquired.ExecutionStatus;
-            reason = acquired.ReasonCode;
-            if (!acquired.Succeeded || acquired.Frame is null) return;
-            frame = acquired.Frame;
-            metadata = frame.Frame.Metadata;
-            provenance = acquired.Provenance;
-            await RequireStationQualificationAuthorityAsync(owner).ConfigureAwait(false);
-            await ObserveStationQualificationFacilityAsync(owner, isolated: true, targetController: false,
-                owner.Cancellation.Token).ConfigureAwait(false);
-            var baseline = owner.Header.TargetBaseline.SuccessfulSnapshot!;
-            using (var phase = ClaimStationQualificationPhysicalPhase(owner))
-            {
-                if (!phase.Available) { status = ExecutionStatus.Cancelled; reason = phase.Failure ?? "StationQualificationStopping"; return; }
-                var attempt = await owner.Execution!.ExecuteAsync(owner.Prepared!, frame,
-                    new(baseline.Recipe, baseline.Release.Source.Content.AlgorithmExecutionTimeout), owner.Cancellation.Token).ConfigureAwait(false);
-                frame = null;
-                outcome = attempt.Outcome;
-                status = outcome?.ExecutionStatus ?? ExecutionStatus.Error;
-                reason = outcome?.ReasonCode ?? attempt.ReasonCode;
-            }
-            if (status != ExecutionStatus.Success || outcome is null) return;
-            await RequireStationQualificationAuthorityAsync(owner).ConfigureAwait(false);
-            await ObserveStationQualificationFacilityAsync(owner, isolated: true, targetController: false,
-                owner.Cancellation.Token).ConfigureAwait(false);
-            var encoded = new PlcResultPayloadEncoder().EncodeQualification(owner.Header.SessionId, owner.CurrentRunId!,
-                owner.Header.Plan.QualificationContextHash, baseline.PlcResultContract,
-                stimulus.ControllerEpoch, stimulus.CycleSequence, outcome);
-            if (encoded.Payload is null) { status = ExecutionStatus.Error; reason = encoded.ReasonCode; return; }
-            payload = encoded.Payload;
-            var written = await StartStationQualificationFacilityOperationAsync(owner,
-                () => owner.Facility!.WriteQualificationResultAsync(payload, owner.Cancellation.Token).AsTask(),
-                "StationQualificationResultWrite").ConfigureAwait(false);
-            if (!written.Succeeded) { status = ExecutionStatus.Error; reason = written.ReasonCode; }
+            var completed = await coordinator.ExecuteAsync(pipeline, owner.Cancellation.Token).ConfigureAwait(false);
+            if (coordinator.Phase == InspectionCyclePhase.FaultTerminated)
+                lock (_sync) RequestStationQualificationExitLocked(owner, completed.ReasonCode, abort: true);
         }
-        catch (OperationCanceledException) { status = ExecutionStatus.Cancelled; reason = "StationQualificationRunCancelled"; }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        { status = ExecutionStatus.Error; reason = "StationQualificationRunFailed"; }
         finally
         {
-            frame?.Dispose();
-            await CompleteStationQualificationRunAsync(owner, outcome, status, reason, metadata, provenance, payload).ConfigureAwait(false);
-            if (status != ExecutionStatus.Success)
-                lock (_sync) RequestStationQualificationExitLocked(owner, reason, abort: true);
+            lock (_sync)
+            {
+                owner.CycleExecuting = false;
+                if (!owner.ModbusRecoveryRequired && owner.CurrentRun is { Terminal: true } &&
+                    owner.Execution is (null or { ActiveExecutionCount: 0 }))
+                { owner.CurrentRun = null; owner.CurrentRunId = null; }
+            }
         }
     }
 }

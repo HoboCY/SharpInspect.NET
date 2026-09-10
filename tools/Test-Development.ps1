@@ -821,6 +821,9 @@ try {
     if ($Ticket -ge 39) {
         & (Join-Path $PSScriptRoot 'Test-TraceStoragePolicyConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
+    if ($Ticket -ge 40) {
+        & (Join-Path $PSScriptRoot 'Test-ModbusQualificationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

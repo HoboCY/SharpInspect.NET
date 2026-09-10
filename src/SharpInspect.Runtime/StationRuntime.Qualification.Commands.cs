@@ -47,6 +47,11 @@ public sealed partial class StationRuntime
             var lastEvent = owner?.LastEvent;
             if (command is StartStationQualificationSessionCommand)
             {
+                if (rejection is null && _qualificationModbusProfile is not null)
+                {
+                    try { await ReadQualificationCyclePolicyAsync(token).ConfigureAwait(false); }
+                    catch (InvalidOperationException) { rejection = "QualificationCycleStoragePolicyUnavailable"; }
+                }
                 var current = await new SqliteStationQualificationHistoryQuery(_stationQualificationStoreOptions!)
                     .ReadCurrentAsync(token).ConfigureAwait(false);
                 lastEvent = current.LastEvent;

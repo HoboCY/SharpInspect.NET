@@ -1,6 +1,7 @@
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Qualification;
 using SharpInspect.Runtime.Recipes;
+using SharpInspect.Runtime.Cycles;
 
 namespace SharpInspect.Runtime;
 
@@ -37,8 +38,15 @@ public sealed partial class StationRuntime
             owner.ExitRequested, _stationQualificationRecoveryBlocked, owner.ExitFact?.CorrelationId ?? owner.StartFact.CorrelationId);
         PublishLocked(_snapshot with
         {
-            Busy = owner.CurrentRunId is not null,
-            CurrentExecution = owner.CurrentRunId?.Correlation,
+            Busy = owner.CurrentRunId is not null && !owner.CycleFaultTerminated &&
+                owner.CycleCoordinator?.Phase is not (InspectionCyclePhase.AwaitAckHigh or InspectionCyclePhase.AwaitAckLow or InspectionCyclePhase.Completed),
+            CurrentExecution = owner.CycleFaultTerminated ? null : owner.CurrentRunId?.Correlation,
+            Handshake = owner.CycleCoordinator?.Phase switch
+            {
+                InspectionCyclePhase.AwaitAckHigh => HandshakePhase.AwaitingResultAck,
+                InspectionCyclePhase.AwaitAckLow => HandshakePhase.AwaitingAckReset,
+                _ => owner.ModbusRecoveryRequired && owner.CycleFaultTerminated ? HandshakePhase.Unknown : HandshakePhase.Idle
+            },
             Ready = false, ArmState = ProductionArmState.Disarmed
         });
     }

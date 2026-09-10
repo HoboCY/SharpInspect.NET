@@ -454,6 +454,29 @@ internal static class AuditChainDatabase
                  OR (Kind='TraceStoragePolicyEvent' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL AND NetworkPosition IS NULL AND ImagingPosition IS NULL AND CalibrationSessionPosition IS NULL AND CalibrationEventPosition IS NULL AND CalibrationManifestPosition IS NULL AND GovernancePosition IS NULL AND ReleasePosition IS NULL AND PlcResultContractPosition IS NULL AND ActivationPosition IS NULL AND PreviewPosition IS NULL AND CalibrationImportPosition IS NULL AND ManualInspectionPosition IS NULL AND ProductionAdmissionPosition IS NULL AND StationQualificationPosition IS NULL AND RecipeTransferPosition IS NULL AND TraceStoragePolicyPosition IS NOT NULL AND TraceStoragePolicyPosition>0)");
             return sql;
         }
+        if (version == QualificationCycleStoreOptions.SchemaVersion)
+        {
+            // Schema 26 keeps every schema-25 envelope byte-for-byte and adds
+            // one independent cursor for the shared qualification-cycle
+            // lifecycle ledger.  V22 is selected only for schema-26 rows.
+            var sql = SchemaSqlFor(TraceStoragePolicyStoreOptions.SchemaVersion)
+                .Replace("TraceStoragePolicyPosition INTEGER UNIQUE,", "TraceStoragePolicyPosition INTEGER UNIQUE, QualificationCyclePosition INTEGER UNIQUE,", StringComparison.Ordinal)
+                .Replace("TraceStoragePolicyPosition IS NULL)", "TraceStoragePolicyPosition IS NULL AND QualificationCyclePosition IS NULL)", StringComparison.Ordinal)
+                .Replace("TraceStoragePolicyPosition IS NOT NULL AND TraceStoragePolicyPosition>0)",
+                    "TraceStoragePolicyPosition IS NOT NULL AND TraceStoragePolicyPosition>0 AND QualificationCyclePosition IS NULL)", StringComparison.Ordinal)
+                .Replace("PRAGMA user_version=25;", @"
+             CREATE INDEX ix_audit_qualification_cycle_sequence ON audit_entries(Sequence) WHERE QualificationCyclePosition IS NOT NULL;
+             PRAGMA user_version=26;", StringComparison.Ordinal);
+            const string policyEvent = " OR (Kind='TraceStoragePolicyEvent'";
+            var policyStart = sql.LastIndexOf(policyEvent, StringComparison.Ordinal);
+            var checkClose = policyStart < 0 ? -1 : sql.IndexOf(")));", policyStart,
+                StringComparison.Ordinal);
+            if (policyStart < 0 || checkClose < 0)
+                throw new InvalidOperationException("AuditSchemaDefinitionInvalid");
+            sql = sql.Insert(checkClose + 1, @" OR (Kind='QualificationCycleStoreActivated' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL AND NetworkPosition IS NULL AND ImagingPosition IS NULL AND CalibrationSessionPosition IS NULL AND CalibrationEventPosition IS NULL AND CalibrationManifestPosition IS NULL AND GovernancePosition IS NULL AND ReleasePosition IS NULL AND PlcResultContractPosition IS NULL AND ActivationPosition IS NULL AND PreviewPosition IS NULL AND CalibrationImportPosition IS NULL AND ManualInspectionPosition IS NULL AND ProductionAdmissionPosition IS NULL AND StationQualificationPosition IS NULL AND RecipeTransferPosition IS NULL AND TraceStoragePolicyPosition IS NULL AND QualificationCyclePosition IS NULL)
+                 OR (Kind='QualificationCycleEvent' AND Sequence>1 AND FactPosition IS NULL AND IdentityPosition IS NULL AND AlarmPosition IS NULL AND ResultPosition IS NULL AND DraftPosition IS NULL AND CameraPosition IS NULL AND NetworkPosition IS NULL AND ImagingPosition IS NULL AND CalibrationSessionPosition IS NULL AND CalibrationEventPosition IS NULL AND CalibrationManifestPosition IS NULL AND GovernancePosition IS NULL AND ReleasePosition IS NULL AND PlcResultContractPosition IS NULL AND ActivationPosition IS NULL AND PreviewPosition IS NULL AND CalibrationImportPosition IS NULL AND ManualInspectionPosition IS NULL AND ProductionAdmissionPosition IS NULL AND StationQualificationPosition IS NULL AND RecipeTransferPosition IS NULL AND TraceStoragePolicyPosition IS NULL AND QualificationCyclePosition IS NOT NULL AND QualificationCyclePosition>0)");
+            return sql;
+        }
         throw new ArgumentOutOfRangeException(nameof(version));
     }
 
@@ -488,6 +511,8 @@ internal static class AuditChainDatabase
         "ProductionAdmissionEntryCapacityExceeded" or "ProductionAdmissionPayloadCapacityExceeded" or
         "ProductionAdmissionTotalCapacityExceeded" or "ProductionAdmissionCapacityExceeded" or
         "TraceStoragePolicyAuditCapacityExceeded" or "TraceStoragePolicyEntryCapacityExceeded" or
+        "QualificationCycleAuditCapacityExceeded" or "QualificationCycleEntryCapacityExceeded" or
+        "QualificationCyclePayloadCapacityExceeded" or "QualificationCycleTotalCapacityExceeded" or
         "TraceStoragePolicyPayloadCapacityExceeded" or "TraceStoragePolicyTotalCapacityExceeded" or
         "TraceStoragePolicyCapacityExceeded";
 
@@ -519,7 +544,7 @@ internal static class AuditChainDatabase
         if (schemaVersion is not (CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
-            RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) ||
+            RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) ||
             !TableExists(db, "camera_network_events", deadline)) return 0;
         var pending = PendingCameraNetworkOperations(db, deadline);
         return mode switch
@@ -541,7 +566,8 @@ internal static class AuditChainDatabase
         bool productionAdmissionData = false, long? productionAdmissionReserveOverride = null,
         bool stationQualificationData = false, long? stationQualificationReserveOverride = null,
         bool recipeTransferData = false, bool traceStoragePolicyData = false,
-        long? traceStoragePolicyReserveOverride = null)
+        long? traceStoragePolicyReserveOverride = null,
+        bool qualificationCycleData = false, long? qualificationCycleReserveOverride = null)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
         var previous = Tail(db, deadline);
@@ -558,38 +584,40 @@ internal static class AuditChainDatabase
             if (schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
                 CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                 PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
-                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, ImagingSetupStoreOptions.ControlVerificationReserve);
             if (schemaVersion == CalibrationSessionStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, CalibrationSessionStoreOptions.ControlVerificationReserve);
             if (schemaVersion is CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or
                 PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
-                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, CalibrationGovernanceStoreOptions.ControlVerificationReserve);
             if (schemaVersion is RecipeReleaseStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
-                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, RecipeReleaseStoreOptions.ControlVerificationReserve);
             if (schemaVersion is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or
-                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+                PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, PlcResultContractStoreOptions.ControlVerificationReserve);
             if (schemaVersion is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or
-                CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+                CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, RecipeActivationStoreOptions.ControlVerificationReserve);
             if (schemaVersion == PreviewSessionStoreOptions.SchemaVersion ||
                 schemaVersion == CalibrationImportStoreOptions.SchemaVersion ||
                 schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion))
+                (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion))
                 controlReserve = Math.Max(controlReserve, PreviewSessionStoreOptions.ControlVerificationReserve);
             if (schemaVersion == CalibrationImportStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, CalibrationImportStoreOptions.ControlVerificationReserve);
             if (schemaVersion == ManualInspectionStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, ManualInspectionStoreOptions.ControlVerificationReserve);
-            if (schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion)
+            if (schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, StationQualificationStoreOptions.ControlVerificationReserve);
             if (schemaVersion == RecipeTransferStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, RecipeTransferStoreOptions.ControlVerificationReserve);
-            if (schemaVersion == TraceStoragePolicyStoreOptions.SchemaVersion)
+            if (schemaVersion is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion)
                 controlReserve = Math.Max(controlReserve, TraceStoragePolicyStoreOptions.ControlVerificationReserve);
+            if (schemaVersion == QualificationCycleStoreOptions.SchemaVersion)
+                controlReserve = Math.Max(controlReserve, QualificationCycleStoreOptions.ControlVerificationReserve);
             var reservedTerminalOperations = CameraNetworkReservedTerminalOperations(db,
                 schemaVersion, cameraNetworkMode, deadline);
             // Schema 22 can carry the already-published schema-21 Manual
@@ -599,21 +627,25 @@ internal static class AuditChainDatabase
             var manualConfigured = TableExists(db, "manual_inspection_store_config", deadline) &&
                 TableExists(db, "manual_inspection_events", deadline);
             var manualReserve = (schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-                ((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) && manualConfigured))
+                ((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && manualConfigured))
                 ? manualInspectionReserveOverride ?? SqliteCommandStore.ReadManualInspectionAuditReserve(db, deadline) : 0;
             var productionConfigured = TableExists(db, "production_admission_store_config", deadline) &&
                 TableExists(db, "production_admission_events", deadline);
             var productionReserve = (schemaVersion == ProductionAdmissionStoreOptions.SchemaVersion ||
-                ((schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) && productionConfigured))
+                ((schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && productionConfigured))
                 ? productionAdmissionReserveOverride ?? SqliteCommandStore.ReadProductionAdmissionAuditReserve(db, deadline) : 0;
             var qualificationConfigured = TableExists(db, "station_qualification_store_config", deadline) &&
                 TableExists(db, "station_qualification_events", deadline);
             var stationReserve = schemaVersion == StationQualificationStoreOptions.SchemaVersion ||
-                ((schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion) && qualificationConfigured)
+                ((schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion) && qualificationConfigured)
                 ? stationQualificationReserveOverride ?? SqliteCommandStore.ReadStationQualificationAuditReserve(db, deadline) : 0;
+            var cycleConfigured = TableExists(db, "qualification_cycle_store_config", deadline) &&
+                TableExists(db, "qualification_cycle_events", deadline);
+            var cycleReserve = schemaVersion == QualificationCycleStoreOptions.SchemaVersion || cycleConfigured
+                ? qualificationCycleReserveOverride ?? SqliteCommandStore.ReadQualificationCycleAuditReserve(db, deadline) : 0;
             var limit = checked(policy.MaximumVerificationEntries - controlReserve -
                 reservedTerminalOperations * CameraNetworkStoreOptions.AuditEntriesPerTerminal - manualReserve - productionReserve - stationReserve -
-                (traceStoragePolicyReserveOverride ?? 0));
+                (traceStoragePolicyReserveOverride ?? 0) - cycleReserve);
             Require(sequence <= limit, archiveData
                 ? recipeDraftData ? "RecipeDraftArchiveCapacityExceeded" : "AlgorithmResultArchiveCapacityExceeded"
                 : cameraNetworkData || schemaVersion == CameraNetworkStoreOptions.SchemaVersion
@@ -629,6 +661,7 @@ internal static class AuditChainDatabase
                  : stationQualificationData ? "StationQualificationAuditCapacityExceeded"
                  : recipeTransferData ? "RecipeTransferAuditCapacityExceeded"
                  : traceStoragePolicyData ? "TraceStoragePolicyAuditCapacityExceeded"
+                 : qualificationCycleData ? "QualificationCycleAuditCapacityExceeded"
                  : previewData ? "PreviewSessionAuditCapacityExceeded"
                 : cameraSetupData ? "CameraSetupCapacityExceeded" : "AuditVerificationCapacityExceeded");
         }
@@ -698,7 +731,7 @@ internal static class AuditChainDatabase
     /// </summary>
     internal static long EnsureStationQualificationTransactionCapacity(sqlite3 db,
         AuditIntegrityPolicy policy, int writes, StationQualificationSessionEvent candidate,
-        StoreDeadline deadline)
+        StoreDeadline deadline, long? qualificationCycleReserveOverride = null)
     {
         Require(writes > 0, "StationQualificationAuditReservationInvalid");
         var configured = Read(db, @"
@@ -739,7 +772,8 @@ internal static class AuditChainDatabase
         var reserve = checked(postAuditReserve + writes - 1);
         _ = NextSequence(db, policy, deadline, archiveData: false,
             stationQualificationData: true,
-            stationQualificationReserveOverride: reserve);
+            stationQualificationReserveOverride: reserve,
+            qualificationCycleReserveOverride: qualificationCycleReserveOverride);
         return reserve;
     }
 
@@ -810,14 +844,17 @@ internal static class AuditChainDatabase
         long? manualInspectionReserveOverride = null,
         long? productionAdmissionReserveOverride = null,
         long? stationQualificationReserveOverride = null,
-        long? traceStoragePolicyReserveOverride = null)
+        long? traceStoragePolicyReserveOverride = null,
+        long? qualificationCycleReserveOverride = null)
     {
         var position = Scalar(db, "SELECT Position FROM command_facts WHERE EventId=?;", deadline, eventId.ToString("D"));
         var payload = CommandPayload(db, position, deadline);
         AppendEntry(db, policy, "CommandFact", position, payload, deadline,
             cameraNetworkMode: cameraNetworkMode, manualInspectionReserveOverride: manualInspectionReserveOverride,
             productionAdmissionReserveOverride: productionAdmissionReserveOverride,
-            stationQualificationReserveOverride: stationQualificationReserveOverride);
+            stationQualificationReserveOverride: stationQualificationReserveOverride,
+            traceStoragePolicyReserveOverride: traceStoragePolicyReserveOverride,
+            qualificationCycleReserveOverride: qualificationCycleReserveOverride);
         var tail = Tail(db, deadline);
         var lastCheckpoint = Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline);
         if (tail.Sequence - lastCheckpoint >= policy.CheckpointEveryEntries)
@@ -841,11 +878,13 @@ internal static class AuditChainDatabase
         long? stationQualificationPosition = null,
         long? recipeTransferPosition = null,
         long? traceStoragePolicyPosition = null,
+        long? qualificationCyclePosition = null,
         CameraNetworkAuditWriteMode cameraNetworkMode = CameraNetworkAuditWriteMode.Generic,
         long? manualInspectionReserveOverride = null,
         long? productionAdmissionReserveOverride = null,
         long? stationQualificationReserveOverride = null,
-        long? traceStoragePolicyReserveOverride = null)
+        long? traceStoragePolicyReserveOverride = null,
+        long? qualificationCycleReserveOverride = null)
     {
         var next = NextSequence(db, policy, deadline, archiveData: false,
             cameraNetworkData: cameraNetworkMode != CameraNetworkAuditWriteMode.Generic,
@@ -868,14 +907,42 @@ internal static class AuditChainDatabase
                  kind is "RecipeTransferStoreActivated" or "RecipeTransferEvent",
             traceStoragePolicyData: traceStoragePolicyPosition is not null ||
                 kind is "TraceStoragePolicyStoreActivated" or "TraceStoragePolicyEvent",
+            qualificationCycleData: qualificationCyclePosition is not null ||
+                kind is "QualificationCycleStoreActivated" or "QualificationCycleEvent",
              manualInspectionReserveOverride: manualInspectionReserveOverride,
              productionAdmissionReserveOverride: productionAdmissionReserveOverride,
              stationQualificationReserveOverride: stationQualificationReserveOverride,
-             traceStoragePolicyReserveOverride: traceStoragePolicyReserveOverride);
+             traceStoragePolicyReserveOverride: traceStoragePolicyReserveOverride,
+             qualificationCycleReserveOverride: qualificationCycleReserveOverride);
         var sequence = next.Sequence;
         var previousHash = next.PreviousHash;
         var schemaVersion = next.SchemaVersion;
-         var hash = schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion
+         var hash = schemaVersion >= QualificationCycleStoreOptions.SchemaVersion
+             ? EntryHashV22(schemaVersion, policy.StationId, sequence, previousHash, kind,
+                 position is { } ordinal26 ? Number(ordinal26) : null,
+                 identityPosition is { } identity26 ? Number(identity26) : null,
+                 alarmPosition is { } alarm26 ? Number(alarm26) : null,
+                 resultPosition is { } result26 ? Number(result26) : null,
+                 draftPosition is { } draft26 ? Number(draft26) : null,
+                 null,
+                 networkPosition is { } network26 ? Number(network26) : null,
+                 imagingPosition is { } imaging26 ? Number(imaging26) : null,
+                 calibrationSessionPosition is { } session26 ? Number(session26) : null,
+                 calibrationEventPosition is { } event26 ? Number(event26) : null,
+                 calibrationManifestPosition is { } manifest26 ? Number(manifest26) : null,
+                 governancePosition is { } governance26 ? Number(governance26) : null,
+                 releasePosition is { } release26 ? Number(release26) : null,
+                 plcResultContractPosition is { } contract26 ? Number(contract26) : null,
+                 activationPosition is { } activation26 ? Number(activation26) : null,
+                 previewPosition is { } preview26 ? Number(preview26) : null,
+                 calibrationImportPosition is { } import26 ? Number(import26) : null,
+                 manualInspectionPosition is { } manual26 ? Number(manual26) : null,
+                 productionAdmissionPosition is { } production26 ? Number(production26) : null,
+                 stationQualificationPosition is { } station26 ? Number(station26) : null,
+                 recipeTransferPosition is { } transfer26 ? Number(transfer26) : null,
+                 traceStoragePolicyPosition is { } trace26 ? Number(trace26) : null,
+                 qualificationCyclePosition is { } cycle26 ? Number(cycle26) : null, payload)
+             : schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion
              ? EntryHashV21(schemaVersion, policy.StationId, sequence, previousHash, kind,
                  position is { } ordinal25 ? Number(ordinal25) : null,
                  identityPosition is { } identity25 ? Number(identity25) : null,
@@ -1097,7 +1164,32 @@ internal static class AuditChainDatabase
                 calibrationEventPosition is { } calibrationEvent ? Number(calibrationEvent) : null,
                 calibrationManifestPosition is { } calibrationManifest ? Number(calibrationManifest) : null,
                 payload);
-        if (schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion)
+        if (schemaVersion >= QualificationCycleStoreOptions.SchemaVersion)
+            Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition,QualificationCyclePosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", deadline,
+                Number(sequence), kind, position is { } p26 ? Number(p26) : null,
+                identityPosition is { } i26 ? Number(i26) : null,
+                alarmPosition is { } a26 ? Number(a26) : null,
+                resultPosition is { } r26 ? Number(r26) : null,
+                draftPosition is { } d26 ? Number(d26) : null,
+                null, networkPosition is { } n26 ? Number(n26) : null,
+                imagingPosition is { } m26 ? Number(m26) : null,
+                calibrationSessionPosition is { } s26 ? Number(s26) : null,
+                calibrationEventPosition is { } e26 ? Number(e26) : null,
+                calibrationManifestPosition is { } f26 ? Number(f26) : null,
+                governancePosition is { } g26 ? Number(g26) : null,
+                releasePosition is { } q26 ? Number(q26) : null,
+                plcResultContractPosition is { } c26 ? Number(c26) : null,
+                activationPosition is { } x26 ? Number(x26) : null,
+                previewPosition is { } y26 ? Number(y26) : null,
+                calibrationImportPosition is { } z26 ? Number(z26) : null,
+                manualInspectionPosition is { } u26 ? Number(u26) : null,
+                productionAdmissionPosition is { } v26 ? Number(v26) : null,
+                stationQualificationPosition is { } w26 ? Number(w26) : null,
+                recipeTransferPosition is { } t26 ? Number(t26) : null,
+                traceStoragePolicyPosition is { } l26 ? Number(l26) : null,
+                qualificationCyclePosition is { } k26 ? Number(k26) : null,
+                Convert.ToBase64String(payload), previousHash, hash);
+        else if (schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion)
             Execute(db, "INSERT INTO audit_entries(Sequence,Kind,FactPosition,IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition,Payload,PreviousHash,Hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);", deadline,
                 Number(sequence), kind, position is { } p25 ? Number(p25) : null,
                 identityPosition is { } i25 ? Number(i25) : null,
@@ -1379,7 +1471,7 @@ internal static class AuditChainDatabase
         long? stationQualificationReserveOverride = null)
     {
         var schemaVersion = checked((int)Scalar(db, "PRAGMA user_version;", deadline));
-        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25, "AuditSchemaInvalid");
+        Require(schemaVersion is 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26, "AuditSchemaInvalid");
         var next = NextSequence(db, policy, deadline, archiveData: false,
             cameraNetworkMode: cameraNetworkMode, manualInspectionReserveOverride: manualInspectionReserveOverride,
             productionAdmissionReserveOverride: productionAdmissionReserveOverride,
@@ -1388,7 +1480,11 @@ internal static class AuditChainDatabase
         var ordinal = checked(Scalar(db, "SELECT COALESCE(MAX(IdentityPosition),0) FROM audit_entries;", deadline) + 1);
         var payload = fact.Encode(ordinal, schemaVersion);
         IdentityAuditEvent.VerifyPayload(payload, ordinal, policy.StationId, schemaVersion);
-        var hash = schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion
+        var hash = schemaVersion >= QualificationCycleStoreOptions.SchemaVersion
+            ? EntryHashV22(schemaVersion, policy.StationId, sequence, next.PreviousHash, "IdentityEvent",
+                null, Number(ordinal), null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, payload)
+            : schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion
             ? EntryHashV21(schemaVersion, policy.StationId, sequence, next.PreviousHash, "IdentityEvent",
                 null, Number(ordinal), null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, payload)
@@ -1512,7 +1608,7 @@ internal static class AuditChainDatabase
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='AlgorithmArchiveActivated';", deadline) == 0,
             "AlgorithmResultArchiveActivationConflict");
@@ -1536,7 +1632,7 @@ internal static class AuditChainDatabase
             CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadAuditBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true);
@@ -1557,7 +1653,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
             CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
             ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeDraftStoreActivated';", deadline) == 0,
             "RecipeDraftActivationConflict");
@@ -1585,7 +1681,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
             CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
             ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payload = SqliteCommandStore.ReadRecipeDraftBindingPayload(db, position, deadline);
         var next = NextSequence(db, policy, deadline, archiveData: true, recipeDraftData: true);
@@ -1606,7 +1702,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraSetupStoreActivated';", deadline) == 0,
             "CameraSetupActivationConflict");
@@ -1629,7 +1725,7 @@ internal static class AuditChainDatabase
         Require(schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_setup_events WHERE Position=?;", deadline, Number(position));
         Require(payloadText is { Length: > 0 and <= CameraSetupStorageCodec.MaximumEncodedPayloadChars },
@@ -1653,7 +1749,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
             ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraRecoveryStoreActivated';", deadline) == 0,
             "CameraRecoveryActivationConflict");
@@ -1671,7 +1767,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraRecoveryStoreOptions.SchemaVersion or CameraNetworkStoreOptions.SchemaVersion or
             ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_recovery_terminal_events WHERE Position=?;",
             deadline, Number(position));
@@ -1692,7 +1788,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CameraNetworkStoreActivated';", deadline) == 0,
             "CameraNetworkActivationConflict");
@@ -1710,7 +1806,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM camera_network_events WHERE Position=?;",
             deadline, Number(position));
@@ -1735,7 +1831,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ImagingSetupStoreActivated';",
             deadline) == 0, "ImagingSetupActivationConflict");
@@ -1753,7 +1849,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is ImagingSetupStoreOptions.SchemaVersion or CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         var payloadText = Text(db, "SELECT Payload FROM imaging_setup_revisions WHERE Position=?;",
             deadline, Number(position));
@@ -1775,7 +1871,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationStoreActivated';",
             deadline) == 0, "CalibrationActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -1797,7 +1893,7 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, string kind, long position, byte[] payload, StoreDeadline deadline)
     {
         Require(Scalar(db, "PRAGMA user_version;", deadline) is CalibrationSessionStoreOptions.SchemaVersion or
-            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            CalibrationGovernanceStoreOptions.SchemaVersion or RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         Require(kind is "CalibrationSessionHeader" or "CalibrationSessionEvent" or "CalibrationFrameManifest" &&
             position > 0 && payload.Length is > 0 and <= CalibrationSessionStoreOptions.SqliteValueLimitBytes &&
@@ -1820,7 +1916,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationGovernanceStoreActivated';",
             deadline) == 0, "CalibrationGovernanceActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -1838,7 +1934,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion is CalibrationGovernanceStoreOptions.SchemaVersion or
-            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+            RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(position > 0 && payload.Length is > 0 and <= CalibrationGovernanceStoreOptions.SqliteValueLimitBytes &&
             Convert.ToBase64String(payload).Length <= CalibrationGovernanceStoreOptions.SqliteValueLimitBytes * 2,
             "CalibrationGovernanceAuditPayloadInvalid");
@@ -1855,7 +1951,7 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, RecipeReleaseStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeReleaseStoreActivated';",
             deadline) == 0, "RecipeReleaseActivationConflict");
         var payload = options.EncodeActivationPayload();
@@ -1871,7 +1967,7 @@ internal static class AuditChainDatabase
         IAuditSigningKey key, long position, byte[] payload, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(position > 0 && payload.Length is > 0 and <= RecipeReleaseStoreOptions.SqliteValueLimitBytes &&
             Convert.ToBase64String(payload).Length <= RecipeReleaseStoreOptions.SqliteValueLimitBytes * 2,
             "RecipeReleaseAuditPayloadInvalid");
@@ -1889,7 +1985,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='PlcResultContractStoreActivated';",
             deadline) == 0, "PlcResultContractActivationConflict");
         options.Validate();
@@ -1907,7 +2003,7 @@ internal static class AuditChainDatabase
         PlcResultContractStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is PlcResultContractStoreOptions.SchemaVersion or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= options.MaximumPayloadBytes &&
@@ -1928,7 +2024,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeActivationStoreActivated';",
             deadline) == 0, "RecipeActivationActivationConflict");
@@ -1946,7 +2042,7 @@ internal static class AuditChainDatabase
         RecipeActivationStoreOptions options, StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= options.MaximumPayloadBytes &&
@@ -1969,7 +2065,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == PreviewSessionStoreOptions.SchemaVersion ||
             schemaVersion == CalibrationImportStoreOptions.SchemaVersion || schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='PreviewSessionStoreActivated';",
             deadline) == 0, "PreviewSessionActivationConflict");
@@ -1989,7 +2085,7 @@ internal static class AuditChainDatabase
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == PreviewSessionStoreOptions.SchemaVersion ||
             schemaVersion == CalibrationImportStoreOptions.SchemaVersion || schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= options.MaximumPayloadBytes &&
@@ -2011,7 +2107,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == CalibrationImportStoreOptions.SchemaVersion || schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='CalibrationImportStoreActivated';",
             deadline) == 0, "CalibrationImportActivationConflict");
@@ -2030,7 +2126,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == CalibrationImportStoreOptions.SchemaVersion || schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= CalibrationImportStoreOptions.MaximumPayloadBytesHardLimit &&
             Convert.ToBase64String(payload).Length <= CalibrationImportStoreOptions.SqliteValueLimitBytes * 2,
@@ -2053,7 +2149,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ManualInspectionStoreActivated';",
             deadline) == 0, "ManualInspectionActivationConflict");
@@ -2073,7 +2169,7 @@ internal static class AuditChainDatabase
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
         Require(schemaVersion == ManualInspectionStoreOptions.SchemaVersion ||
-            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion), "AuditSchemaInvalid");
+            (schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion), "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= options.MaximumPayloadBytes &&
@@ -2097,7 +2193,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion),
+        Require((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion),
             "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ProductionAdmissionStoreActivated';",
@@ -2119,7 +2215,7 @@ internal static class AuditChainDatabase
         long? productionAdmissionReserveOverride = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion),
+        Require((schemaVersion is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion),
             "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
@@ -2145,7 +2241,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+        Require(schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='StationQualificationStoreActivated';",
@@ -2165,10 +2261,11 @@ internal static class AuditChainDatabase
     internal static long AppendStationQualificationLedgerEntry(sqlite3 db,
         AuditIntegrityPolicy policy, IAuditSigningKey key, long position, byte[] payload,
         StationQualificationStoreOptions options, StoreDeadline deadline,
-        long? stationQualificationReserveOverride = null)
+        long? stationQualificationReserveOverride = null,
+        long? qualificationCycleReserveOverride = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+        Require(schemaVersion is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
             "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
@@ -2181,7 +2278,8 @@ internal static class AuditChainDatabase
             "StationQualificationPositionGap");
         var sequence = AppendEntry(db, policy, SqliteCommandStore.StationQualificationEventKind, null, payload, deadline,
             stationQualificationPosition: position,
-            stationQualificationReserveOverride: stationQualificationReserveOverride);
+            stationQualificationReserveOverride: stationQualificationReserveOverride,
+            qualificationCycleReserveOverride: qualificationCycleReserveOverride);
         var tail = Tail(db, deadline);
         if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
             policy.CheckpointEveryEntries)
@@ -2194,7 +2292,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeTransferStoreActivated';",
             deadline) == 0, "RecipeTransferActivationConflict");
@@ -2214,7 +2312,7 @@ internal static class AuditChainDatabase
         long? recipeTransferReserveOverride = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } && payload.Length <= options.MaximumPayloadBytes &&
             payload.Length <= RecipeTransferStoreOptions.MaximumPayloadBytesHardLimit,
@@ -2238,7 +2336,7 @@ internal static class AuditChainDatabase
         StoreDeadline deadline)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='TraceStoragePolicyStoreActivated';",
             deadline) == 0, "TraceStoragePolicyActivationConflict");
@@ -2257,7 +2355,7 @@ internal static class AuditChainDatabase
         long? traceStoragePolicyReserveOverride = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion == TraceStoragePolicyStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        Require(schemaVersion is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
         options.Validate();
         Require(position > 0 && payload is { Length: > 0 } &&
             payload.Length <= options.MaximumPayloadBytes &&
@@ -2271,6 +2369,50 @@ internal static class AuditChainDatabase
             traceStoragePolicyReserveOverride: traceStoragePolicyReserveOverride);
         var tail = Tail(db, deadline);
         Require(tail.Sequence == sequence, "TraceStoragePolicyAuditMismatch");
+        if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
+            policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return (sequence, tail.Hash);
+    }
+
+    internal static long AppendQualificationCycleStoreActivation(sqlite3 db,
+        AuditIntegrityPolicy policy, IAuditSigningKey key, QualificationCycleStoreOptions options,
+        StoreDeadline deadline)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        options.Validate();
+        Require(Scalar(db, "SELECT COUNT(*) FROM audit_entries WHERE Kind='QualificationCycleStoreActivated';",
+            deadline) == 0, "QualificationCycleActivationConflict");
+        AppendEntry(db, policy, "QualificationCycleStoreActivated", null,
+            options.EncodeActivationPayload(), deadline, qualificationCycleReserveOverride: 0);
+        var tail = Tail(db, deadline);
+        if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
+            policy.CheckpointEveryEntries)
+            CreateCheckpoint(db, policy, key, deadline);
+        return tail.Sequence;
+    }
+
+    internal static (long Sequence, string Hash) AppendQualificationCycleLedgerEntry(sqlite3 db,
+        AuditIntegrityPolicy policy, IAuditSigningKey key, long position, byte[] payload,
+        QualificationCycleStoreOptions options, StoreDeadline deadline,
+        long? qualificationCycleReserveOverride = null)
+    {
+        var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
+        Require(schemaVersion == QualificationCycleStoreOptions.SchemaVersion, "AuditSchemaInvalid");
+        options.Validate();
+        Require(position > 0 && payload is { Length: > 0 } &&
+            payload.Length <= options.MaximumPayloadBytes &&
+            payload.Length <= QualificationCycleStoreOptions.MaximumPayloadBytesHardLimit,
+            "QualificationCycleAuditPayloadInvalid");
+        Require(position == Scalar(db,
+            "SELECT COALESCE(MAX(Position),0)+1 FROM qualification_cycle_events;", deadline),
+            "QualificationCyclePositionGap");
+        var sequence = AppendEntry(db, policy, "QualificationCycleEvent", null, payload, deadline,
+            qualificationCyclePosition: position,
+            qualificationCycleReserveOverride: qualificationCycleReserveOverride);
+        var tail = Tail(db, deadline);
+        Require(tail.Sequence == sequence, "QualificationCycleAuditMismatch");
         if (tail.Sequence - Scalar(db, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;", deadline) >=
             policy.CheckpointEveryEntries)
             CreateCheckpoint(db, policy, key, deadline);
@@ -2352,10 +2494,11 @@ internal static class AuditChainDatabase
         ProductionAdmissionStoreOptions? productionAdmissionOptions = null,
         StationQualificationStoreOptions? stationQualificationOptions = null,
          RecipeTransferStoreOptions? recipeTransferOptions = null,
-         TraceStoragePolicyStoreOptions? traceStoragePolicyOptions = null)
+         TraceStoragePolicyStoreOptions? traceStoragePolicyOptions = null,
+         QualificationCycleStoreOptions? qualificationCycleOptions = null)
     {
         var schemaVersion = Scalar(db, "PRAGMA user_version;", deadline);
-        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25, "AuditSchemaInvalid");
+        Require(schemaVersion is 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26, "AuditSchemaInvalid");
         var schema16 = schemaVersion == RecipeReleaseStoreOptions.SchemaVersion;
         var schema17 = schemaVersion == PlcResultContractStoreOptions.SchemaVersion;
         var schema18 = schemaVersion == RecipeActivationStoreOptions.SchemaVersion;
@@ -2366,6 +2509,7 @@ internal static class AuditChainDatabase
         var schema23 = schemaVersion == StationQualificationStoreOptions.SchemaVersion;
         var schema24 = schemaVersion == RecipeTransferStoreOptions.SchemaVersion;
         var schema25 = schemaVersion == TraceStoragePolicyStoreOptions.SchemaVersion;
+        var schema26 = schemaVersion == QualificationCycleStoreOptions.SchemaVersion;
         if (schema22)
             Require(productionAdmissionOptions is not null, "ProductionAdmissionConfigurationRequired");
         if (schema23)
@@ -2377,6 +2521,12 @@ internal static class AuditChainDatabase
         }
         if (schema25)
             Require(traceStoragePolicyOptions is not null, "TraceStoragePolicyConfigurationRequired");
+        if (schema26)
+        {
+            Require(qualificationCycleOptions is not null, "QualificationCycleConfigurationRequired");
+            Require(stationQualificationOptions is not null, "StationQualificationConfigurationRequired");
+            Require(traceStoragePolicyOptions is not null, "TraceStoragePolicyConfigurationRequired");
+        }
         if (schema17)
         {
             Require(recipeDraftOptions is not null, "RecipeDraftConfigurationRequired");
@@ -2415,25 +2565,26 @@ internal static class AuditChainDatabase
             Require(recipeDraftOptions is not null, "RecipeDraftConfigurationRequired");
             Require(cameraSetupOptions is not null, "CameraSetupConfigurationRequired");
         }
-        if (schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25)
+        if (schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25 || schema26)
             RequireReleaseLedgerPresence(db, deadline, archiveOptions is not null,
                 cameraSetupOptions is not null, cameraRecoveryOptions is not null,
                 cameraNetworkOptions is not null, imagingSetupOptions is not null,
                 calibrationSessionOptions is not null, governanceOptions is not null,
-                release: schema25 ? releaseOptions is not null : schema24 ? releaseOptions is not null :
+                release: (schema25 || schema26) ? releaseOptions is not null : schema24 ? releaseOptions is not null :
                      schema21 || schema22 || schema23 ? releaseOptions is not null : true,
-                plcResultContract: schema25 ? contractOptions is not null : schema21 || schema22 || schema23 || schema24 ? contractOptions is not null : schema17 || schema18 || schema19 || schema20,
-                activation: schema25 ? activationOptions is not null : schema21 || schema22 || schema23 || schema24 ? activationOptions is not null : schema18 || schema19 || schema20,
-                preview: schema25 ? previewOptions is not null : schema21 || schema22 || schema23 || schema24 ? previewOptions is not null : schema19 || schema20,
-                calibrationImport: schema25 ? importOptions is not null : schema21 || schema22 || schema23 || schema24 ? importOptions is not null : schema20,
-                manualInspection: schema25 ? manualOptions is not null : schema22 || schema23 || schema24 ? manualOptions is not null : schema21,
-                productionAdmission: schema25 ? productionAdmissionOptions is not null : schema22 || ((schema23 || schema24) && productionAdmissionOptions is not null),
-                 stationQualification: schema25 ? stationQualificationOptions is not null : schema23 || (schema24 && stationQualificationOptions is not null),
-                 recipeTransfer: schema25 ? recipeTransferOptions is not null : schema24,
-                 traceStoragePolicy: schema25);
+                plcResultContract: (schema25 || schema26) ? contractOptions is not null : schema21 || schema22 || schema23 || schema24 ? contractOptions is not null : schema17 || schema18 || schema19 || schema20,
+                activation: (schema25 || schema26) ? activationOptions is not null : schema21 || schema22 || schema23 || schema24 ? activationOptions is not null : schema18 || schema19 || schema20,
+                preview: (schema25 || schema26) ? previewOptions is not null : schema21 || schema22 || schema23 || schema24 ? previewOptions is not null : schema19 || schema20,
+                calibrationImport: (schema25 || schema26) ? importOptions is not null : schema21 || schema22 || schema23 || schema24 ? importOptions is not null : schema20,
+                manualInspection: (schema25 || schema26) ? manualOptions is not null : schema22 || schema23 || schema24 ? manualOptions is not null : schema21,
+                productionAdmission: (schema25 || schema26) ? productionAdmissionOptions is not null : schema22 || ((schema23 || schema24) && productionAdmissionOptions is not null),
+                 stationQualification: (schema25 || schema26) ? stationQualificationOptions is not null : schema23 || (schema24 && stationQualificationOptions is not null),
+                 recipeTransfer: (schema25 || schema26) ? recipeTransferOptions is not null : schema24,
+                 traceStoragePolicy: schema25 || schema26,
+                 qualificationCycle: schema26);
         var hasIdentity = schemaVersion >= 3;
         var hasAlarm = schemaVersion >= 7;
-        var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25;
+        var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25 || schema26;
         var hasCamera = modernOptional ? cameraSetupOptions is not null : schemaVersion is CameraSetupStoreOptions.SchemaVersion or CameraRecoveryStoreOptions.SchemaVersion or
             CameraNetworkStoreOptions.SchemaVersion or ImagingSetupStoreOptions.SchemaVersion or
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion;
@@ -2454,8 +2605,9 @@ internal static class AuditChainDatabase
         var hasManual = modernOptional ? manualOptions is not null : schema21;
         var hasProductionAdmission = modernOptional ? productionAdmissionOptions is not null : schema22;
         var hasStationQualification = modernOptional ? stationQualificationOptions is not null : schema23;
-        var hasRecipeTransfer = schema24 || (schema25 && recipeTransferOptions is not null);
-        var hasTraceStoragePolicy = schema25;
+        var hasRecipeTransfer = schema24 || ((schema25 || schema26) && recipeTransferOptions is not null);
+        var hasTraceStoragePolicy = schema25 || schema26;
+        var hasQualificationCycle = schema26;
         if (hasCamera != (cameraSetupOptions is not null))
             throw new InvalidOperationException(hasCamera
                 ? "CameraSetupConfigurationRequired" : "CameraSetupGovernedMigrationRequired");
@@ -2504,6 +2656,9 @@ internal static class AuditChainDatabase
         if (hasTraceStoragePolicy != (traceStoragePolicyOptions is not null))
             throw new InvalidOperationException(hasTraceStoragePolicy
                 ? "TraceStoragePolicyConfigurationRequired" : "TraceStoragePolicyGovernedMigrationRequired");
+        if (hasQualificationCycle != (qualificationCycleOptions is not null))
+            throw new InvalidOperationException(hasQualificationCycle
+                ? "QualificationCycleConfigurationRequired" : "QualificationCycleGovernedMigrationRequired");
         if (hasGovernance)
         {
             governanceOptions!.Validate();
@@ -2558,6 +2713,11 @@ internal static class AuditChainDatabase
         {
             traceStoragePolicyOptions!.Validate();
             SqliteCommandStore.RequireConfiguredTraceStoragePolicies(db, traceStoragePolicyOptions, deadline);
+        }
+        if (hasQualificationCycle)
+        {
+            qualificationCycleOptions!.Validate();
+            SqliteCommandStore.RequireConfiguredQualificationCycles(db, qualificationCycleOptions, deadline);
         }
         var hasArchive = modernOptional ? archiveOptions is not null : schemaVersion == AlgorithmResultArchiveOptions.SchemaVersion ||
             ((schemaVersion is RecipeDraftStoreOptions.SchemaVersion or CameraSetupStoreOptions.SchemaVersion or
@@ -2655,7 +2815,9 @@ internal static class AuditChainDatabase
         }
         var tail = Tail(db, deadline);
         Require(tail.Sequence > 0, "AuditChainMissing");
-         var genesisPositionColumns = schema25
+         var genesisPositionColumns = schema26
+             ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition,QualificationCyclePosition"
+             : schema25
              ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition"
              : schema24
              ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition"
@@ -2685,10 +2847,10 @@ internal static class AuditChainDatabase
             (hasManual ? ",ManualInspectionPosition" : string.Empty);
         var genesis = Read(db, "SELECT Kind,Payload,PreviousHash,Hash,FactPosition," +
             genesisPositionColumns + " FROM audit_entries WHERE Sequence=1;", deadline,
-                 s => Enumerable.Range(0, schema25 ? 26 : schema24 ? 25 : schema23 ? 24 : schema22 ? 23 : hasManual ? 22 : hasImport ? 21 : hasPreview ? 20 : hasActivation ? 19 : hasContract ? 18 : hasRelease ? 17 : hasGovernance ? 16 : hasCalibration ? 15 : hasImaging ? 12 : 11)
+                 s => Enumerable.Range(0, schema26 ? 27 : schema25 ? 26 : schema24 ? 25 : schema23 ? 24 : schema22 ? 23 : hasManual ? 22 : hasImport ? 21 : hasPreview ? 20 : hasActivation ? 19 : hasContract ? 18 : hasRelease ? 17 : hasGovernance ? 16 : hasCalibration ? 15 : hasImaging ? 12 : 11)
                   .Select(i => SqliteNative.ColumnText(s, i)).ToArray()).SingleOrDefault();
         Require(genesis is not null && genesis[0] == "SigningKeyCreated" && genesis[2] == AuditCanonical.GenesisHash &&
-             ((!schema21 && !schema22 && !schema23 && !schema24 && !schema25) || genesis.Skip(4).All(value => value is null)) &&
+             ((!schema21 && !schema22 && !schema23 && !schema24 && !schema25 && !schema26) || genesis.Skip(4).All(value => value is null)) &&
             genesis[4] is null && genesis[5] is null && genesis[6] is null && genesis[7] is null && genesis[8] is null &&
             genesis[9] is null && genesis[10] is null && (!hasImaging || genesis[11] is null) &&
               (!hasCalibration || (genesis[12] is null && genesis[13] is null && genesis[14] is null)) &&
@@ -2699,9 +2861,14 @@ internal static class AuditChainDatabase
                   (!hasImport || genesis[20] is null) && (!hasManual || genesis[21] is null) &&
                   (!hasProductionAdmission || genesis[22] is null) && (!hasStationQualification || genesis[23] is null) &&
                   (!hasRecipeTransfer || genesis[24] is null) &&
-                  (!hasTraceStoragePolicy || genesis[25] is null),
+                  (!hasTraceStoragePolicy || genesis[25] is null) && (!hasQualificationCycle || genesis[26] is null),
                  "AuditGenesisMissingOrInvalid");
-           var genesisHash = schema25
+           var genesisHash = schema26
+               ? EntryHashV22(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
+                   genesis![0]!, genesis[4], genesis[5], genesis[6], genesis[7], genesis[8], genesis[9], genesis[10], genesis[11],
+                   genesis[12], genesis[13], genesis[14], genesis[15], genesis[16], genesis[17], genesis[18], genesis[19], genesis[20], genesis[21], genesis[22], genesis[23], genesis[24], genesis[25], genesis[26],
+                   Convert.FromBase64String(genesis[1]!))
+               : schema25
                ? EntryHashV21(schemaVersion, policy.StationId, 1, AuditCanonical.GenesisHash,
                    genesis![0]!, genesis[4], genesis[5], genesis[6], genesis[7], genesis[8], genesis[9], genesis[10], genesis[11],
                    genesis[12], genesis[13], genesis[14], genesis[15], genesis[16], genesis[17], genesis[18], genesis[19], genesis[20], genesis[21], genesis[22], genesis[23], genesis[24], genesis[25],
@@ -2836,6 +3003,10 @@ internal static class AuditChainDatabase
              "SELECT COUNT(*) FROM audit_entries WHERE Kind='RecipeTransferStoreActivated';", deadline) : 0;
         var traceStoragePolicyActivations = hasTraceStoragePolicy ? Scalar(db,
             "SELECT COUNT(*) FROM audit_entries WHERE Kind='TraceStoragePolicyStoreActivated';", deadline) : 0;
+        var qualificationCycleActivations = hasQualificationCycle ? Scalar(db,
+            "SELECT COUNT(*) FROM audit_entries WHERE Kind='QualificationCycleStoreActivated';", deadline) : 0;
+        var maxQualificationCycle = hasQualificationCycle ? Scalar(db,
+            "SELECT COUNT(*) FROM qualification_cycle_events;", deadline) : 0;
         Require(!hasArchive || archiveActivations == 1, "AlgorithmResultArchiveActivationMissing");
         Require(!hasDraft || draftActivations == 1, "RecipeDraftActivationMissing");
         Require(!hasCamera || cameraActivations == 1, "CameraSetupActivationMissing");
@@ -2858,6 +3029,7 @@ internal static class AuditChainDatabase
              "RecipeTransferActivationMissing");
         Require(!hasTraceStoragePolicy || traceStoragePolicyActivations == 1,
             "TraceStoragePolicyActivationMissing");
+        Require(!hasQualificationCycle || qualificationCycleActivations == 1, "QualificationCycleActivationMissing");
         Require(checked(maxFact + maxIdentity + maxAlarm + maxResult + maxDraft + maxCamera +
             maxRecovery + maxNetwork + maxImaging + maxCalibrationSession + maxCalibrationEvent + maxCalibrationManifest +
               maxGovernance + maxRelease + maxContract + maxActivation + maxPreview + maxImport + maxManual +
@@ -2865,7 +3037,7 @@ internal static class AuditChainDatabase
               networkActivations + imagingActivations + calibrationActivations + governanceActivations + releaseActivations +
               contractActivations + activationActivations + previewActivations + importActivations + manualActivations +
                productionAdmissionActivations + stationQualificationActivations + recipeTransferActivations +
-               traceStoragePolicyActivations + maxTraceStoragePolicy) == tail.Sequence - 1 && maxFact == Scalar(db,
+               traceStoragePolicyActivations + maxTraceStoragePolicy + qualificationCycleActivations + maxQualificationCycle) == tail.Sequence - 1 && maxFact == Scalar(db,
             "SELECT COALESCE(MAX(FactPosition),0) FROM audit_entries;", deadline) &&
             (!hasAlarm || maxAlarm == Scalar(db, "SELECT COALESCE(MAX(AlarmPosition),0) FROM audit_entries;", deadline)) &&
             (!hasArchive || maxResult == Scalar(db, "SELECT COALESCE(MAX(ResultPosition),0) FROM audit_entries;", deadline)) &&
@@ -2891,6 +3063,8 @@ internal static class AuditChainDatabase
                  "SELECT COALESCE(MAX(RecipeTransferPosition),0) FROM audit_entries;", deadline)) &&
              (!hasTraceStoragePolicy || maxTraceStoragePolicy == Scalar(db,
                  "SELECT COALESCE(MAX(TraceStoragePolicyPosition),0) FROM audit_entries;", deadline)) &&
+             (!hasQualificationCycle || maxQualificationCycle == Scalar(db,
+                 "SELECT COALESCE(MAX(QualificationCyclePosition),0) FROM audit_entries;", deadline)) &&
             Scalar(db, "SELECT COALESCE(MIN(Position),1) FROM command_facts;", deadline) == 1, "AuditUnchainedFact");
         long? anchored = null;
         if (policy.RequireExternalAnchor && validateAnchorReceipt)
@@ -2916,11 +3090,13 @@ internal static class AuditChainDatabase
          var fullImportVerification = hasImport && importOptions is not null;
          var fullProductionAdmissionVerification = hasProductionAdmission && productionAdmissionOptions is not null;
          var fullRecipeTransferVerification = hasRecipeTransfer && recipeTransferOptions is not null;
-         var fullTraceStoragePolicyVerification = hasTraceStoragePolicy && traceStoragePolicyOptions is not null;
+        var fullTraceStoragePolicyVerification = hasTraceStoragePolicy && traceStoragePolicyOptions is not null;
+        var fullQualificationCycleVerification = hasQualificationCycle && qualificationCycleOptions is not null;
         var prefixCheckpoint = startup && !fullArchiveVerification && !fullDraftVerification && !fullCameraVerification &&
             !fullRecoveryVerification && !fullNetworkVerification && !fullImagingVerification &&
             !fullCalibrationVerification && !fullGovernanceVerification && !fullReleaseVerification && !fullContractVerification && !fullActivationVerification && !fullPreviewVerification && !fullImportVerification &&
-             !fullProductionAdmissionVerification && !fullRecipeTransferVerification && !fullTraceStoragePolicyVerification ? checkpoint : ReadCheckpoint(db,
+            !fullProductionAdmissionVerification && !fullRecipeTransferVerification && !fullTraceStoragePolicyVerification &&
+            !fullQualificationCycleVerification ? checkpoint : ReadCheckpoint(db,
             "WHERE Sequence<=? ORDER BY Sequence DESC LIMIT 1", deadline, Number(request.AfterSequence));
         if (prefixCheckpoint is not null) VerifyCheckpoint(policy, prefixCheckpoint, trustedKeyId, trustedPublicKey);
         var after = prefixCheckpoint is null ? 0 : prefixCheckpoint.Sequence - 1;
@@ -2962,10 +3138,15 @@ internal static class AuditChainDatabase
          var recipeTransferOrdinal = hasRecipeTransfer ? Scalar(db,
              "SELECT RecipeTransferPosition FROM audit_entries WHERE RecipeTransferPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;",
              deadline, Number(after)) : 0;
-        var traceStoragePolicyOrdinal = hasTraceStoragePolicy ? Scalar(db,
-            "SELECT TraceStoragePolicyPosition FROM audit_entries WHERE TraceStoragePolicyPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;",
+         var traceStoragePolicyOrdinal = hasTraceStoragePolicy ? Scalar(db,
+             "SELECT TraceStoragePolicyPosition FROM audit_entries WHERE TraceStoragePolicyPosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;",
+             deadline, Number(after)) : 0;
+        var qualificationCycleOrdinal = hasQualificationCycle ? Scalar(db,
+            "SELECT QualificationCyclePosition FROM audit_entries WHERE QualificationCyclePosition IS NOT NULL AND Sequence<=? ORDER BY Sequence DESC LIMIT 1;",
             deadline, Number(after)) : 0;
-        var positionColumns = schema25
+        var positionColumns = schema26
+            ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition,QualificationCyclePosition"
+            : schema25
             ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition,TraceStoragePolicyPosition"
             : schema24
             ? "IdentityPosition,AlarmPosition,ResultPosition,DraftPosition,CameraPosition,NetworkPosition,ImagingPosition,CalibrationSessionPosition,CalibrationEventPosition,CalibrationManifestPosition,GovernancePosition,ReleasePosition,PlcResultContractPosition,ActivationPosition,PreviewPosition,CalibrationImportPosition,ManualInspectionPosition,ProductionAdmissionPosition,StationQualificationPosition,RecipeTransferPosition"
@@ -2986,6 +3167,17 @@ internal static class AuditChainDatabase
         var rows = Read(db, "SELECT Sequence,Kind,FactPosition,Payload,PreviousHash,Hash," + positionColumns +
             " FROM audit_entries WHERE Sequence>? ORDER BY Sequence LIMIT ?;", deadline, s =>
         {
+            if (schema26)
+                return new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
+                    SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
+                    SqliteNative.ColumnText(s, 5)!, SqliteNative.ColumnText(s, 6), SqliteNative.ColumnText(s, 7),
+                    SqliteNative.ColumnText(s, 8), SqliteNative.ColumnText(s, 9), SqliteNative.ColumnText(s, 10),
+                    SqliteNative.ColumnText(s, 11), SqliteNative.ColumnText(s, 12), SqliteNative.ColumnText(s, 13),
+                    SqliteNative.ColumnText(s, 14), SqliteNative.ColumnText(s, 15), SqliteNative.ColumnText(s, 16),
+                    SqliteNative.ColumnText(s, 17), SqliteNative.ColumnText(s, 18), SqliteNative.ColumnText(s, 19),
+                    SqliteNative.ColumnText(s, 20), SqliteNative.ColumnText(s, 21), SqliteNative.ColumnText(s, 22),
+                    SqliteNative.ColumnText(s, 23), SqliteNative.ColumnText(s, 24), SqliteNative.ColumnText(s, 25),
+                    SqliteNative.ColumnText(s, 26), SqliteNative.ColumnText(s, 27));
             if (schema25)
                 return new ChainRow(SqliteNative.ColumnInt64(s, 0), SqliteNative.ColumnText(s, 1)!,
                     SqliteNative.ColumnText(s, 2), SqliteNative.ColumnText(s, 3)!, SqliteNative.ColumnText(s, 4)!,
@@ -3072,9 +3264,13 @@ internal static class AuditChainDatabase
               var traceStoragePolicyKind = row.Kind is "TraceStoragePolicyStoreActivated" or "TraceStoragePolicyEvent";
               Require(recipeTransferKind || row.RecipeTransferPosition is null,
                   "AuditRecipeTransferPositionGap");
-              Require(traceStoragePolicyKind || row.TraceStoragePolicyPosition is null,
-                  "AuditTraceStoragePolicyPositionGap");
-              var encodedPayloadLimit = traceStoragePolicyKind ? traceStoragePolicyOptions!.MaximumPayloadBytes * 2 :
+               Require(traceStoragePolicyKind || row.TraceStoragePolicyPosition is null,
+                   "AuditTraceStoragePolicyPositionGap");
+               var qualificationCycleKind = row.Kind is "QualificationCycleStoreActivated" or "QualificationCycleEvent";
+               Require(qualificationCycleKind || row.QualificationCyclePosition is null,
+                   "AuditQualificationCyclePositionGap");
+               var encodedPayloadLimit = qualificationCycleKind ? qualificationCycleOptions!.MaximumPayloadBytes * 2 :
+                   traceStoragePolicyKind ? traceStoragePolicyOptions!.MaximumPayloadBytes * 2 :
                   stationKind ? stationQualificationOptions!.MaximumPayloadBytes * 2 :
                   row.Kind is "RecipeTransferStoreActivated" or "RecipeTransferEvent" ? recipeTransferOptions!.MaximumPayloadBytes * 2 :
                  manualKind ? manualOptions!.MaximumPayloadBytes * 2 :
@@ -3093,7 +3289,8 @@ internal static class AuditChainDatabase
                 hasAlarm ? AlarmStorageCodec.MaximumEncodedPayloadChars : 24000;
             Require(row.Payload.Length <= encodedPayloadLimit, "AuditPayloadOversize");
             var payload = Convert.FromBase64String(row.Payload);
-              var payloadLimit = traceStoragePolicyKind ? traceStoragePolicyOptions!.MaximumPayloadBytes :
+               var payloadLimit = qualificationCycleKind ? qualificationCycleOptions!.MaximumPayloadBytes :
+                   traceStoragePolicyKind ? traceStoragePolicyOptions!.MaximumPayloadBytes :
                   stationKind ? stationQualificationOptions!.MaximumPayloadBytes :
                   row.Kind is "RecipeTransferStoreActivated" or "RecipeTransferEvent" ? recipeTransferOptions!.MaximumPayloadBytes :
                  manualKind ? manualOptions!.MaximumPayloadBytes :
@@ -3111,7 +3308,16 @@ internal static class AuditChainDatabase
                 hasArchive ? AlgorithmResultArchiveOptions.MaximumBindingPayloadBytes :
                 hasAlarm ? AlarmStorageCodec.MaximumPayloadBytes : 16384;
             Require(payload.Length <= payloadLimit, "AuditPayloadOversize");
-              var rowHash = schema25
+              var rowHash = schema26
+                  ? EntryHashV22(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
+                      row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition,
+                      row.DraftPosition, row.CameraPosition, row.NetworkPosition, row.ImagingPosition,
+                      row.CalibrationSessionPosition, row.CalibrationEventPosition, row.CalibrationManifestPosition,
+                      row.GovernancePosition, row.ReleasePosition, row.PlcResultContractPosition, row.ActivationPosition,
+                      row.PreviewPosition, row.CalibrationImportPosition, row.ManualInspectionPosition,
+                      row.ProductionAdmissionPosition, row.StationQualificationPosition, row.RecipeTransferPosition,
+                      row.TraceStoragePolicyPosition, row.QualificationCyclePosition, payload)
+                  : schema25
                   ? EntryHashV21(schemaVersion, policy.StationId, row.Sequence, previousHash!, row.Kind,
                       row.FactPosition, row.IdentityPosition, row.AlarmPosition, row.ResultPosition,
                       row.DraftPosition, row.CameraPosition, row.NetworkPosition, row.ImagingPosition,
@@ -3699,8 +3905,8 @@ internal static class AuditChainDatabase
                   SqliteCommandStore.VerifyTraceStoragePolicyActivationPayload(db, payload,
                       traceStoragePolicyOptions!, deadline);
               }
-              else if (hasTraceStoragePolicy && row.Kind == "TraceStoragePolicyEvent")
-              {
+               else if (hasTraceStoragePolicy && row.Kind == "TraceStoragePolicyEvent")
+               {
                   Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
                       row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
                       row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null &&
@@ -3715,10 +3921,46 @@ internal static class AuditChainDatabase
                           CultureInfo.InvariantCulture, out var position))
                       throw new InvalidOperationException("TraceStoragePolicyPositionGap");
                   Require(position == ++traceStoragePolicyOrdinal, "TraceStoragePolicyPositionGap");
-                  SqliteCommandStore.VerifyTraceStoragePolicyAuditPayload(db, position, payload,
-                      traceStoragePolicyOptions!, deadline);
-              }
-              else if (hasImaging && row.Kind == "ImagingSetupStoreActivated")
+                   SqliteCommandStore.VerifyTraceStoragePolicyAuditPayload(db, position, payload,
+                       traceStoragePolicyOptions!, deadline);
+               }
+               else if (hasQualificationCycle && row.Kind == "QualificationCycleStoreActivated")
+               {
+                   Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                       row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
+                       row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null &&
+                       row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null &&
+                       row.GovernancePosition is null && row.ReleasePosition is null &&
+                       row.PlcResultContractPosition is null && row.ActivationPosition is null &&
+                       row.PreviewPosition is null && row.CalibrationImportPosition is null &&
+                       row.ManualInspectionPosition is null && row.ProductionAdmissionPosition is null &&
+                       row.StationQualificationPosition is null && row.RecipeTransferPosition is null &&
+                       row.TraceStoragePolicyPosition is null && row.QualificationCyclePosition is null,
+                       "QualificationCycleActivationBindingMismatch");
+                   SqliteCommandStore.VerifyQualificationCycleActivationPayload(db, payload,
+                       qualificationCycleOptions!, deadline);
+               }
+               else if (hasQualificationCycle && row.Kind == "QualificationCycleEvent")
+               {
+                   Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
+                       row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
+                       row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null &&
+                       row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null &&
+                       row.GovernancePosition is null && row.ReleasePosition is null &&
+                       row.PlcResultContractPosition is null && row.ActivationPosition is null &&
+                       row.PreviewPosition is null && row.CalibrationImportPosition is null &&
+                       row.ManualInspectionPosition is null && row.ProductionAdmissionPosition is null &&
+                       row.StationQualificationPosition is null && row.RecipeTransferPosition is null &&
+                       row.TraceStoragePolicyPosition is null,
+                       "QualificationCyclePositionGap");
+                   if (!long.TryParse(row.QualificationCyclePosition, NumberStyles.None,
+                           CultureInfo.InvariantCulture, out var position))
+                       throw new InvalidOperationException("QualificationCyclePositionGap");
+                   Require(position == ++qualificationCycleOrdinal, "QualificationCyclePositionGap");
+                   SqliteCommandStore.VerifyQualificationCycleAuditPayload(db, position, payload,
+                       qualificationCycleOptions!, deadline);
+               }
+               else if (hasImaging && row.Kind == "ImagingSetupStoreActivated")
             {
                 Require(row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null &&
                     row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null &&
@@ -3741,7 +3983,7 @@ internal static class AuditChainDatabase
                     payload, deadline, imagingSetupOptions!);
                 Require(imagingBinding.Length > 0, "ImagingSetupBindingMismatch");
             }
-             else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null && row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null && row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null && row.GovernancePosition is null && row.ReleasePosition is null && row.PlcResultContractPosition is null && row.ActivationPosition is null && row.PreviewPosition is null && row.CalibrationImportPosition is null && row.ManualInspectionPosition is null && row.ProductionAdmissionPosition is null && row.StationQualificationPosition is null && row.RecipeTransferPosition is null && row.TraceStoragePolicyPosition is null,
+             else Require(row.Sequence == 1 && row.Kind == "SigningKeyCreated" && row.FactPosition is null && row.IdentityPosition is null && row.AlarmPosition is null && row.ResultPosition is null && row.DraftPosition is null && row.CameraPosition is null && row.NetworkPosition is null && row.ImagingPosition is null && row.CalibrationSessionPosition is null && row.CalibrationEventPosition is null && row.CalibrationManifestPosition is null && row.GovernancePosition is null && row.ReleasePosition is null && row.PlcResultContractPosition is null && row.ActivationPosition is null && row.PreviewPosition is null && row.CalibrationImportPosition is null && row.ManualInspectionPosition is null && row.ProductionAdmissionPosition is null && row.StationQualificationPosition is null && row.RecipeTransferPosition is null && row.TraceStoragePolicyPosition is null && row.QualificationCyclePosition is null,
                 "AuditEntryKindUnsupported");
             var cp = ReadCheckpoint(db, "WHERE Sequence=?", deadline, Number(row.Sequence));
             if ((row.Sequence - 1) % policy.CheckpointEveryEntries == 0)
@@ -3778,6 +4020,8 @@ internal static class AuditChainDatabase
             SqliteCommandStore.ValidateRecipeTransferHistory(db, recipeTransferOptions!, deadline);
         if (hasTraceStoragePolicy)
             SqliteCommandStore.ValidateTraceStoragePolicyHistory(db, traceStoragePolicyOptions!, deadline);
+        if (hasQualificationCycle)
+            SqliteCommandStore.ValidateQualificationCycleHistory(db, qualificationCycleOptions!, deadline);
         return new AuditIntegrityReport(AuditIntegrityState.Verified,
             startup ? "AuditStartupTailVerified" : after == 0 && verifiedThrough == tail.Sequence ? "AuditRetainedChainVerified" : "AuditSegmentVerified",
             policy.StationId, policy.Version, tail.Sequence, after + 1, verifiedThrough,
@@ -4011,6 +4255,20 @@ internal static class AuditChainDatabase
         }
     }
 
+    internal static void RequireFullQualificationCycleVerification(sqlite3 db,
+        AuditIntegrityReport report, StoreDeadline deadline,
+        QualificationCycleStoreOptions? options = null)
+    {
+        Require(report.VerifiedFromSequence == 1 &&
+            report.VerifiedThroughSequence == Tail(db, deadline).Sequence,
+            "QualificationCycleVerificationBudgetExceeded");
+        if (options is not null)
+        {
+            options.Validate();
+            SqliteCommandStore.ValidateQualificationCycleHistory(db, options, deadline);
+        }
+    }
+
     internal static void VerifyCheckpoint(AuditIntegrityPolicy policy, AuditCheckpoint cp, string keyId, string publicKey)
     {
         Require(cp.StationId == policy.StationId && cp.PolicyVersion == policy.Version && cp.PolicyHash == policy.ContentHash &&
@@ -4086,7 +4344,7 @@ internal static class AuditChainDatabase
         bool activation = false, bool preview = false, bool calibrationImport = false,
         bool manualInspection = false, bool productionAdmission = false,
         bool stationQualification = false, bool recipeTransfer = false,
-        bool traceStoragePolicy = false)
+        bool traceStoragePolicy = false, bool qualificationCycle = false)
     {
         void RequireLedger(bool configured, string reason, params string[] tables)
         {
@@ -4128,6 +4386,8 @@ internal static class AuditChainDatabase
             "recipe_transfer_store_config", "recipe_transfer_events", "recipe_transfer_import_provenance");
         RequireLedger(traceStoragePolicy, "TraceStoragePolicyConfigurationRequired",
             "trace_storage_policy_store_config", "trace_storage_policy_events");
+        RequireLedger(qualificationCycle, "QualificationCycleConfigurationRequired",
+            "qualification_cycle_store_config", "qualification_cycle_events");
     }
 
     internal static bool TableExists(sqlite3 db, string table, StoreDeadline deadline) =>
@@ -4417,8 +4677,17 @@ internal static class AuditChainDatabase
         string? plcResultContractPosition, string? activationPosition, string? previewPosition,
         string? calibrationImportPosition, string? manualInspectionPosition,
         string? productionAdmissionPosition, string? stationQualificationPosition,
-        string? recipeTransferPosition, string? traceStoragePolicyPosition, byte[] payload) =>
-        AuditCanonical.Hash(stationId, sequence, previousHash,
+        string? recipeTransferPosition, string? traceStoragePolicyPosition, byte[] payload)
+    {
+        if (schemaVersion >= QualificationCycleStoreOptions.SchemaVersion)
+            return EntryHashV22(schemaVersion, stationId, sequence, previousHash, kind, factPosition,
+                identityPosition, alarmPosition, resultPosition, draftPosition, cameraPosition,
+                networkPosition, imagingPosition, calibrationSessionPosition, calibrationEventPosition,
+                calibrationManifestPosition, governancePosition, releasePosition, plcResultContractPosition,
+                activationPosition, previewPosition, calibrationImportPosition, manualInspectionPosition,
+                productionAdmissionPosition, stationQualificationPosition, recipeTransferPosition,
+                traceStoragePolicyPosition, null, payload);
+        return AuditCanonical.Hash(stationId, sequence, previousHash,
             AuditCanonical.Encode("AuditEntryEnvelopeV21", kind, factPosition, identityPosition,
                 alarmPosition, resultPosition, draftPosition, cameraPosition, networkPosition,
                 imagingPosition, calibrationSessionPosition, calibrationEventPosition,
@@ -4427,6 +4696,27 @@ internal static class AuditChainDatabase
                 calibrationImportPosition, manualInspectionPosition, productionAdmissionPosition,
                 stationQualificationPosition, recipeTransferPosition, traceStoragePolicyPosition,
                 Convert.ToBase64String(payload)));
+    }
+
+    private static string EntryHashV22(long schemaVersion, string stationId, long sequence, string previousHash,
+        string kind, string? factPosition, string? identityPosition, string? alarmPosition,
+        string? resultPosition, string? draftPosition, string? cameraPosition, string? networkPosition,
+        string? imagingPosition, string? calibrationSessionPosition, string? calibrationEventPosition,
+        string? calibrationManifestPosition, string? governancePosition, string? releasePosition,
+        string? plcResultContractPosition, string? activationPosition, string? previewPosition,
+        string? calibrationImportPosition, string? manualInspectionPosition,
+        string? productionAdmissionPosition, string? stationQualificationPosition,
+        string? recipeTransferPosition, string? traceStoragePolicyPosition,
+        string? qualificationCyclePosition, byte[] payload) =>
+        AuditCanonical.Hash(stationId, sequence, previousHash,
+            AuditCanonical.Encode("AuditEntryEnvelopeV22", kind, factPosition, identityPosition,
+                alarmPosition, resultPosition, draftPosition, cameraPosition, networkPosition,
+                imagingPosition, calibrationSessionPosition, calibrationEventPosition,
+                calibrationManifestPosition, governancePosition, releasePosition,
+                plcResultContractPosition, activationPosition, previewPosition,
+                calibrationImportPosition, manualInspectionPosition, productionAdmissionPosition,
+                stationQualificationPosition, recipeTransferPosition, traceStoragePolicyPosition,
+                qualificationCyclePosition, Convert.ToBase64String(payload)));
     internal static void Require(bool condition, string reason)
     {
         if (!condition) throw new InvalidOperationException(reason);
@@ -4444,7 +4734,7 @@ internal static class AuditChainDatabase
           string? CalibrationSessionPosition, string? CalibrationEventPosition, string? CalibrationManifestPosition,
          string? GovernancePosition, string? ReleasePosition, string? PlcResultContractPosition,
           string? ActivationPosition, string? PreviewPosition, string? CalibrationImportPosition,
-           string? ManualInspectionPosition, string? ProductionAdmissionPosition,
-           string? StationQualificationPosition, string? RecipeTransferPosition,
-           string? TraceStoragePolicyPosition = null);
+            string? ManualInspectionPosition, string? ProductionAdmissionPosition,
+            string? StationQualificationPosition, string? RecipeTransferPosition,
+            string? TraceStoragePolicyPosition = null, string? QualificationCyclePosition = null);
 }

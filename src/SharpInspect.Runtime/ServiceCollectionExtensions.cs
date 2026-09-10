@@ -298,6 +298,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IProductionAdmissionHistoryQuery>(_ => new SqliteProductionAdmissionHistoryQuery(options));
         if (options.StationQualifications is not null)
             services.TryAddSingleton<IStationQualificationHistoryQuery>(_ => new SqliteStationQualificationHistoryQuery(options));
+        if (options.QualificationCycles is not null)
+            services.TryAddSingleton<IQualificationCycleHistoryQuery>(_ => new SqliteQualificationCycleHistoryQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -327,7 +329,8 @@ public static class ServiceCollectionExtensions
                     p.GetService<SharpInspect.Runtime.Qualification.StationQualificationSessionOptions>() ?? new(),
                     p.GetService<StationQualificationPlan>(), p.GetService<SharpInspect.Runtime.Qualification.IStationQualificationFacility>(),
                     p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmExecutionOptions>(), options,
-                    p.GetService<IFrameAcquisitionClock>());
+                    p.GetService<IFrameAcquisitionClock>(),
+                    p.GetService<SharpInspect.Runtime.Qualification.ModbusQualificationProfile>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>

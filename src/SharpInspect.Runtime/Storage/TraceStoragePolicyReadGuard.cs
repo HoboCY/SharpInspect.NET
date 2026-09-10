@@ -15,7 +15,7 @@ internal static class TraceStoragePolicyReadGuard
     internal static void RequireConfiguration(long schema, ProductionStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (schema == TraceStoragePolicyStoreOptions.SchemaVersion &&
+        if (schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion &&
             options.TraceStoragePolicies is null)
             throw new InvalidOperationException("TraceStoragePolicyConfigurationRequired");
         if (schema < TraceStoragePolicyStoreOptions.SchemaVersion &&

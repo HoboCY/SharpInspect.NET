@@ -250,9 +250,11 @@ internal sealed partial class SqliteCommandStore
         if (run.ExecutionStatus != ExecutionStatus.Success)
         {
             if (run.Decision != InspectionDecision.Unknown || run.ResultPayloadJson is not null ||
-                run.ResultPayloadHash is not null || run.QualificationPayload is not null)
+                run.ResultPayloadHash is not null)
                 return "StationQualificationNonSuccessEvidenceUnexpected";
-            return null;
+            // Legacy cancelled/no-frame facts remain readable without a wire
+            // result. A real failed algorithm may carry a validated Unknown.
+            if (run.QualificationPayload is null) return null;
         }
 
         var resultJson = run.ResultPayloadJson;
@@ -260,8 +262,8 @@ internal sealed partial class SqliteCommandStore
         var frameMetadata = run.FrameMetadata;
         var frameProvenance = run.FrameProvenance;
         var payload = run.QualificationPayload;
-        if (string.IsNullOrWhiteSpace(resultJson) ||
-            string.IsNullOrWhiteSpace(resultHash) ||
+        if ((run.ExecutionStatus == ExecutionStatus.Success &&
+            (string.IsNullOrWhiteSpace(resultJson) || string.IsNullOrWhiteSpace(resultHash))) ||
             frameMetadata is null || frameProvenance is null || payload is null)
             return "StationQualificationSuccessEvidenceIncomplete";
         if (frameMetadata.Correlation.Kind != ExecutionKind.Qualification ||
@@ -282,11 +284,18 @@ internal sealed partial class SqliteCommandStore
             return "StationQualificationSuccessPayloadOutcomeMismatch";
         if (payload.ReasonCode is not null && !string.Equals(payload.ReasonCode, run.ReasonCode, StringComparison.Ordinal))
             return "StationQualificationSuccessPayloadReasonMismatch";
+        if (run.ExecutionStatus != ExecutionStatus.Success)
+        {
+            if (run.Timing is null || run.Timing.Recipe != snapshot.Recipe ||
+                string.IsNullOrWhiteSpace(payload.ReasonCode))
+                return "StationQualificationUnknownEvidenceIncomplete";
+            return null;
+        }
 
         try
         {
             var decoded = AlgorithmResultStorageCodec.Decode(run.Position, run.CompletedAtUtc.Value,
-                resultJson, resultHash);
+                resultJson!, resultHash!);
             if (decoded.RecordId != run.RunId.Value ||
                 decoded.Timing.Recipe != snapshot.Recipe ||
                 decoded.Algorithm != snapshot.PlcResultContract.Algorithm ||

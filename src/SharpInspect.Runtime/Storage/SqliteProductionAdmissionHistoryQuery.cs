@@ -155,7 +155,7 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
-            AuditChainDatabase.Require(schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion,
                 schema < ProductionAdmissionStoreOptions.SchemaVersion
                     ? "ProductionAdmissionGovernedMigrationRequired" : "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -232,7 +232,8 @@ public sealed class SqliteProductionAdmissionHistoryQuery : IProductionAdmission
             productionAdmissionOptions: admissionOptions,
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies);
+                traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                qualificationCycleOptions: _options.QualificationCycles);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             StationQualificationReadGuard.RequireVerified(database, verification, deadline, _options);

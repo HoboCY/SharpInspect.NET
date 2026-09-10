@@ -95,4 +95,7 @@ public sealed class ProductionStoreOptions
     /// Requires only local identity and central audit integrity; the policy is
     /// deployment governance and is independent from recipe and camera ledgers.</summary>
     public TraceStoragePolicyStoreOptions? TraceStoragePolicies { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 26 isolated qualification-cycle ledger.</summary>
+    public QualificationCycleStoreOptions? QualificationCycles { get; init; }
 }
