@@ -387,10 +387,24 @@ public sealed partial class ManualInspectionRuntimeTests
         await controller.WaitForReadyAsync().WaitAsync(TimeSpan.FromSeconds(10));
         controller.RaiseTrigger(41, 7);
         await controller.WaitForAckLowAsync().WaitAsync(TimeSpan.FromSeconds(30));
-        await harness.WaitForSnapshotAsync(
-            value => value.SessionId == sessionId &&
-                value.Phase == StationQualificationSessionPhase.Closed,
-            "qualification cycle transition-validator session did not close");
+        try
+        {
+            await harness.WaitForSnapshotAsync(
+                value => value.SessionId == sessionId &&
+                    value.Phase == StationQualificationSessionPhase.Closed,
+                "qualification cycle transition-validator session did not close");
+        }
+        catch (Xunit.Sdk.XunitException closeFailure)
+        {
+            var failureHistory = await new SqliteQualificationCycleHistoryQuery(harness.Fixture.Options)
+                .QueryAsync(new(SessionId: sessionId, PageSize: 128));
+            var stationFailure = await harness.History.QueryAsync(new StationQualificationHistoryFilter(
+                SessionId: sessionId, PageSize: 128));
+            throw new Xunit.Sdk.XunitException(closeFailure.Message + "; cycle=" + failureHistory.ReasonCode + ":" +
+                string.Join(";", failureHistory.Events.Select(value => value.Kind + ":" + value.ReasonCode)) +
+                "; station=" + stationFailure.ReasonCode + ":" +
+                string.Join(";", stationFailure.Events.Select(value => value.Phase + ":" + value.ReasonCode)));
+        }
 
         var cyclePage = await new SqliteQualificationCycleHistoryQuery(harness.Fixture.Options)
             .QueryAsync(new(SessionId: sessionId, PageSize: 128));

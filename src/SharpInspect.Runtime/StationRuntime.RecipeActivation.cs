@@ -76,6 +76,7 @@ public sealed partial class StationRuntime
 
     private string? RecipeActivationBlockerLocked(ActivationReservation? reservation)
     {
+        if (ProductionInspectionConfigurationBlockedLocked) return "ProductionInspectionInProgress";
         if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (PreviewConfigurationBlockedLocked) return "PreviewSessionInProgress";
         if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";

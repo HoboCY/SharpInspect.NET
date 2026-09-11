@@ -100,7 +100,8 @@ internal sealed partial class SqliteCommandStore
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication);
+                plcCommunicationOptions: _options.PlcCommunication,
+                productionInspectionOptions: _options.ProductionInspections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -191,7 +192,8 @@ internal sealed partial class SqliteCommandStore
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication);
+                plcCommunicationOptions: _options.PlcCommunication,
+                productionInspectionOptions: _options.ProductionInspections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -572,7 +574,8 @@ internal sealed partial class SqliteCommandStore
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication);
+                plcCommunicationOptions: _options.PlcCommunication,
+                productionInspectionOptions: _options.ProductionInspections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

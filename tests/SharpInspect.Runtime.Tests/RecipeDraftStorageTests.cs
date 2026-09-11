@@ -539,7 +539,9 @@ public sealed class RecipeDraftStorageTests
             ManualInspectionStoreOptions? manualInspections = null, int? maximumAuditEntries = null,
             ProductionAdmissionStoreOptions? productionAdmission = null,
             RecipeTransferStoreOptions? recipeTransfers = null,
-            TraceStoragePolicyStoreOptions? traceStoragePolicies = null)
+            TraceStoragePolicyStoreOptions? traceStoragePolicies = null,
+            PlcCommunicationStoreOptions? plcCommunication = null,
+            ProductionInspectionStoreOptions? productionInspections = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -591,6 +593,8 @@ public sealed class RecipeDraftStorageTests
                 PreviewSessions = previewSessions,
                 ManualInspections = manualInspections,
                 ProductionAdmission = productionAdmission,
+                PlcCommunication = plcCommunication,
+                ProductionInspections = productionInspections,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };

@@ -241,6 +241,7 @@ public sealed partial class StationRuntime
                 {
                     RequestManualInspectionStop("ManualInspectionFaultAbort", abort: true);
                     RequestStationQualificationStop("StationQualificationFaultAbort", abort: true);
+                    RequestProductionInspectionAbort("ProductionInspectionFaultAbort");
                 }
                 var blockers = _snapshot.AdmissionBlockers.Where(code => code is not
                     ("AlarmProductionBlocked" or "AlarmAuthorityUnavailable")).ToList();

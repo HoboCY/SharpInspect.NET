@@ -76,8 +76,9 @@ public sealed partial class StationRuntime
                     setup.Health.Configuration == CameraConfigurationState.Unconfigured ? HealthState.Unconfigured : HealthState.Unknown,
                 setup.Health.Acquisition == CameraAcquisitionState.Stopped ? HealthState.Healthy : HealthState.Unknown,
                 _snapshot.Camera.Buffers);
+            var ownedProductionProgress = IsOwnedProductionProgressLocked(_snapshot);
             PublishLocked(_snapshot with { CameraSetup = state, Camera = camera,
-                Ready = false, ArmState = ProductionArmState.Disarmed,
+                Ready = false, ArmState = ownedProductionProgress ? _snapshot.ArmState : ProductionArmState.Disarmed,
                 AdmissionBlockers = new AdmissionBlockers(blockers.Distinct(StringComparer.Ordinal)) });
         }
     }

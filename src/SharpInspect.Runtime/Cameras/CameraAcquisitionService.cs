@@ -115,7 +115,8 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
     {
         lock (_sync)
         {
-            if (_disposed || _attempt is not null || _admissionInProgress || _manualEnabled || _qualificationSessionEnabled)
+            if (_disposed || _attempt is not null || _admissionInProgress || _manualEnabled ||
+                _qualificationSessionEnabled || _productionOwnedEnabled)
                 throw new InvalidOperationException("CameraCalibrationAcquisitionUnavailable");
             _calibrationEnabled = true;
         }
@@ -261,7 +262,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         {
             var correlationValid = suppliedCorrelation.Value != Guid.Empty &&
                 suppliedCorrelation.Kind == kind &&
-                kind is ExecutionKind.Calibration or ExecutionKind.Manual or ExecutionKind.Qualification;
+                kind is ExecutionKind.Calibration or ExecutionKind.Manual or ExecutionKind.Qualification or ExecutionKind.Production;
             if (!correlationValid)
                 return Rejected(kind == ExecutionKind.Manual
                     ? "CameraManualCorrelationInvalid"
@@ -288,6 +289,10 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         lock (_sync)
         {
             if (_disposed) return Rejected("CameraAcquisitionServiceDisposed");
+            if (kind == ExecutionKind.Production && !_productionOwnedEnabled)
+                return Rejected("CameraProductionLeaseRequired");
+            if (kind != ExecutionKind.Production && _productionOwnedEnabled)
+                return Rejected("CameraProductionControlledOnly");
             if (kind == ExecutionKind.Calibration && !_calibrationEnabled)
                 return Rejected("CameraCalibrationLeaseRequired");
             if (kind == ExecutionKind.Manual && !_manualEnabled)

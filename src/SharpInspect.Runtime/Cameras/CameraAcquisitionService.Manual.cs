@@ -15,7 +15,7 @@ public sealed partial class CameraAcquisitionService
         lock (_sync)
         {
             if (_disposed || _attempt is not null || _admissionInProgress ||
-                _calibrationEnabled || _manualEnabled || _qualificationSessionEnabled)
+                _calibrationEnabled || _manualEnabled || _qualificationSessionEnabled || _productionOwnedEnabled)
                 throw new InvalidOperationException("CameraManualAcquisitionUnavailable");
             _manualEnabled = true;
         }

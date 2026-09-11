@@ -105,7 +105,8 @@ public sealed class PlcResultContractBinder
             }
             else
             {
-                var required = PlcResultContract.FrameworkReasonCodes.Concat(schema.ReasonCodes).Append(null).Distinct(StringComparer.Ordinal);
+                var required = contract.FrameworkReasonCatalog.Concat(schema.ReasonCodes).Append(null)
+                    .Distinct(StringComparer.Ordinal);
                 var declared = field.ReasonCodes.ToLookup(value => value.ReasonCode, StringComparer.Ordinal);
                 Check("V131.B04", subject, required.All(value => declared[value].Count() == 1) && declared.Count == field.ReasonCodes.Count,
                     "PlcResultReasonCodeCoverageInvalid");

@@ -9,7 +9,7 @@ namespace SharpInspect.Runtime.Qualification;
 /// Explicit, development-only Modbus TCP binding for a qualification controller.
 /// The profile contains no connection state and grants no production authority.
 /// </summary>
-public sealed class ModbusQualificationProfile
+public sealed class ModbusQualificationProfile : SharpInspect.Runtime.Plc.IModbusInspectionProfile
 {
     internal const int ControllerRegisterCount = 6;
     internal const int RuntimeRegisterCount = 6;
@@ -164,6 +164,9 @@ public sealed class ModbusQualificationProfile
     public string Version { get; }
     public string ScenarioId { get; }
     public string LoopbackAddress { get; }
+    string SharpInspect.Runtime.Plc.IModbusInspectionProfile.Address => LoopbackAddress;
+    int SharpInspect.Runtime.Plc.IModbusInspectionProfile.ControllerEndAddressExclusive => ControllerEndAddressExclusive;
+    int SharpInspect.Runtime.Plc.IModbusInspectionProfile.RuntimeEndAddressExclusive => RuntimeEndAddressExclusive;
     public int Port { get; }
     public byte UnitId { get; }
     public ushort ControllerStartAddress { get; }

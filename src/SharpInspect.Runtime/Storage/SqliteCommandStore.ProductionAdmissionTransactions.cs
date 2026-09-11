@@ -84,11 +84,14 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
             ["identity-policy"] = state.PolicyContentHash
         };
         // These are durable governed facts. Ordinary command/identity audit traffic,
-        // heartbeat time and this admission's own ledger do not change their heads.
+        // heartbeat time and owned cycle/transport progress do not change their heads.
+        // Their live health, generation, recovery and resource gates are observed
+        // separately; their immutable store activation/configuration entries remain material.
         var selected = AuditChainDatabase.Read(database, @"
             SELECT Kind,Hash FROM audit_entries WHERE Sequence IN (
                 SELECT MAX(Sequence) FROM audit_entries
-                WHERE Kind NOT IN ('CommandFact','IdentityEvent','ProductionAdmissionEvent')
+                WHERE Kind NOT IN ('CommandFact','IdentityEvent','ProductionAdmissionEvent',
+                    'ProductionInspectionEvent','PlcCommunicationEvent')
                 GROUP BY Kind) ORDER BY Kind LIMIT 63;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0)!, Hash: SqliteNative.ColumnText(statement, 1)!));
         AuditChainDatabase.Require(selected.Count <= 62, "ProductionAdmissionDurableHeadsCapacityExceeded");
@@ -249,7 +252,8 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication);
+                plcCommunicationOptions: _options.PlcCommunication,
+                productionInspectionOptions: _options.ProductionInspections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

@@ -52,6 +52,7 @@ public sealed class PreparedAlgorithm : IAsyncDisposable
         _algorithm = algorithm; _retire = retire;
     }
     public Guid InstanceId { get; }
+    internal System.Reflection.Assembly ImplementationAssembly => _algorithm.GetType().Assembly;
     public AlgorithmDescriptor Descriptor { get; }
     public AlgorithmConfigurationSnapshot Configuration { get; }
     public bool IsRetired { get { lock (_sync) return _disposal is not null; } }
@@ -141,6 +142,22 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
     }
 
     public IReadOnlyList<AlgorithmDescriptor> Descriptors { get; }
+    internal string? ProductionPreparedBinaryHash(Guid instanceId)
+    {
+        PreparedAlgorithm? prepared;
+        IVisionAlgorithmFactory? factory;
+        lock (_sync)
+        {
+            prepared = _published.SingleOrDefault(value => value.InstanceId == instanceId && !value.IsRetired);
+            factory = prepared is not null && _registrations.TryGetValue(
+                (prepared.Descriptor.Identity.Id, prepared.Descriptor.Identity.Version), out var registration)
+                ? registration.Factory : null;
+        }
+        return prepared is null || factory is null ? null : Admission.ProductionAdmissionCanonical.Hash(
+            "production-prepared-binaries-v1",
+            Admission.ProductionConfigurationBuilder.AssemblyHash(prepared.ImplementationAssembly),
+            Admission.ProductionConfigurationBuilder.AssemblyHash(factory.GetType().Assembly));
+    }
     public int OwnedInstanceCount { get { lock (_sync) return _owned.Count; } }
     public int PendingPreparationCount { get { lock (_sync) return _running.Count; } }
 

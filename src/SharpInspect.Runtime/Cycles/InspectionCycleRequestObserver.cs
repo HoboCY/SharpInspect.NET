@@ -33,6 +33,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     private string? _failure;
     private bool _closing;
     private bool _admissionRevoked;
+    private long _admissionVersion;
     private long _observationSequence;
     private long _ackObservationSequence;
     private long _ackObservedAt;
@@ -55,6 +56,22 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         }
     }
     internal void StopAccepting() { lock (_sync) _accepting = false; }
+    internal bool IsAccepting { get { lock (_sync) return _accepting; } }
+    internal bool HasPendingAdmission { get { lock (_sync) return _accepted is not null; } }
+    internal void RejectPendingAdmission(string reason)
+    {
+        lock (_sync)
+        {
+            _accepting = false;
+            _admissionVersion++;
+            if (_accepted is not { } pending) return;
+            if (_rejections.Count < 256)
+                _rejections.Enqueue(new(new(pending.ControllerEpoch, pending.CycleSequence), reason));
+            else _failure = "InspectionCycleProtocolFactCapacityExceeded";
+            _accepted = null;
+            _activeEpoch = null;
+        }
+    }
     internal void StopObserving()
     {
         lock (_sync) { _closing = true; _accepting = false; _admissionRevoked = true; }
@@ -90,12 +107,14 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         await _sampleGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            long admissionVersion;
             lock (_sync)
             {
                 ThrowIfFailed();
                 if (_closing || _admissionRevoked) throw new OperationCanceledException("InspectionCycleObserverStopped");
                 if (_latest is not { ResultAck: false })
                     throw new InvalidOperationException("QualificationInitialResultAckNotClear");
+                admissionVersion = _admissionVersion;
             }
             await advertiseReady().ConfigureAwait(false);
             lock (_sync)
@@ -103,6 +122,8 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 ThrowIfFailed();
                 if (_closing || _admissionRevoked || _stop.IsCancellationRequested)
                     throw new OperationCanceledException("InspectionCycleObserverStopped");
+                if (_admissionVersion != admissionVersion)
+                    throw new OperationCanceledException("InspectionCycleAdmissionChanged");
                 _accepting = true;
             }
         }

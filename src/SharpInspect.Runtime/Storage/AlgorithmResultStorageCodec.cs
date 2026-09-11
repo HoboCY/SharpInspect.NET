@@ -6,6 +6,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
+using SharpInspect.Runtime.Production;
 
 namespace SharpInspect.Runtime.Storage;
 
@@ -33,6 +34,91 @@ internal static class AlgorithmResultStorageCodec
         AllowTrailingCommas = false,
         MaxDepth = MaximumDepth
     };
+
+    // Format 2 is the production structured-result domain. The existing archive
+    // entry points accept only format 1 and continue to reject Production kind.
+    // Both domains share the same strict DTOs and bounded primitive serialization.
+    internal static ProductionAlgorithmResultDocument EncodeProduction(Guid inspectionId,
+        AlgorithmExecutionOutcome outcome)
+    {
+        if (inspectionId == Guid.Empty || outcome is null || outcome.Correlation is null ||
+            outcome.Correlation.Kind != ExecutionKind.Production || outcome.Correlation.Value != inspectionId ||
+            outcome.ExecutionStatus != ExecutionStatus.Success || outcome.ValidatedResult is null)
+            throw Invalid("ProductionStructuredResultInputsInvalid");
+        try
+        {
+            ValidateOutcome(outcome, production: true);
+            EnsureMaterializationBudget(outcome, MaximumPayloadBytes);
+            var dto = PayloadDto.FromOutcome(inspectionId, outcome);
+            dto.FormatVersion = 2;
+            var bytes = SerializeBounded(dto, MaximumPayloadBytes);
+            var json = StrictUtf8String(bytes);
+            var hash = Convert.ToHexString(SHA256.HashData(bytes));
+            return ProductionDocument(PayloadDto.ToDecoded(dto, production: true), json, hash);
+        }
+        catch (PayloadCapacityExceededException) { throw Invalid("ProductionStructuredResultCapacityExceeded"); }
+        catch (Exception exception) when (IsBoundedValidationException(exception))
+        { throw Invalid("ProductionStructuredResultInvalid", exception); }
+    }
+
+    internal static ProductionAlgorithmResultDocument DecodeProduction(Guid inspectionId,
+        string payloadJson, string expectedHash)
+    {
+        try
+        {
+            if (inspectionId == Guid.Empty || !IsSha256(expectedHash))
+                throw Invalid("ProductionStructuredResultIdentityInvalid");
+            var bytes = StrictUtf8(payloadJson, MaximumPayloadBytes, "ProductionStructuredResultInvalid");
+            if (Convert.ToHexString(SHA256.HashData(bytes)) != expectedHash)
+                throw Invalid("ProductionStructuredResultHashMismatch");
+            using var json = ParseJson(bytes);
+            ValidatePayloadShape(json.RootElement);
+            var dto = DeserializePayload(json.RootElement);
+            if (dto.FormatVersion != 2 || dto.CanonicalizationVersion != CanonicalizationVersion)
+                throw Invalid("ProductionStructuredResultVersionUnsupported");
+            if (!bytes.AsSpan().SequenceEqual(SerializeBounded(dto, bytes.Length)))
+                throw Invalid("ProductionStructuredResultCanonicalMismatch");
+            var decoded = PayloadDto.ToDecoded(dto, production: true);
+            if (decoded.RecordId != inspectionId || decoded.Correlation.Value != inspectionId ||
+                AlgorithmResultValidator.Validate(decoded.Result, decoded.ResultSchema).Count != 0 ||
+                decoded.Result.OverlaySet.ContractId != decoded.ResultSchema.OverlayContract.Id ||
+                decoded.Result.OverlaySet.ContractVersion != decoded.ResultSchema.OverlayContract.Version)
+                throw Invalid("ProductionStructuredResultBindingMismatch");
+            return ProductionDocument(decoded, payloadJson, expectedHash);
+        }
+        catch (PayloadCapacityExceededException) { throw Invalid("ProductionStructuredResultCapacityExceeded"); }
+        catch (Exception exception) when (IsBoundedValidationException(exception))
+        { throw Invalid("ProductionStructuredResultInvalid", exception); }
+    }
+
+    private static ProductionAlgorithmResultDocument ProductionDocument(DecodedPayload decoded,
+        string json, string hash) => new(decoded.RecordId, decoded.Correlation, decoded.PreparedInstanceId,
+        decoded.Algorithm, decoded.ConfigurationContentHash, decoded.ConfigurationSchemaId,
+        decoded.ConfigurationSchemaVersion, decoded.ConfigurationSchemaContentHash, decoded.FrameMetadata,
+        decoded.ResultSchema, decoded.Result, decoded.Timing, decoded.AdmittedMonotonicTimestamp,
+        decoded.MonotonicFrequency, json, hash);
+
+    internal static string EncodeProductionSchema(AlgorithmResultSchema schema) =>
+        JsonSerializer.Serialize(SchemaDto.From(schema), Json);
+
+    internal static AlgorithmResultSchema DecodeProductionSchema(string encoded)
+    {
+        _ = StrictUtf8(encoded, MaximumPayloadBytes, "ProductionResultSchemaInvalid");
+        var schema = SchemaDto.ToDomain(JsonSerializer.Deserialize<SchemaDto>(encoded, Json));
+        if (EncodeProductionSchema(schema) != encoded) throw Invalid("ProductionResultSchemaCanonicalMismatch");
+        return schema;
+    }
+
+    internal static string EncodeProductionTiming(AlgorithmExecutionTimingSnapshot timing) =>
+        JsonSerializer.Serialize(TimingDto.From(timing), Json);
+
+    internal static AlgorithmExecutionTimingSnapshot DecodeProductionTiming(string encoded)
+    {
+        _ = StrictUtf8(encoded, 16384, "ProductionExecutionTimingInvalid");
+        var timing = TimingDto.ToDomain(JsonSerializer.Deserialize<TimingDto>(encoded, Json));
+        if (EncodeProductionTiming(timing) != encoded) throw Invalid("ProductionExecutionTimingCanonicalMismatch");
+        return timing;
+    }
 
     internal static bool TryEncode(Guid recordId, AlgorithmExecutionOutcome outcome,
         out AlgorithmResultArchiveDocument? document, out string reasonCode)
@@ -154,10 +240,11 @@ internal static class AlgorithmResultStorageCodec
         }
     }
 
-    private static void ValidateOutcome(AlgorithmExecutionOutcome outcome)
+    private static void ValidateOutcome(AlgorithmExecutionOutcome outcome, bool production = false)
     {
         if (outcome.Correlation.Value == Guid.Empty ||
-            outcome.Correlation.Kind is not (ExecutionKind.Manual or ExecutionKind.Qualification))
+            (production ? outcome.Correlation.Kind != ExecutionKind.Production :
+                outcome.Correlation.Kind is not (ExecutionKind.Manual or ExecutionKind.Qualification)))
             throw Invalid("AlgorithmResultCorrelationInvalid");
         if (outcome.PreparedInstanceId == Guid.Empty)
             throw Invalid("AlgorithmResultPreparedInstanceInvalid");
@@ -629,10 +716,10 @@ internal static class AlgorithmResultStorageCodec
             MonotonicFrequency = outcome.MonotonicFrequency
         };
 
-        internal static DecodedPayload ToDecoded(PayloadDto dto)
+        internal static DecodedPayload ToDecoded(PayloadDto dto, bool production = false)
         {
             var recordId = GuidValue(dto.RecordId, "AlgorithmResultRecordIdInvalid");
-            var correlation = CorrelationDto.ToDomain(dto.Correlation);
+            var correlation = CorrelationDto.ToDomain(dto.Correlation, production);
             var algorithm = new AlgorithmIdentity(Required(dto.Algorithm?.Id, "AlgorithmResultAlgorithmInvalid"),
                 Required(dto.Algorithm?.Version, "AlgorithmResultAlgorithmInvalid"));
             var configuration = dto.Configuration ?? throw Invalid("AlgorithmResultConfigurationInvalid");
@@ -643,7 +730,7 @@ internal static class AlgorithmResultStorageCodec
                 dto.OverlayRenderingContract.Version != SharpInspect.Abstractions.OverlayRenderingContract.Version ||
                 dto.OverlayRenderingContract.ContentHash != SharpInspect.Abstractions.OverlayRenderingContract.ContentHash)
                 throw Invalid("AlgorithmResultRenderingContractMismatch");
-            var frame = FrameDto.ToDomain(dto.Frame);
+            var frame = FrameDto.ToDomain(dto.Frame, production);
             if (frame.Correlation != correlation)
                 throw Invalid("AlgorithmResultCorrelationMismatch");
             var timing = TimingDto.ToDomain(dto.Timing);
@@ -672,12 +759,13 @@ internal static class AlgorithmResultStorageCodec
         public string? Value { get; set; }
         internal static CorrelationDto From(ExecutionCorrelationId value) => new()
         { Kind = value.Kind.ToString(), Value = value.Value.ToString("D") };
-        internal static ExecutionCorrelationId ToDomain(CorrelationDto? value)
+        internal static ExecutionCorrelationId ToDomain(CorrelationDto? value, bool production = false)
         {
             if (value is null) throw Invalid("AlgorithmResultCorrelationInvalid");
             var kind = EnumValue<ExecutionKind>(value.Kind, "AlgorithmResultCorrelationInvalid");
             var id = GuidValue(value.Value, "AlgorithmResultCorrelationInvalid");
-            if (id == Guid.Empty || kind == ExecutionKind.Production) throw Invalid("AlgorithmResultProductionForbidden");
+            if (id == Guid.Empty || (production ? kind != ExecutionKind.Production : kind == ExecutionKind.Production))
+                throw Invalid("AlgorithmResultProductionForbidden");
             return new ExecutionCorrelationId(kind, id);
         }
     }
@@ -716,9 +804,9 @@ internal static class AlgorithmResultStorageCodec
             EffectiveCameraConfiguration = CameraDto.From(value.EffectiveCameraConfiguration)
         };
 
-        internal FrameMetadata ToDomain()
+        internal FrameMetadata ToDomain(bool production = false)
         {
-            var correlation = CorrelationDto.ToDomain(Correlation);
+            var correlation = CorrelationDto.ToDomain(Correlation, production);
             var pixelFormat = EnumValue<VisionPixelFormat>(PixelFormat, "AlgorithmResultFrameInvalid");
             var utc = UtcValue(HostCaptureUtc, "AlgorithmResultFrameInvalid");
             var camera = CameraDto.ToDomain(EffectiveCameraConfiguration);
@@ -729,8 +817,8 @@ internal static class AlgorithmResultStorageCodec
                 throw Invalid("AlgorithmResultFrameDerivedValueMismatch");
             return frame;
         }
-        internal static FrameMetadata ToDomain(FrameDto? value) =>
-            (value ?? throw Invalid("AlgorithmResultFrameInvalid")).ToDomain();
+        internal static FrameMetadata ToDomain(FrameDto? value, bool production = false) =>
+            (value ?? throw Invalid("AlgorithmResultFrameInvalid")).ToDomain(production);
     }
 
     private sealed class CameraDto

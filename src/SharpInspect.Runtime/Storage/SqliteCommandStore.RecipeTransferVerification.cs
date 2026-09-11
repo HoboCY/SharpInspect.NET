@@ -45,7 +45,8 @@ internal sealed partial class SqliteCommandStore
              recipeTransferOptions: options.RecipeTransfers,
              traceStoragePolicyOptions: options.TraceStoragePolicies,
                 qualificationCycleOptions: options.QualificationCycles,
-                plcCommunicationOptions: options.PlcCommunication);
+                plcCommunicationOptions: options.PlcCommunication,
+                productionInspectionOptions: options.ProductionInspections);
         TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
 
         if (options.AlgorithmResultArchive is not null)

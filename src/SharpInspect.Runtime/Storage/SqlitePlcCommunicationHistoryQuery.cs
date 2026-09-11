@@ -128,8 +128,8 @@ public sealed class SqlitePlcCommunicationHistoryQuery : IPlcCommunicationHistor
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema != PlcCommunicationStoreOptions.SchemaVersion)
-                throw new InvalidOperationException(schema > PlcCommunicationStoreOptions.SchemaVersion
+            if (schema is not (PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion))
+                throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "PlcCommunicationGovernedMigrationRequired"
                     : "PlcCommunicationConfigurationRequired");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
@@ -157,7 +157,8 @@ public sealed class SqlitePlcCommunicationHistoryQuery : IPlcCommunicationHistor
                 recipeTransferOptions: _options.RecipeTransfers,
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication);
+                plcCommunicationOptions: _options.PlcCommunication,
+                productionInspectionOptions: _options.ProductionInspections);
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification,
                 deadline, _options.PlcCommunication);
             SqliteNative.EnsureDeadline(deadline, cancellationToken);

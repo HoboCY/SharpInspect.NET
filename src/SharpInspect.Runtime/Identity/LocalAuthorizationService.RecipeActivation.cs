@@ -181,8 +181,36 @@ internal sealed partial class LocalAuthorizationService
                     if (reason == "Authorized" && !state.Releases.Any(value => value.Recipe == command.Candidate &&
                         value.ReleaseId == command.ReleaseId && value.ContentHash == command.ReleaseRecordContentHash))
                         reason = "RecipeActivationExactReleaseMissing";
-                    if (reason == "Authorized" && preflightFailure is not null) reason = preflightFailure;
-                    if (reason == "Authorized") reason = runtimeBlocker() ?? "Authorized";
+                    if (reason == "Authorized" && preflightFailure is not null)
+                    {
+                        if (RecipeActivationRuntimeLease.IsRuntimeBusy(preflightFailure))
+                        {
+                            // Runtime lock contention is not an activation outcome. Roll back
+                            // this identity transaction so the caller can retry outside it.
+                            var retry = new RecipeActivationAdmissionDecision(
+                                new(command.CorrelationId, CommandDisposition.Rejected,
+                                    preflightFailure, AuditPersistence.NotAttempted, attemptId),
+                                null, previous);
+                            return new(retry, Array.Empty<IdentityAuditEvent>(), NoMutation: true);
+                        }
+                        reason = preflightFailure;
+                    }
+                    if (reason == "Authorized")
+                    {
+                        var blocker = runtimeBlocker();
+                        if (RecipeActivationRuntimeLease.IsRuntimeBusy(blocker))
+                        {
+                            // ReadBlocker is deliberately non-blocking while the writer holds
+                            // a session lease. Never turn that transient observation into a
+                            // durable failed admission.
+                            var retry = new RecipeActivationAdmissionDecision(
+                                new(command.CorrelationId, CommandDisposition.Rejected,
+                                    blocker!, AuditPersistence.NotAttempted, attemptId),
+                                null, previous);
+                            return new(retry, Array.Empty<IdentityAuditEvent>(), NoMutation: true);
+                        }
+                        reason = blocker ?? "Authorized";
+                    }
                     var admitted = reason == "Authorized";
                     var phase = admitted ? RecipeActivationOutcomeState.Admitted :
                         reason == "RecipeActivationCancelled" ? RecipeActivationOutcomeState.Cancelled : RecipeActivationOutcomeState.Failed;

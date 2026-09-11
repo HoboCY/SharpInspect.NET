@@ -80,7 +80,8 @@ public enum SystemPermission : byte
     FinalizeEvidence = 3,
     ScrubEvidence = 4,
     CleanupRetention = 5,
-    RecordPlcCommunication = 6
+    RecordPlcCommunication = 6,
+    RecordProductionInspection = 7
 }
 
 /// <summary>
@@ -123,7 +124,7 @@ public static class SystemPrincipalCatalog
 {
     public static SystemPrincipalDescriptor Runtime { get; } = new(
         SystemPrincipalId.Runtime, "Runtime command recording",
-        new[] { SystemPermission.RecordCommand });
+        new[] { SystemPermission.RecordCommand, SystemPermission.RecordProductionInspection });
 
     public static SystemPrincipalDescriptor Outbox { get; } = new(
         SystemPrincipalId.Outbox, "Outbox delivery",

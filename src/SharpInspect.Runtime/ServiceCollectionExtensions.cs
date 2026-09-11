@@ -12,6 +12,7 @@ using SharpInspect.Runtime.Calibration;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Preview;
 using SharpInspect.Runtime.StoragePolicies;
+using SharpInspect.Runtime.Production;
 
 namespace SharpInspect.Runtime;
 
@@ -278,7 +279,11 @@ public static class ServiceCollectionExtensions
                                     ? authority.ReserveRecipeActivationAsync(correlation, token)
                                     : ValueTask.FromResult(new RecipeActivationRuntimeLease(Guid.Empty,
                                         "RecipeActivationRuntimeUnavailable", token)),
-                                () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                                () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync(),
+                                deploymentEvidence: p.GetService<ProductionInspectionOptions>() is null ? null :
+                                    (candidate, token) => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
+                                    ? authority.CaptureRecipeActivationDeploymentEvidenceAsync(candidate, token)
+                                    : ValueTask.FromResult<RecipeActivationDeploymentEvidence?>(null)));
                             services.TryAddSingleton<IRecipeActivationService>(p => p.GetRequiredService<RecipeActivationService>());
                         }
                     }
@@ -302,6 +307,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IQualificationCycleHistoryQuery>(_ => new SqliteQualificationCycleHistoryQuery(options));
         if (options.PlcCommunication is not null)
             services.TryAddSingleton<IPlcCommunicationHistoryQuery>(_ => new SqlitePlcCommunicationHistoryQuery(options));
+        if (options.ProductionInspections is not null)
+            services.TryAddSingleton<IProductionInspectionHistoryQuery>(_ => new SqliteProductionInspectionHistoryQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -333,6 +340,9 @@ public static class ServiceCollectionExtensions
                     p.GetService<AlgorithmPreparationService>(), p.GetService<AlgorithmExecutionOptions>(), options,
                     p.GetService<IFrameAcquisitionClock>(),
                     p.GetService<SharpInspect.Runtime.Qualification.ModbusQualificationProfile>());
+            if (p.GetService<SharpInspect.Runtime.Production.ProductionInspectionOptions>() is { } production)
+                runtime.ConfigureProductionInspections(production, options,
+                    p.GetRequiredService<AlgorithmExecutionOptions>(), p.GetRequiredService<IFrameAcquisitionClock>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>

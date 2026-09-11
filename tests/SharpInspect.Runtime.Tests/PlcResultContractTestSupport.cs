@@ -9,16 +9,17 @@ namespace SharpInspect.Runtime.Tests;
 
 internal static class PlcResultContractTestSupport
 {
-    internal static PlcResultContract Contract(AlgorithmResultSchema schema, string version = "1")
+    internal static PlcResultContract Contract(AlgorithmResultSchema schema, string version = "1",
+        PlcResultReasonCatalog? frameworkReasons = null)
     {
         var u16 = new PlcWireEncoding(PlcWireRepresentation.UInt16, PlcByteOrder.BigEndian,
             PlcWordOrder.NotApplicable, PlcRoundingMode.Exact, PlcOverflowBehavior.EncodingFault);
         var u32 = new PlcWireEncoding(PlcWireRepresentation.UInt32, PlcByteOrder.BigEndian,
             PlcWordOrder.HighWordFirst, PlcRoundingMode.Exact, PlcOverflowBehavior.EncodingFault);
-        var reasons = PlcResultContract.FrameworkReasonCodes.Concat(schema.ReasonCodes)
+        var reasons = (frameworkReasons?.Codes ?? PlcResultContract.FrameworkReasonCodes).Concat(schema.ReasonCodes)
             .Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal)
             .Select((value, index) => new PlcReasonCode(value, index + 1)).Prepend(new(null, 0));
-        return new("V131.Integration.Contract", version, 256, 64, new[]
+        var fields = new[]
         {
             new PlcFrameworkFieldMapping(PlcFrameworkResultField.ControllerEpoch, new(10, 2), u32),
             new PlcFrameworkFieldMapping(PlcFrameworkResultField.ResultSequence, new(12, 2), u32),
@@ -27,8 +28,11 @@ internal static class PlcResultContractTestSupport
             new PlcFrameworkFieldMapping(PlcFrameworkResultField.InspectionDecision, new(15, 1), u16,
                 inspectionDecisionCodes: Enum.GetValues<InspectionDecision>().Select((value, index) => new PlcInspectionDecisionCode(value, index))),
             new PlcFrameworkFieldMapping(PlcFrameworkResultField.ResultReasonCode, new(16, 1), u16, reasonCodes: reasons)
-        }, new[] { new PlcResultSchemaMap(new(schema.Id, schema.Version, schema.ContentHash),
-            schema.Measurements.Select(value => new PlcMeasurementMapping(value.Key, PlcMeasurementDisposition.Excluded))) });
+        };
+        var maps = new[] { new PlcResultSchemaMap(new(schema.Id, schema.Version, schema.ContentHash),
+            schema.Measurements.Select(value => new PlcMeasurementMapping(value.Key, PlcMeasurementDisposition.Excluded))) };
+        return frameworkReasons is null ? new("V131.Integration.Contract", version, 256, 64, fields, maps)
+            : new("V142.Integration.Contract", version, 256, 64, fields, maps, frameworkReasons);
     }
 
     internal static async Task<PlcResultContractRevision> CommitAsync(ProductionStoreOptions options,

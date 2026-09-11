@@ -48,6 +48,8 @@ internal sealed class ManualCameraAcquisitionResult
     /// into a generic error by the orchestration layer.
     /// </summary>
     internal ExecutionStatus ExecutionStatus { get; }
+    internal CameraAcquisitionFailureKind? FailureKind { get; init; }
+    internal FrameAcquisitionStart? AcquisitionStart { get; init; }
 }
 
 /// <summary>
@@ -218,20 +220,21 @@ internal sealed partial class RecipeActivationCameraLease
         ExecutionCorrelationId correlation, FrameBufferPool framePool,
         IFrameAcquisitionClock clock, CancellationToken cancellationToken = default,
         Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory = null) =>
-        AcquireNonProductionFrameAsync(ExecutionKind.Manual, correlation, framePool,
+        AcquireOwnedFrameAsync(ExecutionKind.Manual, correlation, framePool,
             clock, cancellationToken, physicalPhaseFactory);
 
-    private async ValueTask<ManualCameraAcquisitionResult> AcquireNonProductionFrameAsync(
+    private async ValueTask<ManualCameraAcquisitionResult> AcquireOwnedFrameAsync(
         ExecutionKind requiredKind, ExecutionCorrelationId correlation, FrameBufferPool framePool,
         IFrameAcquisitionClock clock, CancellationToken cancellationToken,
         Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory)
     {
         if (correlation is null)
             throw new ArgumentNullException(nameof(correlation));
-        if (requiredKind is not (ExecutionKind.Manual or ExecutionKind.Qualification) ||
+        if (requiredKind is not (ExecutionKind.Manual or ExecutionKind.Qualification or ExecutionKind.Production) ||
             correlation.Kind != requiredKind || correlation.Value == Guid.Empty)
             return Failure(correlation, requiredKind == ExecutionKind.Manual
-                ? "CameraManualCorrelationInvalid" : "CameraQualificationCorrelationInvalid");
+                ? "CameraManualCorrelationInvalid" : requiredKind == ExecutionKind.Production
+                    ? "CameraProductionCorrelationInvalid" : "CameraQualificationCorrelationInvalid");
         if (framePool is null)
             return Failure(correlation, "CameraManualFramePoolUnavailable");
         if (clock is null)
@@ -263,8 +266,12 @@ internal sealed partial class RecipeActivationCameraLease
                     return Failure(correlation, "CameraManualPreviewConflict");
                 if (requiredKind == ExecutionKind.Qualification && !_qualificationOwned)
                     return Failure(correlation, "CameraQualificationLeaseRequired");
+                if (requiredKind == ExecutionKind.Production && !_productionOwned)
+                    return Failure(correlation, "CameraProductionLeaseRequired");
                 if (requiredKind == ExecutionKind.Manual && _qualificationOwned ||
-                    requiredKind == ExecutionKind.Qualification && _manualOwned)
+                    requiredKind == ExecutionKind.Qualification && _manualOwned ||
+                    requiredKind != ExecutionKind.Production && _productionOwned ||
+                    requiredKind == ExecutionKind.Production && (_manualOwned || _qualificationOwned))
                     return Failure(correlation, "CameraNonProductionOwnerConflict");
                 if (!_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot?.Effective is not { } candidateEffective)
@@ -312,6 +319,7 @@ internal sealed partial class RecipeActivationCameraLease
         var preparationReason = "CameraManualAcquisitionFailed";
         var framePrepared = false;
         var executionStatus = ExecutionStatus.Error;
+        CameraAcquisitionFailureKind? failureKind = null;
 
         try
         {
@@ -319,7 +327,13 @@ internal sealed partial class RecipeActivationCameraLease
                 new ManualControlledCameraBorrow(controlled, physicalPhaseFactory), effective, clock,
                 _owner.CreateManualAcquisitionOptions());
             CameraAcquisitionAttempt attempt;
-            if (correlation.Kind == ExecutionKind.Qualification)
+            if (correlation.Kind == ExecutionKind.Production)
+            {
+                acquisition.EnableProductionOwnedAcquisition();
+                attempt = await acquisition.AcquireProductionOwnedAsync(correlation,
+                    _logicalRole, cancellationToken).ConfigureAwait(false);
+            }
+            else if (correlation.Kind == ExecutionKind.Qualification)
             {
                 acquisition.EnableQualificationSessionAcquisition();
                 attempt = await acquisition.AcquireQualificationSessionAsync(correlation,
@@ -333,6 +347,7 @@ internal sealed partial class RecipeActivationCameraLease
             }
             preparationReason = attempt.ReasonCode;
             outcome = attempt.Outcome;
+            failureKind = outcome?.FailureKind;
             executionStatus = outcome?.ExecutionStatus ??
                 (cancellationToken.IsCancellationRequested
                     ? ExecutionStatus.Cancelled : ExecutionStatus.Error);
@@ -413,10 +428,11 @@ internal sealed partial class RecipeActivationCameraLease
         }
 
         if (!framePrepared || copied is null)
-            return Failure(correlation, preparationReason, retirement, executionStatus);
+            return Failure(correlation, preparationReason, retirement, executionStatus, failureKind, outcome?.Start);
 
         return new ManualCameraAcquisitionResult(true, "CameraManualFramePrepared",
-            correlation, copied, copied.Provenance, retirement, ExecutionStatus.Success);
+            correlation, copied, copied.Provenance, retirement, ExecutionStatus.Success)
+            { AcquisitionStart = outcome?.Start };
     }
 
     private async ValueTask<CameraRetirementObservation?> BeginManualRetirementBoundedAsync(
@@ -577,10 +593,12 @@ internal sealed partial class RecipeActivationCameraLease
     private static ManualCameraAcquisitionResult Failure(
         ExecutionCorrelationId correlation, string? reasonCode,
         CameraRetirementObservation? retirement = null,
-        ExecutionStatus executionStatus = ExecutionStatus.Error) =>
+        ExecutionStatus executionStatus = ExecutionStatus.Error,
+        CameraAcquisitionFailureKind? failureKind = null, FrameAcquisitionStart? acquisitionStart = null) =>
         new(false, string.IsNullOrWhiteSpace(reasonCode)
             ? "CameraManualAcquisitionFailed" : reasonCode, correlation,
-            null, null, retirement, executionStatus);
+            null, null, retirement, executionStatus)
+            { FailureKind = failureKind, AcquisitionStart = acquisitionStart };
 }
 
 /// <summary>

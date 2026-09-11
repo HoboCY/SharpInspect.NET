@@ -19,7 +19,7 @@ internal sealed class PlcRequestRevokedException : OperationCanceledException
 internal sealed class PlcCommunicationOwner : IAsyncDisposable
 {
     private readonly object _sync = new();
-    private readonly ModbusQualificationProfile _profile;
+    private readonly IModbusInspectionProfile _profile;
     private readonly PlcCommunicationPolicy _policy;
     private readonly Guid _runtimeEpoch;
     private readonly Action<PlcCommunicationHealth> _publish;
@@ -49,7 +49,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
     private string? _failure;
     private PlcCommunicationHealth? _lastPublished;
 
-    internal PlcCommunicationOwner(ModbusQualificationProfile profile, Guid runtimeEpoch,
+    internal PlcCommunicationOwner(IModbusInspectionProfile profile, Guid runtimeEpoch,
         Action<PlcCommunicationHealth> publish, Action<string> revoke,
         Func<PlcCommunicationTransition, Task> record, Func<long>? nextGeneration = null)
     {

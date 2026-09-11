@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Frames;
@@ -17,11 +18,14 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
     private readonly SqliteCommandStore _store;
     private readonly ProductionStoreOptions _options;
     private readonly AlgorithmPreparationService? _algorithms;
+    internal string? ProductionPreparedBinaryHash(Guid instanceId) => _algorithms?.ProductionPreparedBinaryHash(instanceId);
     private readonly TimeSpan _preparationTimeout;
     private readonly FrameBufferPool? _frames;
     private readonly Func<Guid, CancellationToken, ValueTask<RecipeActivationRuntimeLease>> _reserveRuntime;
     private readonly Func<ValueTask<StationStateSnapshot>> _readStation;
     private readonly RecipeActivationInternalFixture? _fixture;
+    private readonly Func<RecipeActivationSnapshot, CancellationToken,
+        ValueTask<RecipeActivationDeploymentEvidence?>>? _deploymentEvidence;
     private int _active;
 
     internal RecipeActivationService(RecipeDraftService drafts, IReleasedRecipeQuery releases,
@@ -29,7 +33,9 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         SqliteCommandStore store, ProductionStoreOptions options, AlgorithmPreparationService? algorithms,
         AlgorithmPreparationOptions? preparationOptions, FrameBufferPool? frames,
         Func<Guid, CancellationToken, ValueTask<RecipeActivationRuntimeLease>> reserveRuntime,
-        Func<ValueTask<StationStateSnapshot>> readStation, RecipeActivationInternalFixture? fixture = null)
+        Func<ValueTask<StationStateSnapshot>> readStation, RecipeActivationInternalFixture? fixture = null,
+        Func<RecipeActivationSnapshot, CancellationToken,
+            ValueTask<RecipeActivationDeploymentEvidence?>>? deploymentEvidence = null)
     {
         _preparation = new(drafts, releases, contracts, options); _history = history;
         // Startup recovery is an authority decision. Public query registrations
@@ -39,6 +45,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         _authorization = authorization; _store = store; _options = options; _algorithms = algorithms;
         _preparationTimeout = preparationOptions?.MaximumPreparationTimeout ?? TimeSpan.FromSeconds(5);
         _frames = frames; _reserveRuntime = reserveRuntime; _readStation = readStation; _fixture = fixture;
+        _deploymentEvidence = deploymentEvidence;
     }
 
     public ValueTask<RecipeActivationAccess> GetAccessAsync(CommandInvocation invocation,
@@ -67,6 +74,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         RecipeActivationRecord? previous = null;
         var execution = new RecipeActivationExecution();
         var durableSuccess = false;
+        RecipeActivationDeploymentEvidence? stagedEvidence = null;
         Guid epoch = Guid.Empty;
         string? failure = entered ? null : "RecipeActivationCapacityExceeded";
         try
@@ -81,9 +89,27 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                     if (!access.CanActivate) failure = access.ReasonCode;
                     else
                     {
-                        runtime = await _reserveRuntime(command.CorrelationId, cancellationToken).ConfigureAwait(false);
-                        checks.Observe(2, runtime.Available, runtime.Failure ?? "RecipeActivationQuiescenceReserved");
-                        failure = runtime.Failure;
+                        var reserveStarted = Stopwatch.GetTimestamp();
+                        while (true)
+                        {
+                            var remaining = Remaining(_options.CommitTimeout, reserveStarted);
+                            if (remaining <= TimeSpan.Zero)
+                            {
+                                failure = "RecipeActivationRuntimeBusy";
+                                break;
+                            }
+                            runtime = await _reserveRuntime(command.CorrelationId,
+                                cancellationToken).ConfigureAwait(false);
+                            checks.Observe(2, runtime.Available,
+                                runtime.Failure ?? "RecipeActivationQuiescenceReserved");
+                            failure = runtime.Failure;
+                            if (!RecipeActivationRuntimeLease.IsRuntimeBusy(failure)) break;
+                            runtime.Dispose();
+                            runtime = null;
+                            if (!await DelayRuntimeBusyAsync(reserveStarted, _options.CommitTimeout,
+                                    cancellationToken).ConfigureAwait(false))
+                                break;
+                        }
                     }
                 }
             }
@@ -92,10 +118,39 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
             catch (Exception exception) when (exception is not OutOfMemoryException)
             { failure = "RecipeActivationAdmissionUnavailable"; }
             epoch = runtime?.RuntimeEpoch ?? (await _readStation().ConfigureAwait(false)).RuntimeEpoch;
-            var admission = await _authorization.AdmitRecipeActivationAsync(command, epoch, attempt, kind,
-                checks.Snapshot(), failure, () => runtime is null ? "RecipeActivationRuntimeUnavailable" : runtime.GetBlocker(),
-                new StoreDeadline(_options.CommitTimeout),
-                runtime?.Token ?? cancellationToken).ConfigureAwait(false);
+            var admissionStarted = Stopwatch.GetTimestamp();
+            RecipeActivationAdmissionDecision admission;
+            while (true)
+            {
+                var remaining = Remaining(_options.CommitTimeout, admissionStarted);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    admission = RuntimeBusyAdmission(command, attempt);
+                    break;
+                }
+                admission = await _authorization.AdmitRecipeActivationAsync(command, epoch, attempt, kind,
+                    checks.Snapshot(), failure,
+                    () => runtime is null ? "RecipeActivationRuntimeUnavailable" : runtime.GetBlocker(),
+                    new StoreDeadline(remaining), runtime?.Token ?? cancellationToken).ConfigureAwait(false);
+                if (!IsRetryableRuntimeBusy(admission) || runtime is null) break;
+                // The identity writer rolled back the transient contention. Wait
+                // outside that transaction and reuse the same command/attempt.
+                try
+                {
+                    var blocker = await runtime.WaitForBlockerAsync(
+                        Remaining(_options.CommitTimeout, admissionStarted), runtime.Token)
+                        .ConfigureAwait(false);
+                    if (blocker is null) continue;
+                    admission = NonMutatingAdmission(command, attempt, blocker);
+                }
+                catch (OperationCanceledException) when (
+                    runtime!.Token.IsCancellationRequested || cancellationToken.IsCancellationRequested)
+                {
+                    admission = new(new(command.CorrelationId, CommandDisposition.Rejected,
+                        "RecipeActivationCancelled", AuditPersistence.NotAttempted, attempt));
+                }
+                break;
+            }
             if (admission.Record?.Outcome.State != RecipeActivationOutcomeState.Admitted)
             {
                 runtime?.PublishTerminal(admission.Outcome.ReasonCode, admission.Outcome.Audit == AuditPersistence.Unavailable);
@@ -105,7 +160,12 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
             previous = admission.PreviousActive;
             var token = runtime!.Token;
             var inputs = await _preparation.PrepareAsync(command, checks, token).ConfigureAwait(false);
-            checks.VerifyInstalledAuthorities(_fixture);
+            // The closed development fixture keeps its historical behavior. A
+            // local-authority activation with a deployment observer defers A12-A18
+            // until physical staging has produced the immutable snapshot. Without
+            // an observer the old fail-closed rejection is retained before I/O.
+            if (_fixture is not null || _deploymentEvidence is null)
+                checks.VerifyInstalledAuthorities(_fixture);
             if (_algorithms is null) checks.Observe(6, false, "RecipeActivationAlgorithmPreparationUnavailable");
             if (_frames is null) checks.Observe(11, false, "RecipeActivationFramePoolUnavailable");
             failure = checks.Failure ?? (inputs is null ? "RecipeActivationDependenciesUnavailable" : null);
@@ -117,30 +177,128 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
             }
             if (failure is null && execution.Snapshot is not null)
             {
-                using var commit = await runtime.EnterCommitAsync(token).ConfigureAwait(false);
-                failure = commit.GetBlocker();
-                if (failure is null)
+                if (_fixture is null && _deploymentEvidence is not null)
                 {
-                    var committed = await _authorization.TryCommitRecipeActivationAsync(command, epoch, admitted,
-                        execution.Snapshot, checks.Snapshot(), () =>
-                        {
-                            var pool = _frames?.GetSnapshot();
-                            if (pool is not { IsDisposed: false, ProductionFaultLatched: false, OutstandingLeases: 0, ActiveReaders: 0 })
-                                return "RecipeActivationFramePoolChanged";
-                            return commit.TryBeginCommit();
-                        }, new StoreDeadline(_options.CommitTimeout), token).ConfigureAwait(false);
-                    if (committed.Committed && committed.Result is { } result)
+                    stagedEvidence = await _deploymentEvidence(execution.Snapshot, token).ConfigureAwait(false);
+                    checks.VerifyDeploymentEvidence(execution.Snapshot, stagedEvidence);
+                    failure = checks.Failure;
+                }
+            }
+            if (failure is null && execution.Snapshot is not null)
+            {
+                // Re-capture immediately before entering the commit fence. The
+                // callback performs only bounded observation; no I/O is performed
+                // from the commit callback itself. A changed observation fails
+                // closed instead of sealing stale deployment evidence.
+                if (_fixture is null && _deploymentEvidence is not null)
+                {
+                    var finalEvidence = await _deploymentEvidence(execution.Snapshot, token).ConfigureAwait(false);
+                    if (stagedEvidence is null || finalEvidence is null ||
+                        stagedEvidence.ContentHash != finalEvidence.ContentHash)
                     {
-                        durableSuccess = true;
-                        var installed = execution.InstallCommitted(runtime);
-                        commit.Dispose();
-                        var cleanup = installed.Previous is null ? null :
-                            await RecipeActivationExecution.RetireBoundedAsync(installed.Previous).ConfigureAwait(false);
-                        runtime.PublishTerminal(!installed.Installed ? "RecipeActivationResourceInstallFailed" :
-                            cleanup ?? result.Outcome.ReasonCode, !installed.Installed || cleanup is not null);
-                        return result;
+                        checks.Set(12, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(13, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(14, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(15, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(16, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(17, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        checks.Set(18, RecipeActivationCheckStatus.Failed,
+                            "ProductionDeploymentEvidenceChangedBeforeCommit");
+                        failure = checks.Failure;
                     }
-                    failure = committed.ReasonCode;
+                    else
+                    {
+                        checks.VerifyDeploymentEvidence(execution.Snapshot, finalEvidence);
+                        failure = checks.Failure;
+                    }
+                }
+            }
+            if (failure is null && execution.Snapshot is not null)
+            {
+                var commitStarted = Stopwatch.GetTimestamp();
+                while (true)
+                {
+                    var remaining = Remaining(_options.CommitTimeout, commitStarted);
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        failure = "RecipeActivationRuntimeBusy";
+                        break;
+                    }
+                    RecipeActivationCommitLease? acquiredCommit = null;
+                    using (var commitBudget = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        commitBudget.CancelAfter(remaining);
+                        try
+                        {
+                            acquiredCommit = await runtime.EnterCommitAsync(commitBudget.Token)
+                                .ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (
+                            !token.IsCancellationRequested && commitBudget.IsCancellationRequested)
+                        {
+                            failure = "RecipeActivationRuntimeBusy";
+                        }
+                    }
+                    if (acquiredCommit is { } commit)
+                    {
+                        using (commit)
+                        {
+                            var transactionRemaining = Remaining(_options.CommitTimeout, commitStarted);
+                            failure = transactionRemaining <= TimeSpan.Zero
+                                ? "RecipeActivationRuntimeBusy" : commit.GetBlocker();
+                            if (failure is null)
+                            {
+                                var committed = await _authorization.TryCommitRecipeActivationAsync(command, epoch,
+                                    admitted, execution.Snapshot, checks.Snapshot(), () =>
+                                    {
+                                        var pool = _frames?.GetSnapshot();
+                                        if (pool is not { IsDisposed: false, ProductionFaultLatched: false,
+                                            OutstandingLeases: 0, ActiveReaders: 0 })
+                                            return "RecipeActivationFramePoolChanged";
+                                        return commit.TryBeginCommit();
+                                    }, new StoreDeadline(transactionRemaining), token).ConfigureAwait(false);
+                                if (committed.Committed && committed.Result is { } result)
+                                {
+                                    durableSuccess = true;
+                                    var installed = execution.InstallCommitted(runtime);
+                                    // Do not hold the Runtime command gate while an old
+                                    // prepared algorithm retires outside the transaction.
+                                    commit.Dispose();
+                                    var cleanup = installed.Previous is null ? null :
+                                        await RecipeActivationExecution.RetireBoundedAsync(installed.Previous)
+                                            .ConfigureAwait(false);
+                                    runtime.PublishTerminal(!installed.Installed ?
+                                        "RecipeActivationResourceInstallFailed" :
+                                        cleanup ?? result.Outcome.ReasonCode,
+                                        !installed.Installed || cleanup is not null);
+                                    return result;
+                                }
+                                failure = committed.ReasonCode;
+                            }
+                        }
+                    }
+                    if (!RecipeActivationRuntimeLease.IsRuntimeBusy(failure)) break;
+                    // The candidate is already prepared. A busy final claim is a
+                    // rolled-back transaction, so retry only the durable commit.
+                    try
+                    {
+                        var blocker = await runtime.WaitForBlockerAsync(
+                            Remaining(_options.CommitTimeout, commitStarted), token)
+                            .ConfigureAwait(false);
+                        if (blocker is null) continue;
+                        failure = blocker;
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        failure = "RecipeActivationCancelled";
+                    }
+                    break;
                 }
             }
             return await FailAsync(failure ?? "RecipeActivationPreparationFailed").ConfigureAwait(false);
@@ -191,5 +349,37 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                 result.Outcome.Audit != AuditPersistence.Persisted);
             return result;
         }
+    }
+
+    private static bool IsRetryableRuntimeBusy(RecipeActivationAdmissionDecision admission) =>
+        admission.Record is null && admission.Outcome.Audit == AuditPersistence.NotAttempted &&
+        RecipeActivationRuntimeLease.IsRuntimeBusy(admission.Outcome.ReasonCode);
+
+    private static RecipeActivationAdmissionDecision RuntimeBusyAdmission(
+        ActivateRecipeCommand command, Guid attemptId) =>
+        NonMutatingAdmission(command, attemptId, "RecipeActivationRuntimeBusy");
+
+    private static RecipeActivationAdmissionDecision NonMutatingAdmission(
+        ActivateRecipeCommand command, Guid attemptId, string reason) =>
+        new(new(command.CorrelationId, CommandDisposition.Rejected,
+            reason, AuditPersistence.NotAttempted, attemptId));
+
+    private static TimeSpan Remaining(TimeSpan budget, long started)
+    {
+        var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - started) /
+            (double)Stopwatch.Frequency);
+        var remaining = budget - elapsed;
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+    }
+
+    private static async ValueTask<bool> DelayRuntimeBusyAsync(long started,
+        TimeSpan budget, CancellationToken cancellationToken)
+    {
+        var remaining = Remaining(budget, started);
+        if (remaining <= TimeSpan.Zero) return false;
+        var delay = remaining > TimeSpan.FromMilliseconds(10)
+            ? TimeSpan.FromMilliseconds(10) : remaining;
+        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 }

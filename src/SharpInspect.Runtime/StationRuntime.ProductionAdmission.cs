@@ -10,6 +10,11 @@ public sealed partial class StationRuntime
 {
     private bool _productionAdmissionEnabled;
     private IProductionAdmissionFactsSource? _productionAdmissionFactsSource;
+    // Qualification evidence is an internal Runtime-owned seam.  It can replace
+    // only the signed qualification inputs; the built-in runtime gates below are
+    // always captured from the live StationStateSnapshot.
+    private IProductionInspectionQualificationEvidenceProvider?
+        _productionInspectionQualificationEvidenceProvider;
     private long _admissionGeneration;
     private string _admissionStateHash = string.Empty;
     // Keep the immutable facts so the fixed engine can re-evaluate time-dependent
@@ -29,6 +34,28 @@ public sealed partial class StationRuntime
     internal long AdmissionGeneration
     {
         get { lock (_sync) return _admissionGeneration; }
+    }
+
+    /// <summary>
+    /// Installs the internal source for qualification evidence used by the
+    /// production admission capture.  This is deliberately separate from the
+    /// public admission facts source: a provider cannot supply, override, or
+    /// mark any Runtime gate as passed.
+    /// </summary>
+    internal void ConfigureProductionInspectionQualificationEvidenceProvider(
+        IProductionInspectionQualificationEvidenceProvider? provider)
+    {
+        lock (_sync)
+        {
+            if (ReferenceEquals(_productionInspectionQualificationEvidenceProvider, provider)) return;
+            _productionInspectionQualificationEvidenceProvider = provider;
+            if (!_productionAdmissionEnabled || _disposed || _shutdownRequested) return;
+
+            _admissionGeneration = checked(_admissionGeneration + 1);
+            PublishUnavailableProductionAdmissionLocked(
+                provider is null ? "ProductionQualificationEvidenceUnavailable" :
+                    "ProductionQualificationEvidenceProviderChanged");
+        }
     }
 
     private void ConfigureProductionAdmission(ProductionStoreOptions? options,
@@ -150,7 +177,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped", _snapshot.ProductionAdmission);
-                if (Volatile.Read(ref _pendingLocalStops) > 0)
+                if (LocalStopPendingLocked)
                     return Unavailable("LocalStopPending", _snapshot.ProductionAdmission);
                 if (_snapshot.LastCommand?.CorrelationId == command.CorrelationId)
                     return Unavailable("DuplicateCorrelationId", _snapshot.ProductionAdmission);
@@ -182,7 +209,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped", _snapshot.ProductionAdmission);
-                if (Volatile.Read(ref _pendingLocalStops) > 0)
+                if (LocalStopPendingLocked)
                     return Unavailable("LocalStopPending", _snapshot.ProductionAdmission);
                 capture = new AdmissionCapture(_snapshot.RuntimeEpoch, _snapshot.Revision,
                     _admissionGeneration, _admissionStateHash);
@@ -194,7 +221,7 @@ public sealed partial class StationRuntime
             {
                 forced = _shutdownRequested || _disposed ? "RuntimeStopped" : networkBarrier;
                 if (forced is null && StationQualificationConfigurationBlockedLocked) forced = "StationQualificationSessionInProgress";
-                if (forced is null && Volatile.Read(ref _pendingLocalStops) > 0) forced = "LocalStopPending";
+                if (forced is null && LocalStopPendingLocked) forced = "LocalStopPending";
                 if (forced is null && _snapshot.Mode != ExclusiveMode.None) forced = "ExclusiveWorkInProgress";
                 if (forced is null && _snapshot.Recovery != RecoveryState.None) forced = "StartupRecoveryNotVerified";
             }
@@ -287,7 +314,7 @@ public sealed partial class StationRuntime
                     _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
                     _admissionGeneration == capture.Generation &&
                     string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
-                    Volatile.Read(ref _pendingLocalStops) == 0 &&
+                    !LocalStopPendingLocked &&
                     _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
             }
 
@@ -311,10 +338,10 @@ public sealed partial class StationRuntime
                         !_shutdownRequested && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
                         _admissionGeneration == capture.Generation &&
                         string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
-                        Volatile.Read(ref _pendingLocalStops) == 0 &&
+                        !LocalStopPendingLocked &&
                         _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
                     if (stillStable)
-                        PublishLocked(_snapshot with { Ready = true, ArmState = ProductionArmState.Armed,
+                        PublishLocked(_snapshot with { Ready = _productionInspectionOptions is null, ArmState = ProductionArmState.Armed,
                             ProductionAdmission = report,
                             LastCommand = new CommandProgress(command.CorrelationId,
                                 OperationState.Completed, "ProductionArmed") }, completingProductionArm: true);
@@ -432,6 +459,8 @@ public sealed partial class StationRuntime
                 Ready = false, ArmState = ProductionArmState.Disarmed, ProductionAdmission = report,
                 AlarmState = alarms };
             _admissionStateHash = ComputeAdmissionStateHash(_snapshot);
+            if (_productionInspectionOwner is { Current: null, Observer: { } observer })
+                observer.RejectPendingAdmission("ProductionTriggerPermitRevoked");
             foreach (var subscriber in _subscribers) subscriber.Writer.TryWrite(_snapshot);
             return report;
         }
@@ -452,9 +481,15 @@ public sealed partial class StationRuntime
     }
 
     private ProductionAdmissionFacts CaptureDefaultFactsLocked(StationStateSnapshot? observedState = null,
-        IReadOnlyDictionary<string, string>? durableHeads = null, bool captureSucceeded = false)
+        IReadOnlyDictionary<string, string>? durableHeads = null, bool captureSucceeded = false,
+        ProductionQualificationInputs? qualifications = null)
     {
-        var state = observedState ?? _snapshot;
+        // A production cycle deliberately projects Busy/CurrentExecution while it
+        // owns the physical resources.  Those fields describe the live operation,
+        // not a new admission blocker.  Normalize only this observation copy; the
+        // published snapshot remains the authoritative Busy/Ack projection.
+        var state = NormalizeProductionAdmissionObservationLocked(observedState ?? _snapshot);
+        var ownedProductionProgress = IsOwnedProductionProgressLocked(observedState ?? _snapshot);
         var gates = ProductionAdmissionReport.RequiredGates
             .Where(gate => !ProductionAdmissionEngine.IsQualificationGate(gate))
             .Select(gate => gate switch
@@ -464,6 +499,8 @@ public sealed partial class StationRuntime
                         "ActiveRecipeObserved", observedFingerprint: recipe.ContentHash)
                     : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                         "ActiveRecipeMissing"),
+                ProductionAdmissionGate.PreparedAlgorithm => PreparedAlgorithmGate(gate, state),
+                ProductionAdmissionGate.RecipeAssets => RecipeAssetsGate(gate, state),
                 ProductionAdmissionGate.CameraBinding => state.CameraSetup is { BindingRevision: > 0 } camera
                     ? new ProductionAdmissionGateResult(gate, ProductionAdmissionGateStatus.Passed,
                         "CameraBindingObserved", observedFingerprint: ProductionAdmissionCanonical.Hash(
@@ -517,23 +554,31 @@ public sealed partial class StationRuntime
                         : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                             "AlarmAuthorityUnavailable"),
                 ProductionAdmissionGate.StoreIntegrity => StoreIntegrityGate(gate),
-                ProductionAdmissionGate.EvidenceReconciliation => state.Evidence.State == HealthState.Healthy &&
-                    state.Evidence.PendingRequiredImages == 0 && state.Evidence.PendingDeliveries == 0
-                    ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
-                        "EvidenceReconciliationHealthy")
-                    : state.Evidence.State == HealthState.Faulted
-                        ? RuntimeGate(gate, ProductionAdmissionGateStatus.Failed,
-                            "EvidenceReconciliationFailed")
-                        : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
-                            "EvidenceReconciliationUnavailable"),
+                ProductionAdmissionGate.EvidenceReconciliation => EvidenceGate(gate, state),
+                ProductionAdmissionGate.Backlog => BacklogGate(gate, ownedProductionProgress),
+                ProductionAdmissionGate.ProductionCycle => ProductionCycleGate(gate, state),
+                ProductionAdmissionGate.DeploymentPolicies or ProductionAdmissionGate.VersionPolicy or
+                    ProductionAdmissionGate.StoreCapacity or ProductionAdmissionGate.IdentityRecovery =>
+                    ProductionDeploymentGate(gate),
                 _ => RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                     ProductionAdmissionEngine.MissingReason(gate))
             }).ToArray();
         if (!captureSucceeded && _productionAdmissionFactsFailure is { } failure)
             gates = gates.Select(gate => new ProductionAdmissionGateResult(gate.Gate,
                 ProductionAdmissionGateStatus.Blocked, failure)).ToArray();
-        return new ProductionAdmissionFacts(new(new Dictionary<ProductionConfigurationBinding, string>()),
-            ProductionQualificationInputs.Unconfigured, gates,
+        // PublishLocked re-captures the built-in gates on every snapshot. Preserve
+        // the last verified qualification target while the internal provider is
+        // installed; otherwise a heartbeat would silently replace signed evidence
+        // with the conservative empty target and disarm an otherwise stable arm.
+        var effectiveConfiguration = _productionInspectionQualificationEvidenceProvider is not null
+            ? _lastAdmissionFacts?.Configuration
+            : null;
+        var effectiveQualifications = qualifications ??
+            (_productionInspectionQualificationEvidenceProvider is not null
+                ? _lastAdmissionFacts?.Qualifications : null) ?? ProductionQualificationInputs.Unconfigured;
+        return new ProductionAdmissionFacts(effectiveConfiguration ??
+            new(new Dictionary<ProductionConfigurationBinding, string>()),
+            effectiveQualifications, gates,
             durableHeads ?? _lastAdmissionFacts?.DurableHeads ?? new Dictionary<string, string>());
 
         ProductionAdmissionGateResult StoreIntegrityGate(ProductionAdmissionGate gate)
@@ -560,19 +605,140 @@ public sealed partial class StationRuntime
             };
 
         static ProductionAdmissionGateResult RuntimeGate(ProductionAdmissionGate gate,
-            ProductionAdmissionGateStatus status, string reason) => new(gate, status, reason);
+            ProductionAdmissionGateStatus status, string reason, string? observedFingerprint = null) =>
+            new(gate, status, reason, observedFingerprint: observedFingerprint);
+
+        ProductionAdmissionGateResult PreparedAlgorithmGate(ProductionAdmissionGate gate,
+            StationStateSnapshot current)
+        {
+            var activation = _activeActivation;
+            var content = activation?.Snapshot.Release.Source.Content;
+            var prepared = activation?.Algorithm;
+            var exact = activation is { Snapshot.ProductionAuthority: true,
+                    Snapshot: { } snapshot } &&
+                current.ActiveRecipe is { } activeRecipe &&
+                activeRecipe == snapshot.Recipe &&
+                prepared is { IsRetired: false } algorithm &&
+                algorithm.InstanceId == snapshot.PreparedAlgorithmInstanceId &&
+                algorithm.Descriptor.Identity == content?.Algorithm.Algorithm &&
+                algorithm.Descriptor.ConfigurationSchema.Id == content?.Algorithm.ConfigurationSchema.Id &&
+                algorithm.Descriptor.ConfigurationSchema.Version == content?.Algorithm.ConfigurationSchema.Version &&
+                algorithm.Descriptor.ConfigurationSchema.ContentHash == content?.Algorithm.ConfigurationSchema.ContentHash &&
+                algorithm.Descriptor.ResultSchema.Id == content?.Algorithm.ResultSchema.Id &&
+                algorithm.Descriptor.ResultSchema.Version == content?.Algorithm.ResultSchema.Version &&
+                algorithm.Descriptor.ResultSchema.ContentHash == content?.Algorithm.ResultSchema.ContentHash &&
+                algorithm.Configuration.ContentHash == content?.Configuration.ContentHash;
+            return exact
+                ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
+                    "PreparedAlgorithmExact", ProductionAdmissionCanonical.Hash(
+                        "production-prepared-algorithm-v1", activation!.Snapshot.ContentHash,
+                        prepared!.InstanceId.ToString("D"), prepared.Descriptor.Identity.Id,
+                        prepared.Descriptor.Identity.Version, prepared.Configuration.ContentHash))
+                : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                    "PreparedAlgorithmExactUnavailable");
+        }
+
+        ProductionAdmissionGateResult RecipeAssetsGate(ProductionAdmissionGate gate,
+            StationStateSnapshot current)
+        {
+            var activation = _activeActivation;
+            var content = activation?.Snapshot.Release.Source.Content;
+            var exact = activation is { Snapshot.ProductionAuthority: true,
+                    Snapshot: { } snapshot } && current.ActiveRecipe == snapshot.Recipe &&
+                content is not null &&
+                content.AssetRequirements.Count == 0 && content.CameraProviderExtension is null &&
+                content.CalibrationRequirements.Count == 0;
+            return exact
+                ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
+                    "RecipeAssetsExplicitlyEmpty", ProductionAdmissionCanonical.Hash(
+                        "production-recipe-assets-v1", activation!.Snapshot.Release.ContentHash,
+                        content!.ContentHash))
+                : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                    "RecipeAssetsVerificationUnavailable");
+        }
+
+        ProductionAdmissionGateResult ProductionCycleGate(ProductionAdmissionGate gate,
+            StationStateSnapshot current)
+        {
+            var options = _productionInspectionOptions;
+            var storeOptions = _productionInspectionStoreOptions;
+            var activation = _activeActivation;
+            var content = activation?.Snapshot.Release.Source.Content;
+            var policy = _productionInspectionPolicy;
+            var owner = _productionInspectionOwner;
+            var ownerReady = owner is { Aborted: false } &&
+                !owner.Cancellation.IsCancellationRequested;
+            var exact = options is { EvidenceRequirement: ProductionEvidenceRequirement.None } &&
+                storeOptions is { ProductionInspections: not null } &&
+                _audit is SqliteCommandStore { ProductionInspectionEnabled: true } &&
+                _productionInspectionClock is not null && _frameBufferPool is not null &&
+                ownerReady && _productionInspectionStartupVerified &&
+                !_productionInspectionRecoveryBlocked && activation is { Snapshot.ProductionAuthority: true,
+                    Snapshot: { } snapshot, Algorithm.IsRetired: false } && current.ActiveRecipe == snapshot.Recipe &&
+                content?.PartIdentityRequirement?.Mode ==
+                    PartIdentityRequirementMode.None && policy is { Policy.RequiredRoutes.Count: 0 } &&
+                storeOptions.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
+            return exact
+                ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "ProductionCycleConfigured",
+                    ProductionAdmissionCanonical.Hash("production-cycle-v1", options!.ContentHash,
+                        storeOptions!.ProductionInspections!.BindingHash, activation!.Snapshot.ContentHash,
+                        policy!.ContentHash, owner!.RuntimeEpoch.ToString("D")))
+                : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                    "ProductionCycleUnavailable");
+        }
+
+        ProductionAdmissionGateResult EvidenceGate(ProductionAdmissionGate gate,
+            StationStateSnapshot current)
+        {
+            var noPending = current.Evidence.PendingRequiredImages == 0 &&
+                current.Evidence.PendingDeliveries == 0;
+            var noRoutes = _productionInspectionOptions?.EvidenceRequirement ==
+                    ProductionEvidenceRequirement.None &&
+                _productionInspectionPolicy is { Policy.RequiredRoutes.Count: 0 } &&
+                _productionInspectionStoreOptions?.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
+            if (_productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked && noPending &&
+                noRoutes && current.Evidence.State != HealthState.Faulted)
+                return RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
+                    "ProductionEvidenceLedgerVerified");
+            return current.Evidence.State == HealthState.Faulted
+                ? RuntimeGate(gate, ProductionAdmissionGateStatus.Failed,
+                    "EvidenceReconciliationFailed")
+                : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                    "EvidenceReconciliationUnavailable");
+        }
+
+        ProductionAdmissionGateResult BacklogGate(ProductionAdmissionGate gate,
+            bool ownedProgress)
+        {
+            if (_productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked &&
+                (_productionInspectionOwner?.Current is null || ownedProgress))
+                return RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
+                    "ProductionBacklogLedgerVerified");
+            return RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
+                "ProductionBacklogStateUnavailable");
+        }
     }
 
     private string ComputeAdmissionStateHash(StationStateSnapshot state)
     {
+        state = NormalizeProductionAdmissionObservationLocked(state);
+        // Acquisition Unknown/Healthy describes the current frame attempt, not
+        // the deployed camera configuration. A fault remains material. This also
+        // keeps completion of a normal frame from revoking the next cycle's Arm.
+        var cameraMaterial = _productionInspectionOptions is null ? state.Camera.ToString() :
+            string.Join("|", state.Camera.Connection, state.Camera.Configuration, state.Camera.Buffers,
+                state.Camera.Acquisition == HealthState.Faulted ? "AcquisitionFaulted" : "AcquisitionProgress");
+        var cameraSetupMaterial = _productionInspectionOptions is not null && state.CameraSetup is { } setup
+            ? (setup with { Acquisition = CameraAcquisitionState.Stopped }).ToString()
+            : state.CameraSetup?.ToString();
         var fields = new List<string?>
         {
             "production-admission-runtime-state-v1", state.RuntimeEpoch.ToString("D"),
             state.Lifecycle.ToString(), state.Mode.ToString(), state.Busy.ToString(),
             state.Handshake.ToString(), state.Recovery.ToString(), state.CurrentExecution?.ToString(),
-            state.ActiveRecipe?.ToString(), state.Camera.ToString(), state.Plc.ToString(),
+            state.ActiveRecipe?.ToString(), cameraMaterial, state.Plc.ToString(),
             state.Store.ToString(), state.Evidence.ToString(), state.Qualification.ToString(),
-            state.Performance.ToString(), state.Alarms.ToString(), state.CameraSetup?.ToString(),
+            state.Performance.ToString(), state.Alarms.ToString(), cameraSetupMaterial,
             state.CameraRecovery is { } recovery
                 ? string.Join("|", recovery.State, recovery.AttemptCount, recovery.MaximumAttempts,
                     recovery.SourceHealthy, recovery.ReasonCode, recovery.Health?.ToString()) : null,
@@ -598,6 +764,20 @@ public sealed partial class StationRuntime
         return ProductionAdmissionCanonical.Hash("production-admission-runtime-state-v1", fields.ToArray());
     }
 
+    /// <summary>
+    /// Returns the state used for admission-material observation while an already
+    /// accepted production cycle owns the physical resources.  This deliberately
+    /// does not mutate or publish the station snapshot: Busy/Ack remains visible
+    /// to Runtime consumers, but it cannot invalidate the same cycle's admission.
+    /// </summary>
+    internal StationStateSnapshot NormalizeProductionAdmissionObservationLocked(
+        StationStateSnapshot state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (!IsOwnedProductionProgressLocked(state)) return state;
+        return state with { Busy = false, CurrentExecution = null, Handshake = HandshakePhase.Idle };
+    }
+
     private readonly record struct AdmissionCapture(Guid RuntimeEpoch, long Revision,
         long Generation, string StateHash);
 
@@ -613,12 +793,45 @@ public sealed partial class StationRuntime
             var heads = _owner._audit is SqliteCommandStore { ProductionAdmissionEnabled: true } store
                 ? await store.ReadProductionAdmissionDurableHeadsAsync(cancellationToken).ConfigureAwait(false)
                 : new Dictionary<string, string>();
+            ProductionAdmissionFacts runtimeFacts;
+            StationStateSnapshot state;
+            RecipeActivationSnapshot? activation;
+            IProductionInspectionQualificationEvidenceProvider? provider;
             lock (_owner._sync)
             {
                 if (_owner._disposed || _owner._shutdownRequested)
                     throw new InvalidOperationException("ProductionAdmissionRuntimeStopped");
-                return _owner.CaptureDefaultFactsLocked(durableHeads: heads, captureSucceeded: true);
+                state = _owner._snapshot;
+                activation = _owner._activeActivation?.Snapshot;
+                provider = _owner._productionInspectionQualificationEvidenceProvider;
+                runtimeFacts = _owner.CaptureDefaultFactsLocked(state, heads, captureSucceeded: true);
             }
+
+            var deployment = await _owner.CaptureProductionDeploymentAsync(activation, cancellationToken).ConfigureAwait(false);
+            var configuration = deployment?.Configuration ?? runtimeFacts.Configuration;
+            var evidence = provider is null ? ProductionQualificationInputs.Unconfigured :
+                await provider.CaptureAsync(configuration, state, activation, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (evidence is null)
+                throw new InvalidOperationException("ProductionQualificationEvidenceUnavailable");
+            lock (_owner._sync)
+            {
+                _owner._productionDeploymentObservation = deployment;
+                runtimeFacts = _owner.CaptureDefaultFactsLocked(state, heads, captureSucceeded: true);
+            }
+            return new ProductionAdmissionFacts(configuration, evidence,
+                runtimeFacts.RuntimeGates.Values.ToArray(), runtimeFacts.DurableHeads);
         }
     }
+}
+
+/// <summary>
+/// Internal qualification-only evidence seam for the production admission path.
+/// Implementations may provide signed qualification inputs, but they cannot
+/// provide any of the Runtime gates or durable-head observations.
+/// </summary>
+internal interface IProductionInspectionQualificationEvidenceProvider
+{
+    ValueTask<ProductionQualificationInputs> CaptureAsync(ProductionConfiguration observedConfiguration, StationStateSnapshot state,
+        RecipeActivationSnapshot? activation, CancellationToken cancellationToken);
 }

@@ -68,7 +68,10 @@ internal enum IdentityEventKind
     ProductionAdmissionFailed,
     StationQualificationAuthorized,
     RecipeTransferAuthorized,
-    TraceStoragePolicyAuthorized
+    TraceStoragePolicyAuthorized,
+    ProductionInspectionAdmitted,
+    ProductionInspectionCoreCommitted,
+    ProductionInspectionFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -147,14 +150,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > PlcCommunicationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionInspectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > PlcCommunicationStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionInspectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -179,7 +182,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PlcCommunicationStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionInspectionStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -251,6 +254,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     legacyKind != IdentityEventKind.RecipeTransferAuthorized, "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.TraceStoragePolicyAuthorized, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= ProductionInspectionStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.ProductionInspectionAdmitted or
+                        IdentityEventKind.ProductionInspectionCoreCommitted or
+                        IdentityEventKind.ProductionInspectionFailed), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||

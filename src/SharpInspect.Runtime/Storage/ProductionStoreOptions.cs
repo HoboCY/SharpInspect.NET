@@ -101,4 +101,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 27 append-only PLC communication ledger.</summary>
     public PlcCommunicationStoreOptions? PlcCommunication { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 28 immutable production inspection Core ledger.</summary>
+    public ProductionInspectionStoreOptions? ProductionInspections { get; init; }
 }

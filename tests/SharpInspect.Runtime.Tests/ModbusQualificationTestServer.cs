@@ -53,6 +53,8 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
     private uint _expectedControllerSampleSequence;
     private bool _controllerSampleExpected;
     private bool _qualificationReady;
+    private bool _productionReady;
+    private bool _productionPeer;
     private bool _busy;
     private bool _resultValid;
     private bool _cycleFault;
@@ -225,7 +227,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
         {
             lock (_stateSync)
                 return !_qualificationReady && !_busy && !_resultValid && !_cycleFault &&
-                    !_protocolViolation;
+                    !_protocolViolation && !_productionReady;
         }
     }
 
@@ -353,7 +355,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
             else if (start == profile.RuntimeStartAddress)
                 values = new[] { _qualificationReady ? (ushort)1 : (ushort)0, _busy ? (ushort)1 : (ushort)0,
                     _resultValid ? (ushort)1 : (ushort)0, _cycleFault ? (ushort)1 : (ushort)0,
-                    _protocolViolation ? (ushort)1 : (ushort)0, (ushort)0 };
+                    _protocolViolation ? (ushort)1 : (ushort)0, _productionReady ? (ushort)1 : (ushort)0 };
             else return ExceptionResponse(request, 0x03, 0x02);
         }
         var body = new byte[1 + values.Length * 2];
@@ -372,6 +374,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
         lock (_stateSync)
         {
             if (address == profile.RuntimeStartAddress && value == 0) _qualificationReady = false;
+            if (address == profile.RuntimeStartAddress + 5 && value == 0) _productionReady = false;
         }
         return Response(request, 0x06, request.Pdu.AsSpan(1, 4).ToArray());
     }
@@ -400,8 +403,9 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
                 resultValid = BooleanRegister(data, 2);
                 _cycleFault = BooleanRegister(data, 3);
                 _protocolViolation = BooleanRegister(data, 4);
-                var productionReady = BooleanRegister(data, 5);
+                var productionReady = _productionReady = BooleanRegister(data, 5);
                 if (productionReady) ProductionReadyWriteCount++;
+                if (productionReady && _productionPeer) _readyWrite.TrySetResult(true);
                 _stateWrites.Enqueue(new(_qualificationReady, _busy, resultValid,
                     _cycleFault, _protocolViolation, productionReady));
                 if (_qualificationReady) { ReadyWriteCount++; _readyWrite.TrySetResult(true); }

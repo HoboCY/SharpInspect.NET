@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
@@ -31,6 +32,25 @@ internal sealed class RecipeActivationRuntimeLease : IDisposable
     internal CancellationToken Token { get; }
     internal CameraSetupRuntime? Camera { get; }
     internal string? GetBlocker() => !Available ? Failure ?? "RecipeActivationReservationUnavailable" : _blocker?.Invoke();
+    internal async ValueTask<string?> WaitForBlockerAsync(TimeSpan budget, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var blocker = GetBlocker();
+            if (!IsRuntimeBusy(blocker)) return blocker;
+            var elapsed = TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - started) /
+                (double)Stopwatch.Frequency);
+            var remaining = budget - elapsed;
+            if (remaining <= TimeSpan.Zero) return blocker;
+            var delay = remaining > TimeSpan.FromMilliseconds(10)
+                ? TimeSpan.FromMilliseconds(10) : remaining;
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+    }
+    internal static bool IsRuntimeBusy(string? reason) =>
+        string.Equals(reason, "RecipeActivationRuntimeBusy", StringComparison.Ordinal);
     internal RecipeActivationPhysicalPhaseClaim TryBeginPhysicalPhase() =>
         !Available || _beginPhysicalPhase is null
             ? RecipeActivationPhysicalPhaseClaim.Unavailable(Failure ?? "RecipeActivationReservationUnavailable")

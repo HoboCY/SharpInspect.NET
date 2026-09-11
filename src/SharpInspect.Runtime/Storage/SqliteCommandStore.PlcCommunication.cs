@@ -212,7 +212,7 @@ internal sealed partial class SqliteCommandStore
             SqliteNative.EnsureDeadline(deadline, default);
             SqliteNative.Execute(database, "BEGIN IMMEDIATE;", deadline);
             started = true;
-            var verification = VerifyForPlcCommunication(database, deadline);
+            var verification = VerifyForProtocolLedger(database, deadline);
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline, options);
 
             var rows = ReadPlcCommunicationRows(database, options, deadline);
@@ -322,7 +322,7 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("PlcCommunicationMonotonicOrderInvalid");
     }
 
-    private AuditIntegrityReport VerifyForPlcCommunication(sqlite3 database, StoreDeadline deadline)
+    private AuditIntegrityReport VerifyForProtocolLedger(sqlite3 database, StoreDeadline deadline)
     {
         var options = _options;
         var request = new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries);
@@ -338,7 +338,8 @@ internal sealed partial class SqliteCommandStore
             manualOptions: options.ManualInspections, productionAdmissionOptions: options.ProductionAdmission,
             stationQualificationOptions: options.StationQualifications, recipeTransferOptions: options.RecipeTransfers,
             traceStoragePolicyOptions: options.TraceStoragePolicies, qualificationCycleOptions: options.QualificationCycles,
-            plcCommunicationOptions: options.PlcCommunication);
+            plcCommunicationOptions: options.PlcCommunication,
+                productionInspectionOptions: options.ProductionInspections);
     }
 
     internal static void VerifyPlcCommunicationActivationPayload(sqlite3 database,

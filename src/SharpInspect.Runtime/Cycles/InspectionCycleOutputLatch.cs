@@ -1,3 +1,5 @@
+using SharpInspect.Runtime.Plc;
+
 namespace SharpInspect.Runtime.Cycles;
 
 /// <summary>
@@ -26,6 +28,12 @@ internal sealed class InspectionCycleOutputLatch
             try
             {
                 await _write(nextReady, nextBusy, nextValid, nextFault, nextViolation, token).ConfigureAwait(false);
+            }
+            catch (PlcRequestRevokedException)
+            {
+                // This exception is raised by the request fence before any bytes
+                // are sent. The last confirmed image remains authoritative.
+                throw;
             }
             catch
             {

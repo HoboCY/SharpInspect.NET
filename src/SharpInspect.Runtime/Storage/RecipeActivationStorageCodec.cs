@@ -22,6 +22,34 @@ internal static class RecipeActivationStorageCodec
     private const int MaximumCheckCount = 256;
     private const int MaximumSelectionCount = 8;
 
+    /// <summary>
+    /// Encodes the exact activation snapshot using the already versioned
+    /// activation wire representation. This wrapper intentionally adds no new
+    /// snapshot format; production Core stores the resulting bytes as an
+    /// opaque immutable baseline.
+    /// </summary>
+    internal static byte[] EncodeSnapshot(RecipeActivationSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, new UTF8Encoding(false, true), leaveOpen: true))
+            WriteSnapshot(writer, snapshot);
+        return stream.ToArray();
+    }
+
+    internal static RecipeActivationSnapshot DecodeSnapshot(ReadOnlyMemory<byte> payload,
+        Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? profileResolver = null)
+    {
+        if (payload.Length is < 1 or > MaximumPayloadBytes)
+            throw new InvalidOperationException("RecipeActivationSnapshotPayloadCapacityExceeded");
+        using var stream = new MemoryStream(payload.ToArray(), writable: false);
+        using var reader = new BinaryReader(stream, new UTF8Encoding(false, true), leaveOpen: true);
+        var value = ReadSnapshot(reader, profileResolver);
+        if (value is null || stream.Position != stream.Length)
+            throw new InvalidOperationException("RecipeActivationSnapshotPayloadInvalid");
+        return value;
+    }
+
     internal static byte[] Encode(RecipeActivationRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);

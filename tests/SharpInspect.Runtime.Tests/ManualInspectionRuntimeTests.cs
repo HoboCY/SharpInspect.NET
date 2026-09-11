@@ -7,7 +7,9 @@ using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Manual;
+using SharpInspect.Runtime.Production;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.StoragePolicies;
 using Xunit;
 using Xunit.Sdk;
 
@@ -367,14 +369,30 @@ public sealed partial class ManualInspectionRuntimeTests
         internal void PauseClock() => _clockPump.Pause();
         internal void ResumeClock() => _clockPump.Resume();
 
+        internal async Task StopRuntimePreservingFixtureAsync()
+        {
+            // Keep the provider and fixture-owned services alive so a cold runtime
+            // can be composed against the same durable options after the store is
+            // reopened.  The fixture remains responsible for their final disposal.
+            await Assert.IsType<StationRuntime>(Runtime).DisposeAsync();
+        }
+
         internal static async Task<ManualHarness> CreateAsync(bool allowManual = true,
             bool timeout = false, bool configureCamera = true,
             string? preparationBarrierStage = null, bool failUnpublishedDispose = false,
             TimeSpan? shutdownTimeout = null, bool requireManualStepUp = false,
             bool minimalStore = false, ManualInspectionStoreOptions? manualStoreOptions = null,
-            int? maximumAuditEntries = null, bool activationReadyDraft = false, bool productionAdmission = false)
+            int? maximumAuditEntries = null, bool activationReadyDraft = false, bool productionAdmission = false,
+            ModbusQualificationTestServer? productionPeer = null,
+            ProductionInspectionStoreOptions? productionStore = null)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
+            if (productionPeer is not null)
+                policy = new AuthorizationPolicy("V142.Production.Authorization", "1",
+                    policy.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
+                        ? pair.Value.Concat(new[] { Permission.ReleaseRecipe, Permission.ManagePlcResultContract,
+                            Permission.ActivateRecipe, Permission.ArmProduction, Permission.ManageProductionPolicy }).Distinct()
+                        : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             var alarm = CreateAlarmPolicy();
             var releasePolicy = new RecipeGovernancePolicy("V135.Release", "1",
                 RecipeGovernanceMode.SingleApproverRelease);
@@ -386,7 +404,11 @@ public sealed partial class ManualInspectionRuntimeTests
                 recipeActivations: minimalStore ? null : new RecipeActivationStoreOptions(),
                 manualInspections: manualStoreOptions ?? new ManualInspectionStoreOptions(),
                 maximumAuditEntries: maximumAuditEntries,
-                productionAdmission: productionAdmission ? new ProductionAdmissionStoreOptions() : null);
+                productionAdmission: productionAdmission || productionPeer is not null ? new ProductionAdmissionStoreOptions() : null,
+                plcCommunication: productionPeer is null ? null : new PlcCommunicationStoreOptions(),
+                productionInspections: productionPeer is null ? null : productionStore ?? new ProductionInspectionStoreOptions(),
+                traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
+                    { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) });
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
@@ -399,10 +421,29 @@ public sealed partial class ManualInspectionRuntimeTests
                 Assert.True(saved.Saved, saved.ReasonCode);
                 var draft = Assert.IsType<RecipeDraftRevision>(saved.Revision);
 
-                var clock = new VirtualCameraClock(new DateTimeOffset(2026, 1, 1,
-                    0, 0, 0, TimeSpan.Zero));
+                var clock = new VirtualCameraClock(productionPeer is not null ? DateTimeOffset.UtcNow :
+                    new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
                 var cameraProvider = CreateProvider(clock, timeout);
                 var registrations = new ServiceCollection();
+                if (productionPeer is not null)
+                {
+                    var publication = await TraceStoragePolicyRuntimeTests.Service(fixture).PublishAsync(
+                        await TraceStoragePolicyRuntimeTests.AuthorizedCommand(fixture, 0, TraceStoragePolicyRuntimeTests.Policy()));
+                    Assert.True(publication.Succeeded, publication.Outcome.ReasonCode);
+                    ProductionPolicyDocument Document(string id, string content) => new(id, "1", content);
+                    var deployment = new ProductionDeploymentManifest("V142.Isolated.Deployment", "1",
+                        Document("Logging", "Isolated test workload: structured command and inspection audit only."),
+                        Document("Diagnostics", "Protected test diagnostics are local and access controlled."),
+                        Document("Backup", "Offline test database; retained test artifacts, no production restore qualification."),
+                        Document("Startup", "Verify all enabled ledgers; pending inspection blocks before opening PLC socket."),
+                        Document("Performance", "Virtual isolated station, one frame per software trigger; 2 second execution budget."),
+                        Document("Conformance", "V142 isolated software contract checks, test issuer only."),
+                        Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>());
+                    registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
+                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(),
+                        publication.Snapshot!.Version, publication.Snapshot.ContentHash,
+                        TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
+                }
                 registrations.AddSingleton(fixture.Store);
                 registrations.AddSingleton(fixture.Identity);
                 registrations.AddSingleton<IIdentityProvider>(fixture.Identity);
@@ -440,6 +481,21 @@ public sealed partial class ManualInspectionRuntimeTests
                     throw new XunitException("Manual runtime did not use StationRuntime");
                 await station.WaitForManualInspectionStartupAsync()
                     .WaitAsync(TimeSpan.FromSeconds(30));
+                if (productionPeer is not null)
+                {
+                    var startupManual = await fixture.Store.ReadManualInspectionRecoveryStateAsync(CancellationToken.None);
+                    Assert.True(startupManual.Available, startupManual.ReasonCode);
+                    if (fixture.Options.PreviewSessions is not null)
+                    {
+                        var startupPreview = await fixture.Store.ReadPreviewRecoveryStateAsync(CancellationToken.None);
+                        Assert.True(startupPreview.Available, startupPreview.ReasonCode);
+                    }
+                    var startupActivation = await new SqliteRecipeActivationQuery(fixture.Options).ReadCurrentAsync();
+                    Assert.True(startupActivation.Available, startupActivation.ReasonCode);
+                    var startupState = await runtime.GetSnapshotAsync();
+                    Assert.True(startupState.Mode == ExclusiveMode.None,
+                        $"Startup mode={startupState.Mode}, blockers={string.Join(",", startupState.AdmissionBlockers)}");
+                }
                 pump = ClockPump.Start(clock);
 
                 var manual = services.GetRequiredService<IManualInspectionSessionService>();
@@ -719,6 +775,9 @@ public sealed partial class ManualInspectionRuntimeTests
         private int _created;
         private int _validationCalls;
         private int _algorithmDisposeFailures;
+        private int _holdExecution;
+        private readonly TaskCompletionSource<bool> _executionEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _executionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal ManualFactory(string? preparationBarrierStage = null,
             bool failUnpublishedDispose = false)
@@ -746,6 +805,9 @@ public sealed partial class ManualInspectionRuntimeTests
         internal Task PreparationCallbackEntered => _preparationCallbackEntered.Task;
         internal Task PreparationCallbackCompleted => _preparationCallbackCompleted.Task;
         internal Task AlgorithmDisposeCompleted => _algorithmDisposeCompleted.Task;
+        internal Task ExecutionEntered => _executionEntered.Task;
+        internal void HoldExecution() => Volatile.Write(ref _holdExecution, 1);
+        internal void ReleaseExecution() => _executionReleased.TrySetResult(true);
 
         internal void ReleasePreparationCallback() =>
             _preparationCallbackReleased.TrySetResult(true);
@@ -818,12 +880,18 @@ public sealed partial class ManualInspectionRuntimeTests
                 _warmed = true;
             }
 
-            public ValueTask<AlgorithmResult> ExecuteAsync(AlgorithmExecutionContext context,
+            public async ValueTask<AlgorithmResult> ExecuteAsync(AlgorithmExecutionContext context,
                 CancellationToken cancellationToken = default)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!_warmed || _disposed)
                     throw new InvalidOperationException("V135ManualAlgorithmNotPrepared");
+                if (Volatile.Read(ref _factory._holdExecution) != 0)
+                {
+                    _factory._executionEntered.TrySetResult(true);
+                    // Model an external algorithm that ignores cancellation and retains its input.
+                    await _factory._executionReleased.Task.ConfigureAwait(false);
+                }
                 var sequence = Interlocked.Increment(ref _sequence);
                 var decision = sequence switch
                 {
@@ -841,7 +909,7 @@ public sealed partial class ManualInspectionRuntimeTests
                         {
                             new OverlayAxisAlignedRectangle(new OverlayPoint(1, 1), 8, 8)
                         }));
-                return ValueTask.FromResult(result);
+                return result;
             }
 
             public ValueTask DisposeAsync()

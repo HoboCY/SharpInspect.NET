@@ -119,7 +119,8 @@ internal sealed class PlcResultContractService : IPlcResultContractService
         }
         if (schemas.Count == 0) return Failure("PlcResultContractSchemaMapRequired");
         var expectedReasons = schemas.SelectMany(value => value.Schema.ReasonCodes)
-            .Concat(PlcResultContract.FrameworkReasonCodes).Append(null).ToHashSet(StringComparer.Ordinal);
+            .Concat(command.Proposal.FrameworkReasonCatalog).Append(null)
+            .ToHashSet(StringComparer.Ordinal);
         var reasonField = command.Proposal.FrameworkFields.Single(value => value.Field == PlcFrameworkResultField.ResultReasonCode);
         if (!expectedReasons.SetEquals(reasonField.ReasonCodes.Select(value => value.ReasonCode)))
             return Failure("PlcResultContractGlobalReasonCatalogMismatch");

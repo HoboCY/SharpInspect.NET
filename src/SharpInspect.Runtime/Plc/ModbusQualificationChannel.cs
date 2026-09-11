@@ -44,7 +44,8 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private const int MaximumWriteRegisters = 123;
     private const int ControlRegisterCount = 6;
 
-    private readonly ModbusQualificationProfile _profile;
+    private readonly IModbusInspectionProfile _profile;
+    private readonly bool _production;
     private readonly Func<Func<Task>, Task>? _startCycleWrite;
     private readonly Func<Func<Task>, Task>? _startOwnedRequest;
     private readonly SemaphoreSlim _transportGate = new(1, 1);
@@ -55,10 +56,11 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private bool _disposed;
     private ushort _transactionId;
 
-    internal ModbusQualificationChannel(ModbusQualificationProfile profile,
+    internal ModbusQualificationChannel(IModbusInspectionProfile profile,
         Func<Func<Task>, Task>? startCycleWrite = null, Func<Func<Task>, Task>? startOwnedRequest = null)
     {
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
+        _production = profile is ModbusProductionProfile;
         _startCycleWrite = startCycleWrite;
         _startOwnedRequest = startOwnedRequest;
     }
@@ -90,8 +92,20 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
             protocolViolation, cancellationToken);
 
     internal Task WritePayloadAsync(StationQualificationPayload payload,
-        CancellationToken cancellationToken = default) =>
-        WritePayloadCoreAsync(payload, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (_production) throw new InvalidOperationException("QualificationPayloadRequiresQualificationProfile");
+        return WritePayloadCoreAsync(payload.Binding, payload.Segments, cancellationToken);
+    }
+
+    internal Task WritePayloadAsync(PlcResultPayloadSnapshot payload,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (!_production) throw new InvalidOperationException("ProductionPayloadRequiresProductionProfile");
+        return WritePayloadCoreAsync(payload.Binding, payload.Segments, cancellationToken);
+    }
 
     /// <summary>
     /// A narrow primitive for Runtime-owned boolean state registers only.
@@ -147,7 +161,7 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
                 if (_stream is not null) return;
             }
 
-            if (!IPAddress.TryParse(_profile.LoopbackAddress, out var address) || address is null)
+            if (!IPAddress.TryParse(_profile.Address, out var address) || address is null)
                 throw new InvalidOperationException("ModbusQualificationLoopbackAddressInvalid");
 
             candidate = new TcpClient(address.AddressFamily);
@@ -330,12 +344,12 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
         bool cycleFault, bool protocolViolation, CancellationToken cancellationToken)
     {
         var registers = new ushort[ControlRegisterCount];
-        registers[0] = qualificationReady ? (ushort)1 : (ushort)0;
+        registers[0] = qualificationReady && !_production ? (ushort)1 : (ushort)0;
         registers[1] = busy ? (ushort)1 : (ushort)0;
         registers[2] = resultValid ? (ushort)1 : (ushort)0;
         registers[3] = cycleFault ? (ushort)1 : (ushort)0;
         registers[4] = protocolViolation ? (ushort)1 : (ushort)0;
-        registers[5] = 0; // ProductionReady is intentionally hard-coded unavailable.
+        registers[5] = qualificationReady && _production ? (ushort)1 : (ushort)0;
 
         var body = await ExecuteRequestAsync(
             WriteMultipleRegistersFunction,
@@ -379,27 +393,28 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
         }
     }
 
-    private async Task WritePayloadCoreAsync(StationQualificationPayload payload,
+    private async Task WritePayloadCoreAsync(PlcResultContractBinding binding,
+        IReadOnlyList<PlcRegisterSegment> segments,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(payload);
-        ValidatePayloadBinding(payload.Binding);
-        var contractRanges = CollectContractRanges(payload.Binding);
+        ArgumentNullException.ThrowIfNull(binding);
+        ValidatePayloadBinding(binding);
+        var contractRanges = CollectContractRanges(binding);
 
         var payloadRegisterCount = 0;
         var payloadByteCount = 0;
-        foreach (var segment in payload.Segments)
+        foreach (var segment in segments)
         {
             ValidatePayloadSegment(segment, contractRanges);
             payloadRegisterCount = checked(payloadRegisterCount + segment.RegisterCount);
             payloadByteCount = checked(payloadByteCount + segment.RegisterBytes.Count);
         }
 
-        if (payloadByteCount > payload.Binding.Contract.MaximumPayloadBytes ||
-            payloadRegisterCount > payload.Binding.Contract.MaximumRegisterCount)
-            throw new ArgumentException("ModbusQualificationPayloadCapacityExceeded", nameof(payload));
+        if (payloadByteCount > binding.Contract.MaximumPayloadBytes ||
+            payloadRegisterCount > binding.Contract.MaximumRegisterCount)
+            throw new ArgumentException("ModbusQualificationPayloadCapacityExceeded", nameof(segments));
 
-        foreach (var segment in payload.Segments)
+        foreach (var segment in segments)
         {
             var offset = 0;
             while (offset < segment.RegisterCount)

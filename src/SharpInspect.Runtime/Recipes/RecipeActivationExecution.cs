@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
@@ -32,9 +33,21 @@ internal sealed class RecipeActivationExecution : IAsyncDisposable
             throw new ArgumentException("RecipeActivationDurableBaselineRequired", nameof(previous));
         var content = inputs.Release.Source.Content;
         var token = runtime.Token;
+        var busyWaitRemaining = preparationTimeout;
+        async ValueTask<string?> WaitForRuntimeAsync()
+        {
+            var started = Stopwatch.GetTimestamp();
+            try { return await runtime.WaitForBlockerAsync(busyWaitRemaining, token).ConfigureAwait(false); }
+            finally
+            {
+                busyWaitRemaining -= TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - started) /
+                    (double)Stopwatch.Frequency);
+                if (busyWaitRemaining < TimeSpan.Zero) busyWaitRemaining = TimeSpan.Zero;
+            }
+        }
         try
         {
-            if (runtime.GetBlocker() is { } beforePreparation)
+            if (await WaitForRuntimeAsync().ConfigureAwait(false) is { } beforePreparation)
             {
                 checks.Observe(6, false, beforePreparation);
                 Failure = beforePreparation;
@@ -54,7 +67,7 @@ internal sealed class RecipeActivationExecution : IAsyncDisposable
             checks.Observe(6, prepared.Succeeded && _prepared is not null, prepared.ReasonCode,
                 content.Configuration.ContentHash, _prepared?.Configuration.ContentHash);
             if (!prepared.Succeeded || _prepared is null) { Failure = checks.Failure; return; }
-            if (runtime.GetBlocker() is { } afterPreparation)
+            if (await WaitForRuntimeAsync().ConfigureAwait(false) is { } afterPreparation)
             {
                 checks.Observe(6, false, afterPreparation,
                     content.Configuration.ContentHash, _prepared.Configuration.ContentHash);
@@ -62,7 +75,7 @@ internal sealed class RecipeActivationExecution : IAsyncDisposable
                 return;
             }
             token.ThrowIfCancellationRequested();
-            if (runtime.GetBlocker() is { } beforeCameraReservation)
+            if (await WaitForRuntimeAsync().ConfigureAwait(false) is { } beforeCameraReservation)
             {
                 checks.Observe(8, false, beforeCameraReservation);
                 Failure = beforeCameraReservation;

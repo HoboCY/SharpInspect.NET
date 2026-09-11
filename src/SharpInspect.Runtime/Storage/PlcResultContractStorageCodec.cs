@@ -10,7 +10,8 @@ internal static class PlcResultContractStorageCodec
 {
     internal const int MaximumPayloadBytes = PlcResultContractStoreOptions.MaximumPayloadBytesHardLimit;
     private const int Magic = 0x31524350; // PCR1
-    private const byte FormatVersion = 1;
+    private const byte LegacyFormatVersion = 1;
+    private const byte ReasonCatalogFormatVersion = 2;
     private const int MaximumStringBytes = 256 * 1024;
     private const int MaximumContractStringBytes = 64;
     private const int MaximumSchemaCount = 64;
@@ -26,8 +27,10 @@ internal static class PlcResultContractStorageCodec
         using (var writer = new BinaryWriter(stream, new UTF8Encoding(false, true), leaveOpen: true))
         {
             writer.Write(Magic);
-            writer.Write(FormatVersion);
-            WriteRevision(writer, revision);
+            var formatVersion = IsLegacyReasonCatalog(revision.Contract)
+                ? LegacyFormatVersion : ReasonCatalogFormatVersion;
+            writer.Write(formatVersion);
+            WriteRevision(writer, revision, formatVersion);
             WriteString(writer, revision.ContentHash, MaximumContractStringBytes);
         }
         if (stream.Length is < 1 or > MaximumPayloadBytes)
@@ -43,9 +46,12 @@ internal static class PlcResultContractStorageCodec
         {
             using var stream = new MemoryStream(payload.ToArray(), writable: false);
             using var reader = new BinaryReader(stream, new UTF8Encoding(false, true), leaveOpen: true);
-            if (reader.ReadInt32() != Magic || reader.ReadByte() != FormatVersion)
+            if (reader.ReadInt32() != Magic)
                 throw new InvalidOperationException("PlcResultContractPayloadVersionUnsupported");
-            var revision = ReadRevision(reader);
+            var formatVersion = reader.ReadByte();
+            if (formatVersion is not (LegacyFormatVersion or ReasonCatalogFormatVersion))
+                throw new InvalidOperationException("PlcResultContractPayloadVersionUnsupported");
+            var revision = ReadRevision(reader, formatVersion);
             var savedHash = ReadString(reader, MaximumContractStringBytes);
             if (!string.Equals(savedHash, revision.ContentHash, StringComparison.Ordinal))
                 throw new InvalidOperationException("PlcResultContractContentHashMismatch");
@@ -63,12 +69,13 @@ internal static class PlcResultContractStorageCodec
         }
     }
 
-    private static void WriteRevision(BinaryWriter writer, PlcResultContractRevision revision)
+    private static void WriteRevision(BinaryWriter writer, PlcResultContractRevision revision,
+        byte formatVersion)
     {
         writer.Write(revision.Position);
         writer.Write(revision.RevisionId.ToByteArray());
         writer.Write(revision.OperationId.ToByteArray());
-        WriteContract(writer, revision.Contract);
+        WriteContract(writer, revision.Contract, formatVersion == ReasonCatalogFormatVersion);
         WriteOptionalContract(writer, revision.PreviousContract);
         writer.Write(revision.ReleaseHighWatermark);
         WriteCount(writer, revision.SchemaValidations.Count, MaximumSchemaCount);
@@ -110,12 +117,12 @@ internal static class PlcResultContractStorageCodec
         writer.Write(revision.RecordedAtUtc.UtcTicks);
     }
 
-    private static PlcResultContractRevision ReadRevision(BinaryReader reader)
+    private static PlcResultContractRevision ReadRevision(BinaryReader reader, byte formatVersion)
     {
         var position = reader.ReadInt64();
         var revisionId = ReadGuid(reader);
         var operationId = ReadGuid(reader);
-        var contract = ReadContract(reader);
+        var contract = ReadContract(reader, formatVersion == ReasonCatalogFormatVersion);
         var previous = ReadOptionalContract(reader);
         var releaseHighWatermark = reader.ReadInt64();
         var validations = new List<PlcResultSchemaValidation>(ReadCount(reader, MaximumSchemaCount));
@@ -178,31 +185,64 @@ internal static class PlcResultContractStorageCodec
             authorizationTarget, recordedAtUtc);
     }
 
-    private static void WriteContract(BinaryWriter writer, PlcResultContract contract)
+    private static void WriteContract(BinaryWriter writer, PlcResultContract contract,
+        bool writeReasonCatalog)
     {
         WriteString(writer, contract.Id, MaximumStringBytes);
         WriteString(writer, contract.Version, MaximumStringBytes);
         writer.Write(contract.MaximumPayloadBytes);
         writer.Write(contract.MaximumRegisterCount);
+        if (writeReasonCatalog) WriteReasonCatalog(writer, contract.FrameworkReasonCatalogDefinition);
         WriteCount(writer, contract.FrameworkFields.Count, 5);
         foreach (var field in contract.FrameworkFields) WriteFrameworkField(writer, field);
         WriteCount(writer, contract.SchemaMaps.Count, MaximumSchemaCount);
         foreach (var map in contract.SchemaMaps) WriteSchemaMap(writer, map);
     }
 
-    private static PlcResultContract ReadContract(BinaryReader reader)
+    private static PlcResultContract ReadContract(BinaryReader reader, bool readReasonCatalog)
     {
         var id = ReadString(reader, MaximumStringBytes);
         var version = ReadString(reader, MaximumStringBytes);
         var maximumPayloadBytes = reader.ReadInt32();
         var maximumRegisterCount = reader.ReadInt32();
+        var reasonCatalog = readReasonCatalog ? ReadReasonCatalog(reader) : null;
         var fields = new List<PlcFrameworkFieldMapping>(ReadCount(reader, 5));
         for (var index = 0; index < fields.Capacity; index++) fields.Add(ReadFrameworkField(reader));
         var maps = new List<PlcResultSchemaMap>(ReadCount(reader, MaximumSchemaCount));
         for (var index = 0; index < maps.Capacity; index++) maps.Add(ReadSchemaMap(reader));
-        var contract = new PlcResultContract(id, version, maximumPayloadBytes, maximumRegisterCount, fields, maps);
-        return contract;
+        return reasonCatalog is null
+            ? new PlcResultContract(id, version, maximumPayloadBytes, maximumRegisterCount, fields, maps)
+            : new PlcResultContract(id, version, maximumPayloadBytes, maximumRegisterCount, fields, maps,
+                reasonCatalog);
     }
+
+    private static void WriteReasonCatalog(BinaryWriter writer, PlcResultReasonCatalog catalog)
+    {
+        WriteString(writer, catalog.Id, MaximumStringBytes);
+        WriteString(writer, catalog.Version, MaximumStringBytes);
+        WriteCount(writer, catalog.Codes.Count, 256);
+        foreach (var code in catalog.Codes) WriteString(writer, code, MaximumStringBytes);
+        WriteString(writer, catalog.ContentHash, MaximumContractStringBytes);
+    }
+
+    private static PlcResultReasonCatalog ReadReasonCatalog(BinaryReader reader)
+    {
+        var catalog = new PlcResultReasonCatalog(ReadString(reader, MaximumStringBytes),
+            ReadString(reader, MaximumStringBytes),
+            Enumerable.Range(0, ReadCount(reader, 256))
+                .Select(_ => ReadString(reader, MaximumStringBytes)));
+        var savedHash = ReadString(reader, MaximumContractStringBytes);
+        if (!string.Equals(savedHash, catalog.ContentHash, StringComparison.Ordinal))
+            throw new InvalidOperationException("PlcResultReasonCatalogHashMismatch");
+        return catalog;
+    }
+
+    private static bool IsLegacyReasonCatalog(PlcResultContract contract) =>
+        contract.UsesLegacyReasonCatalogWireFormat &&
+        contract.FrameworkReasonCatalogDefinition.Id == PlcResultContract.FrameworkReasonCatalogId &&
+        contract.FrameworkReasonCatalogDefinition.Version == PlcResultContract.FrameworkReasonCatalogVersion &&
+        contract.FrameworkReasonCatalog.SequenceEqual(PlcResultContract.FrameworkReasonCodes,
+            StringComparer.Ordinal);
 
     private static void WriteContractReference(BinaryWriter writer, RecipeContractReference reference)
     {

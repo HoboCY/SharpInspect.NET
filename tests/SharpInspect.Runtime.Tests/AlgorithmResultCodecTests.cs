@@ -7,7 +7,7 @@ using Xunit;
 
 namespace SharpInspect.Runtime.Tests;
 
-public sealed class AlgorithmResultCodecTests
+public sealed partial class AlgorithmResultCodecTests
 {
     [Fact]
     public async Task V114_C01_TenPrimitivesRoundTripWithCompleteSchemaAndTiming()

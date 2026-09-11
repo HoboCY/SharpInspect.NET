@@ -93,8 +93,20 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
     public long DroppedDiagnosticCount => Interlocked.Read(ref _droppedDiagnostics);
 
     /// <summary>Consumes a frame owner for computation; the token is the Runtime's abort signal, not a UI wait token.</summary>
-    public async ValueTask<AlgorithmExecutionAttempt> ExecuteAsync(PreparedAlgorithm prepared,
-        FrameBufferLease frameLease, AlgorithmExecutionRequest request, CancellationToken runtimeCancellationToken = default)
+    public ValueTask<AlgorithmExecutionAttempt> ExecuteAsync(PreparedAlgorithm prepared,
+        FrameBufferLease frameLease, AlgorithmExecutionRequest request, CancellationToken runtimeCancellationToken = default) =>
+        ExecuteCoreAsync(prepared, frameLease, request, null, runtimeCancellationToken);
+
+    // Only the internal shared cycle coordinator supplies the accepted production identity.
+    // The public computation seam continues to reject all production frames.
+    internal ValueTask<AlgorithmExecutionAttempt> ExecuteProductionOwnedAsync(PreparedAlgorithm prepared,
+        FrameBufferLease frameLease, AlgorithmExecutionRequest request, ExecutionCorrelationId correlation,
+        CancellationToken runtimeCancellationToken) =>
+        ExecuteCoreAsync(prepared, frameLease, request, correlation, runtimeCancellationToken);
+
+    private async ValueTask<AlgorithmExecutionAttempt> ExecuteCoreAsync(PreparedAlgorithm prepared,
+        FrameBufferLease frameLease, AlgorithmExecutionRequest request, ExecutionCorrelationId? productionOwner,
+        CancellationToken runtimeCancellationToken)
     {
         ArgumentNullException.ThrowIfNull(prepared); ArgumentNullException.ThrowIfNull(frameLease);
         var owner = frameLease.Transfer();
@@ -103,8 +115,11 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         Attempt? attempt = null;
         try
         {
-            if (owner.Metadata.Correlation.Kind == ExecutionKind.Production)
+            if (owner.Metadata.Correlation.Kind == ExecutionKind.Production && productionOwner is null)
                 return Rejected("ProductionExecutionAdmissionUnavailable");
+            if (productionOwner is not null && (productionOwner.Kind != ExecutionKind.Production ||
+                    productionOwner.Value == Guid.Empty || owner.Metadata.Correlation != productionOwner))
+                return Rejected("ProductionExecutionOwnerMismatch");
             if (_guard.IsHung) return Rejected("AlgorithmHung");
             if (!_options.Policy.TryBind(request, out var timing, out var timingReason))
                 return Rejected(timingReason);

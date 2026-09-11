@@ -451,16 +451,33 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
 
     private void MarkHardwareTouched() => Interlocked.Exchange(ref _hardwareTouched, 1);
 
-    private static RecipeActivationPhysicalPhaseClaim? BeginPhysicalPhase(
-        Func<RecipeActivationPhysicalPhaseClaim>? factory, out string? failure)
+    private static async ValueTask<(RecipeActivationPhysicalPhaseClaim? Claim, string? Failure)>
+        BeginPhysicalPhaseAsync(Func<RecipeActivationPhysicalPhaseClaim>? factory,
+            CancellationToken callerCancellation, CancellationToken operationCancellation)
     {
-        failure = null;
-        if (factory is null) return null;
-        var claim = factory();
-        if (claim.Available) return claim;
-        failure = claim.Failure ?? "RecipeActivationCancelled";
-        claim.Dispose();
-        return null;
+        if (factory is null) return (null, null);
+        while (true)
+        {
+            var claim = factory();
+            if (claim.Available) return (claim, null);
+            var failure = claim.Failure ?? "RecipeActivationCancelled";
+            claim.Dispose();
+            if (!RecipeActivationRuntimeLease.IsRuntimeBusy(failure))
+                return (null, failure);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), operationCancellation)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (callerCancellation.IsCancellationRequested)
+            {
+                return (null, "RecipeActivationCancelled");
+            }
+            catch (OperationCanceledException)
+            {
+                return (null, "RecipeActivationRuntimeBusy");
+            }
+        }
     }
 
     internal async ValueTask<RecipeActivationCameraLeaseResult> ApplyAsync(
@@ -481,6 +498,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
         try
         {
             if (_disposed) return new(false, "CameraActivationLeaseDisposed", null, HardwareTouched);
+            if (_productionOwned) return new(false, "CameraProductionConfigurationImmutable", null, HardwareTouched);
             if (_committed) return new(false, RecipeActivationCommitted, null, HardwareTouched);
             if (_safeClosed)
                 return new(false, RecipeActivationNoPreviousBaselineClosed,
@@ -507,11 +525,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                 if (prior.Failure is not null) return new(false, prior.Failure, null, HardwareTouched);
                 _previousRoleSnapshot = prior.Snapshot;
                 ActivationDeviceCloseResult retired;
-                using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                    out var retirePhaseFailure))
+                var retirePhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                    cancellationToken, operation.Token).ConfigureAwait(false);
+                using (var physicalPhase = retirePhase.Claim)
                 {
-                    if (retirePhaseFailure is not null)
-                        return await FailApplyAsync(requested, extension, retirePhaseFailure)
+                    if (retirePhase.Failure is not null)
+                        return await FailApplyAsync(requested, extension, retirePhase.Failure)
                             .ConfigureAwait(false);
                     MarkHardwareTouched();
                     retired = await _owner.RetireActivationBaselineAsync(durableBaseline,
@@ -527,11 +546,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             // Closing the previous owner is a physical mutation and must be
             // visible to the caller before the first provider call starts.
             ActivationDeviceCloseResult close;
-            using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                out var closePhaseFailure))
+            var closePhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                cancellationToken, operation.Token).ConfigureAwait(false);
+            using (var physicalPhase = closePhase.Claim)
             {
-                if (closePhaseFailure is not null)
-                    return await FailApplyAsync(requested, extension, closePhaseFailure)
+                if (closePhase.Failure is not null)
+                    return await FailApplyAsync(requested, extension, closePhase.Failure)
                         .ConfigureAwait(false);
                 MarkHardwareTouched();
                 close = await _owner.CloseActivationSlotDeviceAsync(_logicalRole)
@@ -545,11 +565,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             ICameraDevice? opened = null;
             try
             {
-                using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                    out var openPhaseFailure))
+                var openPhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                    cancellationToken, operation.Token).ConfigureAwait(false);
+                using (var physicalPhase = openPhase.Claim)
                 {
-                    if (openPhaseFailure is not null)
-                        return await FailApplyAsync(requested, extension, openPhaseFailure)
+                    if (openPhase.Failure is not null)
+                        return await FailApplyAsync(requested, extension, openPhase.Failure)
                             .ConfigureAwait(false);
                     opened = await _owner.OpenActivationExactAsync(binding.Target,
                         operation.Token).ConfigureAwait(false);
@@ -559,11 +580,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                         "CameraDeviceOpenFailed").ConfigureAwait(false);
 
                 ActivationBoundedHealthResult initial;
-                using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                    out var initialHealthPhaseFailure))
+                var initialHealthPhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                    cancellationToken, operation.Token).ConfigureAwait(false);
+                using (var physicalPhase = initialHealthPhase.Claim)
                 {
-                    if (initialHealthPhaseFailure is not null)
-                        return await FailApplyAsync(requested, extension, initialHealthPhaseFailure, opened)
+                    if (initialHealthPhase.Failure is not null)
+                        return await FailApplyAsync(requested, extension, initialHealthPhase.Failure, opened)
                             .ConfigureAwait(false);
                     initial = await _owner.ReadActivationHealthBoundedAsync(opened,
                         cancellationToken, operation.Token).ConfigureAwait(false);
@@ -588,11 +610,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                         .ConfigureAwait(false);
 
                 ActivationBoundedConfigurationResult applied;
-                using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                    out var applyPhaseFailure))
+                var applyPhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                    cancellationToken, operation.Token).ConfigureAwait(false);
+                using (var physicalPhase = applyPhase.Claim)
                 {
-                    if (applyPhaseFailure is not null)
-                        return await FailApplyAsync(requested, extension, applyPhaseFailure, opened)
+                    if (applyPhase.Failure is not null)
+                        return await FailApplyAsync(requested, extension, applyPhase.Failure, opened)
                             .ConfigureAwait(false);
                     applied = await _owner.ApplyActivationConfigurationBoundedAsync(opened,
                         requested, cancellationToken, operation.Token).ConfigureAwait(false);
@@ -616,11 +639,12 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                         .ConfigureAwait(false);
 
                 ActivationBoundedHealthResult configured;
-                using (var physicalPhase = BeginPhysicalPhase(physicalPhaseFactory,
-                    out var configuredHealthPhaseFailure))
+                var configuredHealthPhase = await BeginPhysicalPhaseAsync(physicalPhaseFactory,
+                    cancellationToken, operation.Token).ConfigureAwait(false);
+                using (var physicalPhase = configuredHealthPhase.Claim)
                 {
-                    if (configuredHealthPhaseFailure is not null)
-                        return await FailApplyAsync(requested, extension, configuredHealthPhaseFailure, opened)
+                    if (configuredHealthPhase.Failure is not null)
+                        return await FailApplyAsync(requested, extension, configuredHealthPhase.Failure, opened)
                             .ConfigureAwait(false);
                     configured = await _owner.ReadActivationHealthBoundedAsync(opened,
                         cancellationToken, operation.Token).ConfigureAwait(false);
@@ -712,7 +736,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             ICameraDevice? candidate;
             lock (this)
             {
-                if (_disposed || _previewOwned || _manualOwned || _qualificationOwned || !_candidatePrepared || _candidateDevice is null ||
+                if (_disposed || _previewOwned || _manualOwned || _qualificationOwned || _productionOwned || !_candidatePrepared || _candidateDevice is null ||
                     _candidateSnapshot is null || _committed || _restoreSucceeded)
                     return false;
                 candidate = _candidateDevice;
@@ -1019,7 +1043,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                 return;
             }
             _disposed = true;
-            if (!_committed && !_restoreSucceeded && !_safeClosed)
+            if (!_committed && !_restoreSucceeded && !_safeClosed && !_productionOwned)
             {
                 var candidate = _candidateDevice;
                 var requested = _candidateSnapshot?.Requested;

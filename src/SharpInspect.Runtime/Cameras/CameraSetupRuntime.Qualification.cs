@@ -34,7 +34,7 @@ internal sealed partial class RecipeActivationCameraLease
     {
         lock (this)
         {
-            if (_disposed || _committed || _previewOwned || _manualOwned)
+            if (_disposed || _committed || _previewOwned || _manualOwned || _productionOwned)
                 throw new InvalidOperationException("CameraQualificationOwnerConflict");
             _qualificationOwned = true;
         }
@@ -44,6 +44,6 @@ internal sealed partial class RecipeActivationCameraLease
         ExecutionCorrelationId correlation, FrameBufferPool framePool,
         IFrameAcquisitionClock clock, CancellationToken cancellationToken = default,
         Func<RecipeActivationPhysicalPhaseClaim>? physicalPhaseFactory = null) =>
-        AcquireNonProductionFrameAsync(ExecutionKind.Qualification, correlation,
+        AcquireOwnedFrameAsync(ExecutionKind.Qualification, correlation,
             framePool, clock, cancellationToken, physicalPhaseFactory);
 }

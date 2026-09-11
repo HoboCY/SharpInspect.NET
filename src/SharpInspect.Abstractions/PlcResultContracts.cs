@@ -597,6 +597,36 @@ public sealed class PlcResultSchemaMap
     public string ContentHash { get; }
 }
 
+/// <summary>One immutable, versioned framework reason catalog used by a PLC result contract.</summary>
+public sealed class PlcResultReasonCatalog : IEquatable<PlcResultReasonCatalog>
+{
+    public PlcResultReasonCatalog(string id, string version, IEnumerable<string> codes)
+    {
+        Id = AlgorithmConfigurationValidation.Identifier(id, nameof(id));
+        Version = AlgorithmConfigurationValidation.Identifier(version, nameof(version));
+        ArgumentNullException.ThrowIfNull(codes);
+        var values = codes.Select(value => AlgorithmConfigurationValidation.Identifier(
+            value, nameof(codes))).ToArray();
+        if (values.Length is < 1 or > 256 || values.Distinct(StringComparer.Ordinal).Count() != values.Length)
+            throw new ArgumentException("PlcResultReasonCatalogInvalid", nameof(codes));
+        Codes = new ReadOnlyCollection<string>(values);
+        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        {
+            "sharpinspect-plc-reason-catalog-v1", Id, Version,
+            Codes.Count.ToString(CultureInfo.InvariantCulture)
+        }.Concat(Codes));
+    }
+
+    public string Id { get; }
+    public string Version { get; }
+    public ReadOnlyCollection<string> Codes { get; }
+    public string ContentHash { get; }
+    public bool Equals(PlcResultReasonCatalog? other) => other is not null &&
+        ContentHash == other.ContentHash;
+    public override bool Equals(object? obj) => Equals(obj as PlcResultReasonCatalog);
+    public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(ContentHash);
+}
+
 /// <summary>
 /// Immutable PLC result contract. It describes deployment bytes and mappings only; it does not
 /// perform binding, production admission, result validity or PLC I/O.
@@ -614,12 +644,44 @@ public sealed class PlcResultContract
             "AlgorithmExecutionError",
             "AlgorithmResultContractViolation"
         });
+    private static readonly PlcResultReasonCatalog FrameworkReasonCatalogV1 =
+        new(FrameworkReasonCatalogId, FrameworkReasonCatalogVersion, FrameworkReasonCatalogValues);
+    /// <summary>
+    /// Frozen catalog for production acquisition failures. The original five framework reasons
+    /// remain in their original order and the three camera failures are appended in v2.
+    /// </summary>
+    public static PlcResultReasonCatalog ProductionFailureReasonCatalogV2 { get; } =
+        new(FrameworkReasonCatalogId, "2", FrameworkReasonCatalogValues.Concat(new[]
+        {
+            "CameraAcquisitionError",
+            "CameraAcquisitionTimeout",
+            "CameraAcquisitionCancelled"
+        }));
     private readonly ReadOnlyCollection<PlcFrameworkFieldMapping> _frameworkFields;
     private readonly ReadOnlyCollection<PlcResultSchemaMap> _schemaMaps;
+    private readonly bool _includeReasonCatalogInHash;
 
     public PlcResultContract(string id, string version, int maximumPayloadBytes,
         int maximumRegisterCount, IEnumerable<PlcFrameworkFieldMapping> frameworkFields,
         IEnumerable<PlcResultSchemaMap> schemaMaps)
+        : this(id, version, maximumPayloadBytes, maximumRegisterCount, frameworkFields,
+            schemaMaps, FrameworkReasonCatalogV1, false)
+    {
+    }
+
+    /// <summary>Creates a contract with an explicit immutable framework reason catalog.</summary>
+    public PlcResultContract(string id, string version, int maximumPayloadBytes,
+        int maximumRegisterCount, IEnumerable<PlcFrameworkFieldMapping> frameworkFields,
+        IEnumerable<PlcResultSchemaMap> schemaMaps, PlcResultReasonCatalog reasonCatalog)
+        : this(id, version, maximumPayloadBytes, maximumRegisterCount, frameworkFields,
+            schemaMaps, reasonCatalog, true)
+    {
+    }
+
+    private PlcResultContract(string id, string version, int maximumPayloadBytes,
+        int maximumRegisterCount, IEnumerable<PlcFrameworkFieldMapping> frameworkFields,
+        IEnumerable<PlcResultSchemaMap> schemaMaps, PlcResultReasonCatalog reasonCatalog,
+        bool explicitReasonCatalog)
     {
         Id = AlgorithmConfigurationValidation.Identifier(id, nameof(id));
         Version = AlgorithmConfigurationValidation.Identifier(version, nameof(version));
@@ -629,6 +691,8 @@ public sealed class PlcResultContract
             throw new ArgumentOutOfRangeException(nameof(maximumRegisterCount));
         MaximumPayloadBytes = maximumPayloadBytes;
         MaximumRegisterCount = maximumRegisterCount;
+        _includeReasonCatalogInHash = explicitReasonCatalog;
+        FrameworkReasonCatalogDefinition = reasonCatalog ?? throw new ArgumentNullException(nameof(reasonCatalog));
         _frameworkFields = new ReadOnlyCollection<PlcFrameworkFieldMapping>(AlgorithmContractValidation.Copy(
             frameworkFields, nameof(frameworkFields), 64).OrderBy(field => field.Field).ToArray());
         _schemaMaps = new ReadOnlyCollection<PlcResultSchemaMap>(AlgorithmContractValidation.Copy(
@@ -639,10 +703,13 @@ public sealed class PlcResultContract
         {
             "sharpinspect-plc-result-contract-v2", Id, Version,
             MaximumPayloadBytes.ToString(CultureInfo.InvariantCulture),
-            MaximumRegisterCount.ToString(CultureInfo.InvariantCulture),
-            FrameworkReasonCatalogId, FrameworkReasonCatalogVersion,
-            FrameworkReasonCatalogValues.Count.ToString(CultureInfo.InvariantCulture)
-        }.Concat(FrameworkReasonCatalogValues)
+            MaximumRegisterCount.ToString(CultureInfo.InvariantCulture)
+        }
+            .Concat(_includeReasonCatalogInHash
+                ? new[] { FrameworkReasonCatalogDefinition.Id, FrameworkReasonCatalogDefinition.Version,
+                    FrameworkReasonCatalogDefinition.Codes.Count.ToString(CultureInfo.InvariantCulture) }
+                    .Concat(FrameworkReasonCatalogDefinition.Codes)
+                : Array.Empty<string>())
             .Concat(new[] { _frameworkFields.Count.ToString(CultureInfo.InvariantCulture) })
             .Concat(_frameworkFields.Select(field => field.ContentHash))
             .Concat(new[] { _schemaMaps.Count.ToString(CultureInfo.InvariantCulture) })
@@ -657,8 +724,10 @@ public sealed class PlcResultContract
     public int MaximumRegisters => MaximumRegisterCount;
     public ReadOnlyCollection<PlcFrameworkFieldMapping> FrameworkFields => _frameworkFields;
     public ReadOnlyCollection<PlcResultSchemaMap> SchemaMaps => _schemaMaps;
-    public IReadOnlyList<string> FrameworkReasonCatalog => FrameworkReasonCatalogValues;
-    public IReadOnlyList<string> FrameworkReasonCatalogCodes => FrameworkReasonCatalogValues;
+    public PlcResultReasonCatalog FrameworkReasonCatalogDefinition { get; }
+    public IReadOnlyList<string> FrameworkReasonCatalog => FrameworkReasonCatalogDefinition.Codes;
+    public IReadOnlyList<string> FrameworkReasonCatalogCodes => FrameworkReasonCatalogDefinition.Codes;
+    internal bool UsesLegacyReasonCatalogWireFormat => !_includeReasonCatalogInHash;
     public RecipeContractReference Reference { get; }
     public string ContentHash { get; }
     public static IReadOnlyList<string> FrameworkReasonCodes => FrameworkReasonCatalogValues;

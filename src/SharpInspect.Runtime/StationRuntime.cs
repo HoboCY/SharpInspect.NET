@@ -38,6 +38,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private Task? _completion;
     private Task? _shutdown;
     private CommandAuditFact? _pendingAudit;
+    private bool LocalStopPendingLocked => Volatile.Read(ref _pendingLocalStops) != 0 ||
+        _pendingAudit is not null ||
+        _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" };
     private bool _shutdownRequested;
     private bool _auditFault;
     private bool _storeReady;
@@ -587,11 +590,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         Task? physicalRetirement;
         Task? manualRetirement;
         Task? qualificationRetirement;
+        Task? productionRetirement;
         lock (_sync)
         {
             physicalRetirement = _importPhysicalReservation?.Retirement;
             manualRetirement = _manualOwner?.Retired.Task;
             qualificationRetirement = _stationQualificationOwner?.Retired.Task;
+            productionRetirement = _productionInspectionOwner?.CycleRetired?.Task;
         }
         if (physicalRetirement is not null)
         {
@@ -611,6 +616,11 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (qualificationRetirement is not null)
         {
             try { await qualificationRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        }
+        if (productionRetirement is not null)
+        {
+            try { await productionRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         }
         await _commandGate.WaitAsync().ConfigureAwait(false);
@@ -688,15 +698,23 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 next = next with { Ready = false, ArmState = ProductionArmState.Disarmed };
             }
         }
-        if (admission is { CanArm: false })
+        if (admission is { CanArm: false }) next = next with { Ready = false };
+        if (admission is { CanArm: false } && !(next.ArmState == ProductionArmState.Armed &&
+            _lastVerifiedStoreIntegrityGate is { Status: ProductionAdmissionGateStatus.Passed } &&
+            admission.Gates.All(gate => gate.Status is ProductionAdmissionGateStatus.Passed or
+                ProductionAdmissionGateStatus.NotApplicable || ProductionAdmissionEngine.IsTransientAuditRecheck(gate))))
             next = next with { Ready = false, ArmState = ProductionArmState.Disarmed };
-        if (completingProductionArm && (!next.Ready || next.ArmState != ProductionArmState.Armed) &&
+        if (completingProductionArm && (next.ArmState != ProductionArmState.Armed ||
+            _productionInspectionOptions is null && !next.Ready) &&
             next.LastCommand is { } armProgress)
             next = next with { LastCommand = armProgress with
                 { State = OperationState.Failed, ReasonCode = "ProductionAdmissionChanged" } };
         var published = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow,
             AlarmState = alarms, ProductionAdmission = admission };
         _snapshot = published;
+        if (_productionInspectionOwner is { Current: null, Observer: { } productionObserver } &&
+            (!published.Ready || published.ArmState != ProductionArmState.Armed || admission?.CanArm != true))
+            productionObserver.RejectPendingAdmission("ProductionTriggerPermitRevoked");
         if (_productionAdmissionEnabled)
             _admissionStateHash = ComputeAdmissionStateHash(published);
         foreach (var subscriber in _subscribers) subscriber.Writer.TryWrite(_snapshot);
@@ -719,6 +737,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await ShutdownProductionInspectionAsync().ConfigureAwait(false);
         await ShutdownManualInspectionAsync().ConfigureAwait(false);
         await ShutdownStationQualificationAsync().ConfigureAwait(false);
         await ShutdownPreviewAsync().ConfigureAwait(false);
