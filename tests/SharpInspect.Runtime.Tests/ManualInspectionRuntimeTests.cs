@@ -390,13 +390,19 @@ public sealed partial class ManualInspectionRuntimeTests
             ModbusPartIdentityReadPlan? partIdentityReadPlan = null,
             PartIdentityStoreOptions? partIdentityStore = null,
             Action<IServiceCollection>? configureAdditionalServices = null,
-            bool allowPartIdentityCorrection = true)
+            bool allowPartIdentityCorrection = true, bool allowProductionRecovery = true,
+            bool enableProductionRecovery = false)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             if (!allowPartIdentityCorrection)
                 policy = new AuthorizationPolicy("V143.CorrectionDenied.Authorization", "1",
                     policy.RoleBundles.ToDictionary(pair => pair.Key,
                         pair => pair.Value.Where(permission => permission != Permission.CorrectHistoricalFact)),
+                    policy.StepUpPermissions);
+            if (!allowProductionRecovery)
+                policy = new AuthorizationPolicy("V144.RecoveryDenied.Authorization", "1",
+                    policy.RoleBundles.ToDictionary(pair => pair.Key,
+                        pair => pair.Value.Where(permission => permission != Permission.ManualRecovery)),
                     policy.StepUpPermissions);
             if (productionPeer is not null)
                 policy = new AuthorizationPolicy("V142.Production.Authorization", "1",
@@ -419,6 +425,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 plcCommunication: productionPeer is null ? null : new PlcCommunicationStoreOptions(),
                 productionInspections: productionPeer is null ? null : productionStore ?? new ProductionInspectionStoreOptions(),
                 partIdentities: partIdentityStore,
+                productionRecovery: enableProductionRecovery ? new ProductionRecoveryStoreOptions() : null,
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
                     { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) });
 

@@ -73,7 +73,10 @@ internal enum IdentityEventKind
     ProductionInspectionCoreCommitted,
     ProductionInspectionFailed,
     PartIdentityRejectedTriggerRecorded,
-    PartIdentityCorrectionAuthorized
+    PartIdentityCorrectionAuthorized,
+    ProductionRecoveryAuthorized,
+    ProductionRecoveryCompleted,
+    ProductionRecoveryFailed
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -152,14 +155,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > PartIdentityStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionRecoveryStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > PartIdentityStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > ProductionRecoveryStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -170,13 +173,13 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             if (bytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             return BinaryPrimitives.ReadInt32BigEndian(bytes);
         }
-        string? ReadValue()
+        string? ReadValue(int maximumBytes = 1024)
         {
             var marker = reader.ReadByte();
             if (marker == 0) return null;
             AuditChainDatabase.Require(marker == 1, "AuditIdentityPayloadInvalid");
             var length = ReadInteger();
-            AuditChainDatabase.Require(length is >= 0 and <= 1024, "AuditIdentityPayloadInvalid");
+            AuditChainDatabase.Require(length >= 0 && length <= maximumBytes, "AuditIdentityPayloadInvalid");
             var bytes = reader.ReadBytes(length);
             AuditChainDatabase.Require(bytes.Length == length, "AuditIdentityPayloadInvalid");
             return new UTF8Encoding(false, true).GetString(bytes);
@@ -184,11 +187,12 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PartIdentityStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionRecoveryStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
-            var fields = Enumerable.Range(0, expectedCount).Select(_ => ReadValue()).ToArray();
+            var fields = Enumerable.Range(0, expectedCount).Select(index => ReadValue(
+                schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion && index == 45 ? 2048 : 1024)).ToArray();
             AuditChainDatabase.Require(input.Position == input.Length &&
                 fields[0] == ordinal.ToString(CultureInfo.InvariantCulture) && fields[4] == stationId &&
                 Guid.TryParseExact(fields[1], "D", out var eventId) && eventId != Guid.Empty &&
@@ -263,6 +267,11 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 AuditChainDatabase.Require(schemaVersion >= PartIdentityStoreOptions.SchemaVersion ||
                     legacyKind is not (IdentityEventKind.PartIdentityRejectedTriggerRecorded or
                         IdentityEventKind.PartIdentityCorrectionAuthorized), "AuditIdentityPayloadInvalid");
+                // Recovery uses the existing opaque envelope, gated by schema 30 command authorization.
+                AuditChainDatabase.Require(schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.ProductionRecoveryAuthorized or
+                        IdentityEventKind.ProductionRecoveryCompleted or
+                        IdentityEventKind.ProductionRecoveryFailed), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -349,6 +358,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= StationQualificationStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.StartStationQualificationSession and <= AuditedCommandKind.ExitStationQualificationSession)) &&
                     (schemaVersion >= RecipeTransferStoreOptions.SchemaVersion || actionKind is not (>= AuditedCommandKind.ReplaceRecipeTrustStore and <= AuditedCommandKind.ImportRecipeTransfer)) &&
                     (schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.PublishTraceStoragePolicy) &&
+                    (schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion ||
+                        actionKind != AuditedCommandKind.ManualProductionRecovery) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -369,8 +380,20 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 foreach (var index in new[] { 42, 43, 44 })
                     AuditChainDatabase.Require(fields[index] is null ||
                         Guid.TryParseExact(fields[index], "D", out _), "AuditRecoveryPayloadInvalid");
-                AuditChainDatabase.Require(fields[45] is null || IsSafeIdentifier(fields[45]),
-                    "AuditRecoveryPayloadInvalid");
+                var productionRecoveryEvent = schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion &&
+                    Enum.TryParse<IdentityEventKind>(fields[2], out var productionRecoveryKind) &&
+                    productionRecoveryKind is IdentityEventKind.ProductionRecoveryAuthorized or
+                        IdentityEventKind.ProductionRecoveryCompleted or
+                        IdentityEventKind.ProductionRecoveryFailed;
+                AuditChainDatabase.Require(fields[45] is null ||
+                    (productionRecoveryEvent
+                        ? IsProductionRecoverySafetyEvidence(fields[45])
+                        : IsSafeIdentifier(fields[45])),
+                    productionRecoveryEvent ? "AuditProductionRecoverySafetyEvidenceInvalid" :
+                        "AuditRecoveryPayloadInvalid");
+                if (productionRecoveryEvent)
+                    AuditChainDatabase.Require(fields[45] is not null,
+                        "AuditProductionRecoverySafetyEvidenceMissing");
             }
 
             if (schemaVersion >= CameraRecoveryStoreOptions.SchemaVersion)
@@ -1075,6 +1098,292 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             InvalidOperationException or FormatException) { return false; }
     }
 
+    /// <summary>
+    /// Creates the bounded v3 safety/context reference carried by the existing
+    /// schema-28/29 identity envelope. It preserves the attempt's reason and
+    /// safety observation context; immutable disposition text is referenced by
+    /// hash so a retry cannot borrow another attempt's evidence.
+    /// </summary>
+    internal static string CreateProductionRecoverySafetyEvidence(
+        Guid attemptId, Guid correlationId, Guid inspectionId, string expectedEventHash, string reasonCode,
+        string partDisposition, string? dispositionNote, ProductionRecoverySafetyCapture capture)
+    {
+        if (attemptId == Guid.Empty)
+            throw new ArgumentException("ProductionRecoveryAttemptRequired", nameof(attemptId));
+        if (inspectionId == Guid.Empty)
+            throw new ArgumentException("ProductionRecoveryInspectionRequired", nameof(inspectionId));
+        if (correlationId == Guid.Empty)
+            throw new ArgumentException("ProductionRecoveryCorrelationRequired", nameof(correlationId));
+        if (!IsHash(expectedEventHash))
+            throw new ArgumentException("ProductionRecoveryExpectedEventHashInvalid", nameof(expectedEventHash));
+        _ = RecipeActivationValidation.Reason(reasonCode, nameof(reasonCode));
+        if (!IsSafeIdentifier(partDisposition))
+            throw new ArgumentException("ProductionRecoveryPartDispositionInvalid", nameof(partDisposition));
+        if (dispositionNote is { } note)
+            _ = AlgorithmContractValidation.BoundedText(note, nameof(dispositionNote), 1024);
+        ArgumentNullException.ThrowIfNull(capture);
+
+        if (!Enum.TryParse<PartDisposition>(partDisposition, out var disposition) ||
+            !Enum.IsDefined(disposition))
+            throw new ArgumentException("ProductionRecoveryPartDispositionInvalid", nameof(partDisposition));
+        if (!IsHash(capture.Source.ContentHash) || !IsSafeIdentifier(capture.ReasonCode))
+            throw new ArgumentException("ProductionRecoverySafetyCaptureInvalid", nameof(capture));
+        if (capture.Source.SourceEpoch == Guid.Empty || capture.Source.SourceGeneration < 1)
+            throw new ArgumentException("ProductionRecoverySafetySourceInvalid", nameof(capture));
+
+        var noteHash = AlgorithmContractValidation.HashParts(new string?[]
+        {
+            "sharpinspect-production-recovery-disposition-note-v1", dispositionNote
+        });
+        var targetHash = ManualProductionRecoveryCommand.ComputeAuthorizationTarget(
+            correlationId, inspectionId, expectedEventHash, reasonCode, disposition, dispositionNote);
+        return EncodeProductionRecoverySafetyEvidence(new ProductionRecoverySafetyAuditEvidence(
+            3, attemptId, inspectionId, expectedEventHash, reasonCode, disposition,
+            targetHash, noteHash, capture.RuntimeEpoch, capture.Available, capture.ReasonCode,
+            capture.Revision, capture.Source.ContentHash, capture.Source.SourceEpoch,
+            capture.Source.SourceGeneration, capture.Source.Available,
+            capture.Observation is null ? null : capture.Observation.Binding.ContentHash,
+            capture.Observation?.Status, capture.Observation?.ReasonCode,
+            capture.Observation?.SourceEpoch, capture.Observation?.SourceGeneration,
+            capture.Observation?.ObservedAtUtc, capture.Observation?.MonotonicTimestamp,
+            capture.Observation?.MonotonicFrequency));
+    }
+
+    internal static bool IsProductionRecoverySafetyEvidence(string? value) =>
+        TryDecodeProductionRecoverySafetyEvidence(value, out _);
+
+    internal static bool TryDecodeProductionRecoverySafetyEvidence(string? value,
+        out ProductionRecoverySafetyAuditEvidence evidence)
+    {
+        evidence = null!;
+        if (value is not { Length: > 3 and <= 2048 } ||
+            !value.StartsWith("v3.", StringComparison.Ordinal)) return false;
+        try
+        {
+            var encoded = value[3..].Replace('-', '+').Replace('_', '/');
+            encoded = encoded.PadRight(encoded.Length + ((4 - encoded.Length % 4) % 4), '=');
+            var raw = Convert.FromBase64String(encoded);
+            var canonical = "v3." + Convert.ToBase64String(raw).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            if (!string.Equals(value, canonical, StringComparison.Ordinal)) return false;
+            using var input = new MemoryStream(raw, writable: false);
+            using var reader = new BinaryReader(input, new UTF8Encoding(false, true));
+            if (reader.ReadByte() != 3) return false;
+            var attempt = new Guid(reader.ReadBytes(16));
+            var inspection = new Guid(reader.ReadBytes(16));
+            if (attempt == Guid.Empty || inspection == Guid.Empty) return false;
+            var expectedHash = ReadEvidenceHash(reader);
+            var reason = ReadRecoveryEvidenceReason(reader);
+            var dispositionValue = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(PartDisposition), dispositionValue)) return false;
+            var disposition = (PartDisposition)dispositionValue;
+            var targetHash = ReadEvidenceHash(reader);
+            var noteHash = ReadEvidenceHash(reader);
+            var runtimeEpoch = new Guid(reader.ReadBytes(16));
+            if (runtimeEpoch == Guid.Empty) return false;
+            var captureAvailable = reader.ReadBoolean();
+            var captureReason = ReadEvidenceIdentifier(reader);
+            var captureRevision = reader.ReadInt64();
+            if (captureRevision < 0) return false;
+            var sourceContentHash = ReadEvidenceHash(reader);
+            var sourceEpoch = new Guid(reader.ReadBytes(16));
+            var sourceGeneration = reader.ReadInt64();
+            if (sourceEpoch == Guid.Empty || sourceGeneration < 1) return false;
+            var sourceAvailable = reader.ReadBoolean();
+            var hasObservation = reader.ReadBoolean();
+            ProductionRecoverySafetyObservationStatus? status = null;
+            string? observationReason = null;
+            Guid? observationSourceEpoch = null;
+            long? observationSourceGeneration = null;
+            DateTimeOffset? observedAt = null;
+            long? monotonicTimestamp = null;
+            long? monotonicFrequency = null;
+            string? bindingHash = null;
+            if (hasObservation)
+            {
+                bindingHash = ReadEvidenceHash(reader);
+                var statusValue = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(ProductionRecoverySafetyObservationStatus), statusValue))
+                    return false;
+                status = (ProductionRecoverySafetyObservationStatus)statusValue;
+                observationReason = ReadEvidenceIdentifier(reader);
+                var parsedEpoch = new Guid(reader.ReadBytes(16));
+                var parsedGeneration = reader.ReadInt64();
+                var observedTicks = reader.ReadInt64();
+                var parsedTimestamp = reader.ReadInt64();
+                var parsedFrequency = reader.ReadInt64();
+                if (parsedEpoch == Guid.Empty || parsedGeneration < 1 || observedTicks <= 0 ||
+                    parsedTimestamp <= 0 || parsedFrequency <= 0) return false;
+                try { observedAt = new DateTimeOffset(new DateTime(observedTicks, DateTimeKind.Utc)); }
+                catch (ArgumentOutOfRangeException) { return false; }
+                observationSourceEpoch = parsedEpoch;
+                observationSourceGeneration = parsedGeneration;
+                monotonicTimestamp = parsedTimestamp;
+                monotonicFrequency = parsedFrequency;
+            }
+            if (input.Position != input.Length) return false;
+            evidence = new ProductionRecoverySafetyAuditEvidence(3, attempt, inspection,
+                expectedHash, reason, disposition, targetHash, noteHash, runtimeEpoch,
+                captureAvailable, captureReason, captureRevision, sourceContentHash,
+                sourceEpoch, sourceGeneration, sourceAvailable, bindingHash, status,
+                observationReason, observationSourceEpoch, observationSourceGeneration,
+                observedAt, monotonicTimestamp, monotonicFrequency);
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or
+            EndOfStreamException or DecoderFallbackException or FormatException or
+            IOException or OverflowException or InvalidOperationException)
+        { return false; }
+    }
+
+    private static string EncodeProductionRecoverySafetyEvidence(
+        ProductionRecoverySafetyAuditEvidence value)
+    {
+        using var output = new MemoryStream();
+        using (var writer = new BinaryWriter(output, new UTF8Encoding(false), leaveOpen: true))
+        {
+            writer.Write((byte)value.Version);
+            writer.Write(value.AttemptId.ToByteArray());
+            writer.Write(value.InspectionId.ToByteArray());
+            WriteEvidenceHash(writer, value.ExpectedEventHash);
+            WriteRecoveryEvidenceReason(writer, value.ReasonCode);
+            writer.Write((byte)value.Disposition);
+            WriteEvidenceHash(writer, value.AuthorizationTarget);
+            WriteEvidenceHash(writer, value.DispositionNoteHash);
+            writer.Write(value.RuntimeEpoch.ToByteArray());
+            writer.Write(value.CaptureAvailable);
+            WriteEvidenceIdentifier(writer, value.CaptureReasonCode);
+            writer.Write(value.CaptureRevision);
+            WriteEvidenceHash(writer, value.SourceContentHash);
+            writer.Write(value.SourceEpoch.ToByteArray());
+            writer.Write(value.SourceGeneration);
+            writer.Write(value.SourceAvailable);
+            writer.Write(value.ObservationStatus is not null);
+            if (value.ObservationStatus is { } status)
+            {
+                WriteEvidenceHash(writer, value.ObservationBindingHash!);
+                writer.Write((byte)status);
+                WriteEvidenceIdentifier(writer, value.ObservationReasonCode!);
+                writer.Write(value.ObservationSourceEpoch!.Value.ToByteArray());
+                writer.Write(value.ObservationSourceGeneration!.Value);
+                writer.Write(value.ObservationObservedAtUtc!.Value.UtcDateTime.Ticks);
+                writer.Write(value.ObservationMonotonicTimestamp!.Value);
+                writer.Write(value.ObservationMonotonicFrequency!.Value);
+            }
+        }
+        var bytes = output.ToArray();
+        var encoded = "v3." + Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        if (encoded.Length > 2048)
+            throw new ArgumentException("ProductionRecoverySafetyEvidenceTooLarge");
+        return encoded;
+    }
+
+    private static void WriteEvidenceHash(BinaryWriter writer, string value)
+    {
+        if (!IsHash(value)) throw new ArgumentException("ProductionRecoveryEvidenceHashInvalid");
+        writer.Write(Convert.FromHexString(value));
+    }
+
+    private static string ReadEvidenceHash(BinaryReader reader)
+    {
+        var bytes = reader.ReadBytes(32);
+        if (bytes.Length != 32) throw new InvalidOperationException("ProductionRecoveryEvidenceHashInvalid");
+        return Convert.ToHexString(bytes);
+    }
+
+    private static void WriteRecoveryEvidenceReason(BinaryWriter writer, string reason)
+    {
+        _ = RecipeActivationValidation.Reason(reason, nameof(reason));
+        var bytes = new UTF8Encoding(false, true).GetBytes(reason);
+        writer.Write((ushort)bytes.Length);
+        writer.Write(bytes);
+    }
+
+    private static string ReadRecoveryEvidenceReason(BinaryReader reader)
+    {
+        var length = reader.ReadUInt16();
+        if (length is 0 or > 1024)
+            throw new InvalidOperationException("ProductionRecoveryEvidenceReasonInvalid");
+        var bytes = reader.ReadBytes(length);
+        if (bytes.Length != length)
+            throw new InvalidOperationException("ProductionRecoveryEvidenceReasonInvalid");
+        var reason = new UTF8Encoding(false, true).GetString(bytes);
+        return RecipeActivationValidation.Reason(reason, nameof(reason));
+    }
+
+    private static void WriteEvidenceIdentifier(BinaryWriter writer, string value)
+    {
+        if (!IsSafeIdentifier(value)) throw new ArgumentException("ProductionRecoveryEvidenceIdentifierInvalid");
+        var bytes = new UTF8Encoding(false, true).GetBytes(value);
+        if (bytes.Length > 256) throw new ArgumentException("ProductionRecoveryEvidenceIdentifierInvalid");
+        writer.Write((ushort)bytes.Length);
+        writer.Write(bytes);
+    }
+
+    private static string ReadEvidenceIdentifier(BinaryReader reader)
+    {
+        var length = reader.ReadUInt16();
+        if (length is 0 or > 256) throw new InvalidOperationException("ProductionRecoveryEvidenceIdentifierInvalid");
+        var bytes = reader.ReadBytes(length);
+        if (bytes.Length != length) throw new InvalidOperationException("ProductionRecoveryEvidenceIdentifierInvalid");
+        var value = new UTF8Encoding(false, true).GetString(bytes);
+        if (!IsSafeIdentifier(value)) throw new InvalidOperationException("ProductionRecoveryEvidenceIdentifierInvalid");
+        return value;
+    }
+
+    /// <summary>
+    /// Reads the authorization envelope used by all three production-recovery
+    /// identity markers. Storage still compares the returned tuple with its
+    /// command fact and immutable recovery projection; this method only validates
+    /// the signed envelope and its schema-30 command binding.
+    /// </summary>
+    internal static bool TryReadProductionRecoveryAuthorization(byte[] payload, long ordinal,
+        string stationId, out ProductionRecoveryAuthorizationAudit binding,
+        int schemaVersion = ProductionRecoveryStoreOptions.SchemaVersion)
+    {
+        binding = null!;
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, schemaVersion);
+            var fields = DecodeFields(payload);
+            if (fields.Length != 49 || !Enum.TryParse<IdentityEventKind>(fields[2], out var kind) ||
+                kind is not (IdentityEventKind.ProductionRecoveryAuthorized or
+                    IdentityEventKind.ProductionRecoveryCompleted or
+                    IdentityEventKind.ProductionRecoveryFailed) ||
+                !Guid.TryParseExact(fields[5], "D", out var principal) || principal == Guid.Empty ||
+                !Guid.TryParseExact(fields[25], "D", out var session) || session == Guid.Empty ||
+                !Guid.TryParseExact(fields[30], "D", out var actor) || actor == Guid.Empty ||
+                !Guid.TryParseExact(fields[31], "D", out var correlation) || correlation == Guid.Empty ||
+                !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) ||
+                boundCorrelation != correlation ||
+                !Guid.TryParseExact(fields[42], "D", out var inspectionId) || inspectionId == Guid.Empty ||
+                !long.TryParse(fields[35], NumberStyles.None, CultureInfo.InvariantCulture,
+                    out var revision) || revision < 0 ||
+                fields[33] != Permission.ManualRecovery.ToString() ||
+                fields[37] is not { Length: > 0 } || !IsSafeIdentifier(fields[37]) ||
+                fields[39] != AuditedCommandKind.ManualProductionRecovery.ToString() ||
+                !IsProductionRecoverySafetyEvidence(fields[45]) || fields[34] is not null)
+                return false;
+
+            Guid? grant = null;
+            if (fields[32] is not null)
+            {
+                if (!Guid.TryParseExact(fields[32], "D", out var parsedGrant) || parsedGrant == Guid.Empty)
+                    return false;
+                grant = parsedGrant;
+            }
+
+            binding = new ProductionRecoveryAuthorizationAudit(kind, principal, actor,
+                correlation, grant, fields[33]!, fields[37]!, boundCorrelation,
+                AuditedCommandKind.ManualProductionRecovery, inspectionId, session,
+                revision, fields[9]!, fields[45]!, new RecipeContractReference(fields[27]!, fields[28]!, fields[29]!));
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException or
+            IndexOutOfRangeException)
+        { return false; }
+    }
+
     internal static bool TryReadEventKind(byte[] payload, out IdentityEventKind kind)
     {
         kind = default;
@@ -1119,7 +1428,10 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             var lengthBytes = reader.ReadBytes(4);
             if (lengthBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             var length = BinaryPrimitives.ReadInt32BigEndian(lengthBytes);
-            if (length is < 0 or > 1024) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+            var maximumBytes = index == 45 && fields[2] is nameof(IdentityEventKind.ProductionRecoveryAuthorized)
+                or nameof(IdentityEventKind.ProductionRecoveryCompleted) or nameof(IdentityEventKind.ProductionRecoveryFailed)
+                ? 2048 : 1024;
+            if (length < 0 || length > maximumBytes) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             var bytes = reader.ReadBytes(length);
             if (bytes.Length != length) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             fields[index] = new UTF8Encoding(false, true).GetString(bytes);
@@ -1170,3 +1482,22 @@ internal sealed record CameraRecoveryAuthorizationAudit(
     Guid? StepUpGrantId, string RequiredPermission, string ActionTargetId,
     Guid BoundCommandCorrelationId, AuditedCommandKind CommandKind, Guid ExpectedCycleId,
     Guid SessionId, long AuthorizationRevision, string ReasonCode, string RecoveryReasonCode);
+
+internal sealed record ProductionRecoveryAuthorizationAudit(
+    IdentityEventKind Kind, Guid PrincipalId, Guid ActorPrincipalId, Guid CommandCorrelationId,
+    Guid? StepUpGrantId, string RequiredPermission, string ActionTargetId,
+    Guid BoundCommandCorrelationId, AuditedCommandKind CommandKind, Guid InspectionId,
+    Guid SessionId, long AuthorizationRevision, string ReasonCode, string SafetyEvidence,
+    RecipeContractReference AuthorizationPolicy);
+
+internal sealed record ProductionRecoverySafetyAuditEvidence(
+    int Version, Guid AttemptId, Guid InspectionId, string ExpectedEventHash,
+    string ReasonCode, PartDisposition Disposition, string AuthorizationTarget,
+    string DispositionNoteHash, Guid RuntimeEpoch, bool CaptureAvailable,
+    string CaptureReasonCode, long CaptureRevision, string SourceContentHash,
+    Guid SourceEpoch, long SourceGeneration, bool SourceAvailable,
+    string? ObservationBindingHash,
+    ProductionRecoverySafetyObservationStatus? ObservationStatus,
+    string? ObservationReasonCode, Guid? ObservationSourceEpoch,
+    long? ObservationSourceGeneration, DateTimeOffset? ObservationObservedAtUtc,
+    long? ObservationMonotonicTimestamp, long? ObservationMonotonicFrequency);

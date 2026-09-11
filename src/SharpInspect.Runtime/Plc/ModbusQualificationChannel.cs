@@ -97,6 +97,19 @@ internal sealed partial class ModbusQualificationChannel : IAsyncDisposable
         WriteStateCoreAsync(qualificationReady, busy, resultValid, cycleFault,
             protocolViolation, cancellationToken);
 
+    /// <summary>
+    /// Clears only Runtime-owned state for an already authorized manual recovery.
+    /// Unlike fault-exit writes, this request must cross the live recovery authority
+    /// fence immediately before the physical send. It cannot write a payload or Ack.
+    /// </summary>
+    internal Task ClearProductionRecoveryStateAsync(CancellationToken cancellationToken)
+    {
+        if (!_production || _startOwnedRequest is null)
+            throw new InvalidOperationException("ProductionRecoveryRequestAuthorityRequired");
+        return WriteStateCoreAsync(false, false, false, false, false,
+            cancellationToken, requireOwner: true);
+    }
+
     internal Task WritePayloadAsync(StationQualificationPayload payload,
         CancellationToken cancellationToken = default)
     {
@@ -357,7 +370,8 @@ internal sealed partial class ModbusQualificationChannel : IAsyncDisposable
     }
 
     private async Task WriteStateCoreAsync(bool qualificationReady, bool busy, bool resultValid,
-        bool cycleFault, bool protocolViolation, CancellationToken cancellationToken)
+        bool cycleFault, bool protocolViolation, CancellationToken cancellationToken,
+        bool requireOwner = false)
     {
         var registers = new ushort[ControlRegisterCount];
         registers[0] = qualificationReady && !_production ? (ushort)1 : (ushort)0;
@@ -372,7 +386,7 @@ internal sealed partial class ModbusQualificationChannel : IAsyncDisposable
             BuildWriteMultipleRequest(_profile.RuntimeStartAddress, registers),
             expectedMbapLength: 6,
             cancellationToken, requiresCycleAuthority: qualificationReady || busy || resultValid && !cycleFault,
-            allowAfterExit: !qualificationReady && !busy && (!resultValid || cycleFault)).ConfigureAwait(false);
+            allowAfterExit: !requireOwner && !qualificationReady && !busy && (!resultValid || cycleFault)).ConfigureAwait(false);
         try
         {
             ValidateWriteMultipleResponse(body, _profile.RuntimeStartAddress, ControlRegisterCount);

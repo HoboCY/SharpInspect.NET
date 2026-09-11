@@ -221,6 +221,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ArgumentNullException.ThrowIfNull(command);
         if (command is CorrectProductionPartIdentityCommand partIdentityCorrection)
             return await SubmitPartIdentityCorrectionAsync(partIdentityCorrection, cancellationToken).ConfigureAwait(false);
+        if (command is ManualProductionRecoveryCommand productionRecovery)
+            return await SubmitProductionRecoveryAsync(productionRecovery, cancellationToken).ConfigureAwait(false);
         if (command is ManualInspectionCommand manual)
             return await SubmitManualInspectionAsync(manual, cancellationToken).ConfigureAwait(false);
         if (command is PreviewSessionCommand preview)
@@ -739,6 +741,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
         _lifetime.Cancel();
         await _heartbeat.ConfigureAwait(false);
+        await ShutdownProductionRecoveryAsync().ConfigureAwait(false);
         await ShutdownProductionInspectionAsync().ConfigureAwait(false);
         await ShutdownManualInspectionAsync().ConfigureAwait(false);
         await ShutdownStationQualificationAsync().ConfigureAwait(false);

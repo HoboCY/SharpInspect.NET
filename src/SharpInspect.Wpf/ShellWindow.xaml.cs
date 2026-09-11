@@ -66,6 +66,7 @@ public partial class ShellWindow : Window
     private readonly ManualInspectionSessionViewModel? _manualInspectionViewModel;
     private readonly StationQualificationSessionViewModel? _qualificationViewModel;
     private readonly TraceStoragePolicyViewModel? _traceStoragePolicyViewModel;
+    private ProductionRecoveryViewModel? _productionRecoveryViewModel;
     private bool _algorithmResultSelectionLoaded;
     private bool _allowSmokeShutdown;
     private bool _traceSelectionLoaded;
@@ -79,9 +80,28 @@ public partial class ShellWindow : Window
     private bool _manualSelectionLoaded;
     private bool _qualificationSelectionLoaded;
     private bool _traceStoragePolicySelectionLoaded;
+    private bool _productionRecoverySelectionLoaded;
     private long _lastInputReport;
     private Task _sessionLock = Task.CompletedTask;
     public bool IsPrivacyLocked { get; private set; }
+
+    /// <summary>
+    /// Adds the production recovery maintenance surface once the host has built
+    /// its real Runtime/query composition. This keeps the legacy constructor and
+    /// existing sample composition ABI unchanged.
+    /// </summary>
+    public void AttachProductionRecovery(ProductionRecoveryViewModel viewModel)
+    {
+        ArgumentNullException.ThrowIfNull(viewModel);
+        if (_productionRecoveryViewModel is not null &&
+            !ReferenceEquals(_productionRecoveryViewModel, viewModel))
+            throw new InvalidOperationException("ProductionRecoveryAlreadyAttached");
+        if (ReferenceEquals(_productionRecoveryViewModel, viewModel)) return;
+        _productionRecoveryViewModel = viewModel;
+        ProductionRecoveryPanel.DataContext = viewModel;
+        viewModel.PropertyChanged += ProductionRecoveryChanged;
+        RenderState();
+    }
 
     /// <summary>
     /// Keeps the original public constructor signature for source and binary
@@ -306,6 +326,8 @@ public partial class ShellWindow : Window
         ManualInspectionPanel.Deactivate();
         QualificationPanel.Deactivate();
         TraceStoragePolicyPanel.Deactivate();
+        ProductionRecoveryPanel.Deactivate();
+        _productionRecoverySelectionLoaded = false;
         _previewSelectionLoaded = false;
         LockedUserNameBox.Clear();
         LockedPasswordBox.Clear();
@@ -444,6 +466,11 @@ public partial class ShellWindow : Window
         if (_manualInspectionViewModel is not null) _manualInspectionViewModel.PropertyChanged -= ManualInspectionChanged;
         if (_qualificationViewModel is not null) _qualificationViewModel.PropertyChanged -= QualificationChanged;
         if (_traceStoragePolicyViewModel is not null) _traceStoragePolicyViewModel.PropertyChanged -= TraceStoragePolicyChanged;
+        if (_productionRecoveryViewModel is not null)
+        {
+            _productionRecoveryViewModel.PropertyChanged -= ProductionRecoveryChanged;
+            _productionRecoveryViewModel.Deactivate();
+        }
         SystemEvents.SessionSwitch -= OperatingSystemSessionSwitch;
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
@@ -455,6 +482,7 @@ public partial class ShellWindow : Window
         ManualInspectionPanel.Deactivate();
         QualificationPanel.Deactivate();
         TraceStoragePolicyPanel.Deactivate();
+        ProductionRecoveryPanel.Deactivate();
         base.OnClosed(e);
     }
 
@@ -470,6 +498,7 @@ public partial class ShellWindow : Window
     private void ManualInspectionChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void QualificationChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
     private void TraceStoragePolicyChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
+    private void ProductionRecoveryChanged(object? sender, PropertyChangedEventArgs e) => RenderState();
 
     private void RenderState()
     {
@@ -615,6 +644,21 @@ public partial class ShellWindow : Window
         {
             _traceStoragePolicySelectionLoaded = true;
             _ = _traceStoragePolicyViewModel.RefreshAsync();
+        }
+        ProductionRecoveryPanel.Visibility = maintenanceSelected && _productionRecoveryViewModel is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!maintenanceSelected || IsPrivacyLocked)
+        {
+            if (_productionRecoverySelectionLoaded)
+            {
+                _productionRecoverySelectionLoaded = false;
+                ProductionRecoveryPanel.Deactivate();
+            }
+        }
+        else if (_productionRecoveryViewModel is not null && !_productionRecoverySelectionLoaded)
+        {
+            _productionRecoverySelectionLoaded = true;
+            _ = _productionRecoveryViewModel.RefreshAsync();
         }
         if (!alarmSelected)
         {

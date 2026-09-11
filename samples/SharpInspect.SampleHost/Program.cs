@@ -60,6 +60,7 @@ internal static class Program
         var identitySmoke = args.Contains("--identity-login-smoke", StringComparer.OrdinalIgnoreCase);
         var administratorRecoveryCheck = args.Contains("--administrator-recovery-check", StringComparer.OrdinalIgnoreCase);
         var smoke = identitySmoke || args.Contains("--smoke", StringComparer.OrdinalIgnoreCase);
+        var productionRecoveryUiEnabled = args.Contains("--production-recovery-ui", StringComparer.OrdinalIgnoreCase);
         var databasePath = Path.GetFullPath(Option("--trace-db") ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SharpInspect.SampleHost", "trace.sqlite"));
         if (Option("--trace-db") is null) Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
@@ -169,6 +170,8 @@ internal static class Program
                     Path.Combine(Path.GetFullPath(calibrationImportCheckDirectory!), "calibration-artifacts"))
             } : null,
             ProductionAdmission = productionAdmissionEnabled ? new ProductionAdmissionStoreOptions() : null,
+            ProductionInspections = productionRecoveryUiEnabled ? new ProductionInspectionStoreOptions() : null,
+            ProductionRecovery = productionRecoveryUiEnabled ? new ProductionRecoveryStoreOptions() : null,
             AuditIntegrityPolicy = auditKey is null ? null : new AuditIntegrityPolicy("SampleDevelopmentStation", "development-v1", auditKey)
             {
                 AllowInitialKeyCreation = true, CheckpointEveryEntries = 2, VerificationInterval = TimeSpan.FromSeconds(1),
@@ -324,6 +327,11 @@ internal static class Program
         if (traceStoragePolicyEnabled)
             services.AddSingleton(p => new TraceStoragePolicyViewModel(p.GetService<ITraceStoragePolicyService>(),
                 p.GetService<IInteractiveSessionService>(), p.GetService<IStepUpAuthentication>(), new DispatcherUiDispatcher(app.Dispatcher)));
+        if (productionRecoveryUiEnabled)
+            services.AddSingleton(p => new ProductionRecoveryViewModel(
+                p.GetService<IProductionRecoveryHistoryQuery>(), p.GetRequiredService<IStationRuntime>(),
+                p.GetService<IInteractiveSessionService>(), p.GetService<IStepUpAuthentication>(),
+                new DispatcherUiDispatcher(app.Dispatcher)));
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -351,6 +359,10 @@ internal static class Program
             : new ShellWindow(vm, trace, integrity, identity, identityAdministration, recovery, alarms,
                 provider.GetRequiredService<AlgorithmResultHistoryViewModel>(),
                 provider.GetRequiredService<RecipeDraftEditorViewModel>());
+        var productionRecovery = productionRecoveryUiEnabled
+            ? provider.GetRequiredService<ProductionRecoveryViewModel>() : null;
+        if (productionRecovery is not null)
+            window.AttachProductionRecovery(productionRecovery);
         var exitCode = 0;
         if (smoke)
         {
@@ -366,6 +378,18 @@ internal static class Program
             {
                 window.Show();
                 await vm.StartAsync();
+                if (smoke && productionRecovery is not null)
+                {
+                    vm.NavigateTo("Maintenance");
+                    await WaitAsync(() => !productionRecovery.IsBusy);
+                    var recoverySnapshot = await runtime.GetSnapshotAsync();
+                    Require(productionRecovery.IsConfigured && !productionRecovery.CanRecover &&
+                        !recoverySnapshot.Ready && recoverySnapshot.ArmState == ProductionArmState.Disarmed,
+                        "production recovery UI must remain fail-closed before an authenticated pending record");
+                    Console.WriteLine($"V144-N01 production-recovery-ui PASS configured={productionRecovery.IsConfigured.ToString().ToLowerInvariant()} " +
+                        $"ready={recoverySnapshot.Ready.ToString().ToLowerInvariant()} canRecover={productionRecovery.CanRecover.ToString().ToLowerInvariant()} " +
+                        "safetyProvider=none physicalProduction=NotRun");
+                }
                 if (smoke)
                 {
                     if (auditKey is not null)
@@ -555,6 +579,7 @@ internal static class Program
             startup.ArmState == ProductionArmState.Disarmed, "startup must remain disarmed");
         if (recovery.IsConfigured)
         {
+            await WaitAsync(() => !recovery.IsBusy);
             await recovery.RefreshAsync();
             Require(recovery.CurrentStatus is { RecoveryAvailable: false, ReasonCode: "SafetyStopUnverified" },
                 "administrator recovery must remain fail-closed without physical stop proof");

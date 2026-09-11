@@ -209,6 +209,7 @@ internal sealed partial class SqliteCommandStore
             previous = row.Position;
         }
         ValidateProductionInspectionProjections(database, rows, deadline);
+        ValidateProductionRecoveryHistory(database, rows, options, deadline);
         var reserved = ReadProductionInspectionReservation(database, deadline);
         AuditChainDatabase.Require(rows.Count + reserved.Rows <= options.MaximumEntries,
             "ProductionInspectionEntryCapacityExceeded");
@@ -629,6 +630,9 @@ internal sealed partial class SqliteCommandStore
                 request.RecordedAtUtc == default || request.RecordedAtUtc.Offset != TimeSpan.Zero ||
                 request.MonotonicTimestamp <= 0)
                 throw new InvalidOperationException("ProductionInspectionEventIdentityInvalid");
+            if (ProductionRecoveryEnabled && request.Kind is
+                (ProductionInspectionEventKind.RecoveryRequired or ProductionInspectionEventKind.RecoveryCompleted))
+                throw new InvalidOperationException("ProductionRecoveryDedicatedWriterRequired");
             SqliteNative.Execute(database, "BEGIN IMMEDIATE;", deadline);
             started = true;
             AuditChainDatabase.RequireFullProductionInspectionVerification(database,
@@ -678,7 +682,9 @@ internal sealed partial class SqliteCommandStore
         catch (InvalidOperationException ex) when (ex.Message.StartsWith("ProductionInspection", StringComparison.Ordinal))
         { return ProductionInspectionRejected(work, ex.Message); }
         catch (Exception ex) when (ex is not OutOfMemoryException)
-        { return ProductionInspectionRejected(work, SqliteAuditIntegrityQuery.FaultReason(ex, "ProductionInspectionEventFailed")); }
+        { return ProductionInspectionRejected(work, ex is InvalidOperationException &&
+            ex.Message.StartsWith("ProductionRecovery", StringComparison.Ordinal) ? ex.Message :
+            SqliteAuditIntegrityQuery.FaultReason(ex, "ProductionInspectionEventFailed")); }
         finally
         {
             if (started && !committed) Rollback(database);

@@ -25,8 +25,11 @@ public sealed partial class StationRuntime
             var history = new SqliteProductionInspectionHistoryQuery(_productionInspectionStoreOptions!);
             var current = await history.ReadCurrentAsync(_lifetime.Token).ConfigureAwait(false);
             if (!current.Available || current.RecoveryRequired)
+            {
+                await RefreshProductionRecoveryAsync(_lifetime.Token).ConfigureAwait(false);
                 throw new InvalidOperationException(current.Available
                     ? "ProductionInspectionStartupRecoveryRequired" : current.ReasonCode);
+            }
             var keys = new HashSet<PlcControllerCycle>();
             long after = 0;
             long? through = null;
@@ -269,7 +272,10 @@ public sealed partial class StationRuntime
                 { MarkAuditFault("PartIdentityRejectionJournalUnavailable", alarmAuthorityUnavailable: true); }
             }
             if (owner.Current is not null)
+            {
                 await RecordProductionFaultAsync(owner, owner.FailureReason).ConfigureAwait(false);
+                await RefreshProductionRecoveryAsync(CancellationToken.None).ConfigureAwait(false);
+            }
             await RetireProductionCameraAsync(owner).ConfigureAwait(false);
             owner.CycleRetired?.TrySetResult(true);
             if (communication.Failure is not null && !_lifetime.IsCancellationRequested)

@@ -109,4 +109,8 @@ public sealed class ProductionStoreOptions
     /// Accepted identity evidence remains in the production admission/Core records; this
     /// independent ledger stores rejected triggers and authorized historical corrections.</summary>
     public PartIdentityStoreOptions? PartIdentities { get; init; }
+
+    /// <summary>Explicit opt-in for schema 30 audited manual production recovery.
+    /// Requires production inspections, local identity and central audit integrity.</summary>
+    public ProductionRecoveryStoreOptions? ProductionRecovery { get; init; }
 }

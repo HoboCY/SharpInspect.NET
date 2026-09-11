@@ -16,6 +16,7 @@ internal static class ProductionInspectionStorageCodec
     internal const int MaximumStringBytes = 4 * 1024 * 1024;
     private const int LegacyEnvelopeVersion = 1;
     private const int PartIdentityEnvelopeVersion = 2;
+    private const int RecoveryEnvelopeVersion = 3;
     private const int MaximumEnvelopeBytes = 16 * 1024 * 1024;
     private const int MaximumSegments = 2048;
     private const int MaximumObligations = 64;
@@ -79,14 +80,26 @@ internal static class ProductionInspectionStorageCodec
     }
 
     /// <summary>Central audit payload excludes final audit sequence/hash to avoid self-binding.</summary>
-    internal static byte[] EncodeAuditBinding(ProductionInspectionHistoryEvent value) =>
-        AuditCanonical.Encode("ProductionInspectionEventAuditV1",
+    internal static byte[] EncodeAuditBinding(ProductionInspectionHistoryEvent value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Recovery is { } recovery)
+            return AuditCanonical.Encode("ProductionInspectionEventAuditV2",
+                value.Position.ToString(CultureInfo.InvariantCulture), value.Kind.ToString(),
+                value.InspectionId.ToString("D"), value.CorrelationId.ToString("D"),
+                value.RuntimeEpoch.ToString("D"), value.Admission.ContentHash,
+                value.Core?.ContentHash, value.ReasonCode,
+                value.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+                value.MonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
+                RecoveryAuditBinding(recovery));
+        return AuditCanonical.Encode("ProductionInspectionEventAuditV1",
             value.Position.ToString(CultureInfo.InvariantCulture), value.Kind.ToString(),
             value.InspectionId.ToString("D"), value.CorrelationId.ToString("D"),
             value.RuntimeEpoch.ToString("D"), value.Admission.ContentHash,
             value.Core?.ContentHash, value.ReasonCode,
             value.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             value.MonotonicTimestamp.ToString(CultureInfo.InvariantCulture));
+    }
 
     internal static byte[] Encode(ProductionInspectionHistoryEvent value) =>
         EncodeEventEnvelope(value);
@@ -304,7 +317,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        var version = value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        var version = value.Recovery is not null ? RecoveryEnvelopeVersion :
+            value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
         using (var writer = NewWriter(stream, EnvelopeKind.Event, version))
         {
             writer.Write(value.Position);
@@ -318,6 +332,9 @@ internal static class ProductionInspectionStorageCodec
             writer.Write(value.Core is not null);
             if (value.Core is not null)
                 WriteBytes(writer, EncodeCoreEnvelope(value.Core), MaximumEnvelopeBytes);
+            if (version >= RecoveryEnvelopeVersion)
+                WriteRecoveryRecord(writer, value.Recovery ??
+                    throw Corrupt("ProductionRecoveryEnvelopeRecordMissing"));
             WriteString(writer, value.ContentHash, 64);
         }
         return FinishEnvelope(stream);
@@ -327,7 +344,7 @@ internal static class ProductionInspectionStorageCodec
         ReadOnlyMemory<byte> payload,
         Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? calibrationResolver = null)
     {
-        using var reader = OpenReader(payload, EnvelopeKind.Event, out var stream, out _);
+        using var reader = OpenReader(payload, EnvelopeKind.Event, out var stream, out var envelopeVersion);
         var position = reader.ReadInt64();
         var kind = ReadEnum<ProductionInspectionEventKind>(reader.ReadByte(),
             "ProductionInspectionEventKindInvalid");
@@ -340,10 +357,18 @@ internal static class ProductionInspectionStorageCodec
         ProductionInspectionCore? core = null;
         if (reader.ReadBoolean())
             core = DecodeCoreEnvelope(ReadBytes(reader, MaximumEnvelopeBytes), admission);
+        ProductionRecoveryRecord? recovery = null;
+        if (envelopeVersion >= RecoveryEnvelopeVersion)
+        {
+            if (kind is not (ProductionInspectionEventKind.RecoveryRequired or
+                ProductionInspectionEventKind.RecoveryCompleted))
+                throw Corrupt("ProductionRecoveryEnvelopeKindInvalid");
+            recovery = ReadRecoveryRecord(reader);
+        }
         var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionEventHashMissing");
         RequireEnd(stream, "ProductionInspectionEventTrailingBytes");
         var value = new ProductionInspectionHistoryEvent(position, kind, admission, core, reason,
-            recorded, monotonic, auditSequence, auditHash);
+            recorded, monotonic, auditSequence, auditHash, expectedHash, recovery);
         RequireHash(value.ContentHash, expectedHash, "ProductionInspectionEventHashMismatch");
         return value;
     }
@@ -385,13 +410,30 @@ internal static class ProductionInspectionStorageCodec
         var magic = reader.ReadBytes(EnvelopeMagic.Length);
         version = reader.ReadInt32();
         if (!magic.AsSpan().SequenceEqual(EnvelopeMagic) ||
-            version is not (LegacyEnvelopeVersion or PartIdentityEnvelopeVersion) ||
+            (version is not (LegacyEnvelopeVersion or PartIdentityEnvelopeVersion) &&
+             !(version == RecoveryEnvelopeVersion && kind == EnvelopeKind.Event)) ||
             reader.ReadByte() != (byte)kind)
             throw Corrupt("ProductionInspectionEnvelopeVersionInvalid");
         return reader;
     }
 
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
+
+    private static string RecoveryAuditBinding(ProductionRecoveryRecord value) =>
+        AlgorithmContractValidationBridge.HashParts(new string?[]
+        {
+            "sharpinspect-production-recovery-audit-binding-v2",
+            value.RecoveryAttemptId.ToString("D"), value.InspectionId.ToString("D"),
+            value.PreviousEventPosition.ToString(CultureInfo.InvariantCulture), value.PreviousEventHash,
+             value.Observation.ContentHash, value.SafetyEvidence.ContentHash,
+             value.AuthorizationSafetyEvidence,
+            value.ActorPrincipalId.ToString("D"), value.ActorSessionId.ToString("D"),
+            value.AuthorizationRevision.ToString(CultureInfo.InvariantCulture),
+            value.StepUpGrantId.ToString("D"), value.AuthorizationPolicy.ContentHash,
+            value.CommandCorrelationId.ToString("D"), value.CommandAttemptId.ToString("D"),
+            value.AuthorizationTarget, value.Disposition.ToString(), value.DispositionNote,
+            value.Outcome.ToString(), value.CompletionReceipt?.ContentHash
+        });
 
     private static void RequireEnd(Stream stream, string reason)
     {
@@ -939,6 +981,260 @@ internal static class ProductionInspectionStorageCodec
         RequireHash(value.WireContentHash, wireHash, "ProductionInspectionPayloadWireHashMismatch");
         RequireHash(value.ContentHash, contentHash, "ProductionInspectionPayloadHashMismatch");
         return value;
+    }
+
+    private static void WriteRecoveryRecord(BinaryWriter writer, ProductionRecoveryRecord value)
+    {
+        WriteGuid(writer, value.RecoveryAttemptId);
+        WriteGuid(writer, value.RecoveryRuntimeEpoch);
+        WriteGuid(writer, value.InspectionId);
+        writer.Write(value.PreviousEventPosition);
+        WriteString(writer, value.PreviousEventHash, 64);
+        WriteRecoveryObservation(writer, value.Observation);
+        WriteRecoverySafetyEvidence(writer, value.SafetyEvidence);
+        WriteGuid(writer, value.ActorPrincipalId);
+        WriteGuid(writer, value.ActorSessionId);
+        writer.Write(value.AuthorizationRevision);
+        WriteGuid(writer, value.StepUpGrantId);
+        WriteString(writer, value.AuthorizationPolicy.Id, 128);
+        WriteString(writer, value.AuthorizationPolicy.Version, 128);
+        WriteString(writer, value.AuthorizationPolicy.ContentHash, 64);
+        WriteGuid(writer, value.CommandCorrelationId);
+        WriteGuid(writer, value.CommandAttemptId);
+        WriteString(writer, value.AuthorizationTarget, 64);
+        writer.Write((byte)value.Disposition);
+        WriteNullableString(writer, value.DispositionNote, 512);
+        writer.Write((byte)value.Outcome);
+        writer.Write(value.CompletionReceipt is not null);
+        if (value.CompletionReceipt is { } receipt)
+        {
+            WriteGuid(writer, receipt.RuntimeEpoch);
+            writer.Write(receipt.ConnectionGeneration);
+            writer.Write(receipt.CompletedAtUtc.UtcTicks);
+            writer.Write(receipt.MonotonicTimestamp);
+            writer.Write(receipt.CleanupCompleted);
+            WriteString(writer, receipt.ReasonCode, 128);
+            WriteString(writer, receipt.EndpointBindingHash, 64);
+            WriteString(writer, receipt.PlcProfileHash, 64);
+            WriteString(writer, receipt.PlcPolicyHash, 64);
+            writer.Write(receipt.ControllerEpoch);
+            WriteRecoveryHealth(writer, receipt.Health);
+            writer.Write(receipt.TriggerLowObserved);
+            writer.Write(receipt.AckLowObserved);
+            writer.Write(receipt.RuntimeOutputsClear);
+            WriteString(writer, receipt.ContentHash, 64);
+        }
+        writer.Write(value.CommandAuditSequence);
+        WriteNullableString(writer, value.CommandAuditHash, 64);
+        writer.Write(value.AuthorizationAuditSequence);
+        WriteNullableString(writer, value.AuthorizationAuditHash, 64);
+        WriteNullableString(writer, value.AuthorizationSafetyEvidence, 2048);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static ProductionRecoveryRecord ReadRecoveryRecord(BinaryReader reader)
+    {
+        var attempt = ReadGuid(reader);
+        var recoveryRuntimeEpoch = ReadGuid(reader);
+        var inspection = ReadGuid(reader);
+        var previousPosition = reader.ReadInt64();
+        var previousHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryPreviousHashMissing");
+        var observation = ReadRecoveryObservation(reader);
+        var safety = ReadRecoverySafetyEvidence(reader);
+        var principal = ReadGuid(reader);
+        var session = ReadGuid(reader);
+        var revision = reader.ReadInt64();
+        var grant = ReadGuid(reader);
+        var policy = new RecipeContractReference(
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoveryPolicyIdMissing"),
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoveryPolicyVersionMissing"),
+            ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryPolicyHashMissing"));
+        var correlation = ReadGuid(reader);
+        var commandAttempt = ReadGuid(reader);
+        var target = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryAuthorizationTargetMissing");
+        var disposition = ReadEnum<PartDisposition>(reader.ReadByte(), "ProductionRecoveryDispositionInvalid");
+        var note = ReadNullableString(reader, 512);
+        var outcome = ReadEnum<ProductionRecoveryOutcome>(reader.ReadByte(), "ProductionRecoveryOutcomeInvalid");
+        ProductionRecoveryCleanupReceipt? receipt = null;
+        if (reader.ReadBoolean())
+        {
+            var receiptEpoch = ReadGuid(reader);
+            var generation = reader.ReadInt64();
+            var completedAt = ReadUtc(reader, "ProductionRecoveryCleanupTimestampInvalid");
+            var monotonic = reader.ReadInt64();
+            var completed = reader.ReadBoolean();
+            var reason = ReadString(reader, 128) ?? throw Corrupt("ProductionRecoveryCleanupReasonMissing");
+            var endpoint = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryCleanupEndpointMissing");
+            var profile = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryCleanupProfileMissing");
+            var policyHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryCleanupPolicyMissing");
+            var controllerEpoch = reader.ReadUInt32();
+            var health = ReadRecoveryHealth(reader);
+            var triggerLow = reader.ReadBoolean();
+            var ackLow = reader.ReadBoolean();
+            var runtimeOutputsClear = reader.ReadBoolean();
+            var expectedReceiptHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryCleanupHashMissing");
+            receipt = new ProductionRecoveryCleanupReceipt(receiptEpoch, generation, completedAt,
+                monotonic, completed, reason, endpoint, profile, policyHash, controllerEpoch,
+                health, triggerLow, ackLow, runtimeOutputsClear);
+            RequireHash(receipt.ContentHash, expectedReceiptHash, "ProductionRecoveryCleanupHashMismatch");
+        }
+        var commandSequence = reader.ReadInt64();
+        var commandHash = ReadNullableString(reader, 64);
+        var authorizationSequence = reader.ReadInt64();
+        var authorizationHash = ReadNullableString(reader, 64);
+        var authorizationSafetyEvidence = ReadNullableString(reader, 2048);
+        var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryRecordHashMissing");
+        var value = new ProductionRecoveryRecord(attempt, recoveryRuntimeEpoch, inspection, previousPosition, previousHash,
+            observation, safety, principal, session, revision, grant, policy, correlation, commandAttempt,
+             target, disposition, note, outcome,
+             completionReceipt: receipt,
+             commandAuditSequence: commandSequence,
+             commandAuditHash: commandHash,
+             authorizationAuditSequence: authorizationSequence,
+             authorizationAuditHash: authorizationHash,
+             authorizationSafetyEvidence: authorizationSafetyEvidence,
+             contentHash: expectedHash);
+        return value;
+    }
+
+    private static void WriteRecoveryObservation(BinaryWriter writer, ProductionRecoveryObservation value)
+    {
+        writer.Write((byte)value.DeliveryPhase);
+        writer.Write((byte)value.Uncertainty);
+        writer.Write((byte)value.Acknowledgement);
+        WriteGuid(writer, value.RuntimeEpoch);
+        writer.Write(value.ControllerEpoch);
+        writer.Write(value.CycleSequence);
+        writer.Write(value.ConnectionGeneration);
+        WriteString(writer, value.EndpointBindingHash, 64);
+        WriteString(writer, value.PlcProfileHash, 64);
+        WriteString(writer, value.PlcPolicyHash, 64);
+        WriteNullableString(writer, value.CoreContentHash, 64);
+        WriteNullableString(writer, value.PayloadContentHash, 64);
+        WriteNullableString(writer, value.PayloadWireContentHash, 64);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static ProductionRecoveryObservation ReadRecoveryObservation(BinaryReader reader)
+    {
+        var phase = ReadEnum<ProductionRecoveryDeliveryPhase>(reader.ReadByte(),
+            "ProductionRecoveryDeliveryPhaseInvalid");
+        var uncertainty = ReadEnum<ProductionRecoveryUncertaintyKind>(reader.ReadByte(),
+            "ProductionRecoveryUncertaintyInvalid");
+        var acknowledgement = ReadEnum<ProductionRecoveryAcknowledgementObservation>(reader.ReadByte(),
+            "ProductionRecoveryAcknowledgementInvalid");
+        var runtimeEpoch = ReadGuid(reader);
+        var controllerEpoch = reader.ReadUInt32();
+        var cycleSequence = reader.ReadUInt32();
+        var generation = reader.ReadInt64();
+        var endpoint = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryEndpointMissing");
+        var profile = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryProfileMissing");
+        var policy = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryPolicyHashMissing");
+        var core = ReadNullableString(reader, 64);
+        var payload = ReadNullableString(reader, 64);
+        var wire = ReadNullableString(reader, 64);
+        var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoveryObservationHashMissing");
+        var value = new ProductionRecoveryObservation(phase, uncertainty, acknowledgement, runtimeEpoch,
+            controllerEpoch, cycleSequence, generation, endpoint, profile, policy, core, payload, wire);
+        RequireHash(value.ContentHash, expectedHash, "ProductionRecoveryObservationHashMismatch");
+        return value;
+    }
+
+    private static void WriteRecoverySafetyEvidence(BinaryWriter writer,
+        ProductionRecoverySafetyEvidence value)
+    {
+        var observation = value.Observation;
+        var binding = observation.Binding;
+        WriteString(writer, binding.BindingId, 128);
+        WriteString(writer, binding.BindingVersion, 128);
+        WriteString(writer, binding.StationId, 128);
+        WriteString(writer, binding.EndpointBindingHash, 64);
+        WriteString(writer, binding.SourceId, 128);
+        WriteString(writer, binding.SourceVersion, 128);
+        WriteString(writer, binding.SourceConfigurationHash, 64);
+        WriteString(writer, binding.ProviderTypeName, 1024);
+        WriteString(writer, binding.ProviderAssemblyHash, 64);
+        writer.Write(binding.FreshnessLimit.Ticks);
+        writer.Write((byte)observation.Status);
+        WriteString(writer, observation.ReasonCode, 128);
+        WriteGuid(writer, observation.SourceEpoch);
+        writer.Write(observation.SourceGeneration);
+        writer.Write(observation.ObservedAtUtc.UtcTicks);
+        writer.Write(observation.MonotonicTimestamp);
+        writer.Write(observation.MonotonicFrequency);
+        WriteString(writer, observation.ContentHash, 64);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static ProductionRecoverySafetyEvidence ReadRecoverySafetyEvidence(BinaryReader reader)
+    {
+        var binding = new ProductionRecoverySafetyProviderBinding(
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetyBindingIdMissing"),
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetyBindingVersionMissing"),
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetyStationMissing"),
+            ReadString(reader, 64) ?? throw Corrupt("ProductionRecoverySafetyEndpointMissing"),
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetySourceIdMissing"),
+            ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetySourceVersionMissing"),
+            ReadString(reader, 64) ?? throw Corrupt("ProductionRecoverySafetyConfigurationMissing"),
+            ReadString(reader, 1024) ?? throw Corrupt("ProductionRecoverySafetyProviderMissing"),
+            ReadString(reader, 64) ?? throw Corrupt("ProductionRecoverySafetyAssemblyMissing"),
+            TimeSpan.FromTicks(reader.ReadInt64()));
+        var status = ReadEnum<ProductionRecoverySafetyObservationStatus>(reader.ReadByte(),
+            "ProductionRecoverySafetyStatusInvalid");
+        var reason = ReadString(reader, 128) ?? throw Corrupt("ProductionRecoverySafetyReasonMissing");
+        var sourceEpoch = ReadGuid(reader);
+        var generation = reader.ReadInt64();
+        var observedAt = ReadUtc(reader, "ProductionRecoverySafetyTimestampInvalid");
+        var monotonic = reader.ReadInt64();
+        var frequency = reader.ReadInt64();
+        var expectedObservationHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoverySafetyObservationHashMissing");
+        var observation = new ProductionRecoverySafetyObservation(binding, status, reason, sourceEpoch,
+            generation, observedAt, monotonic, frequency);
+        RequireHash(observation.ContentHash, expectedObservationHash,
+            "ProductionRecoverySafetyObservationHashMismatch");
+        var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionRecoverySafetyEvidenceHashMissing");
+        var value = new ProductionRecoverySafetyEvidence(observation);
+        RequireHash(value.ContentHash, expectedHash, "ProductionRecoverySafetyEvidenceHashMismatch");
+        return value;
+    }
+
+    private static void WriteRecoveryHealth(BinaryWriter writer, PlcCommunicationHealth value)
+    {
+        writer.Write(value.TransportReachable);
+        writer.Write(value.ControllerHeartbeatFresh);
+        writer.Write(value.RuntimeHeartbeatObserved);
+        writer.Write(value.ControllerEpoch.HasValue);
+        if (value.ControllerEpoch is { } controllerEpoch)
+            writer.Write(controllerEpoch);
+        writer.Write(value.Synchronized);
+        writer.Write(value.RecoveryRequired);
+        writer.Write(value.RecoveryAttempt);
+        writer.Write(value.ConnectionGeneration);
+        WriteString(writer, value.ReasonCode, 128);
+        WriteNullableString(writer, value.PolicyHash, 64);
+        WriteGuid(writer, value.RuntimeEpoch);
+    }
+
+    private static PlcCommunicationHealth ReadRecoveryHealth(BinaryReader reader)
+    {
+        var transport = reader.ReadBoolean();
+        var controllerFresh = reader.ReadBoolean();
+        var runtimeObserved = reader.ReadBoolean();
+        uint? controllerEpoch = reader.ReadBoolean() ? reader.ReadUInt32() : null;
+        var synchronized = reader.ReadBoolean();
+        var recoveryRequired = reader.ReadBoolean();
+        var recoveryAttempt = reader.ReadInt32();
+        var connectionGeneration = reader.ReadInt64();
+        var reason = ReadString(reader, 128) ?? throw Corrupt("ProductionRecoveryHealthReasonMissing");
+        var policyHash = ReadNullableString(reader, 64);
+        var runtimeEpoch = ReadGuid(reader);
+        return new PlcCommunicationHealth(transport, controllerFresh, runtimeObserved,
+            controllerEpoch, synchronized, recoveryRequired, recoveryAttempt,
+            connectionGeneration, reason)
+        {
+            PolicyHash = policyHash,
+            RuntimeEpoch = runtimeEpoch
+        };
     }
 
     private static string? ResultHash(AlgorithmResult? value) => value is null ? null :

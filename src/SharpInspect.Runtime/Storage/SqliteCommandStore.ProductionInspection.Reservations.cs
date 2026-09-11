@@ -39,6 +39,10 @@ internal sealed partial class SqliteCommandStore
             ProductionInspectionEventKind.ResultAcknowledged or ProductionInspectionEventKind.ResultValidCleared,
             ProductionInspectionEventKind.FaultTerminated) => true,
         (ProductionInspectionEventKind.FaultTerminated, ProductionInspectionEventKind.RecoveryRequired) => true,
+        (ProductionInspectionEventKind.Admitted or ProductionInspectionEventKind.CoreCommitted or
+            ProductionInspectionEventKind.PublicationPrepared or ProductionInspectionEventKind.ResultValidRaised or
+            ProductionInspectionEventKind.ResultAcknowledged or ProductionInspectionEventKind.ResultValidCleared,
+            ProductionInspectionEventKind.RecoveryRequired) => true,
         (ProductionInspectionEventKind.RecoveryRequired, ProductionInspectionEventKind.RecoveryCompleted) => true,
         _ => false
     };

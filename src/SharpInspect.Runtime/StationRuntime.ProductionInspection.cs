@@ -26,11 +26,12 @@ public sealed partial class StationRuntime
     // Communication monitoring does not own the camera or block configuration.
     // Only a durably accepted production cycle owns inspection resources.
     private bool ProductionInspectionConfigurationBlockedLocked =>
-        _productionInspectionOwner?.Current is not null;
+        _productionInspectionOwner?.Current is not null || _productionRecoveryOwner is not null;
 
     internal void ConfigureProductionInspections(ProductionInspectionOptions options,
         ProductionStoreOptions storeOptions, AlgorithmExecutionOptions executionOptions,
-        IFrameAcquisitionClock clock, PartIdentityBindingRegistry? partIdentityRegistry = null)
+        IFrameAcquisitionClock clock, PartIdentityBindingRegistry? partIdentityRegistry = null,
+        IEnumerable<IProductionRecoverySafetyProvider>? recoverySafetyProviders = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(storeOptions);
@@ -43,20 +44,29 @@ public sealed partial class StationRuntime
             storeOptions.RecipeActivations is null || storeOptions.LocalIdentity is null ||
             executionOptions.Policy.ContentHash != storeOptions.RecipeDrafts?.ExecutionPolicy.ContentHash)
             throw new ArgumentException("ProductionInspectionDependenciesUnavailable");
-        lock (_sync)
+        var recovery = CreateProductionRecovery(options, recoverySafetyProviders);
+        var attached = false;
+        try
         {
-            if (_productionInspectionOptions is not null)
-                throw new InvalidOperationException("ProductionInspectionAlreadyConfigured");
-            if (_disposed || _shutdownRequested)
-                throw new InvalidOperationException("ProductionInspectionRuntimeStopped");
-            _productionInspectionOptions = options;
-            _productionInspectionStoreOptions = storeOptions;
-            _productionInspectionExecutionOptions = executionOptions;
-            _productionInspectionClock = clock;
-            _partIdentityRegistry = partIdentityRegistry;
-            if (partIdentityRegistry is not null) partIdentityRegistry.SourceChanged += PartIdentitySourceChanged;
-            _productionInspectionTask = Task.Run(RunProductionInspectionsAsync);
+            lock (_sync)
+            {
+                if (_productionInspectionOptions is not null)
+                    throw new InvalidOperationException("ProductionInspectionAlreadyConfigured");
+                if (_disposed || _shutdownRequested)
+                    throw new InvalidOperationException("ProductionInspectionRuntimeStopped");
+                _productionInspectionOptions = options;
+                _productionInspectionStoreOptions = storeOptions;
+                _productionInspectionExecutionOptions = executionOptions;
+                _productionInspectionClock = clock;
+                _partIdentityRegistry = partIdentityRegistry;
+                _productionRecoverySafety = recovery.Registry;
+                _productionRecoveryConfigurationFailure = recovery.Failure;
+                attached = true;
+                if (partIdentityRegistry is not null) partIdentityRegistry.SourceChanged += PartIdentitySourceChanged;
+                _productionInspectionTask = Task.Run(RunProductionInspectionsAsync);
+            }
         }
+        finally { if (!attached) recovery.Registry?.Dispose(); }
     }
 
     private bool IsOwnedProductionProgressLocked(StationStateSnapshot state) =>

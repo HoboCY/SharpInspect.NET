@@ -13,7 +13,8 @@ public sealed record ProductionInspectionHistoryEvent
     internal ProductionInspectionHistoryEvent(long position, ProductionInspectionEventKind kind,
         ProductionInspectionAdmission admission, ProductionInspectionCore? core,
         string reasonCode, DateTimeOffset recordedAtUtc, long monotonicTimestamp,
-        long auditSequence = 0, string? auditHash = null, string? contentHash = null)
+        long auditSequence = 0, string? auditHash = null, string? contentHash = null,
+        ProductionRecoveryRecord? recovery = null)
     {
         if (position < 1 || !Enum.IsDefined(kind) || admission is null ||
             recordedAtUtc == default || recordedAtUtc.Offset != TimeSpan.Zero ||
@@ -23,6 +24,17 @@ public sealed record ProductionInspectionHistoryEvent
             throw new ArgumentException("ProductionInspectionHistoryAuditReferenceInvalid");
         if (kind == ProductionInspectionEventKind.CoreCommitted && core is null)
             throw new ArgumentException("ProductionInspectionCoreRequired");
+        if (recovery is not null && kind is not (ProductionInspectionEventKind.RecoveryRequired or
+            ProductionInspectionEventKind.RecoveryCompleted))
+            throw new ArgumentException("ProductionRecoveryEventKindRequired", nameof(recovery));
+        if (recovery is not null && recovery.InspectionId != admission.InspectionId)
+            throw new ArgumentException("ProductionRecoveryInspectionMismatch", nameof(recovery));
+        // Legacy v1/v2 recovery rows have no typed recovery metadata. Their
+        // original content hash and envelope remain readable; schema 30's
+        // writer and history verifier require the new authorized record.
+        if (kind == ProductionInspectionEventKind.RecoveryCompleted && recovery is not null &&
+            recovery.Outcome != ProductionRecoveryOutcome.Completed)
+            throw new ArgumentException("ProductionRecoveryCompletionRecordRequired", nameof(recovery));
         if (core is not null && core.Admission.ContentHash != admission.ContentHash)
             throw new ArgumentException("ProductionInspectionHistoryAdmissionMismatch");
 
@@ -35,6 +47,7 @@ public sealed record ProductionInspectionHistoryEvent
         MonotonicTimestamp = monotonicTimestamp;
         AuditSequence = auditSequence;
         AuditHash = auditHash is null ? null : RecipeActivationValidation.Hash(auditHash, nameof(auditHash));
+        Recovery = recovery;
         ContentHash = contentHash is null ? ComputeContentHash() :
             RecipeActivationValidation.Hash(contentHash, nameof(contentHash));
         if (contentHash is not null && !string.Equals(ContentHash, ComputeContentHash(),
@@ -55,16 +68,23 @@ public sealed record ProductionInspectionHistoryEvent
     public long MonotonicTimestamp { get; }
     public long AuditSequence { get; }
     public string? AuditHash { get; }
+    public ProductionRecoveryRecord? Recovery { get; }
     public string ContentHash { get; }
 
-    private string ComputeContentHash() => AlgorithmContractValidation.HashParts(new string?[]
+    private string ComputeContentHash()
     {
-        "sharpinspect-production-inspection-history-v1",
-        Position.ToString(CultureInfo.InvariantCulture), Kind.ToString(), Admission.ContentHash,
-        Core?.ContentHash, ReasonCode, RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
-        MonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
-        AuditSequence.ToString(CultureInfo.InvariantCulture), AuditHash
-    });
+        var fields = new List<string?>
+        {
+            Recovery is null ? "sharpinspect-production-inspection-history-v1" :
+                "sharpinspect-production-inspection-history-v2",
+            Position.ToString(CultureInfo.InvariantCulture), Kind.ToString(), Admission.ContentHash,
+            Core?.ContentHash, ReasonCode, RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+            MonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
+            AuditSequence.ToString(CultureInfo.InvariantCulture), AuditHash
+        };
+        if (Recovery is not null) fields.Add(Recovery.ContentHash);
+        return AlgorithmContractValidation.HashParts(fields);
+    }
 }
 
 public sealed record ProductionInspectionHistoryFilter(

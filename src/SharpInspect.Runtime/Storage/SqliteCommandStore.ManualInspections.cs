@@ -442,7 +442,7 @@ internal sealed partial class SqliteCommandStore
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
                 AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
                     schema < PlcCommunicationStoreOptions.SchemaVersion
                         ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
                 var verification = AuditChainDatabase.Verify(database, _policy,
@@ -470,6 +470,7 @@ internal sealed partial class SqliteCommandStore
                 qualificationCycleOptions: _options.QualificationCycles,
                 plcCommunicationOptions: _options.PlcCommunication,
                 productionInspectionOptions: _options.ProductionInspections,
+                productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)

@@ -60,6 +60,9 @@ public sealed record StationStateSnapshot(
 
     /// <summary>Observed mutual liveness and synchronization; absent bindings never imply health.</summary>
     public PlcCommunicationHealth? PlcCommunication { get; init; }
+
+    /// <summary>Retained pending inspections and their immutable recovery anchors.</summary>
+    public ProductionRecoveryPendingPage? ProductionRecovery { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>

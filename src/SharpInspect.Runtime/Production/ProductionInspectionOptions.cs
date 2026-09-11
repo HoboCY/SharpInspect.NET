@@ -7,6 +7,7 @@ namespace SharpInspect.Runtime.Production;
 /// <summary>Production entry bindings and bounded resource operations. Qualification remains a separate prerequisite.</summary>
 public sealed class ProductionInspectionOptions
 {
+    /// <summary>Preserves the original production binding and its v1 hash.</summary>
     public ProductionInspectionOptions(string stationId, ProductionEvidenceRequirement evidenceRequirement,
         ModbusProductionProfile profile,
         long tracePolicyVersion, string tracePolicySnapshotHash, TimeSpan operationTimeout,
@@ -32,6 +33,27 @@ public sealed class ProductionInspectionOptions
         });
     }
 
+    /// <summary>
+    /// Explicitly binds the separately governed recovery workflow. A safety
+    /// provider is resolved by the host; this configuration is never itself
+    /// evidence that the physical line has stopped.
+    /// </summary>
+    public ProductionInspectionOptions(string stationId, ProductionEvidenceRequirement evidenceRequirement,
+        ModbusProductionProfile profile, long tracePolicyVersion, string tracePolicySnapshotHash,
+        TimeSpan operationTimeout, TimeSpan retirementTimeout, ProductionDeploymentManifest? deployment,
+        ProductionRecoveryBinding recovery)
+        : this(stationId, evidenceRequirement, profile, tracePolicyVersion, tracePolicySnapshotHash,
+            operationTimeout, retirementTimeout, deployment)
+    {
+        Recovery = recovery ?? throw new ArgumentNullException(nameof(recovery));
+        if (recovery.StationId != StationId || recovery.EndpointBindingHash != profile.EndpointBindingHash)
+            throw new ArgumentException("ProductionRecoveryEndpointBindingMismatch", nameof(recovery));
+        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        {
+            "sharpinspect-production-inspection-options-v2", ContentHash, recovery.ContentHash
+        });
+    }
+
     public string StationId { get; }
     public ProductionEvidenceRequirement EvidenceRequirement { get; }
     public ModbusProductionProfile Profile { get; }
@@ -41,6 +63,7 @@ public sealed class ProductionInspectionOptions
     public TimeSpan RetirementTimeout { get; }
     public string ContentHash { get; }
     public ProductionDeploymentManifest? Deployment { get; }
+    public ProductionRecoveryBinding? Recovery { get; }
 
     private static TimeSpan Duration(TimeSpan value, string name) =>
         value >= TimeSpan.FromMilliseconds(1) && value <= TimeSpan.FromMinutes(5)

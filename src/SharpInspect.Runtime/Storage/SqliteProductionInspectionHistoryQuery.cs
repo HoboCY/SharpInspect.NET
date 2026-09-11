@@ -87,6 +87,50 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
         }
     }
 
+    public async ValueTask<ProductionRecoveryPendingPage> QueryPendingAsync(int pageSize = 128,
+        long afterPosition = 0, CancellationToken cancellationToken = default)
+    {
+        if (pageSize is < 1 or > 128 || afterPosition < 0)
+            return new(false, "ProductionRecoveryPendingQueryInvalid",
+                Array.Empty<ProductionRecoveryPendingItem>(), 0, null);
+        try
+        {
+            // ReadMode.Pending reconstructs the complete verified ledger in
+            // this one SQLite snapshot. Paging the ordinary history first can
+            // hide a later inspection's pending recovery behind the default
+            // 128-row page and falsely clear the station barrier.
+            var result = await QueryCoreAsync(new ProductionInspectionHistoryFilter(
+                AfterPosition: 0, PageSize: pageSize), ReadMode.Pending, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Available)
+                return new(false, result.ReasonCode, Array.Empty<ProductionRecoveryPendingItem>(), 0, null);
+            var pending = result.Events
+                .GroupBy(value => value.InspectionId)
+                .Select(group => group.OrderBy(value => value.Position).Last())
+                .Where(value => value.Kind is not (ProductionInspectionEventKind.AcknowledgementReset or
+                    ProductionInspectionEventKind.RecoveryCompleted) &&
+                    (value.Recovery is null ||
+                     value.Recovery.Outcome != ProductionRecoveryOutcome.Completed))
+                .Select(value => new ProductionRecoveryPendingItem(value.InspectionId, value.Position,
+                    value.ContentHash, value.Recovery?.Observation.DeliveryPhase ??
+                        DeliveryPhaseFor(value.Kind), value.Recovery?.Observation.Uncertainty ??
+                        ProductionRecoveryUncertaintyKind.Unknown, value))
+                .OrderBy(value => value.Position).ToArray();
+            var visible = pending.Where(value => value.Position > afterPosition)
+                .Take(pageSize).ToArray();
+            long? next = visible.Length == pageSize && pending.Any(value => value.Position > visible[^1].Position)
+                ? visible[^1].Position : null;
+            return new(true, result.ReasonCode, visible, pending.Length, next);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return new(false, SqliteAuditIntegrityQuery.FaultReason(exception,
+                "ProductionRecoveryPendingUnavailable"),
+                Array.Empty<ProductionRecoveryPendingItem>(), 0, null);
+        }
+    }
+
     private async ValueTask<QueryResult> QueryCoreAsync(ProductionInspectionHistoryFilter filter,
         ReadMode mode, CancellationToken cancellationToken)
     {
@@ -133,7 +177,12 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion))
+            if (schema == ProductionRecoveryStoreOptions.SchemaVersion &&
+                _options.ProductionRecovery is null)
+                throw new InvalidOperationException("ProductionRecoveryConfigurationRequired");
+            if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
+                PartIdentityStoreOptions.SchemaVersion or
+                ProductionRecoveryStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -159,11 +208,12 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                 productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: _options.StationQualifications,
                 recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: production,
-                partIdentityOptions: _options.PartIdentities);
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                 qualificationCycleOptions: _options.QualificationCycles,
+                 plcCommunicationOptions: _options.PlcCommunication,
+                 productionRecoveryOptions: _options.ProductionRecovery,
+                 productionInspectionOptions: production,
+                 partIdentityOptions: _options.PartIdentities);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database, verification,
                 deadline, production);
             var rows = SqliteCommandStore.ReadProductionInspectionRows(database, production,
@@ -174,10 +224,12 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                 throw new InvalidOperationException("ProductionInspectionCursorInvalid");
             var scoped = rows.Where(row => row.Position <= through && MatchesFilter(row.Event, filter))
                 .Select(row => row.Event).ToArray();
-            var selected = mode == ReadMode.Page
+            var selected = mode == ReadMode.Pending
+                ? scoped.ToArray()
+                : mode == ReadMode.Page
                 ? scoped.Where(value => value.Position > filter.AfterPosition).Take(filter.PageSize + 1).ToArray()
                 : scoped.TakeLast(1).ToArray();
-            var page = selected.Take(filter.PageSize).ToArray();
+            var page = mode == ReadMode.Pending ? selected : selected.Take(filter.PageSize).ToArray();
             long? next = mode == ReadMode.Page && selected.Length > filter.PageSize ? page[^1].Position : null;
             var checkpoint = AuditChainDatabase.LatestCheckpoint(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -224,6 +276,20 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
         return pending.Count != 0;
     }
 
+    private static ProductionRecoveryDeliveryPhase DeliveryPhaseFor(
+        ProductionInspectionEventKind kind) => kind switch
+        {
+            ProductionInspectionEventKind.Admitted => ProductionRecoveryDeliveryPhase.Admitted,
+            ProductionInspectionEventKind.CoreCommitted => ProductionRecoveryDeliveryPhase.CoreCommitted,
+            ProductionInspectionEventKind.PublicationPrepared => ProductionRecoveryDeliveryPhase.PublicationPrepared,
+            ProductionInspectionEventKind.ResultValidRaised => ProductionRecoveryDeliveryPhase.ResultValidRaised,
+            ProductionInspectionEventKind.ResultAcknowledged => ProductionRecoveryDeliveryPhase.ResultAcknowledged,
+            ProductionInspectionEventKind.ResultValidCleared => ProductionRecoveryDeliveryPhase.ResultValidCleared,
+            ProductionInspectionEventKind.FaultTerminated => ProductionRecoveryDeliveryPhase.FaultTerminated,
+            ProductionInspectionEventKind.RecoveryRequired => ProductionRecoveryDeliveryPhase.RecoveryRequired,
+            _ => ProductionRecoveryDeliveryPhase.Unknown
+        };
+
     private static void ValidateFilter(ProductionInspectionHistoryFilter filter)
     {
         if (filter.InspectionId == Guid.Empty || filter.CorrelationId == Guid.Empty ||
@@ -233,7 +299,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
             throw new ArgumentOutOfRangeException(nameof(filter));
     }
 
-    private enum ReadMode { Current, Inspection, Page }
+    private enum ReadMode { Current, Inspection, Page, Pending }
 
     private sealed record QueryResult(bool Available, string ReasonCode,
         IReadOnlyList<ProductionInspectionHistoryEvent> Events, long ThroughPosition,

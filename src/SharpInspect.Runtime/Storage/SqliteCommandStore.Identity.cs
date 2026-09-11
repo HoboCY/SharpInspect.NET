@@ -82,6 +82,7 @@ internal sealed partial class SqliteCommandStore
             var stationQualificationStore = StationQualificationEnabled;
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
+            var productionRecoveryStore = ProductionRecoveryEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -98,11 +99,12 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections,
+                 recipeTransferOptions: _options.RecipeTransfers,
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                 qualificationCycleOptions: _options.QualificationCycles,
+                 plcCommunicationOptions: _options.PlcCommunication,
+                 productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
+                 productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
@@ -178,6 +180,7 @@ internal sealed partial class SqliteCommandStore
             var stationQualificationStore = StationQualificationEnabled;
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
+            var productionRecoveryStore = ProductionRecoveryEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -194,11 +197,12 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections,
+                 recipeTransferOptions: _options.RecipeTransfers,
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                 qualificationCycleOptions: _options.QualificationCycles,
+                 plcCommunicationOptions: _options.PlcCommunication,
+                 productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
+                 productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
@@ -564,6 +568,7 @@ internal sealed partial class SqliteCommandStore
             var stationQualificationStore = StationQualificationEnabled;
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
+            var productionRecoveryStore = ProductionRecoveryEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -580,11 +585,12 @@ internal sealed partial class SqliteCommandStore
                   previewOptions: _options.PreviewSessions, importOptions: _options.CalibrationImports,
                   manualOptions: _options.ManualInspections,
                   productionAdmissionOptions: _options.ProductionAdmission, stationQualificationOptions: _options.StationQualifications,
-                recipeTransferOptions: _options.RecipeTransfers,
-                traceStoragePolicyOptions: _options.TraceStoragePolicies,
-                qualificationCycleOptions: _options.QualificationCycles,
-                plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections,
+                 recipeTransferOptions: _options.RecipeTransfers,
+                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
+                 qualificationCycleOptions: _options.QualificationCycles,
+                 plcCommunicationOptions: _options.PlcCommunication,
+                 productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
+                 productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
@@ -736,7 +742,10 @@ internal sealed partial class SqliteCommandStore
                     evaluated.CalibrationAdmission is null && evaluated.CalibrationGovernance is null &&
                     evaluated.RecipeRelease is null && evaluated.PlcResultContract is null && evaluated.RecipeActivation is null &&
                     evaluated.PreviewSession is null && evaluated.CalibrationImport is null &&
-                    evaluated.ManualInspection is null && evaluated.PartIdentity is null && guard is null,
+                    evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
+                    evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
+                    evaluated.ProductionRecoveryFailure is null &&
+                    guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
                 committed = true;
@@ -747,6 +756,26 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.ManualInspection is not null)
                 EnsureManualInspectionTransactionCapacity(database, evaluated, manualState!, deadline);
             var productionAdmission = PrepareProductionAdmissionWrite(database, state, evaluated, deadline);
+            ProductionRecoveryWriteContext? productionRecovery = null;
+            if (evaluated.ProductionRecovery is { } recoveryRequest)
+            {
+                try
+                {
+                    productionRecovery = PrepareProductionRecoveryWrite(database, recoveryRequest, deadline);
+                }
+                catch (InvalidOperationException exception) when (
+                    IsRecoverableProductionRecoveryRejection(exception.Message))
+                {
+                    // The target may have changed after Runtime preflight. Keep
+                    // this an ordinary durable rejected command/identity fact;
+                    // do not consume the Step-Up lease or append a production
+                    // RecoveryRequired row for a stale authorization.
+                    guard?.Dispose();
+                    guard = null;
+                    evaluated = RejectProductionRecovery(evaluated, exception.Message);
+                    decision = evaluated;
+                }
+            }
             StationQualificationWriteContext? stationQualification;
             try { stationQualification = PrepareStationQualificationWrite(database, evaluated, deadline); }
             catch (InvalidOperationException exception) when (evaluated.Result is
@@ -837,6 +866,73 @@ internal sealed partial class SqliteCommandStore
                 productionAdmission: productionAdmission,
                 stationQualification: stationQualification,
                 partIdentityReserveOverride: evaluated.PartIdentity is null ? null : 1);
+            if (evaluated.ProductionRecovery is { } persistedRecoveryRequest && productionRecovery is { } recoveryContext)
+            {
+                var commandFact = evaluated.CommandFacts?.FirstOrDefault(value =>
+                    value.Phase == CommandAuditPhase.Outcome);
+                var commandReference = commandFact is null
+                    ? (Sequence: 0L, Hash: (string?)null)
+                    : ReadCommandAuditReference(database, commandFact.EventId, deadline);
+                var authorizationReference = ReadIdentityAuditReference(database, identitySequence, deadline);
+                AuditChainDatabase.Require(commandReference.Sequence > 0 && commandReference.Hash is { Length: 64 } &&
+                    authorizationReference.Sequence > 0 && authorizationReference.Hash is { Length: 64 },
+                    "ProductionRecoveryAuthorizationAuditMissing");
+                var persistedEvent = AppendProductionRecoveryIdentityMutation(database, recoveryContext,
+                    persistedRecoveryRequest, commandFact, commandReference.Sequence, commandReference.Hash!,
+                    authorizationReference.Sequence, authorizationReference.Hash!, deadline);
+                var outcome = evaluated.Result switch
+                {
+                    ProductionRecoveryAuthorizationResult result => result.Outcome,
+                    RuntimeCommandOutcome result => result,
+                    _ => new RuntimeCommandOutcome(persistedRecoveryRequest.Command.CorrelationId,
+                        CommandDisposition.Accepted, "ProductionRecoveryAuthorized")
+                };
+                work.Result = new ProductionRecoveryAuthorizationResult(outcome, commandFact,
+                    persistedEvent, recoveryContext.Recovery.RecoveryAttemptId);
+            }
+            if (evaluated.ProductionRecoveryCompletion is { } completionRequest)
+            {
+                var commandFact = evaluated.CommandFacts?.FirstOrDefault(value =>
+                    value.Phase == CommandAuditPhase.Outcome);
+                var commandReference = commandFact is null
+                    ? (Sequence: 0L, Hash: (string?)null)
+                    : ReadCommandAuditReference(database, commandFact.EventId, deadline);
+                var authorizationReference = ReadIdentityAuditReference(database, identitySequence, deadline);
+                AuditChainDatabase.Require(commandReference.Sequence > 0 && commandReference.Hash is { Length: 64 } &&
+                    authorizationReference.Sequence > 0 && authorizationReference.Hash is { Length: 64 },
+                    "ProductionRecoveryAuthorizationAuditMissing");
+                var persistedEvent = AppendProductionRecoveryCompletionMutation(database,
+                    completionRequest, commandFact, commandReference.Sequence, commandReference.Hash!,
+                    authorizationReference.Sequence, authorizationReference.Hash!, deadline);
+                if (evaluated.Result is RuntimeCommandOutcome outcome)
+                    work.Result = new ProductionRecoveryAuthorizationResult(outcome, commandFact,
+                        persistedEvent, completionRequest.RecoveryAttemptId);
+            }
+            if (evaluated.ProductionRecoveryFailure is { } failureRequest)
+            {
+                var commandFact = evaluated.CommandFacts?.FirstOrDefault(value =>
+                    value.Phase == CommandAuditPhase.Outcome);
+                var commandReference = commandFact is null
+                    ? (Sequence: 0L, Hash: (string?)null)
+                    : ReadCommandAuditReference(database, commandFact.EventId, deadline);
+                var authorizationReference = ReadIdentityAuditReference(database, identitySequence, deadline);
+                AuditChainDatabase.Require(commandReference.Sequence > 0 && commandReference.Hash is { Length: 64 } &&
+                    authorizationReference.Sequence > 0 && authorizationReference.Hash is { Length: 64 },
+                    "ProductionRecoveryFailureAuditMissing");
+                var pendingEvent = AppendProductionRecoveryFailureMutation(database,
+                    failureRequest, commandReference.Sequence, commandReference.Hash!,
+                    authorizationReference.Sequence, authorizationReference.Hash!, deadline);
+                var outcome = evaluated.Result switch
+                {
+                    ProductionRecoveryAuthorizationResult result => result.Outcome,
+                    RuntimeCommandOutcome result => result,
+                    _ => new RuntimeCommandOutcome(failureRequest.CorrelationId,
+                        CommandDisposition.Rejected, failureRequest.ReasonCode,
+                        AuditPersistence.Persisted, failureRequest.RecoveryAttemptId)
+                };
+                work.Result = new ProductionRecoveryAuthorizationResult(outcome,
+                    commandFact, pendingEvent, failureRequest.RecoveryAttemptId);
+            }
             if (evaluated.PartIdentity is { } partIdentity)
             {
                 var commandFact = evaluated.CommandFacts?.FirstOrDefault(value =>
@@ -896,6 +992,8 @@ internal sealed partial class SqliteCommandStore
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
             if (evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
+                evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
+                evaluated.ProductionRecoveryFailure is null &&
                 evaluated.Result is not StationQualificationTransactionResult { Accepted: true, Event: not null })
                 work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
                     ? commit with { Revision = imagingRevision } : evaluated.Result;
@@ -1428,5 +1526,8 @@ internal sealed record IdentityUpdate(
       PreviewSessionMutation? PreviewSession = null,
       CalibrationImportMutation? CalibrationImport = null,
       ManualInspectionMutation? ManualInspection = null,
-      PartIdentityWriteRequest? PartIdentity = null);
+      PartIdentityWriteRequest? PartIdentity = null,
+      ProductionRecoveryWriteRequest? ProductionRecovery = null,
+      ProductionRecoveryCompletionWriteRequest? ProductionRecoveryCompletion = null,
+      ProductionRecoveryFailureWriteRequest? ProductionRecoveryFailure = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

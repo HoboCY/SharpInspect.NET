@@ -313,7 +313,10 @@ public static class ServiceCollectionExtensions
         if (options.PlcCommunication is not null)
             services.TryAddSingleton<IPlcCommunicationHistoryQuery>(_ => new SqlitePlcCommunicationHistoryQuery(options));
         if (options.ProductionInspections is not null)
+        {
             services.TryAddSingleton<IProductionInspectionHistoryQuery>(_ => new SqliteProductionInspectionHistoryQuery(options));
+            services.TryAddSingleton<IProductionRecoveryHistoryQuery>(_ => new SqliteProductionRecoveryHistoryQuery(options));
+        }
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -348,7 +351,8 @@ public static class ServiceCollectionExtensions
             if (p.GetService<SharpInspect.Runtime.Production.ProductionInspectionOptions>() is { } production)
                 runtime.ConfigureProductionInspections(production, options,
                     p.GetRequiredService<AlgorithmExecutionOptions>(), p.GetRequiredService<IFrameAcquisitionClock>(),
-                    p.GetRequiredService<PartIdentityBindingRegistry>());
+                    p.GetRequiredService<PartIdentityBindingRegistry>(),
+                    p.GetServices<IProductionRecoverySafetyProvider>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
