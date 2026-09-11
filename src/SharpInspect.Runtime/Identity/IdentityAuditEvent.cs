@@ -77,7 +77,9 @@ internal enum IdentityEventKind
     ProductionRecoveryAuthorized,
     ProductionRecoveryCompleted,
     ProductionRecoveryFailed,
-    RecipeSelectionChanged
+    RecipeSelectionChanged,
+    RecipeDraftAbandoned,
+    RecipeRetired
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -156,7 +158,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > ProductionArmStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeLifecycleStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         if (PlcRecipeActivationEvidence is not null)
         {
@@ -172,7 +174,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > ProductionArmStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeLifecycleStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -197,7 +199,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionRecoveryStoreOptions.SchemaVersion => 49, RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionRecoveryStoreOptions.SchemaVersion => 49, RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion => 49, _ => 0 };
             // Schema 31 may append the one optional PLC evidence field; every other
             // schema keeps exactly its own length, so existing rows stay 49 fields.
             var maximumCount = schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion

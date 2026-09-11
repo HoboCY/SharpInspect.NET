@@ -44,7 +44,8 @@ internal sealed partial class LocalAuthorizationService
                         admitted.Admission is null || admitted.OperationId != command.OperationId ||
                         admitted.AuthorizationTarget != command.AuthorizationTarget)
                         return Refuse("RecipeActivationAdmissionConflict");
-                    var previous = ActivationCurrent(state.Records, admitted.EvidenceKind);
+                    if (ActivationLifecycleFailure(state, command) is { } lifecycleFailure) return Refuse(lifecycleFailure);
+                    var previous = ActivationCurrent(state, admitted.EvidenceKind);
                     if (previous?.Reference != admitted.PreviousActivation || previous?.SuccessfulSnapshot?.ContentHash !=
                         admitted.PreviousSnapshotContentHash) return Refuse("RecipeActivationCurrentConflict");
                     if (!Equals(admitted.HistoricalSelection, command.HistoricalSelection))
@@ -176,7 +177,8 @@ internal sealed partial class LocalAuthorizationService
                     if (reason == "Authorized") reason = CheckGrant(command, actor!, lease!.SessionId, false, out _);
                     var authorized = reason == "Authorized";
                     var observed = ReplaceActivationCheck(checks, 1, authorized, authorized ? "RecipeActivationAuthorized" : reason);
-                    var previous = ActivationCurrent(state.Records, evidenceKind);
+                    var previous = ActivationCurrent(state, evidenceKind);
+                    if (reason == "Authorized") reason = ActivationLifecycleFailure(state, command) ?? reason;
                     if (reason == "Authorized" && duplicate) reason = "DuplicateCorrelationId";
                     if (reason == "Authorized" && callerCancellation.IsCancellationRequested) reason = "RecipeActivationCancelled";
                     if (reason == "Authorized" && epoch == Guid.Empty) reason = "RecipeActivationRuntimeUnavailable";
@@ -302,6 +304,10 @@ internal sealed partial class LocalAuthorizationService
         if (currentContract is null || currentContract.Contract.ContentHash != snapshot.PlcResultContract.Contract.ContentHash ||
             snapshot.PlcResultContract.Recipe != admitted.Candidate || snapshot.PlcResultContract.Algorithm != content.Algorithm.Algorithm)
             return "RecipeActivationPlcContractChanged";
+        if (!currentContract.Bindings.Any(value => value.ReleaseId == admitted.ReleaseId &&
+            value.ReleaseRecordContentHash == admitted.ReleaseRecordContentHash &&
+            value.Binding.ContentHash == snapshot.PlcResultContract.ContentHash))
+            return "RecipeActivationPlcReleaseBindingMissing";
         if (state.Cameras is null || !state.Cameras.TryGetValue(content.CameraRole, out var camera) || camera.HasPending ||
             camera.Binding != snapshot.CameraSetup.Binding || snapshot.CameraSetup.Requested != content.Camera ||
             !Cameras.CameraSetupRuntime.IsActivationConfiguredHealth(snapshot.CameraSetup.Health))
@@ -326,8 +332,13 @@ internal sealed partial class LocalAuthorizationService
         return time;
     }
 
-    private static RecipeActivationRecord? ActivationCurrent(IReadOnlyList<RecipeActivationRecord> records,
-        RecipeActivationEvidenceKind kind) => records.LastOrDefault(value => value.Outcome.Succeeded && value.EvidenceKind == kind);
+    private static RecipeActivationRecord? ActivationCurrent(RecipeActivationCommandState state,
+        RecipeActivationEvidenceKind kind) => RecipeLifecycleProjection.CurrentForEvidence(state.Records,
+            state.Lifecycle ?? Array.Empty<RecipeLifecycleRecord>(), kind);
+
+    private static string? ActivationLifecycleFailure(RecipeActivationCommandState state, ActivateRecipeCommand command) =>
+        RecipeLifecycleProjection.Retirement(state.Lifecycle ?? Array.Empty<RecipeLifecycleRecord>(), command.Candidate,
+            command.ReleaseId, command.ReleaseRecordContentHash) is null ? null : "RecipeRetired";
 
     private static string? ValidateHistoricalSelection(ActivateRecipeCommand command,
         RecipeActivationRecord? previous)

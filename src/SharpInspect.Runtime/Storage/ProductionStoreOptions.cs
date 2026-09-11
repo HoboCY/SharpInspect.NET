@@ -123,4 +123,10 @@ public sealed class ProductionStoreOptions
     /// arm, to the actual authenticated human. Requires production admission, local identity
     /// and central audit integrity; the other gates may be absent.</summary>
     public ProductionArmStoreOptions? ProductionArming { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 33 immutable Recipe lifecycle ledger and
+    /// its signed central-audit metadata entries. Requires recipe drafts, local identity
+    /// and central audit integrity; released recipes, activations, selections and the
+    /// arm ledger stay optional, but a present option and its tables must match exactly.</summary>
+    public RecipeLifecycleStoreOptions? RecipeLifecycle { get; init; }
 }

@@ -20,9 +20,9 @@ internal static partial class AuditChainDatabase
     {
         var tableCount = Scalar(database, @"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND
             name IN ('recipe_selection_store_config','recipe_selection_revisions','recipe_change_events');", deadline);
-        // Schema 32 also serves startup/manual arming stations without a PLC
-        // recipe-change channel. A partially present ledger still fails below.
-        if (schemaVersion == ProductionArmStoreOptions.SchemaVersion && options is null && tableCount == 0)
+        // Schema 32 and later also serve startup/manual arming stations without a
+        // PLC recipe-change channel. A partially present ledger still fails below.
+        if (schemaVersion >= ProductionArmStoreOptions.SchemaVersion && options is null && tableCount == 0)
             return null;
         if (schemaVersion < RecipeSelectionStoreOptions.SchemaVersion)
         {
@@ -103,7 +103,7 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, string kind, byte[] payload,
         RecipeSelectionStoreOptions options, StoreDeadline deadline, long? recipeChangeReserveOverride = null)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion,
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
             "RecipeSelectionSchemaRequired");
         Require(kind is "RecipeSelectionStoreActivated" or "RecipeSelectionRevision" or "RecipeChangeEvent",
             "RecipeSelectionAuditKindInvalid");

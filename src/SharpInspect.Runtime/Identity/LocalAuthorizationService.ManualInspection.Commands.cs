@@ -90,6 +90,8 @@ internal sealed partial class LocalAuthorizationService
             // Runtime rejection carries the exclusive owner and recovery fence.
             // Evaluate it after current authentication, before source-state details.
             if (reason == "Authorized" && forcedRejection is not null) reason = forcedRejection;
+            if (reason == "Authorized" && command is StartManualInspectionSessionCommand or RunManualInspectionCommand &&
+                state.LifecycleFailure is not null) reason = state.LifecycleFailure;
             var current = state.Header;
             if (reason == "Authorized" && !start && expectedHeader is not null &&
                 current?.ContentHash != expectedHeader.ContentHash) reason = "ManualInspectionStateChanged";

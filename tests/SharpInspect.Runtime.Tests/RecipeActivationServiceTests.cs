@@ -495,6 +495,8 @@ public sealed partial class RecipeActivationServiceTests
             _provider.GetRequiredService<ICalibrationImportQuery>();
         internal IRecipeSelectionService RecipeSelections =>
             _provider.GetRequiredService<IRecipeSelectionService>();
+        internal IRecipeLifecycleService RecipeLifecycle => _provider.GetRequiredService<IRecipeLifecycleService>();
+        internal IRecipeDraftDerivationService DraftDerivation => _provider.GetRequiredService<IRecipeDraftDerivationService>();
         internal IRecipeChangeHistoryQuery RecipeChangeHistory =>
             _provider.GetRequiredService<IRecipeChangeHistoryQuery>();
 
@@ -571,7 +573,7 @@ public sealed partial class RecipeActivationServiceTests
         internal static async Task<ActivationHarness> CreateAsync(
             AuthorizationPolicy? authorizationPolicy = null, bool enablePreview = false,
             bool enableImports = false, bool importPhysicalRequired = false,
-            bool enableRecipeSelections = false)
+            bool enableRecipeSelections = false, bool enableRecipeLifecycle = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe activation integration requires Windows machine-key protection.");
@@ -630,6 +632,7 @@ public sealed partial class RecipeActivationServiceTests
                 RecipeReleases = new RecipeReleaseStoreOptions(governance),
                 PlcResultContracts = new PlcResultContractStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
+                RecipeLifecycle = enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
                 RecipeSelections = enableRecipeSelections ? new RecipeSelectionStoreOptions() : null,
                 PlcCommunication = enableRecipeSelections ? new PlcCommunicationStoreOptions() : null,
                 PreviewSessions = previewEnabled ? new PreviewSessionStoreOptions() : null,

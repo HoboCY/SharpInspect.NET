@@ -254,6 +254,8 @@ public sealed partial class StationRuntime
         internal RecipeChangeDecision? RecipeChangeDecision { get; set; }
         internal bool RecipeChangeFaultRecorded { get; set; }
         internal TaskCompletionSource<bool>? RecipeChangeReadyCleared { get; set; }
+        internal TaskCompletionSource<bool>? RecipeRetirementReadyCleared { get; set; }
+        internal ActivationReservation? RecipeRetirementReservation { get; set; }
         internal bool RecipeChangeObservedProductionRequest { get; set; }
         internal long ArmInputSequence { get; set; }
         internal uint ArmInputCycleSequence { get; set; }

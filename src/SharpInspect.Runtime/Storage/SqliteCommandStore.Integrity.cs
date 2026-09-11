@@ -24,6 +24,10 @@ internal sealed partial class SqliteCommandStore
         if (_policy is null || !File.Exists(_databasePath) || new FileInfo(_databasePath!).Length == 0) return;
         using var read = SqliteNative.Open(_databasePath!, readOnly: true);
         var version = AuditChainDatabase.Scalar(read.Handle!, "PRAGMA user_version;", new StoreDeadline(CommitTimeout));
+        if (_options.RecipeLifecycle is null && version == RecipeLifecycleStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeLifecycleConfigurationRequired");
+        if (_options.RecipeLifecycle is not null && version > 0 && version < RecipeLifecycleStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("RecipeLifecycleGovernedMigrationRequired");
         if (_options.ProductionArming is null && version == ProductionArmStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ProductionArmConfigurationRequired");
         if (_options.ProductionArming is not null && version > 0 && version < ProductionArmStoreOptions.SchemaVersion)

@@ -33,6 +33,18 @@ internal static class RecipeReleaseProjection
                 var first = revisions[0];
                 var state = new Dictionary<string, RecipeReleaseChange>(StringComparer.Ordinal);
                 var previous = new Dictionary<string, string>(StringComparer.Ordinal);
+                RecipeDraftRevision? inherited = null;
+                if (first.Content.LifecycleLineage is { } lifecycle)
+                {
+                    var reference = lifecycle.SourceDraft;
+                    if (!byDraft.TryGetValue(reference.DraftId, out var sourceHistory))
+                        throw Invalid("LifecycleSourceMissing");
+                    var origin = sourceHistory.SingleOrDefault(value => value.Revision == reference.Revision);
+                    if (origin is null || origin.RevisionContentHash != reference.RevisionContentHash ||
+                        origin.Position >= first.Position || origin.Content.ContentHash != lifecycle.SourceContentHash)
+                        throw Invalid("LifecycleSourceMismatch");
+                    inherited = origin;
+                }
                 if (first.Content.MigrationLineage is { } migration)
                 {
                     var reference = migration.Plan.Source;
@@ -43,8 +55,15 @@ internal static class RecipeReleaseProjection
                         origin.Position >= first.Position ||
                         origin.Content.Configuration.ContentHash != migration.InputConfigurationContentHash)
                         throw Invalid("MigrationSourceMismatch");
-                    state = Replay(origin, depth + 1);
-                    previous = Facets(origin.Content);
+                    if (inherited is null || origin.Position > inherited.Position) inherited = origin;
+                }
+                // A derived Draft can later be migrated after more authored revisions.
+                // Conversely, derivation may copy an older migration origin. Replay
+                // the nearer preserved source so neither route erases intervening authors.
+                if (inherited is not null)
+                {
+                    state = Replay(inherited, depth + 1);
+                    previous = Facets(inherited.Content);
                 }
 
                 string? previousHash = null;
@@ -53,7 +72,8 @@ internal static class RecipeReleaseProjection
                     var revision = revisions[index];
                     if (revision.Revision != index + 1 || revision.PreviousRevisionContentHash != previousHash ||
                         revision.AuthorPrincipalId == Guid.Empty ||
-                        revision.Content.MigrationLineage?.ContentHash != first.Content.MigrationLineage?.ContentHash)
+                        revision.Content.MigrationLineage?.ContentHash != first.Content.MigrationLineage?.ContentHash ||
+                        revision.Content.LifecycleLineage?.ContentHash != first.Content.LifecycleLineage?.ContentHash)
                         throw Invalid("DraftHistoryMismatch");
                     var current = Facets(revision.Content);
                     foreach (var path in previous.Keys.Union(current.Keys, StringComparer.Ordinal))
@@ -172,7 +192,7 @@ internal static class RecipeReleaseProjection
             throw Invalid("ContributionContentInvalid");
         using var document = JsonDocument.Parse(encoded!.PayloadJson);
         var root = document.RootElement;
-        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 6 ||
+        if (root.GetProperty("FormatVersion").GetInt32() is < 1 or > 7 ||
             root.GetProperty("CanonicalizationVersion").GetInt32() != 1)
             throw Invalid("ContributionFormatUnsupported");
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -191,7 +211,7 @@ internal static class RecipeReleaseProjection
                     Add(property.Name, property.Value); break;
                 case "PartIdentityRequirement":
                     Add(property.Name, property.Value); break;
-                case "CameraProviderExtension": case "MigrationLineage":
+                case "CameraProviderExtension": case "MigrationLineage": case "LifecycleLineage":
                     if (property.Value.ValueKind != JsonValueKind.Null) Add(property.Name, property.Value);
                     break;
                 case "Camera": Flatten("Camera", property.Value); break;

@@ -15,6 +15,7 @@ internal sealed class RecipeTransferService : IRecipeTransferService
     private readonly IReleasedRecipeQuery? _releases;
     private readonly IRecipeTransferHistoryQuery _history;
     private readonly IReadOnlyList<AlgorithmDescriptor> _descriptors;
+    private readonly SqliteRecipeLifecycleQuery? _lifecycle;
     private readonly SemaphoreSlim _slots = new(2, 2);
     private readonly Guid _epoch = Guid.NewGuid();
 
@@ -24,6 +25,9 @@ internal sealed class RecipeTransferService : IRecipeTransferService
     {
         _options = options; _authorization = authorization; _store = store; _drafts = drafts;
         _releases = releases; _history = history; _descriptors = descriptors.ToArray();
+        // A read-only lifecycle projection owned by this service keeps the export
+        // provenance honest without a constructor dependency or a new service edge.
+        _lifecycle = options.RecipeLifecycle is null ? null : new SqliteRecipeLifecycleQuery(options);
         if (options.RecipeTransfers is null) throw new ArgumentException("RecipeTransferConfigurationRequired");
     }
 
@@ -131,7 +135,8 @@ internal sealed class RecipeTransferService : IRecipeTransferService
             if (draft is null || draft.RevisionContentHash != selectedDraft.RevisionContentHash) throw Invalid("ExportSourceUnavailable");
             content = draft.Content;
             source = new(draft.DraftId, content.RecipeKey, draft.Revision, draft.RevisionContentHash,
-                RecipeTransferSourceLifecycle.Draft, _options.LocalIdentity!.StationId);
+                await ReadDraftLifecycleAsync(draft.DraftId, cancellationToken).ConfigureAwait(false),
+                _options.LocalIdentity!.StationId);
         }
         else
         {
@@ -142,7 +147,9 @@ internal sealed class RecipeTransferService : IRecipeTransferService
                 released.Record.ContentHash != command.Source.ReleaseRecordContentHash) throw Invalid("ExportSourceUnavailable");
             content = released.Content;
             source = new(released.Record.ReleaseId, released.Reference.Id, released.Record.RecipeVersion, released.Record.ContentHash,
-                RecipeTransferSourceLifecycle.Released, _options.LocalIdentity!.StationId);
+                await ReadReleaseLifecycleAsync(released.Record.Recipe, released.Record.ReleaseId,
+                    released.Record.ContentHash, cancellationToken).ConfigureAwait(false),
+                _options.LocalIdentity!.StationId);
         }
         if (!RecipeTransferContentCodec.TryEncode(content, _options.RecipeTransfers!.PortablePolicy,
             out var recipeBytes, out var portable, out var reason)) throw new InvalidOperationException(reason);
@@ -172,6 +179,37 @@ internal sealed class RecipeTransferService : IRecipeTransferService
         key.ImportSubjectPublicKeyInfo(Convert.FromBase64String(signer.PublicKeyBase64), out _);
         if (!RecipeTransferPackageCodec.TryVerifySignature(package, key, out var reason)) throw new InvalidOperationException(reason);
     }
+
+    /// <summary>
+    /// The exported lifecycle claim is provenance only, but when this station keeps a
+    /// verified lifecycle it must be the real one.  An unreadable projection fails closed
+    /// instead of labelling an abandoned Draft as an open one.
+    /// </summary>
+    private async ValueTask<RecipeTransferSourceLifecycle> ReadDraftLifecycleAsync(Guid draftId,
+        CancellationToken cancellationToken)
+    {
+        if (_lifecycle is null) return RecipeTransferSourceLifecycle.Draft;
+        var read = await _lifecycle.ReadDraftAsync(draftId, cancellationToken).ConfigureAwait(false);
+        if (!read.Available || read.State is null) throw Invalid("ExportSourceUnavailable");
+        return read.State == RecipeDraftLifecycleState.Abandoned
+            ? RecipeTransferSourceLifecycle.Abandoned : RecipeTransferSourceLifecycle.Draft;
+    }
+
+    /// <summary>
+    /// A Released Recipe stays export material after retirement, so the exported package
+    /// must say Retired rather than claiming the release is still available.
+    /// </summary>
+    private async ValueTask<RecipeTransferSourceLifecycle> ReadReleaseLifecycleAsync(RecipeReference recipe,
+        Guid releaseId, string releaseRecordContentHash, CancellationToken cancellationToken)
+    {
+        if (_lifecycle is null) return RecipeTransferSourceLifecycle.Released;
+        var read = await _lifecycle.ReadReleaseAsync(recipe, releaseId, releaseRecordContentHash, cancellationToken)
+            .ConfigureAwait(false);
+        if (!read.Available || read.State is null) throw Invalid("ExportSourceUnavailable");
+        return read.State == ReleasedRecipeLifecycleState.Retired
+            ? RecipeTransferSourceLifecycle.Retired : RecipeTransferSourceLifecycle.Released;
+    }
+
     private static InvalidOperationException Invalid(string suffix) => new("RecipeTransfer" + suffix);
     private static RecipeTransferResult Failure(RecipeTransferCommand command, string reason) =>
         new(new(command.CorrelationId, CommandDisposition.Rejected, reason, AuditPersistence.Unavailable));

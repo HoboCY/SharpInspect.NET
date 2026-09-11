@@ -354,6 +354,7 @@ internal sealed partial class SqliteCommandStore
                     throw new InvalidOperationException("RecipeTransferExportSignerMissing");
                 RequireExportSource(export.Source, frozenSource);
                 RequirePackageSource(package.Manifest.Source, frozenSource);
+                RequireExportLifecycle(database, export.Source, frozenSource, deadline);
                 var sourceContent = ReadCurrentExportContent(database, export.Source, frozenSource,
                     work.Prepared.FrozenSourceContentHash, state, deadline);
                 RequirePackageIntegrity(package, bytes, signer, recordedAt);
@@ -675,16 +676,45 @@ internal sealed partial class SqliteCommandStore
         if (selected.Kind == RecipeTransferSourceKind.Draft)
         {
             var draft = selected.Draft;
-            AuditChainDatabase.Require(draft is not null && frozen.Lifecycle == RecipeTransferSourceLifecycle.Draft &&
+            AuditChainDatabase.Require(draft is not null &&
+                (frozen.Lifecycle is RecipeTransferSourceLifecycle.Draft or RecipeTransferSourceLifecycle.Abandoned) &&
                 frozen.SourceId == draft.DraftId && frozen.Revision == draft.Revision &&
                 frozen.RevisionContentHash == draft.RevisionContentHash, "RecipeTransferExportSourceMismatch");
             return;
         }
         var recipe = selected.Recipe;
-        AuditChainDatabase.Require(recipe is not null && frozen.Lifecycle == RecipeTransferSourceLifecycle.Released &&
+        AuditChainDatabase.Require(recipe is not null &&
+            (frozen.Lifecycle is RecipeTransferSourceLifecycle.Released or RecipeTransferSourceLifecycle.Retired) &&
             frozen.SourceId == selected.ReleaseId && frozen.RevisionContentHash == selected.ReleaseRecordContentHash &&
             frozen.RecipeKey == recipe.Id && frozen.Revision.ToString(CultureInfo.InvariantCulture) == recipe.Version,
             "RecipeTransferExportSourceMismatch");
+    }
+
+    /// <summary>
+    /// Proves the frozen source lifecycle claim against the immutable lifecycle ledger
+    /// inside the same write transaction that appends the package audit binding. A
+    /// retirement or abandonment that landed between the caller's prepare and this commit
+    /// leaves the declared claim stale, so no package and no audit entry are emitted with
+    /// a wrong lifecycle; an already exported or imported package is never re-evaluated
+    /// against later lifecycle state.
+    /// </summary>
+    private void RequireExportLifecycle(sqlite3 database, RecipeTransferSourceSelection selection,
+        RecipeTransferSource frozen, StoreDeadline deadline)
+    {
+        var records = ReadRecipeLifecycleRecords(database, _options.RecipeLifecycle, deadline);
+        RecipeTransferSourceLifecycle expected;
+        if (selection.Kind == RecipeTransferSourceKind.Draft)
+        {
+            expected = RecipeLifecycleProjection.Abandonment(records, frozen.SourceId) is null
+                ? RecipeTransferSourceLifecycle.Draft : RecipeTransferSourceLifecycle.Abandoned;
+        }
+        else
+        {
+            expected = RecipeLifecycleProjection.Retirement(records, selection.Recipe!,
+                selection.ReleaseId!.Value, selection.ReleaseRecordContentHash!) is null
+                ? RecipeTransferSourceLifecycle.Released : RecipeTransferSourceLifecycle.Retired;
+        }
+        AuditChainDatabase.Require(frozen.Lifecycle == expected, "RecipeTransferExportLifecycleChanged");
     }
 
     private static void RequirePackageSource(RecipeTransferSource packageSource,

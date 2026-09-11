@@ -472,7 +472,13 @@ public sealed class RecipeTransferRuntimeTests
         Assert.Equal(events, harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_transfer_events;"));
     }
 
-    private static AuthorizationPolicy TransferAuthorizationPolicy()
+    /// <summary>
+    /// The transfer policy grants only the transfer permissions under test, plus the
+    /// abandonment permission when a case exercises a real lifecycle transition. The
+    /// persisted Development policy keeps its original bytes and hash; this explicit
+    /// policy never edits it.
+    /// </summary>
+    private static AuthorizationPolicy TransferAuthorizationPolicy(bool lifecycle = false)
     {
         var transferPermissions = new[]
         {
@@ -483,7 +489,9 @@ public sealed class RecipeTransferRuntimeTests
         var roles = RecipeDraftTestPolicies.Authoring.RoleBundles.ToDictionary(
             pair => pair.Key,
             pair => pair.Key == HumanRoleBundle.Administrator
-                ? pair.Value.Concat(transferPermissions).Distinct()
+                ? pair.Value.Concat(transferPermissions)
+                    .Concat(lifecycle ? new[] { Permission.AbandonRecipeDraft } : Array.Empty<Permission>())
+                    .Distinct()
                 : pair.Value.AsEnumerable());
         var stepUp = RecipeDraftTestPolicies.Authoring.StepUpPermissions
             .Concat(new[] { Permission.ImportRecipe, Permission.ExportRecipe })
@@ -701,6 +709,232 @@ public sealed class RecipeTransferRuntimeTests
         Assert.False((await new SqliteRecipeDraftQuery(harness.Fixture.Options).ReadAsync(imported.Draft.DraftId)).Available);
     }
 
+    [Fact]
+    public async Task V148_T01_RetiredReleaseExportsItsRealLifecycleAndImportsAsDraftOnly()
+    {
+        await using var harness = await TransferHarness.CreateAsync(includeRelease: true, lifecycle: true);
+        var key = await harness.CreateSigningKeyAsync();
+        await harness.ReplaceTrustAsync(key.Signer);
+        var released = await harness.ReleaseSourceAsync();
+        var retired = await harness.RetireAsync(released);
+        Assert.Equal(RecipeLifecycleKind.ReleasedRetired, retired.Record!.Kind);
+        Assert.Null(retired.Record.ClearedActive);
+        var state = await harness.LifecycleHistory.ReadReleaseAsync(released.Reference,
+            released.Record.ReleaseId, released.Record.ContentHash);
+        Assert.True(state.Available, state.ReasonCode);
+        Assert.Equal(ReleasedRecipeLifecycleState.Retired, state.State);
+
+        // A Retired Recipe stays export material: the package must not claim it is available.
+        var exported = await harness.ExportSelectionAsync(new RecipeTransferSourceSelection(
+            released.Reference, released.Record.ReleaseId, released.Record.ContentHash));
+        Assert.True(exported.Succeeded, exported.Outcome.ReasonCode);
+        Assert.True(RecipeTransferPackageCodec.TryRead(exported.Export!.ToArray(), out var package,
+            out var packageReason), packageReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Retired, package!.Manifest.Source.Lifecycle);
+        Assert.Equal(released.Record.ReleaseId, package.Manifest.Source.SourceId);
+        Assert.Equal(released.Record.ContentHash, package.Manifest.Source.RevisionContentHash);
+
+        var releasesBefore = harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_release_events;");
+        var imported = await harness.ImportAsync(exported.Export.ToArray());
+        Assert.True(imported.Succeeded, imported.Outcome.ReasonCode);
+        Assert.Equal("Retired", imported.Import!.SourceLifecycle);
+        Assert.Equal(released.Record.ReleaseId.ToString("D") + ":" + released.Reference.Id,
+            imported.Import.SourceRecipeIdentity);
+        Assert.NotEqual(released.Record.Source.DraftId, imported.Draft!.DraftId);
+        Assert.Equal(1, imported.Draft.Revision);
+        Assert.False(imported.Draft.Published);
+        Assert.False(imported.Draft.Active);
+        Assert.Null(imported.Draft.Content.MigrationLineage);
+        Assert.Null(imported.Draft.Content.LifecycleLineage);
+        Assert.Equal(releasesBefore, harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_release_events;"));
+        await harness.Fixture.WaitForVerifiedAsync();
+        var cold = await new SqliteRecipeTransferQuery(harness.Fixture.Options)
+            .ReadImportAsync(imported.Draft.DraftId);
+        Assert.True(cold.Available, cold.ReasonCode);
+        Assert.Equal("Retired", cold.Provenance!.SourceLifecycle);
+        Assert.Equal(RecipeDraftLifecycleState.Open,
+            (await harness.LifecycleHistory.ReadDraftAsync(imported.Draft.DraftId)).State);
+        Assert.Equal(ReleasedRecipeLifecycleState.Retired,
+            (await harness.LifecycleHistory.ReadReleaseAsync(released.Reference, released.Record.ReleaseId,
+                released.Record.ContentHash)).State);
+    }
+
+    [Fact]
+    public async Task V148_T02_AbandonedDraftExportsItsRealLifecycleAndImportsAsDraftOnly()
+    {
+        await using var harness = await TransferHarness.CreateAsync(lifecycle: true);
+        var key = await harness.CreateSigningKeyAsync();
+        await harness.ReplaceTrustAsync(key.Signer);
+        var abandoned = await harness.AbandonAsync(harness.SourceRevision);
+        Assert.Equal(RecipeLifecycleKind.DraftAbandoned, abandoned.Record!.Kind);
+        var state = await harness.LifecycleHistory.ReadDraftAsync(harness.SourceRevision.DraftId);
+        Assert.True(state.Available, state.ReasonCode);
+        Assert.Equal(RecipeDraftLifecycleState.Abandoned, state.State);
+
+        // The preserved revision stays readable history and may still be exported as such.
+        var exported = await harness.ExportAsync();
+        Assert.True(exported.Succeeded, exported.Outcome.ReasonCode);
+        Assert.True(RecipeTransferPackageCodec.TryRead(exported.Export!.ToArray(), out var package,
+            out var packageReason), packageReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Abandoned, package!.Manifest.Source.Lifecycle);
+        Assert.Equal(harness.SourceRevision.DraftId, package.Manifest.Source.SourceId);
+        Assert.Equal(harness.SourceRevision.RevisionContentHash, package.Manifest.Source.RevisionContentHash);
+
+        var imported = await harness.ImportAsync(exported.Export.ToArray());
+        Assert.True(imported.Succeeded, imported.Outcome.ReasonCode);
+        Assert.Equal("Abandoned", imported.Import!.SourceLifecycle);
+        Assert.Equal(harness.SourceRevision.DraftId.ToString("D") + ":" + harness.SourceRevision.Content.RecipeKey,
+            imported.Import.SourceRecipeIdentity);
+        Assert.NotEqual(harness.SourceRevision.DraftId, imported.Draft!.DraftId);
+        Assert.Equal(1, imported.Draft.Revision);
+        Assert.False(imported.Draft.Published);
+        Assert.False(imported.Draft.Active);
+        Assert.Null(imported.Draft.Content.LifecycleLineage);
+        await harness.Fixture.WaitForVerifiedAsync();
+        Assert.Equal(RecipeDraftLifecycleState.Open,
+            (await harness.LifecycleHistory.ReadDraftAsync(imported.Draft.DraftId)).State);
+        Assert.Equal(RecipeDraftLifecycleState.Abandoned,
+            (await harness.LifecycleHistory.ReadDraftAsync(harness.SourceRevision.DraftId)).State);
+    }
+
+    [Fact]
+    public async Task V148_T03_RetirementBetweenPrepareAndExportIsRefusedWithoutPackageOrAudit()
+    {
+        await using var harness = await TransferHarness.CreateAsync(includeRelease: true, lifecycle: true);
+        var key = await harness.CreateSigningKeyAsync();
+        await harness.ReplaceTrustAsync(key.Signer);
+        var released = await harness.ReleaseSourceAsync();
+        var exported = await harness.ExportSelectionAsync(new RecipeTransferSourceSelection(
+            released.Reference, released.Record.ReleaseId, released.Record.ContentHash));
+        Assert.True(exported.Succeeded, exported.Outcome.ReasonCode);
+        var bytes = exported.Export!.ToArray();
+        Assert.True(RecipeTransferPackageCodec.TryRead(bytes, out var package, out var packageReason),
+            packageReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Released, package!.Manifest.Source.Lifecycle);
+
+        // The exact retirement lands after the package bytes were prepared.
+        await harness.RetireAsync(released);
+        var exportsBefore = harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_transfer_events WHERE Kind=4;");
+
+        // Re-enter the real authorization and writer boundary with the same prepared
+        // artifact. The frozen claim still says Released, so the stale lifecycle must be
+        // refused before any package or audit binding is emitted.
+        var selection = new RecipeTransferSourceSelection(released.Reference, released.Record.ReleaseId,
+            released.Record.ContentHash);
+        var correlation = Guid.NewGuid();
+        var bare = new ExportRecipeTransferCommand(correlation, harness.Fixture.Invocation(), selection,
+            key.KeyId, key.Signer.PublicKeyFingerprint, "retirement between prepare and export");
+        var grant = await harness.IssueGrantAsync(bare.CorrelationId, bare.AuthorizationTarget,
+            Permission.ExportRecipe, AuditedCommandKind.ExportRecipeTransfer);
+        var command = bare with { Invocation = harness.Fixture.Invocation(grant) };
+        var frozen = new RecipeTransferSource(released.Record.ReleaseId, released.Reference.Id,
+            released.Record.RecipeVersion, released.Record.ContentHash, RecipeTransferSourceLifecycle.Released,
+            harness.Fixture.Options.LocalIdentity!.StationId);
+        var prepared = new RecipeTransferPreparedOperation(command, bytes, package, signer: key.Signer,
+            frozenSource: frozen, frozenSourceContentHash: released.Content.ContentHash,
+            frozenKeyFingerprint: key.Signer.PublicKeyFingerprint);
+        var refused = await harness.Fixture.Authorization.ExecuteRecipeTransferAsync(command, prepared, null,
+            Guid.NewGuid(), new StoreDeadline(harness.Fixture.Options.CommitTimeout), CancellationToken.None);
+
+        Assert.False(refused.Succeeded);
+        Assert.Equal(CommandDisposition.Rejected, refused.Outcome.Disposition);
+        Assert.Equal("RecipeTransferExportLifecycleChanged", refused.Outcome.ReasonCode);
+        Assert.Equal(AuditPersistence.Unavailable, refused.Outcome.Audit);
+        Assert.Null(refused.Export);
+        Assert.Equal(exportsBefore,
+            harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_transfer_events WHERE Kind=4;"));
+        Assert.Equal(0, harness.Fixture.Scalar(
+            $"SELECT COUNT(*) FROM recipe_transfer_events WHERE OperationId='{correlation:D}';"));
+        Assert.Equal(0, harness.Fixture.Scalar(
+            $"SELECT COUNT(*) FROM command_facts WHERE CorrelationId='{correlation:D}';"));
+
+        // The package that legitimately claimed Released before the retirement stays valid
+        // history: it is never re-evaluated against the later lifecycle state.
+        var history = await new SqliteRecipeTransferQuery(harness.Fixture.Options)
+            .QueryAsync(new RecipeTransferFilter(PageSize: 32));
+        Assert.True(history.Available, history.ReasonCode);
+        Assert.Contains(history.Records, item => item.Kind == RecipeTransferEventKind.Exported);
+    }
+
+    [Fact]
+    public async Task V148_T04_AbandonmentBetweenPrepareAndExportIsRefusedWithoutPackageOrAudit()
+    {
+        await using var harness = await TransferHarness.CreateAsync(lifecycle: true);
+        var key = await harness.CreateSigningKeyAsync();
+        await harness.ReplaceTrustAsync(key.Signer);
+        var exported = await harness.ExportAsync();
+        Assert.True(exported.Succeeded, exported.Outcome.ReasonCode);
+        var bytes = exported.Export!.ToArray();
+        Assert.True(RecipeTransferPackageCodec.TryRead(bytes, out var package, out var packageReason),
+            packageReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Draft, package!.Manifest.Source.Lifecycle);
+
+        // The abandonment lands after the package bytes were prepared.
+        await harness.AbandonAsync(harness.SourceRevision);
+        var exportsBefore = harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_transfer_events WHERE Kind=4;");
+
+        var source = new RecipeTransferSourceSelection(new RecipeDraftRevisionReference(
+            harness.SourceRevision.DraftId, harness.SourceRevision.Revision,
+            harness.SourceRevision.RevisionContentHash));
+        var correlation = Guid.NewGuid();
+        var bare = new ExportRecipeTransferCommand(correlation, harness.Fixture.Invocation(), source,
+            key.KeyId, key.Signer.PublicKeyFingerprint, "abandonment between prepare and export");
+        var grant = await harness.IssueGrantAsync(bare.CorrelationId, bare.AuthorizationTarget,
+            Permission.ExportRecipe, AuditedCommandKind.ExportRecipeTransfer);
+        var command = bare with { Invocation = harness.Fixture.Invocation(grant) };
+        var frozen = new RecipeTransferSource(harness.SourceRevision.DraftId,
+            harness.SourceRevision.Content.RecipeKey, harness.SourceRevision.Revision,
+            harness.SourceRevision.RevisionContentHash, RecipeTransferSourceLifecycle.Draft,
+            harness.Fixture.Options.LocalIdentity!.StationId);
+        var prepared = new RecipeTransferPreparedOperation(command, bytes, package, signer: key.Signer,
+            frozenSource: frozen, frozenSourceContentHash: harness.SourceRevision.Content.ContentHash,
+            frozenKeyFingerprint: key.Signer.PublicKeyFingerprint);
+        var refused = await harness.Fixture.Authorization.ExecuteRecipeTransferAsync(command, prepared, null,
+            Guid.NewGuid(), new StoreDeadline(harness.Fixture.Options.CommitTimeout), CancellationToken.None);
+
+        Assert.False(refused.Succeeded);
+        Assert.Equal("RecipeTransferExportLifecycleChanged", refused.Outcome.ReasonCode);
+        Assert.Equal(AuditPersistence.Unavailable, refused.Outcome.Audit);
+        Assert.Null(refused.Export);
+        Assert.Equal(exportsBefore,
+            harness.Fixture.Scalar("SELECT COUNT(*) FROM recipe_transfer_events WHERE Kind=4;"));
+        Assert.Equal(0, harness.Fixture.Scalar(
+            $"SELECT COUNT(*) FROM command_facts WHERE CorrelationId='{correlation:D}';"));
+    }
+
+    [Fact]
+    public async Task V148_T05_ConfiguredLifecycleKeepsOpenDraftAndAvailableReleaseLabels()
+    {
+        await using var harness = await TransferHarness.CreateAsync(includeRelease: true, lifecycle: true);
+        var key = await harness.CreateSigningKeyAsync();
+        await harness.ReplaceTrustAsync(key.Signer);
+        Assert.Equal(RecipeDraftLifecycleState.Open,
+            (await harness.LifecycleHistory.ReadDraftAsync(harness.SourceRevision.DraftId)).State);
+
+        var draftExport = await harness.ExportAsync();
+        Assert.True(draftExport.Succeeded, draftExport.Outcome.ReasonCode);
+        Assert.True(RecipeTransferPackageCodec.TryRead(draftExport.Export!.ToArray(), out var draftPackage,
+            out var draftReason), draftReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Draft, draftPackage!.Manifest.Source.Lifecycle);
+
+        var released = await harness.ReleaseSourceAsync();
+        Assert.Equal(ReleasedRecipeLifecycleState.Available, (await harness.LifecycleHistory.ReadReleaseAsync(
+            released.Reference, released.Record.ReleaseId, released.Record.ContentHash)).State);
+        var releaseExport = await harness.ExportSelectionAsync(new RecipeTransferSourceSelection(
+            released.Reference, released.Record.ReleaseId, released.Record.ContentHash));
+        Assert.True(releaseExport.Succeeded, releaseExport.Outcome.ReasonCode);
+        Assert.True(RecipeTransferPackageCodec.TryRead(releaseExport.Export!.ToArray(), out var releasePackage,
+            out var releaseReason), releaseReason);
+        Assert.Equal(RecipeTransferSourceLifecycle.Released, releasePackage!.Manifest.Source.Lifecycle);
+
+        var imported = await harness.ImportAsync(releaseExport.Export.ToArray());
+        Assert.True(imported.Succeeded, imported.Outcome.ReasonCode);
+        Assert.Equal("Released", imported.Import!.SourceLifecycle);
+        Assert.False(imported.Draft!.Published);
+        Assert.False(imported.Draft.Active);
+        Assert.Null(imported.Draft.Content.LifecycleLineage);
+    }
+
     private sealed class TransferGuardProbe : IIdentityTransactionGuard
     {
         internal TaskCompletionSource<bool> Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -739,7 +973,8 @@ public sealed class RecipeTransferRuntimeTests
         internal TransferFactory? Factory { get; }
         private RecipeSigningKeyRecord? _signingKey;
 
-        internal static async Task<TransferHarness> CreateAsync(bool includeRelease = false, int maximumTransfers = 1000)
+        internal static async Task<TransferHarness> CreateAsync(bool includeRelease = false,
+            int maximumTransfers = 1000, bool lifecycle = false)
         {
             var seed = RecipeTransferContentCodecTests.Fixture();
             var transferOptions = new RecipeTransferStoreOptions
@@ -749,8 +984,9 @@ public sealed class RecipeTransferRuntimeTests
                     RecipeGovernanceMode.SingleApproverRelease))
                 : null;
             var fixture = await RecipeDraftStorageTests.Fixture.CreateAsync(
-                authorizationPolicy: TransferAuthorizationPolicy(), recipeReleases: releaseOptions,
-                recipeTransfers: transferOptions);
+                authorizationPolicy: TransferAuthorizationPolicy(lifecycle), recipeReleases: releaseOptions,
+                recipeTransfers: transferOptions,
+                recipeLifecycle: lifecycle ? new RecipeLifecycleStoreOptions() : null);
             RecipeDraftService? drafts = null;
             StationRuntime? runtime = null;
             RecipeReleaseService? releases = null;
@@ -908,16 +1144,66 @@ public sealed class RecipeTransferRuntimeTests
             return await Service.RetireSigningKeyAsync(command);
         }
 
-        private async Task<Guid> GrantAsync(RecipeTransferCommand command, Permission permission,
-            AuditedCommandKind kind)
+        private Task<Guid> GrantAsync(RecipeTransferCommand command, Permission permission,
+            AuditedCommandKind kind) => IssueGrantAsync(command.CorrelationId, command.Invocation,
+                command.AuthorizationTarget, permission, kind);
+
+        internal Task<Guid> IssueGrantAsync(Guid correlationId, string authorizationTarget,
+            Permission permission, AuditedCommandKind kind) => IssueGrantAsync(correlationId,
+                Fixture.Invocation(), authorizationTarget, permission, kind);
+
+        private async Task<Guid> IssueGrantAsync(Guid correlationId, CommandInvocation invocation,
+            string authorizationTarget, Permission permission, AuditedCommandKind kind)
         {
-            var binding = new StepUpBinding(permission, command.CorrelationId,
-                command.AuthorizationTarget, kind);
+            var binding = new StepUpBinding(permission, correlationId, authorizationTarget, kind);
             var issued = await Fixture.Authorization.ReauthenticateAsync(new StepUpRequest(
-                command.CorrelationId, command.Invocation, binding, Fixture.Password));
+                correlationId, invocation, binding, Fixture.Password));
             Assert.True(issued.Succeeded, issued.ReasonCode + " | integrity=" + Fixture.Store.Integrity?.ReasonCode);
             Assert.True(issued.GrantId.HasValue);
             return issued.GrantId!.Value;
+        }
+
+        internal IRecipeLifecycleHistoryQuery LifecycleHistory => new SqliteRecipeLifecycleQuery(Fixture.Options);
+
+        /// <summary>
+        /// Applies one irreversible abandonment through the real authorization boundary, a
+        /// fresh expiry-bound Step-Up grant and the real schema-33 writer. Only the
+        /// non-active path is used, so no Runtime quiescence lease is involved.
+        /// </summary>
+        internal async Task<RecipeLifecycleResult> AbandonAsync(RecipeDraftRevision source)
+        {
+            Assert.NotNull(Fixture.Options.RecipeLifecycle);
+            var command = new AbandonRecipeDraftCommand(Guid.NewGuid(), Fixture.Invocation(), source.DraftId,
+                source.Revision, source.RevisionContentHash, "V148 transfer source abandonment");
+            var grant = await IssueGrantAsync(command.CorrelationId, command.AuthorizationTarget,
+                Permission.AbandonRecipeDraft, AuditedCommandKind.AbandonRecipeDraft);
+            return await ApplyLifecycleAsync(command with { Invocation = Fixture.Invocation(grant) });
+        }
+
+        /// <summary>
+        /// Retires one exact non-active release through the same real authorization and
+        /// writer boundary, so the transfer cases read genuine durable lifecycle history.
+        /// </summary>
+        internal async Task<RecipeLifecycleResult> RetireAsync(ReleasedRecipe release)
+        {
+            Assert.NotNull(Fixture.Options.RecipeLifecycle);
+            var command = new RetireReleasedRecipeCommand(Guid.NewGuid(), Fixture.Invocation(),
+                release.Record.Recipe, release.Record.ReleaseId, release.Record.ContentHash, null,
+                "V148 transfer source retirement");
+            var grant = await IssueGrantAsync(command.CorrelationId, command.AuthorizationTarget,
+                Permission.RetireRecipe, AuditedCommandKind.RetireReleasedRecipe);
+            return await ApplyLifecycleAsync(command with { Invocation = Fixture.Invocation(grant) });
+        }
+
+        private async ValueTask<RecipeLifecycleResult> ApplyLifecycleAsync(RuntimeCommand command)
+        {
+            var result = await Fixture.Authorization.ApplyRecipeLifecycleAsync(command, Guid.NewGuid(), null,
+                null, null, new StoreDeadline(Fixture.Options.CommitTimeout), CancellationToken.None);
+            Assert.Equal(CommandDisposition.Accepted, result.Outcome.Disposition);
+            Assert.Equal(AuditPersistence.Persisted, result.Outcome.Audit);
+            Assert.NotNull(result.Record);
+            await Fixture.WaitForVerifiedAsync();
+            return result;
         }
 
         public async ValueTask DisposeAsync()

@@ -49,7 +49,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections,
                 productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities,
-                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections);
+                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections, recipeLifecycleOptions: options.RecipeLifecycle);
         TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
 
         if (options.AlgorithmResultArchive is not null)
@@ -81,7 +81,7 @@ internal sealed partial class SqliteCommandStore
         if (options.RecipeActivations is not null)
             AuditChainDatabase.RequireFullRecipeActivationVerification(database, report, deadline,
                 options.RecipeActivations, options.RecipeReleases, options.PlcResultContracts,
-                options.CalibrationGovernance);
+                options.CalibrationGovernance, recipeLifecycleOptions: options.RecipeLifecycle);
         if (options.PreviewSessions is not null)
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, report, deadline,
                 options.PreviewSessions);

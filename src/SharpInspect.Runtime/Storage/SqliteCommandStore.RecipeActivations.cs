@@ -175,9 +175,10 @@ internal sealed partial class SqliteCommandStore
             .Select(value => value.Revision).ToArray();
         var profileResolver = CreateCalibrationProfileResolver(database, _options.CalibrationGovernance, deadline);
         var rows = ReadRecipeActivationRows(database, options, deadline, profileResolver);
-        ValidateRecipeActivationHistory(database, options, rows, releases, contracts, deadline);
+        ValidateRecipeActivationHistory(database, options, rows, releases, contracts, deadline, _options.RecipeLifecycle);
         var records = rows.Select(value => value.Record).ToArray();
-        var current = records.Where(value => value.CanBeActive).OrderBy(value => value.Position).LastOrDefault();
+        var lifecycle = ReadRecipeLifecycleRecords(database, _options.RecipeLifecycle, deadline);
+        var current = RecipeLifecycleProjection.EffectiveCurrent(records, lifecycle);
         var admitted = records.Where(value => value.Outcome.State == RecipeActivationOutcomeState.Admitted)
             .ToDictionary(value => value.Reference, value => value);
         var terminalAdmissionReferences = records.Where(value => value.IsTerminal)
@@ -194,7 +195,8 @@ internal sealed partial class SqliteCommandStore
         return new(true, drafts, releases, contracts, records, current, pending, cameras, imagingSetups,
             governance.Records, governance.Position, governance.ContentHash, admissionCommands,
             _options.RecipeSelections is { } selections ? ReadRecipeSelectionRows(database, selections, deadline).LastOrDefault()?.Revision : null,
-            _options.RecipeSelections is { } changes ? ReadRecipeChangeRows(database, changes, deadline).Select(value => value.Event).ToArray() : null);
+            _options.RecipeSelections is { } changes ? ReadRecipeChangeRows(database, changes, deadline).Select(value => value.Event).ToArray() : null,
+            lifecycle);
     }
 
     private void AppendRecipeActivationIdentityMutation(sqlite3 database, IdentityUpdate update,
@@ -342,7 +344,7 @@ internal sealed partial class SqliteCommandStore
     internal static void ValidateRecipeActivationHistory(sqlite3 database,
         RecipeActivationStoreOptions options, IReadOnlyList<RecipeActivationStoredEvent> rows,
         IReadOnlyList<RecipeReleaseRecord> releases, IReadOnlyList<PlcResultContractRevision> contracts,
-        StoreDeadline deadline)
+        StoreDeadline deadline, RecipeLifecycleStoreOptions? lifecycleOptions = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(options);
@@ -364,9 +366,18 @@ internal sealed partial class SqliteCommandStore
         var unfinishedAdmissions = new HashSet<RecipeActivationReference>();
         var terminalAdmissionReferences = new HashSet<RecipeActivationReference>();
         var successfulHeads = new Dictionary<RecipeActivationEvidenceKind, RecipeActivationStoredEvent>();
+        var lifecycle = lifecycleOptions is null ? Array.Empty<RecipeLifecycleStoredRow>() :
+            ReadRecipeLifecycleRows(database, lifecycleOptions, deadline).ToArray();
         for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
             var row = rows[rowIndex];
+            var retiredBefore = lifecycle.Where(value => value.AuditSequence < row.AuditSequence &&
+                value.Record.Kind == RecipeLifecycleKind.ReleasedRetired).Select(value => value.Record.ReleaseId!.Value).ToHashSet();
+            foreach (var head in successfulHeads.Where(value => retiredBefore.Contains(value.Value.Record.ReleaseId))
+                .Select(value => value.Key).ToArray()) successfulHeads.Remove(head);
+            if (retiredBefore.Contains(row.Record.ReleaseId) &&
+                (row.Record.CanBeActive || row.Record.Outcome.State == RecipeActivationOutcomeState.Admitted))
+                throw new InvalidOperationException("RecipeLifecycleRetiredReleaseUsed");
             if (row.Record.Position != rowIndex + 1L || row.PreviousHash != previousHash)
                 throw new InvalidOperationException("RecipeActivationPositionGap");
             if (row.AuditSequence <= previousAuditSequence)
@@ -808,7 +819,8 @@ internal sealed partial class SqliteCommandStore
 
     internal static void VerifyRecipeActivationHistory(sqlite3 database, RecipeActivationStoreOptions options,
         RecipeReleaseStoreOptions releaseOptions, PlcResultContractStoreOptions contractOptions,
-        StoreDeadline deadline, CalibrationGovernanceStoreOptions? governanceOptions = null)
+        StoreDeadline deadline, CalibrationGovernanceStoreOptions? governanceOptions = null,
+        RecipeLifecycleStoreOptions? lifecycleOptions = null)
     {
         var rows = ReadRecipeActivationRows(database, options, deadline,
             CreateCalibrationProfileResolver(database, governanceOptions, deadline));
@@ -818,7 +830,7 @@ internal sealed partial class SqliteCommandStore
             .Select(value => value.Record).ToArray();
         var contracts = ReadPlcResultContractRows(database, contractOptions, deadline)
             .Select(value => value.Revision).ToArray();
-        ValidateRecipeActivationHistory(database, options, rows, releases, contracts, deadline);
+        ValidateRecipeActivationHistory(database, options, rows, releases, contracts, deadline, lifecycleOptions);
     }
 
     internal static Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>?
@@ -1093,6 +1105,7 @@ internal sealed record RecipeActivationCommandState(bool Enabled,
     string? CalibrationGovernanceContentHash = null,
     IReadOnlyDictionary<Guid, CommandAuditFact>? AdmissionCommands = null,
     RecipeSelectionRevision? Selection = null,
-    IReadOnlyList<RecipeChangeHistoryEvent>? RecipeChanges = null);
+    IReadOnlyList<RecipeChangeHistoryEvent>? RecipeChanges = null,
+    IReadOnlyList<RecipeLifecycleRecord>? Lifecycle = null);
 
 internal sealed record RecipeActivationMutation(RecipeActivationRecord Record);

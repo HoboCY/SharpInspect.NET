@@ -167,7 +167,7 @@ internal sealed partial class SqliteCommandStore
             _options.CalibrationGovernance);
         var records = ReadRecipeReleaseRows(database, releaseOptions, deadline)
             .Select(value => value.Record).ToArray();
-        return new(true, history, records, policies);
+        return new(true, history, records, policies, ReadRecipeLifecycleRecords(database, _options.RecipeLifecycle, deadline));
     }
 
     private void AppendRecipeReleaseIdentityMutation(sqlite3 database, IdentityUpdate update,
@@ -355,7 +355,7 @@ internal sealed partial class SqliteCommandStore
         // and already integrity-checked ledger contributes dependency facts.
         if (schema is not (RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion
             or RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion))
+            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion))
             throw new InvalidOperationException("CalibrationGovernanceSchemaInvalid");
         return rows.Select(row => CalibrationGovernanceCodec.Decode(row.Kind, row.Payload))
             .OfType<CalibrationAcceptancePolicyRevision>().ToArray();
@@ -648,5 +648,6 @@ internal sealed partial class SqliteCommandStore
 
 internal sealed record RecipeReleaseCommandState(bool Enabled,
     IReadOnlyList<RecipeDraftRevision> DraftHistory, IReadOnlyList<RecipeReleaseRecord> Releases,
-    IReadOnlyList<CalibrationAcceptancePolicyRevision> CalibrationPolicies);
+    IReadOnlyList<CalibrationAcceptancePolicyRevision> CalibrationPolicies,
+    IReadOnlyList<RecipeLifecycleRecord>? Lifecycle = null);
 internal sealed record RecipeReleaseMutation(RecipeReleaseRecord Record);

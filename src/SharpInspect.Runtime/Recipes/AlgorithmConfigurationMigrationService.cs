@@ -11,6 +11,8 @@ internal sealed class AlgorithmConfigurationMigrationService : IAlgorithmConfigu
     private readonly LocalAuthorizationService _authorization;
     private readonly AlgorithmConfigurationMigrationRegistry _registry;
     private readonly TimeSpan _timeout;
+    private readonly IRecipeLifecycleHistoryQuery? _lifecycle;
+    private readonly bool _lifecycleRequired;
     private readonly SemaphoreSlim _slots = new(4, 4);
     private readonly SemaphoreSlim _calls = new(16, 16);
     private readonly object _reservationSync = new();
@@ -20,9 +22,10 @@ internal sealed class AlgorithmConfigurationMigrationService : IAlgorithmConfigu
 
     internal AlgorithmConfigurationMigrationService(RecipeDraftService drafts,
         LocalAuthorizationService authorization, AlgorithmConfigurationMigrationRegistry registry,
-        ProductionStoreOptions options)
+        ProductionStoreOptions options, IRecipeLifecycleHistoryQuery? lifecycle = null)
     {
         _drafts = drafts; _authorization = authorization; _registry = registry;
+        _lifecycle = lifecycle; _lifecycleRequired = options.RecipeLifecycle is not null;
         _timeout = options.CommitTimeout >= TimeSpan.FromMilliseconds(1) && options.CommitTimeout <= TimeSpan.FromMinutes(5)
             ? options.CommitTimeout : TimeSpan.FromSeconds(2);
     }
@@ -157,7 +160,9 @@ internal sealed class AlgorithmConfigurationMigrationService : IAlgorithmConfigu
             var lineage = new RecipeDraftMigrationLineage(plan, descriptor, source.Content.Configuration.ContentHash,
                 configuration.ContentHash, transformed.Issues);
             var old = source.Content;
-            var content = new RecipeDraftContent(lineage, old.RecipeKey, old.DisplayName,
+            var lifecycleLineage = await RecipeLifecycleSources.ResolveForMigrationAsync(_lifecycle, source,
+                _lifecycleRequired, budget.Token).ConfigureAwait(false);
+            var content = new RecipeDraftContent(lifecycleLineage, lineage, old.RecipeKey, old.DisplayName,
                 RecipeAlgorithmBinding.FromDescriptor(target), configuration, old.CameraRole, old.Camera,
                 old.AlgorithmExecutionTimeout, old.AssetRequirements, old.PolicyRequirements,
                 configuration.Values.Select(value => new RecipeDraftFieldOrigin(value.Key, RecipeDraftValueOrigin.Explicit)),

@@ -222,6 +222,9 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 forced = _shutdownRequested || _disposed ? "RuntimeStopped" : networkBarrier;
+                if (forced is null && _activationReservation is { } recipeReservation)
+                    forced = recipeReservation.Purpose == ActivationReservationPurpose.Retirement
+                        ? "RecipeRetirementInProgress" : "RecipeActivationInProgress";
                 if (forced is null && StationQualificationConfigurationBlockedLocked) forced = "StationQualificationSessionInProgress";
                 if (forced is null && LocalStopPendingLocked) forced = "LocalStopPending";
                 if (forced is null && _snapshot.Mode != ExclusiveMode.None) forced = "ExclusiveWorkInProgress";

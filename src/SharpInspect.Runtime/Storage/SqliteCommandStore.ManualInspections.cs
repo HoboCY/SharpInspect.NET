@@ -291,6 +291,11 @@ internal sealed partial class SqliteCommandStore
             : ReadManualSource(database, selection, deadline);
         var draft = source.Draft;
         var release = source.Release;
+        var lifecycle = ReadRecipeLifecycleRecords(database, _options.RecipeLifecycle, deadline);
+        var lifecycleFailure = release is not null && SharpInspect.Runtime.Recipes.RecipeLifecycleProjection.Retirement(
+                lifecycle, release.Recipe, release.ReleaseId, release.ContentHash) is not null ? "RecipeRetired" :
+            draft is not null && SharpInspect.Runtime.Recipes.RecipeLifecycleProjection.Abandonment(lifecycle, draft.DraftId) is not null
+                ? "RecipeDraftAbandoned" : null;
         var role = current?.Header.CurrentBinding.LogicalRole ?? draft?.Content.CameraRole;
         var camera = role is null ? null : ReadCameraSetupState(database, role, deadline);
         var expectedActive = command switch
@@ -317,7 +322,7 @@ internal sealed partial class SqliteCommandStore
         return new ManualInspectionCommandState(true, current?.Header, events,
             rows.Where(value => sessionId is Guid id && value.Event.SessionId == id && value.Run is not null)
                 .Select(value => value.Run!).ToArray(), draft, release, camera, active,
-            recoveryRequired, pending, startFact, pendingFacts);
+            recoveryRequired, pending, startFact, pendingFacts, lifecycleFailure);
     }
 
     /// <summary>
@@ -442,7 +447,7 @@ internal sealed partial class SqliteCommandStore
             {
                 var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
                 AuditChainDatabase.Require(schema is ManualInspectionStoreOptions.SchemaVersion or
-                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion,
+                    ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
                     schema < PlcCommunicationStoreOptions.SchemaVersion
                         ? "ManualInspectionGovernedMigrationRequired" : "StoreSchemaTooNew");
                 var verification = AuditChainDatabase.Verify(database, _policy,
@@ -472,7 +477,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

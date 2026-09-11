@@ -77,13 +77,16 @@ public sealed partial class StationRuntime
         finally { _commandGate.Release(); }
     }
 
-    private string? RecipeActivationBlockerLocked(ActivationReservation? reservation)
+    private string? RecipeActivationBlockerLocked(ActivationReservation? reservation, bool allowProductionDrain = false)
     {
         if (_recipeSelectionChangeInProgress) return "RecipeSelectionChangeInProgress";
         // A rejected PLC request blocks new entrants, never the transition which
         // already owned the reservation when that request was observed.
         if (_recipeChangeInProgress && reservation is null) return "RecipeChangeHandshakeInProgress";
-        if (ProductionInspectionConfigurationBlockedLocked) return "ProductionInspectionInProgress";
+        if (ProductionInspectionConfigurationBlockedLocked &&
+            !(allowProductionDrain && _productionRecoveryOwner is null &&
+                _productionInspectionOwner is { Current: not null, AdmissionCommitted: true }))
+            return "ProductionInspectionInProgress";
         if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (PreviewConfigurationBlockedLocked) return "PreviewSessionInProgress";
         if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
@@ -100,10 +103,12 @@ public sealed partial class StationRuntime
         if (reservation?.StopRequested == true || reservation?.Cancellation.IsCancellationRequested == true ||
             Volatile.Read(ref _pendingLocalStops) != 0)
             return "RecipeActivationCancelled";
-        if (_snapshot.Busy || _snapshot.CurrentExecution is not null || _executionGuard.IsHung)
+        if (_executionGuard.IsHung || !allowProductionDrain &&
+            (_snapshot.Busy || _snapshot.CurrentExecution is not null))
             return "RecipeActivationExecutionConflict";
-        if (_snapshot.Evidence.PendingDeliveries != 0 || _snapshot.Evidence.PendingRequiredImages != 0 ||
-            _snapshot.Handshake is HandshakePhase.AwaitingResultAck or HandshakePhase.AwaitingAckReset)
+        if (!allowProductionDrain && (_snapshot.Evidence.PendingDeliveries != 0 ||
+            _snapshot.Evidence.PendingRequiredImages != 0 ||
+            _snapshot.Handshake is HandshakePhase.AwaitingResultAck or HandshakePhase.AwaitingAckReset))
             return "RecipeActivationDeliveryConflict";
         if (_snapshot.Mode != ExclusiveMode.None || _snapshot.Recovery == RecoveryState.InProgress ||
             _cameraNetworkMaintenanceActive || _calibrationAdmissionInProgress || _calibrationWork is { IsCompleted: false } ||
@@ -260,7 +265,8 @@ public sealed partial class StationRuntime
     private async Task ShutdownRecipeActivationAsync()
     {
         Task[] pending;
-        lock (_sync) pending = new[] { _activationReservation?.Completion.Task, _recipeActivationStartupTask }
+        lock (_sync) pending = new[] { _activationReservation?.Completion.Task, _recipeActivationStartupTask,
+                _recipeRetirementCleanup }
             .Where(task => task is not null).Select(task => task!).ToArray();
         CancelRecipeActivation();
         if (pending.Length != 0)
@@ -283,6 +289,8 @@ public sealed partial class StationRuntime
 
     private sealed record ActivationPreparedBundle(RecipeActivationSnapshot Snapshot, PreparedAlgorithm Algorithm);
 
+    private enum ActivationReservationPurpose { Activation, Retirement }
+
     private sealed class ActivationReservation
     {
         internal ActivationReservation(Guid correlationId, CancellationTokenSource cancellation)
@@ -292,6 +300,9 @@ public sealed partial class StationRuntime
         internal TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool Committed { get; set; }
         internal bool PlcOwned { get; init; }
+        internal ActivationReservationPurpose Purpose { get; init; }
+        internal long RetirementConnectionGeneration { get; init; }
+        internal uint RetirementControllerEpoch { get; init; }
         internal Func<string?>? ExternalBlocker { get; set; }
         internal bool CommitClaimed { get; set; }
         internal long InFlightPhysicalPhaseId { get; set; }

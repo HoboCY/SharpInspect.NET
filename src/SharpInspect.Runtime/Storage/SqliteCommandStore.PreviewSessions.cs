@@ -375,7 +375,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -412,7 +412,7 @@ internal sealed partial class SqliteCommandStore
             _options.RecipeActivations ?? throw new InvalidOperationException("RecipeActivationConfigurationRequired"),
             _options.RecipeReleases ?? throw new InvalidOperationException("RecipeReleaseConfigurationRequired"),
             _options.PlcResultContracts ?? throw new InvalidOperationException("PlcResultContractConfigurationRequired"),
-            _options.CalibrationGovernance);
+            _options.CalibrationGovernance, recipeLifecycleOptions: _options.RecipeLifecycle);
         AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
         if (_options.CalibrationImports is not null)
             AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);
@@ -578,7 +578,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -617,7 +617,7 @@ internal sealed partial class SqliteCommandStore
             if (_options.RecipeActivations is not null)
                 AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
                     _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                    _options.CalibrationGovernance);
+                    _options.CalibrationGovernance, recipeLifecycleOptions: _options.RecipeLifecycle);
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline, options);
             if (_options.CalibrationImports is not null)
                 AuditChainDatabase.RequireFullCalibrationImportVerification(database, verification, deadline, _options.CalibrationImports);

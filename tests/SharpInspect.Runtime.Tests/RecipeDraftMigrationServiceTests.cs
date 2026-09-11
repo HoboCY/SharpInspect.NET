@@ -1,12 +1,45 @@
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Recipes;
 using SharpInspect.Runtime.Storage;
+using SharpInspect.Runtime.Identity;
 using Xunit;
 
 namespace SharpInspect.Runtime.Tests;
 
 public sealed class RecipeDraftMigrationServiceTests
 {
+    [Fact]
+    public async Task V148_M01_AbandonedHistoricalSourceMigratesIntoNewDraftWithBothLineages()
+    {
+        await using var fixture = await Harness.CreateAsync(enableRecipeLifecycle: true);
+        var storage = fixture.Storage;
+        var source = fixture.Source;
+        var abandon = new AbandonRecipeDraftCommand(Guid.NewGuid(), storage.Invocation(), source.DraftId,
+            source.Revision, source.RevisionContentHash, "Preserve old schema as abandoned history");
+        var grant = await storage.Authorization.ReauthenticateAsync(new(Guid.NewGuid(), storage.Invocation(),
+            new(Permission.AbandonRecipeDraft, abandon.CorrelationId, abandon.AuthorizationTarget,
+                AuditedCommandKind.AbandonRecipeDraft), storage.Password));
+        Assert.True(grant.Succeeded, grant.ReasonCode);
+        var abandoned = await storage.Authorization.ApplyRecipeLifecycleAsync(abandon with
+            { Invocation = storage.Invocation(grant.GrantId) }, Guid.NewGuid(), null, null, null,
+            new StoreDeadline(storage.Options.CommitTimeout), CancellationToken.None);
+        Assert.Equal(CommandDisposition.Accepted, abandoned.Outcome.Disposition);
+        var migrated = await fixture.Service.MigrateAsync(fixture.Request());
+        Assert.True(migrated.Created, migrated.ReasonCode);
+        var target = Assert.IsType<RecipeDraftRevision>(migrated.Revision);
+        Assert.NotEqual(source.DraftId, target.DraftId);
+        Assert.Equal(abandoned.Record!.Reference, target.Content.LifecycleLineage?.Transition);
+        Assert.Equal(source.RevisionContentHash, target.Content.MigrationLineage?.Plan.Source.RevisionContentHash);
+        Assert.Equal(fixture.Factory.Descriptor.Identity, target.Content.Algorithm.Algorithm);
+        Assert.Equal(0, fixture.Factory.CreateCalls);
+        await storage.WaitForVerifiedAsync();
+        var cold = await new SqliteRecipeDraftQuery(storage.Options).ReadAsync(target.DraftId, 1);
+        Assert.True(cold.Available, cold.ReasonCode);
+        Assert.Equal(target.RevisionContentHash, cold.Revision?.RevisionContentHash);
+        Assert.Equal(RecipeDraftLifecycleState.Abandoned,
+            (await new SqliteRecipeLifecycleQuery(storage.Options).ReadDraftAsync(source.DraftId)).State);
+    }
+
     [Fact]
     public async Task V128_R01_ExplicitHistoricalSourceCreatesCompleteDraftAndExactReplayDoesNotTransformAgain()
     {
@@ -244,7 +277,8 @@ public sealed class RecipeDraftMigrationServiceTests
             // The source factory is deliberately absent. Its immutable embedded schema is sufficient to migrate.
             Drafts = new(new[] { Factory }, storage.Options, storage.Authorization, Query);
             Registry = new(new[] { Migrator }, TimeSpan.FromSeconds(8));
-            Service = new(Drafts, storage.Authorization, Registry, storage.Options);
+            Service = new(Drafts, storage.Authorization, Registry, storage.Options,
+                storage.Options.RecipeLifecycle is null ? null : new SqliteRecipeLifecycleQuery(storage.Options));
         }
         internal RecipeDraftStorageTests.Fixture Storage { get; }
         internal RecipeDraftRevision Source { get; }
@@ -258,9 +292,15 @@ public sealed class RecipeDraftMigrationServiceTests
             new(Source.DraftId, Source.Revision, Source.RevisionContentHash), Guid.NewGuid(),
             Factory.Descriptor.Identity, Migrator.Descriptor.TargetSchema, Migrator.Descriptor.Migrator, "explicit config migration"),
             Storage.Invocation());
-        internal static async Task<Harness> CreateAsync(bool requireStepUp = false)
+        internal static async Task<Harness> CreateAsync(bool requireStepUp = false, bool enableRecipeLifecycle = false)
         {
-            var storage = await RecipeDraftStorageTests.Fixture.CreateAsync(requireStepUp);
+            var baseline = RecipeDraftTestPolicies.Authoring;
+            var lifecyclePolicy = enableRecipeLifecycle ? new AuthorizationPolicy("V148.Migration", "1",
+                baseline.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
+                    ? pair.Value.Append(Permission.AbandonRecipeDraft).Distinct() : pair.Value.AsEnumerable()),
+                baseline.StepUpPermissions) : null;
+            var storage = await RecipeDraftStorageTests.Fixture.CreateAsync(requireStepUp,
+                authorizationPolicy: lifecyclePolicy, recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null);
             var operation = Guid.NewGuid(); var id = Guid.NewGuid();
             Guid? grant = null;
             if (requireStepUp)

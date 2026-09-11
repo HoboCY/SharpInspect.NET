@@ -21,6 +21,7 @@ internal static partial class RecipeDraftStorageCodec
     private const int MigrationLineageFormatVersion = 4;
     private const int PartIdentityFormatVersion = 5;
     private const int TransferClassificationFormatVersion = 6;
+    private const int LifecycleLineageFormatVersion = 7;
     private const int CanonicalizationVersion = 1;
     private const int MaximumDepth = 32;
 
@@ -153,10 +154,11 @@ internal static partial class RecipeDraftStorageCodec
         if (!seenOrigins.SetEquals(entries.Keys))
             throw Invalid("RecipeDraftValueOriginsMismatch");
 
-        var rebuilt = new RecipeDraftContent(content.MigrationLineage, content.RecipeKey, content.DisplayName, content.Algorithm,
-            content.Configuration, content.CameraRole, content.Camera, content.AlgorithmExecutionTimeout,
-            content.AssetRequirements, content.PolicyRequirements, content.ValueOrigins,
-            content.CameraProviderExtension, content.CalibrationRequirements, content.PartIdentityRequirement);
+        var rebuilt = new RecipeDraftContent(content.LifecycleLineage, content.MigrationLineage, content.RecipeKey,
+            content.DisplayName, content.Algorithm, content.Configuration, content.CameraRole, content.Camera,
+            content.AlgorithmExecutionTimeout, content.AssetRequirements, content.PolicyRequirements,
+            content.ValueOrigins, content.CameraProviderExtension, content.CalibrationRequirements,
+            content.PartIdentityRequirement);
         if (!string.Equals(rebuilt.ContentHash, content.ContentHash, StringComparison.Ordinal))
             throw Invalid("RecipeDraftContentHashMismatch");
     }
@@ -165,8 +167,15 @@ internal static partial class RecipeDraftStorageCodec
     {
         var hasTransferClassification = content.Algorithm.ConfigurationSchema.Fields.Any(field =>
             field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly);
+        var hasLifecycleLineage = content.LifecycleLineage is not null;
+        // A lifecycle-derived Draft states the complete extension set, so the newest
+        // format never leans on an earlier format's omitted-property default.
+        var hasExtendedShape = hasTransferClassification || hasLifecycleLineage ||
+            content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
+            content.PartIdentityRequirement is not null;
         writer.WriteStartObject();
-        writer.WriteNumber("FormatVersion", hasTransferClassification ? TransferClassificationFormatVersion : content.PartIdentityRequirement is not null
+        writer.WriteNumber("FormatVersion", hasLifecycleLineage ? LifecycleLineageFormatVersion
+            : hasTransferClassification ? TransferClassificationFormatVersion : content.PartIdentityRequirement is not null
             ? PartIdentityFormatVersion : content.MigrationLineage is not null
             ? MigrationLineageFormatVersion : content.CalibrationRequirements.Count != 0
             ? CalibrationRequirementFormatVersion : content.CameraProviderExtension is null
@@ -175,7 +184,9 @@ internal static partial class RecipeDraftStorageCodec
         writer.WriteString("RecipeKey", content.RecipeKey);
         writer.WriteString("DisplayName", content.DisplayName);
         writer.WritePropertyName("Algorithm");
-        WriteBinding(writer, content.Algorithm);
+        // Format 7 always restates per-field transfer classification, including the
+        // all-LocalOnly schema, so the shape is unambiguous without payload sniffing.
+        WriteBinding(writer, content.Algorithm, hasTransferClassification || hasLifecycleLineage);
         writer.WritePropertyName("Configuration");
         WriteConfiguration(writer, content.Configuration);
         writer.WriteString("CameraRole", content.CameraRole);
@@ -197,11 +208,9 @@ internal static partial class RecipeDraftStorageCodec
             writer.WriteString("ConfigurationContentHash", extension.ConfigurationContentHash);
             writer.WriteEndObject();
         }
-        else if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
-            content.PartIdentityRequirement is not null || hasTransferClassification)
+        else if (hasExtendedShape)
             writer.WriteNull("CameraProviderExtension");
-        if (content.CalibrationRequirements.Count != 0 || content.MigrationLineage is not null ||
-            content.PartIdentityRequirement is not null || hasTransferClassification)
+        if (hasExtendedShape)
         {
             writer.WritePropertyName("CalibrationRequirements");
             writer.WriteStartArray();
@@ -226,7 +235,7 @@ internal static partial class RecipeDraftStorageCodec
             writer.WritePropertyName("MigrationLineage");
             WriteMigrationLineage(writer, migration);
         }
-        else if (content.PartIdentityRequirement is not null || hasTransferClassification)
+        else if (content.PartIdentityRequirement is not null || hasTransferClassification || hasLifecycleLineage)
             writer.WriteNull("MigrationLineage");
         if (content.PartIdentityRequirement is { } partIdentity)
         {
@@ -240,7 +249,12 @@ internal static partial class RecipeDraftStorageCodec
             writer.WriteString("ContentHash", partIdentity.ContentHash);
             writer.WriteEndObject();
         }
-        else if (hasTransferClassification) writer.WriteNull("PartIdentityRequirement");
+        else if (hasTransferClassification || hasLifecycleLineage) writer.WriteNull("PartIdentityRequirement");
+        if (content.LifecycleLineage is { } lifecycle)
+        {
+            writer.WritePropertyName("LifecycleLineage");
+            WriteLifecycleLineage(writer, lifecycle);
+        }
         writer.WriteNumber("AlgorithmExecutionTimeoutTicks", content.AlgorithmExecutionTimeout.Ticks);
         writer.WritePropertyName("AssetRequirements");
         writer.WriteStartArray();
@@ -280,7 +294,7 @@ internal static partial class RecipeDraftStorageCodec
         writer.WriteEndObject();
     }
 
-    private static void WriteBinding(Utf8JsonWriter writer, RecipeAlgorithmBinding binding)
+    private static void WriteBinding(Utf8JsonWriter writer, RecipeAlgorithmBinding binding, bool classified = false)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("Algorithm");
@@ -289,7 +303,7 @@ internal static partial class RecipeDraftStorageCodec
         writer.WriteString("Version", binding.Algorithm.Version);
         writer.WriteEndObject();
         writer.WritePropertyName("ConfigurationSchema");
-        WriteSchema(writer, binding.ConfigurationSchema);
+        WriteSchema(writer, binding.ConfigurationSchema, classified);
         writer.WritePropertyName("ResultSchema");
         WriteContractReference(writer, binding.ResultSchema);
         writer.WritePropertyName("OverlayContract");
@@ -297,9 +311,11 @@ internal static partial class RecipeDraftStorageCodec
         writer.WriteEndObject();
     }
 
-    private static void WriteSchema(Utf8JsonWriter writer, AlgorithmConfigurationSchema schema)
+    private static void WriteSchema(Utf8JsonWriter writer, AlgorithmConfigurationSchema schema,
+        bool classified = false)
     {
-        var classified = schema.Fields.Any(field => field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly);
+        var declaresClassification = classified || schema.Fields.Any(field =>
+            field.TransferClassification != AlgorithmConfigurationTransferClassification.LocalOnly);
         writer.WriteStartObject();
         writer.WriteString("Id", schema.Id);
         writer.WriteString("Version", schema.Version);
@@ -319,7 +335,8 @@ internal static partial class RecipeDraftStorageCodec
             WriteScalar(writer, field.AuthoringDefault);
             if (field.HelpText is null) writer.WriteNull("HelpText");
             else writer.WriteString("HelpText", field.HelpText);
-            if (classified) writer.WriteString("TransferClassification", field.TransferClassification.ToString());
+            if (declaresClassification)
+                writer.WriteString("TransferClassification", field.TransferClassification.ToString());
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
@@ -467,16 +484,19 @@ internal static partial class RecipeDraftStorageCodec
         if (root.ValueKind != JsonValueKind.Object) throw Invalid("RecipeDraftPayloadObjectInvalid");
         var format = Int32(root, "FormatVersion");
         EnsureObject(root, format is PartIdentityFormatVersion or TransferClassificationFormatVersion ? PartIdentityTopProperties :
+            format == LifecycleLineageFormatVersion ? LifecycleTopProperties :
             format == MigrationLineageFormatVersion ? MigrationTopProperties :
             format == CalibrationRequirementFormatVersion ? CalibrationTopProperties :
             format == ProviderExtensionFormatVersion ? ExtendedTopProperties : TopProperties,
             "RecipeDraftPayload");
         var canonical = Int32(root, "CanonicalizationVersion");
         if (format is not (FormatVersion or ProviderExtensionFormatVersion or CalibrationRequirementFormatVersion or
-            MigrationLineageFormatVersion or PartIdentityFormatVersion or TransferClassificationFormatVersion) ||
+            MigrationLineageFormatVersion or PartIdentityFormatVersion or TransferClassificationFormatVersion or
+            LifecycleLineageFormatVersion) ||
             canonical != CanonicalizationVersion)
             throw Invalid("RecipeDraftPayloadVersionUnsupported");
-        var binding = ReadBinding(RequiredObject(root, "Algorithm"), format == TransferClassificationFormatVersion);
+        var binding = ReadBinding(RequiredObject(root, "Algorithm"),
+            format is TransferClassificationFormatVersion or LifecycleLineageFormatVersion);
         var configuration = ReadConfiguration(RequiredObject(root, "Configuration"));
         if (!string.Equals(configuration.SchemaId, binding.ConfigurationSchema.Id, StringComparison.Ordinal) ||
             !string.Equals(configuration.SchemaVersion, binding.ConfigurationSchema.Version, StringComparison.Ordinal) ||
@@ -486,9 +506,19 @@ internal static partial class RecipeDraftStorageCodec
         var migration = format >= MigrationLineageFormatVersion &&
             RequiredValue(root, "MigrationLineage").ValueKind != JsonValueKind.Null
             ? ReadMigrationLineage(RequiredObject(root, "MigrationLineage")) : null;
+        RecipeDraftLifecycleLineage? lifecycle = null;
+        if (format >= LifecycleLineageFormatVersion)
+        {
+            // The field is mandatory in format 7: a lifecycle-derived Draft can never
+            // decode as if it carried no lifecycle provenance, and every earlier format
+            // rejects the unknown property instead of accepting a partial projection.
+            if (RequiredValue(root, "LifecycleLineage").ValueKind == JsonValueKind.Null)
+                throw Invalid("RecipeDraftLifecycleLineageRequired");
+            lifecycle = ReadLifecycleLineage(RequiredObject(root, "LifecycleLineage"));
+        }
         var content = new RecipeDraftContent(
-            migration, RequiredString(root, "RecipeKey"), RequiredString(root, "DisplayName"), binding, configuration,
-            RequiredString(root, "CameraRole"), ReadCamera(RequiredObject(root, "Camera")),
+            lifecycle, migration, RequiredString(root, "RecipeKey"), RequiredString(root, "DisplayName"),
+            binding, configuration, RequiredString(root, "CameraRole"), ReadCamera(RequiredObject(root, "Camera")),
             TimeSpan.FromTicks(Int64(root, "AlgorithmExecutionTimeoutTicks")),
             ReadAssets(RequiredArray(root, "AssetRequirements")),
             ReadPolicies(RequiredArray(root, "PolicyRequirements")),
@@ -498,7 +528,8 @@ internal static partial class RecipeDraftStorageCodec
                 ? ReadCameraExtension(RequiredObject(root, "CameraProviderExtension")) : null,
             format >= CalibrationRequirementFormatVersion
                 ? ReadCalibrations(RequiredArray(root, "CalibrationRequirements"), format >= MigrationLineageFormatVersion) : null,
-            format == PartIdentityFormatVersion || (format == TransferClassificationFormatVersion &&
+            format == PartIdentityFormatVersion || ((format is TransferClassificationFormatVersion or
+                LifecycleLineageFormatVersion) &&
                 RequiredValue(root, "PartIdentityRequirement").ValueKind != JsonValueKind.Null)
                 ? ReadPartIdentity(RequiredObject(root, "PartIdentityRequirement")) : null);
         var suppliedHash = RequiredString(root, "ContentHash");
@@ -518,6 +549,53 @@ internal static partial class RecipeDraftStorageCodec
         if (requirement.ContentHash != RequiredString(element, "ContentHash"))
             throw Invalid("RecipeDraftPartIdentityHashMismatch");
         return requirement;
+    }
+
+    /// <summary>
+    /// Rebuilds the exact preserved source transition. The lineage is provenance only:
+    /// decoding proves the copied evidence, never a lifecycle authority.
+    /// </summary>
+    private static RecipeDraftLifecycleLineage ReadLifecycleLineage(JsonElement element)
+    {
+        EnsureObject(element, LifecycleLineageProperties, "RecipeDraftLifecycleLineage");
+        var transitionElement = RequiredObject(element, "Transition");
+        EnsureObject(transitionElement, LifecycleTransitionProperties, "RecipeDraftLifecycleTransition");
+        var position = Int64(transitionElement, "Position");
+        if (position < 1) throw Invalid("RecipeDraftLifecycleTransitionInvalid");
+        var sourceElement = RequiredObject(element, "SourceDraft");
+        EnsureObject(sourceElement, LifecycleSourceDraftProperties, "RecipeDraftLifecycleSourceDraft");
+        var revision = Int64(sourceElement, "Revision");
+        if (revision < 1) throw Invalid("RecipeDraftLifecycleSourceDraftInvalid");
+        var kind = ParseEnum<RecipeLifecycleKind>(RequiredString(element, "Kind"),
+            "RecipeDraftLifecycleKindInvalid");
+        var sourceRecipe = RequiredValue(element, "SourceRecipe");
+        var recipe = sourceRecipe.ValueKind == JsonValueKind.Null
+            ? null : ReadLifecycleSourceRecipe(RequiredObject(element, "SourceRecipe"));
+        var releaseId = NullableGuid(element, "SourceReleaseId", "RecipeDraftLifecycleSourceReleaseInvalid");
+        var releaseHash = NullableString(element, "SourceReleaseRecordContentHash");
+        if (kind == RecipeLifecycleKind.DraftAbandoned &&
+            (recipe is not null || releaseId is not null || releaseHash is not null) ||
+            kind == RecipeLifecycleKind.ReleasedRetired &&
+            (recipe is null || releaseId is null || releaseHash is null))
+            throw Invalid("RecipeDraftLifecycleLineageSourceInvalid");
+        var lineage = new RecipeDraftLifecycleLineage(new RecipeLifecycleReference(position,
+                ParseGuid(RequiredString(transitionElement, "TransitionId"), "RecipeDraftLifecycleTransitionInvalid"),
+                RequiredString(transitionElement, "ContentHash")),
+            kind, new RecipeDraftRevisionReference(
+                ParseGuid(RequiredString(sourceElement, "DraftId"), "RecipeDraftLifecycleSourceDraftInvalid"),
+                revision, RequiredString(sourceElement, "RevisionContentHash")),
+            RequiredString(element, "SourceContentHash"), recipe, releaseId, releaseHash);
+        if (!string.Equals(lineage.ContentHash, RequiredString(element, "ContentHash"), StringComparison.Ordinal))
+            throw Invalid("RecipeDraftLifecycleLineageHashMismatch");
+        return lineage;
+    }
+
+    private static RecipeReference ReadLifecycleSourceRecipe(JsonElement element)
+    {
+        EnsureObject(element, LifecycleSourceRecipeProperties, "RecipeDraftLifecycleSourceRecipe");
+        var reference = new RecipeContractReference(RequiredString(element, "Id"),
+            RequiredString(element, "Version"), RequiredString(element, "ContentHash"));
+        return new RecipeReference(reference.Id, reference.Version, reference.ContentHash);
     }
 
     private static CameraProviderExtensionRequirement ReadCameraExtension(JsonElement element)
@@ -809,6 +887,46 @@ internal static partial class RecipeDraftStorageCodec
         writer.WriteEndObject();
     }
 
+    /// <summary>
+    /// Writes the complete preserved lifecycle source. Every field is restated on every
+    /// derived Draft: nothing is inherited from the origin's mutable current state.
+    /// </summary>
+    private static void WriteLifecycleLineage(Utf8JsonWriter writer, RecipeDraftLifecycleLineage lineage)
+    {
+        writer.WriteStartObject();
+        writer.WritePropertyName("Transition");
+        writer.WriteStartObject();
+        writer.WriteNumber("Position", lineage.Transition.Position);
+        writer.WriteString("TransitionId", lineage.Transition.TransitionId.ToString("D"));
+        writer.WriteString("ContentHash", lineage.Transition.ContentHash);
+        writer.WriteEndObject();
+        writer.WriteString("Kind", lineage.Kind.ToString());
+        writer.WritePropertyName("SourceDraft");
+        writer.WriteStartObject();
+        writer.WriteString("DraftId", lineage.SourceDraft.DraftId.ToString("D"));
+        writer.WriteNumber("Revision", lineage.SourceDraft.Revision);
+        writer.WriteString("RevisionContentHash", lineage.SourceDraft.RevisionContentHash);
+        writer.WriteEndObject();
+        writer.WriteString("SourceContentHash", lineage.SourceContentHash);
+        writer.WritePropertyName("SourceRecipe");
+        if (lineage.SourceRecipe is { } recipe)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("Id", recipe.Id);
+            writer.WriteString("Version", recipe.Version);
+            writer.WriteString("ContentHash", recipe.ContentHash);
+            writer.WriteEndObject();
+        }
+        else writer.WriteNullValue();
+        if (lineage.SourceReleaseId is { } releaseId) writer.WriteString("SourceReleaseId", releaseId.ToString("D"));
+        else writer.WriteNull("SourceReleaseId");
+        if (lineage.SourceReleaseRecordContentHash is { } releaseHash)
+            writer.WriteString("SourceReleaseRecordContentHash", releaseHash);
+        else writer.WriteNull("SourceReleaseRecordContentHash");
+        writer.WriteString("ContentHash", lineage.ContentHash);
+        writer.WriteEndObject();
+    }
+
     private static RecipeDraftMigrationLineage ReadMigrationLineage(JsonElement element)
     {
         EnsureObject(element, MigrationLineageProperties, "RecipeDraftMigrationLineage");
@@ -928,6 +1046,14 @@ internal static partial class RecipeDraftStorageCodec
         return value.GetString();
     }
 
+    private static Guid? NullableGuid(JsonElement element, string name, string reason)
+    {
+        var value = RequiredValue(element, name);
+        if (value.ValueKind == JsonValueKind.Null) return null;
+        if (value.ValueKind != JsonValueKind.String) throw Invalid(reason);
+        return ParseGuid(value.GetString()!, reason);
+    }
+
     private static int Int32(JsonElement element, string name)
     {
         var value = RequiredValue(element, name);
@@ -1036,7 +1162,13 @@ internal static partial class RecipeDraftStorageCodec
     private static readonly string[] CalibrationTopProperties = ExtendedTopProperties.Concat(new[] { "CalibrationRequirements" }).ToArray();
     private static readonly string[] MigrationTopProperties = CalibrationTopProperties.Concat(new[] { "MigrationLineage" }).ToArray();
     private static readonly string[] PartIdentityTopProperties = MigrationTopProperties.Concat(new[] { "PartIdentityRequirement" }).ToArray();
+    private static readonly string[] LifecycleTopProperties = PartIdentityTopProperties.Concat(new[] { "LifecycleLineage" }).ToArray();
     private static readonly string[] PartIdentityProperties = { "Mode", "LogicalRole", "Format", "ContentHash" };
+    private static readonly string[] LifecycleLineageProperties = { "Transition", "Kind", "SourceDraft",
+        "SourceContentHash", "SourceRecipe", "SourceReleaseId", "SourceReleaseRecordContentHash", "ContentHash" };
+    private static readonly string[] LifecycleTransitionProperties = { "Position", "TransitionId", "ContentHash" };
+    private static readonly string[] LifecycleSourceDraftProperties = { "DraftId", "Revision", "RevisionContentHash" };
+    private static readonly string[] LifecycleSourceRecipeProperties = { "Id", "Version", "ContentHash" };
     private static readonly string[] CalibrationProperties = { "LogicalCameraRole", "Kind", "LogicalPurpose", "CoefficientContract", "AcceptancePolicy" };
     private static readonly string[] CameraExtensionProperties = { "Provider", "ContractId", "ContractVersion", "ConfigurationContentHash" };
     private static readonly string[] CameraProviderProperties = { "Id", "Version", "AdapterPackageId", "AdapterVersion" };

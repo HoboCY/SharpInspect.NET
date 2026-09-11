@@ -25,7 +25,7 @@ internal sealed partial class SqliteCommandStore
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException(
             "AuditPolicyNotConfigured");
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-        AuditChainDatabase.Require(schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion,
+        AuditChainDatabase.Require(schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
             schema > ProductionRecoveryStoreOptions.SchemaVersion
                 ? "TraceStoragePolicyGovernedMigrationRequired"
                 : "TraceStoragePolicyConfigurationRequired");
@@ -57,7 +57,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections,
                 productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities,
-                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections);
+                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections, recipeLifecycleOptions: options.RecipeLifecycle);
 
         if (options.AlgorithmResultArchive is not null)
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, report, deadline);
@@ -88,7 +88,7 @@ internal sealed partial class SqliteCommandStore
         if (options.RecipeActivations is not null)
             AuditChainDatabase.RequireFullRecipeActivationVerification(database, report, deadline,
                 options.RecipeActivations, options.RecipeReleases, options.PlcResultContracts,
-                options.CalibrationGovernance);
+                options.CalibrationGovernance, recipeLifecycleOptions: options.RecipeLifecycle);
         if (options.PreviewSessions is not null)
             AuditChainDatabase.RequireFullPreviewSessionVerification(database, report, deadline,
                 options.PreviewSessions);

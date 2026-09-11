@@ -15,7 +15,7 @@ internal sealed partial class LocalAuthorizationService
         {
             var write = await _store.UpdateRecipeActivationCommandAsync(command, (identity, state, duplicate) =>
             {
-                var previous = ActivationCurrent(state.Records, kind);
+                var previous = ActivationCurrent(state, kind);
                 if (capability.Check(command, epoch, state) is { } capabilityFailure)
                     return new(new RecipeActivationAdmissionDecision(new(command.CorrelationId, CommandDisposition.Rejected,
                         capabilityFailure, AuditPersistence.NotAttempted, attempt)), Array.Empty<IdentityAuditEvent>(), NoMutation: true);
@@ -27,6 +27,7 @@ internal sealed partial class LocalAuthorizationService
                 if (reason == "Authorized" && cancellation.IsCancellationRequested) reason = "RecipeActivationCancelled";
                 if (reason == "Authorized" && state.PendingAdmission is not null) reason = "RecipeActivationRecoveryRequired";
                 if (reason == "Authorized" && command.ExpectedActive != previous?.Reference) reason = "RecipeActivationCurrentConflict";
+                if (reason == "Authorized") reason = ActivationLifecycleFailure(state, command) ?? reason;
                 if (reason == "Authorized") reason = ValidateHistoricalSelection(command, previous) ?? "Authorized";
                 if (reason == "Authorized" && !state.Releases.Any(value => value.Recipe == command.Candidate &&
                         value.ReleaseId == command.ReleaseId && value.ContentHash == command.ReleaseRecordContentHash))
@@ -75,7 +76,8 @@ internal sealed partial class LocalAuthorizationService
                 if (cancellation.IsCancellationRequested) return Refuse("RecipeActivationCancelled");
                 if (ActivationAuthorizationPolicy != admitted.AuthorizationPolicy)
                     return Refuse("RecipeActivationAuthorizationChanged");
-                var previous = ActivationCurrent(state.Records, admitted.EvidenceKind);
+                if (ActivationLifecycleFailure(state, command) is { } lifecycleFailure) return Refuse(lifecycleFailure);
+                var previous = ActivationCurrent(state, admitted.EvidenceKind);
                 if (previous?.Reference != admitted.PreviousActivation || previous?.SuccessfulSnapshot?.ContentHash !=
                     admitted.PreviousSnapshotContentHash) return Refuse("RecipeActivationCurrentConflict");
                 if (ValidateHistoricalSelection(command, previous) is { } historicalFailure) return Refuse(historicalFailure);

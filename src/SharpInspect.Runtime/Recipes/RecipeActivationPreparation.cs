@@ -82,9 +82,13 @@ internal sealed class RecipeActivationPreparation
         }
         var bound = new PlcResultContractBinder().Bind(command.Candidate, algorithm.Identity,
             algorithm.ResultSchema, current.Revision.Contract);
-        checks.Observe(7, bound.Bound && bound.Binding is not null, bound.ReasonCode,
+        var publishedBinding = bound.Bound && bound.Binding is not null && current.Revision.Bindings.Any(value =>
+            value.ReleaseId == release.Record.ReleaseId && value.ReleaseRecordContentHash == release.Record.ContentHash &&
+            value.Binding.ContentHash == bound.Binding.ContentHash);
+        checks.Observe(7, publishedBinding, bound.Bound && !publishedBinding
+                ? "RecipeActivationPlcReleaseBindingMissing" : bound.ReasonCode,
             current.Revision.Reference.ContentHash, bound.Binding?.ContentHash);
-        if (!bound.Bound || bound.Binding is null) return null;
+        if (!publishedBinding || bound.Binding is null) return null;
         if (content.CalibrationRequirements.Count == 0)
             checks.Calibration(RecipeActivationCalibrationEvaluator.EvaluateRecords(content,
                 command.CalibrationSelections, null, null, Array.Empty<object>(), DateTimeOffset.UtcNow), false);

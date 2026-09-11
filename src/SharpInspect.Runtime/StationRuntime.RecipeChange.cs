@@ -38,7 +38,7 @@ public sealed partial class StationRuntime
             {
                 capability = TryReservePlcRecipeActivation(owner, request, selection, out var reason);
                 if (capability is null)
-                    rejection = reason == "RecipeActivationRecipeRetired"
+                    rejection = reason is "RecipeActivationRecipeRetired" or "RecipeRetired"
                         ? new(RecipeChangeOutcome.FailedActivation, RecipeChangeReason.RecipeRetired, reason)
                         : new(RecipeChangeOutcome.RejectedBusy, RecipeChangeReason.RuntimeBusy, reason);
             }
@@ -103,7 +103,7 @@ public sealed partial class StationRuntime
                     decision = new(RecipeChangeOutcome.RejectedBusy, RecipeChangeReason.RuntimeBusy, result.Outcome.ReasonCode);
                 else
                     decision = new(RecipeChangeOutcome.FailedActivation,
-                        result.Outcome.ReasonCode == "RecipeActivationRecipeRetired" ? RecipeChangeReason.RecipeRetired :
+                        result.Outcome.ReasonCode is "RecipeActivationRecipeRetired" or "RecipeRetired" ? RecipeChangeReason.RecipeRetired :
                         result.Record?.Restoration.State == RecipeActivationRestorationState.Failed ? RecipeChangeReason.RestorationFailed :
                         token.IsCancellationRequested ? RecipeChangeReason.Cancelled : RecipeChangeReason.ActivationFailed,
                         result.Outcome.ReasonCode, result.Record?.Reference);
@@ -180,6 +180,7 @@ public sealed partial class StationRuntime
     {
         var communication = owner.Communication!;
         var signals = await communication.ReadAsync(channel, token).ConfigureAwait(false);
+        await ClearRecipeRetirementReadyAsync(owner, output, token).ConfigureAwait(false);
         if (owner.RecipeChange is not { } handshake)
         {
             ObserveProductionArmInputs(owner, signals, dedicatedClear: true);

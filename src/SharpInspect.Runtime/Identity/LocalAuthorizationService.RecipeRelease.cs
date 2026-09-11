@@ -61,6 +61,9 @@ internal sealed partial class LocalAuthorizationService
             if (reason == "Authorized" && duplicate) reason = "DuplicateCorrelationId";
             if (reason == "Authorized" && epoch == Guid.Empty) reason = "RecipeReleaseRuntimeUnavailable";
             if (reason == "Authorized" && callerCancellation.IsCancellationRequested) reason = "RecipeReleaseCancelled";
+            if (reason == "Authorized" && RecipeLifecycleProjection.Abandonment(
+                release.Lifecycle ?? Array.Empty<RecipeLifecycleRecord>(), command.DraftId) is not null)
+                reason = "RecipeDraftAbandoned";
             if (reason == "Authorized" && command.GovernancePolicy != options!.Policy.Reference)
                 reason = "RecipeReleaseGovernancePolicyMismatch";
             var source = release.DraftHistory.Where(value => value.DraftId == command.DraftId)

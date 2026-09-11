@@ -236,6 +236,21 @@ public static class ServiceCollectionExtensions
                     p.GetRequiredService<LocalAuthorizationService>(),
                     p.GetRequiredService<IRecipeDraftHistoryQuery>()));
                 services.TryAddSingleton<IRecipeDraftEditor>(p => p.GetRequiredService<RecipeDraftService>());
+                if (options.RecipeLifecycle is not null)
+                {
+                    services.TryAddSingleton<IRecipeLifecycleHistoryQuery>(_ => new SqliteRecipeLifecycleQuery(options));
+                    services.TryAddSingleton<IRecipeDraftDerivationService>(p => new RecipeDraftDerivationService(
+                        p.GetRequiredService<RecipeDraftService>(), p.GetRequiredService<IRecipeLifecycleHistoryQuery>()));
+                    services.TryAddSingleton<IRecipeLifecycleService>(p => new RecipeLifecycleService(
+                        p.GetRequiredService<IRecipeLifecycleHistoryQuery>(), p.GetService<IRecipeActivationQuery>(),
+                        p.GetRequiredService<LocalAuthorizationService>(), options,
+                        p.GetService<RecipeLifecycleRuntimeOptions>() ?? new RecipeLifecycleRuntimeOptions(),
+                        () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync(),
+                        (command, token) => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
+                            ? authority.ReserveRecipeRetirementAsync(command, token)
+                            : ValueTask.FromResult(new RecipeRetirementRuntimeLease(Guid.Empty,
+                                "RecipeLifecycleRuntimeUnavailable", token))));
+                }
                 if (options.RecipeTransfers is not null)
                 {
                     services.TryAddSingleton<IRecipeTransferHistoryQuery>(_ => new SqliteRecipeTransferQuery(options));
@@ -250,7 +265,8 @@ public static class ServiceCollectionExtensions
                 services.TryAddSingleton<IAlgorithmConfigurationMigrationService>(p =>
                     new AlgorithmConfigurationMigrationService(p.GetRequiredService<RecipeDraftService>(),
                         p.GetRequiredService<LocalAuthorizationService>(),
-                        p.GetRequiredService<AlgorithmConfigurationMigrationRegistry>(), options));
+                        p.GetRequiredService<AlgorithmConfigurationMigrationRegistry>(), options,
+                        p.GetService<IRecipeLifecycleHistoryQuery>()));
                 if (options.RecipeReleases is not null)
                 {
                     services.TryAddSingleton<IReleasedRecipeQuery>(_ => new SqliteReleasedRecipeQuery(options));
@@ -352,6 +368,7 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
+            if (p.GetService<IRecipeLifecycleService>() is { } lifecycle) runtime.ConfigureRecipeLifecycleService(lifecycle);
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);
             if (options.RecipeActivations is not null)
                 runtime.ConfigureRecipeActivationService(p.GetRequiredService<RecipeActivationService>());

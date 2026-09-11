@@ -142,7 +142,7 @@ public sealed class SqliteRecipeTransferQuery : IRecipeTransferHistoryQuery
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             RecipeTransferReadGuard.RequireConfiguration(schema, _options);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
-            AuditChainDatabase.Require(schema is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion, "StoreSchemaTooNew");
+            AuditChainDatabase.Require(schema is RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion, "StoreSchemaTooNew");
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             SqliteCommandStore.VerifyRecipeTransferReadGuard(database, _options, deadline);
             SqliteNative.EnsureDeadline(deadline, cancellationToken);

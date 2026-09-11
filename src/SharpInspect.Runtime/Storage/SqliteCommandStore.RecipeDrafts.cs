@@ -172,7 +172,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -204,7 +204,7 @@ internal sealed partial class SqliteCommandStore
              if (_options.RecipeActivations is not null)
                  AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
                      _options.RecipeActivations, _options.RecipeReleases, _options.PlcResultContracts,
-                     _options.CalibrationGovernance);
+                     _options.CalibrationGovernance, recipeLifecycleOptions: _options.RecipeLifecycle);
              if (_options.PreviewSessions is not null)
                  AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                      _options.PreviewSessions);
@@ -248,6 +248,7 @@ internal sealed partial class SqliteCommandStore
             }
 
             var head = ReadRecipeDraftHead(database, work.Request.DraftId, deadline);
+            ValidateRecipeDraftLifecycleForSave(database, work, head, deadline);
             ValidateRecipeDraftLineageForSave(database, work, head, deadline);
             state.Revision = checked(state.Revision + 1);
             EnsureRecipeDraftNotCancelled(work);
@@ -457,7 +458,7 @@ internal sealed partial class SqliteCommandStore
              CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
              RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
              RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-             ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion;
+             ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion;
 
         // Stream one draft row at a time. A valid store may contain up to the
         // configured 256 MiB payload budget; materializing that history here
@@ -472,6 +473,7 @@ internal sealed partial class SqliteCommandStore
             string? previousHash = null;
             long expectedRevision = 1;
             RecipeDraftMigrationLineage? currentLineage = null;
+            RecipeDraftLifecycleLineage? lifecycleLineage = null;
             while (SqliteNative.Step(database, statement, deadline) == raw.SQLITE_ROW)
             {
                 var row = ReadRecipeDraftRow(statement);
@@ -481,11 +483,21 @@ internal sealed partial class SqliteCommandStore
                     previousHash = null;
                     expectedRevision = 1;
                     currentLineage = null;
+                    lifecycleLineage = null;
                 }
                 AuditChainDatabase.Require(row.Revision == expectedRevision++, "RecipeDraftRevisionGap");
                 AuditChainDatabase.Require(string.Equals(row.PreviousRevisionContentHash, previousHash,
                     StringComparison.Ordinal), "RecipeDraftPreviousRevisionMismatch");
                 var content = DecodeAndValidateRecipeDraftRow(row, options, cameraSetupEnabled);
+                if (row.Revision == 1)
+                {
+                    lifecycleLineage = content.LifecycleLineage;
+                    if (lifecycleLineage is not null)
+                        ValidateRecipeDraftLifecycleSource(database, row.DraftId, row.Position, content, options,
+                            cameraSetupEnabled, deadline, requireAuditOrder: true);
+                }
+                else if (content.LifecycleLineage?.ContentHash != lifecycleLineage?.ContentHash)
+                    throw new InvalidOperationException("RecipeDraftLifecycleLineageImmutable");
                 currentLineage = ValidateRecipeDraftLineageHistory(row, content, currentLineage, migrations);
                 var expectedHash = ComputeRevisionHash(row.DraftId, row.Revision, row.OperationId,
                     row.PreviousRevisionContentHash, content.ContentHash, row.PayloadHash,
@@ -515,7 +527,7 @@ internal sealed partial class SqliteCommandStore
             CalibrationSessionStoreOptions.SchemaVersion or CalibrationGovernanceStoreOptions.SchemaVersion or
             RecipeReleaseStoreOptions.SchemaVersion or PlcResultContractStoreOptions.SchemaVersion or
             RecipeActivationStoreOptions.SchemaVersion or PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion);
+            ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion);
         return auditPayload;
     }
 

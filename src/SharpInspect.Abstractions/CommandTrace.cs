@@ -59,7 +59,9 @@ public enum AuditedCommandKind
     ImportRecipeTransfer = 51,
     PublishTraceStoragePolicy = 52,
     ManualProductionRecovery = 53,
-    ChangeRecipeSelection = 54
+    ChangeRecipeSelection = 54,
+    AbandonRecipeDraft = 55,
+    RetireReleasedRecipe = 56
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

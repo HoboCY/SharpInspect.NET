@@ -28,7 +28,8 @@ internal sealed record ManualInspectionCommandState(
     bool RecoveryRequired,
     ManualInspectionSessionHeader? PendingHeader = null,
     CommandAuditFact? StartCommandFact = null,
-    IReadOnlyList<CommandAuditFact>? PendingCommandFacts = null);
+    IReadOnlyList<CommandAuditFact>? PendingCommandFacts = null,
+    string? LifecycleFailure = null);
 
 /// <summary>One command-owned append operation for the independent Manual ledger.</summary>
 internal sealed record ManualInspectionMutation(

@@ -237,6 +237,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitRecipeSelectionAsync(selection, cancellationToken).ConfigureAwait(false);
         if (command is ReleaseRecipeCommand release)
             return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
+        if (command is AbandonRecipeDraftCommand or RetireReleasedRecipeCommand)
+            return await SubmitRecipeLifecycleAsync(command, cancellationToken).ConfigureAwait(false);
         if (command is CalibrationImportCommand import)
             return await SubmitCalibrationImportAsync(import, cancellationToken).ConfigureAwait(false);
         if (command is ArmProductionCommand productionArm && ProductionAdmissionEnabled)

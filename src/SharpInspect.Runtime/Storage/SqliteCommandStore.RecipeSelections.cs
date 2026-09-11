@@ -8,7 +8,8 @@ using SQLitePCL;
 namespace SharpInspect.Runtime.Storage;
 
 internal sealed record RecipeSelectionCommandState(bool Enabled, IReadOnlyList<RecipeSelectionRevision> Revisions,
-    IReadOnlyList<RecipeReleaseRecord> Releases, long ReleaseHighWatermark, RecipeContractReference? PlcContract);
+    IReadOnlyList<RecipeReleaseRecord> Releases, long ReleaseHighWatermark, RecipeContractReference? PlcContract,
+    IReadOnlyList<RecipeLifecycleRecord>? Lifecycle = null);
 internal sealed record RecipeSelectionMutation(RecipeSelectionRevision Revision);
 
 internal sealed partial class SqliteCommandStore
@@ -102,7 +103,7 @@ internal sealed partial class SqliteCommandStore
         var releases = ReadRecipeReleaseRows(database, _options.RecipeReleases!, deadline).Select(value => value.Record).ToArray();
         var contract = ReadPlcResultContractRows(database, _options.PlcResultContracts!, deadline).LastOrDefault()?.Revision.Reference;
         return new(true, rows.Select(value => value.Revision).ToArray(), releases,
-            releases.LastOrDefault()?.Position ?? 0, contract);
+            releases.LastOrDefault()?.Position ?? 0, contract, ReadRecipeLifecycleRecords(database, _options.RecipeLifecycle, deadline));
     }
 
     private void AppendRecipeSelectionIdentityMutation(sqlite3 database, IdentityUpdate update,

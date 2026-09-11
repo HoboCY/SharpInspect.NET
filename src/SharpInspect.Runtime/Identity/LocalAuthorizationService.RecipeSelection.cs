@@ -60,6 +60,10 @@ internal sealed partial class LocalAuthorizationService
             if (reason == "Authorized" && duplicate) reason = "DuplicateCorrelationId";
             if (reason == "Authorized" && epoch == Guid.Empty) reason = "RecipeSelectionRuntimeUnavailable";
             if (reason == "Authorized" && cancellationToken.IsCancellationRequested) reason = "RecipeSelectionChangeCancelled";
+            if (reason == "Authorized" && command.Map is { } proposedMap && proposedMap.Entries.Any(entry =>
+                RecipeLifecycleProjection.Retirement(selections.Lifecycle ?? Array.Empty<RecipeLifecycleRecord>(),
+                    entry.Recipe, entry.ReleaseId, entry.ReleaseRecordContentHash) is not null))
+                reason = "RecipeRetired";
             if (reason == "Authorized" && command.ExpectedCurrent != selections.Revisions.LastOrDefault()?.Reference)
                 reason = "RecipeSelectionCurrentConflict";
             if (reason == "Authorized" && preparation.Failure is not null) reason = preparation.Failure;

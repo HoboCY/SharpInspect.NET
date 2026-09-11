@@ -217,7 +217,8 @@ internal sealed class RecipeSelectionService : IRecipeSelectionService
                 return RecipeSelectionPreparation.Rejected("RecipeSelectionCurrentPolicyMismatch");
             // Calibration dependencies stay activatable-deferred here: no historical or
             // latest profile is ever chosen, and the real activation checks remain
-            // authoritative. Retirement is T48 and is deliberately not asserted.
+            // authoritative. The writer independently rechecks lifecycle availability
+            // for every proposed target before committing the map.
             var bound = _binder.Bind(release.Recipe, algorithm.Identity, algorithm.ResultSchema, plcContract.Contract);
             if (!bound.Bound || bound.Binding is null)
                 return RecipeSelectionPreparation.Rejected(bound.ReasonCode);

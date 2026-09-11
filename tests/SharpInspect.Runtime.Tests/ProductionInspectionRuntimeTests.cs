@@ -162,7 +162,7 @@ public sealed partial class ManualInspectionRuntimeTests
     {
         var grant = await harness.Fixture.Authorization.ReauthenticateAsync(new(Guid.NewGuid(), harness.Invocation(),
             new(permission, correlation, target, kind), harness.Fixture.Password));
-        Assert.True(grant.Succeeded, grant.ReasonCode);
+        Assert.True(grant.Succeeded, grant.ReasonCode + "; store=" + harness.Fixture.Store.Integrity?.ReasonCode);
         return grant.GrantId;
     }
 
@@ -176,7 +176,8 @@ public sealed partial class ManualInspectionRuntimeTests
             if (predicate(state)) return;
             await Task.Delay(25);
         }
-        throw new XunitException(reason + ": " + state?.ArmState + "/" + state?.Recovery + "/" +
+        throw new XunitException(reason + ": " + state?.ArmState + "/" + state?.Recovery +
+            "/Store=" + harness.Fixture.Store.Integrity?.ReasonCode + "/" +
             string.Join(";", state?.ProductionAdmission?.Gates.Where(gate => gate.Status != ProductionAdmissionGateStatus.Passed)
                 .Select(gate => gate.Gate + ":" + gate.ReasonCode) ?? Array.Empty<string>()));
     }

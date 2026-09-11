@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Integrity;
+using SharpInspect.Runtime.Recipes;
 using SQLitePCL;
 
 namespace SharpInspect.Runtime.Storage;
@@ -157,7 +158,7 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
             AuditChainDatabase.Require(schema is RecipeActivationStoreOptions.SchemaVersion or
                     PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion,
+                    ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
                 schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "RecipeActivationGovernedMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
@@ -198,10 +199,10 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                  contractOptions: contractOptions,
                  activationOptions: activationOptions,
                   previewOptions: schema is PreviewSessionStoreOptions.SchemaVersion or CalibrationImportStoreOptions.SchemaVersion or
-                      ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion
+                      ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
                       ? _options.PreviewSessions : null,
                   importOptions: _options.CalibrationImports,
-                  manualOptions: schema is ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion
+                  manualOptions: schema is ManualInspectionStoreOptions.SchemaVersion or ProductionAdmissionStoreOptions.SchemaVersion or StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
                       ? _options.ManualInspections : null,
                   productionAdmissionOptions: _options.ProductionAdmission,
                 stationQualificationOptions: _options.StationQualifications,
@@ -212,7 +213,7 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -245,7 +246,7 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
                 contractOptions);
              AuditChainDatabase.RequireFullRecipeActivationVerification(database, verification, deadline,
                  activationOptions, _options.RecipeReleases, _options.PlcResultContracts,
-                 _options.CalibrationGovernance);
+                 _options.CalibrationGovernance, recipeLifecycleOptions: _options.RecipeLifecycle);
              if (_options.PreviewSessions is not null)
                  AuditChainDatabase.RequireFullPreviewSessionVerification(database, verification, deadline,
                      _options.PreviewSessions);
@@ -268,9 +269,11 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
             var releaseRecords = releases.Select(value => value.Record).ToArray();
             var contractRecords = contracts.Select(value => value.Revision).ToArray();
             SqliteCommandStore.ValidateRecipeActivationHistory(database, activationOptions, rows,
-                releaseRecords, contractRecords, deadline);
+                releaseRecords, contractRecords, deadline, _options.RecipeLifecycle);
             var records = rows.Select(value => value.Record).ToArray();
-            var (current, pending) = CurrentAndPending(records);
+            var lifecycle = _options.RecipeLifecycle is null ? Array.Empty<RecipeLifecycleRecord>() :
+                SqliteCommandStore.ReadRecipeLifecycleCommandState(database, _options, deadline).Lifecycle;
+            var (current, pending) = CurrentAndPending(records, lifecycle);
 
             var through = records.Length == 0 ? 0 : records[^1].Position;
             if (filter.ThroughPosition is { } requested && requested > through)
@@ -329,9 +332,9 @@ public sealed class SqliteRecipeActivationQuery : IRecipeActivationQuery
     }
 
     private static (RecipeActivationRecord? Current, IReadOnlyList<RecipeActivationRecord> Pending)
-        CurrentAndPending(IReadOnlyList<RecipeActivationRecord> records)
+        CurrentAndPending(IReadOnlyList<RecipeActivationRecord> records, IReadOnlyList<RecipeLifecycleRecord> lifecycle)
     {
-        var current = records.Where(value => value.CanBeActive).OrderBy(value => value.Position).LastOrDefault();
+        var current = RecipeLifecycleProjection.EffectiveCurrent(records, lifecycle);
         var admissions = records.Where(value => value.Outcome.State == RecipeActivationOutcomeState.Admitted)
             .ToDictionary(value => value.Reference, value => value);
         var terminalReferences = records.Where(value => value.IsTerminal)

@@ -149,7 +149,7 @@ public sealed class SqlitePartIdentityHistoryQuery : IPartIdentityHistoryQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema is not (PartIdentityStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion))
+            if (schema is not (PartIdentityStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionRecoveryStoreOptions.SchemaVersion
                     ? "PartIdentityGovernedMigrationRequired"
                     : "PartIdentityConfigurationRequired");
@@ -182,7 +182,7 @@ public sealed class SqlitePartIdentityHistoryQuery : IPartIdentityHistoryQuery
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
             AuditChainDatabase.RequireFullPartIdentityVerification(database, verification,
                 deadline, _options.PartIdentities);
             SqliteNative.EnsureDeadline(deadline, cancellationToken);

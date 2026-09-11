@@ -32,10 +32,20 @@ internal static partial class AuditChainDatabase
             Require(armOptions is null && tableCount == 0, "ProductionArmGovernedMigrationRequired");
             return null;
         }
-        Require(armOptions is not null && tableCount == 2, "ProductionArmConfigurationRequired");
-        // The arm ledger always requires the schema-22 report ledger and the
-        // human identity/audit stack; every other gate may be absent.
-        Require(admissionOptions is not null, "ProductionAdmissionConfigurationRequired");
+        if (schemaVersion == ProductionArmStoreOptions.SchemaVersion)
+        {
+            // The schema-32 store always carries the arm ledger and requires the
+            // schema-22 report ledger and the human identity/audit stack.
+            Require(armOptions is not null && tableCount == 2, "ProductionArmConfigurationRequired");
+            Require(admissionOptions is not null, "ProductionAdmissionConfigurationRequired");
+        }
+        else
+        {
+            // A later schema keeps every earlier ledger optional, so the arm ledger
+            // is present only when its option is declared and its tables match.
+            Require(tableCount == (armOptions is null ? 0 : 2), "ProductionArmConfigurationRequired");
+            if (armOptions is null) return null;
+        }
         SqliteCommandStore.RequireConfiguredProductionArm(database, armOptions!, deadline);
         Require(Scalar(database, "SELECT COUNT(*) FROM production_arm_store_config;", deadline) == 1,
             "ProductionArmConfigurationMismatch");
@@ -107,7 +117,8 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, string kind, byte[] payload,
         ProductionArmStoreOptions options, StoreDeadline deadline, long? productionArmReserveOverride = null)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) == ProductionArmStoreOptions.SchemaVersion,
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
             "ProductionArmSchemaRequired");
         Require(kind is "ProductionArmStoreActivated" or "ProductionArmEvent", "ProductionArmAuditKindInvalid");
         options.Validate();

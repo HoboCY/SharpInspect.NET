@@ -53,7 +53,9 @@ public enum Permission : ushort
     /// <summary>Run an explicitly admitted non-production Manual Inspection Session.</summary>
     RunManualInspection = 36,
     ImportRecipe = 37,
-    ExportRecipe = 38
+    ExportRecipe = 38,
+    /// <summary>Irreversibly abandon a Recipe Draft while retaining its complete history.</summary>
+    AbandonRecipeDraft = 39
 }
 
 /// <summary>

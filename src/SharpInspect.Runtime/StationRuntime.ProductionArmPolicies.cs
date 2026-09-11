@@ -43,7 +43,8 @@ public sealed partial class StationRuntime
         _snapshot.ProductionAdmission?.CanArm == true && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
         _admissionGeneration == capture.Generation &&
         string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
-        !LocalStopPendingLocked && _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
+        !LocalStopPendingLocked && _activationReservation is null &&
+        _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
 
     private void ConsiderStartupProductionArmLocked(ProductionInspectionOwner owner)
     {
@@ -58,7 +59,8 @@ public sealed partial class StationRuntime
         // whole start-up decision; spending the start-up cause here would collide with
         // the post-activation attempt that closes that same episode.
         if (_recipeChangeInProgress || owner.RecipeChangeRequest is not null ||
-            _activationReservation is { PlcOwned: true } || _automaticProductionArm is { Terminal: false })
+            _activationReservation is { PlcOwned: true } or { Purpose: ActivationReservationPurpose.Retirement } ||
+            _automaticProductionArm is { Terminal: false })
             return;
         _automaticProductionArm = CreateAutomaticProductionArmLocked(owner, deployment,
             ProductionArmCause.Startup, null, _currentRecipeActivationReference);

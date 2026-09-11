@@ -36,7 +36,8 @@ public sealed class AuthorizationPolicy
             not Permission.AcknowledgeAlarm and not Permission.EditRecipeDraft and not Permission.RunCalibration and
             not Permission.ManageCalibrationAcceptancePolicy and
             not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
-            not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe)
+            not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
+            not Permission.AbandonRecipeDraft)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -140,7 +141,7 @@ public sealed class AuthorizationPolicy
         // that policy's bytes merely because the account gains the permission.
         return (permission is Permission.RunCalibration or
             Permission.ManageCalibrationAcceptancePolicy or
-            Permission.RecordPhysicalCalibrationVerification) ||
+            Permission.RecordPhysicalCalibrationVerification or Permission.AbandonRecipeDraft) ||
             _stepUpPermissions.Contains(permission);
     }
 
@@ -196,7 +197,8 @@ public sealed class AuthorizationPolicy
             .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration and
                 not Permission.ManageCalibrationAcceptancePolicy and
                 not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
-                not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe)
+                not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
+                not Permission.AbandonRecipeDraft)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

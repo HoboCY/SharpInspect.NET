@@ -408,9 +408,14 @@ public sealed partial class ManualInspectionRuntimeTests
             ModbusProductionArmStatusBinding? productionArmStatusBinding = null,
             TestProductionArmMaintenanceProvider? productionArmMaintenance = null,
             ProductionArmMaintenanceState productionArmMaintenanceState = ProductionArmMaintenanceState.ManualArmConfirmed,
-            string? productionArmMaintenanceJournalHead = null)
+            string? productionArmMaintenanceJournalHead = null, bool enableRecipeLifecycle = false)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
+            if (enableRecipeLifecycle)
+                policy = new AuthorizationPolicy("V148.Lifecycle.Authorization", "1",
+                    policy.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
+                        ? pair.Value.Concat(new[] { Permission.AbandonRecipeDraft, Permission.RetireRecipe }).Distinct()
+                        : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             if (!allowPartIdentityCorrection)
                 policy = new AuthorizationPolicy("V143.CorrectionDenied.Authorization", "1",
                     policy.RoleBundles.ToDictionary(pair => pair.Key,
@@ -450,7 +455,8 @@ public sealed partial class ManualInspectionRuntimeTests
                 recipeSelections: recipeChangeBinding is null ? null : new RecipeSelectionStoreOptions(),
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
                     { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) },
-                productionArming: productionPeer is null ? null : productionArming);
+                productionArming: productionPeer is null ? null : productionArming,
+                recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
@@ -678,7 +684,7 @@ public sealed partial class ManualInspectionRuntimeTests
             return result;
         }
 
-        private static RecipeDraftDocument Encode(RecipeDraftContent content)
+        internal static RecipeDraftDocument Encode(RecipeDraftContent content)
         {
             Assert.True(RecipeDraftStorageCodec.TryEncodeContent(content, out var document,
                 out var reason), reason);
@@ -855,6 +861,13 @@ public sealed partial class ManualInspectionRuntimeTests
         internal Task NextCreateEntered => _nextCreateEntered.Task;
         internal void HoldNextCreate() => Interlocked.Exchange(ref _holdNextCreate, 1);
         internal void ReleaseNextCreate() => _nextCreateReleased.TrySetResult(true);
+        private int _holdNextDispose;
+        private readonly TaskCompletionSource<bool> _disposeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _disposeReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Task DisposeEntered => _disposeEntered.Task;
+        internal void HoldNextDispose() => Interlocked.Exchange(ref _holdNextDispose, 1);
+        internal void ReleaseDispose() => _disposeReleased.TrySetResult(true);
+        internal bool RejectCurrentConfiguration { get; set; }
 
         internal ManualFactory(string? preparationBarrierStage = null,
             bool failUnpublishedDispose = false)
@@ -902,7 +915,9 @@ public sealed partial class ManualInspectionRuntimeTests
             if (Interlocked.Increment(ref _validationCalls) > 1)
                 await WaitForPreparationCallbackAsync("validate", cancellationToken)
                     .ConfigureAwait(false);
-            return configuration.Validate(Descriptor.ConfigurationSchema);
+            return RejectCurrentConfiguration
+                ? new[] { new AlgorithmValidationIssue("V148CurrentConfigurationIncompatible", "Score") }
+                : configuration.Validate(Descriptor.ConfigurationSchema);
         }
 
         public async ValueTask<IVisionAlgorithm> CreateAsync(
@@ -1001,18 +1016,21 @@ public sealed partial class ManualInspectionRuntimeTests
                 return result;
             }
 
-            public ValueTask DisposeAsync()
+            public async ValueTask DisposeAsync()
             {
+                if (Interlocked.Exchange(ref _factory._holdNextDispose, 0) != 0)
+                {
+                    _factory._disposeEntered.TrySetResult(true);
+                    await _factory._disposeReleased.Task.ConfigureAwait(false);
+                }
                 _disposed = true;
                 _warmed = false;
                 _factory._algorithmDisposeCompleted.TrySetResult(true);
                 if (_factory._failUnpublishedDispose)
                 {
                     Interlocked.Increment(ref _factory._algorithmDisposeFailures);
-                    return new ValueTask(Task.FromException(
-                        new InvalidOperationException("V135ManualUnpublishedDisposeFailure")));
+                    throw new InvalidOperationException("V135ManualUnpublishedDisposeFailure");
                 }
-                return ValueTask.CompletedTask;
             }
         }
     }

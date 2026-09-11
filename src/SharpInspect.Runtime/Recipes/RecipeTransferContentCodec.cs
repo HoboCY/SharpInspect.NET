@@ -112,7 +112,8 @@ internal static class RecipeTransferContentCodec
             algorithm["ConfigurationSchema"] = JsonNode.Parse(RecipeDraftStorageCodec.EncodeSchemaForTransfer(descriptor.ConfigurationSchema));
             if (!RecipeDraftStorageCodec.TryDecodeContent(root.ToJsonString(), out var content, out reason)) return false;
             if (content!.RecipeKey != PortableKey || content.DisplayName != PortableDisplayName ||
-                content.MigrationLineage is not null || content.ValueOrigins.Any(item => item.Origin != RecipeDraftValueOrigin.Explicit))
+                content.MigrationLineage is not null || content.LifecycleLineage is not null ||
+                content.ValueOrigins.Any(item => item.Origin != RecipeDraftValueOrigin.Explicit))
                 throw new InvalidOperationException("RecipeTransferAuthorityContentForbidden");
             RequirePortable(content, policy);
             if (content.Algorithm.ResultSchema.Id != descriptor.ResultSchema.Id ||

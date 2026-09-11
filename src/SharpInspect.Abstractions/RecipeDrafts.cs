@@ -137,7 +137,20 @@ public sealed class RecipeDraftContent
         CameraProviderExtensionRequirement? cameraProviderExtension = null,
         IEnumerable<CalibrationRequirement>? calibrationRequirements = null,
         PartIdentityRequirement? partIdentityRequirement = null)
+        : this(null, migrationLineage, recipeKey, displayName, algorithm, configuration, cameraRole, camera,
+            algorithmExecutionTimeout, assetRequirements, policyRequirements, valueOrigins,
+            cameraProviderExtension, calibrationRequirements, partIdentityRequirement) { }
+
+    /// <summary>Preserves the immutable lifecycle and migration provenance of a derived Draft.</summary>
+    public RecipeDraftContent(RecipeDraftLifecycleLineage? lifecycleLineage, RecipeDraftMigrationLineage? migrationLineage,
+        string recipeKey, string displayName, RecipeAlgorithmBinding algorithm,
+        AlgorithmConfigurationSnapshot configuration, string cameraRole, RequestedCameraConfiguration camera,
+        TimeSpan algorithmExecutionTimeout, IEnumerable<RecipeAssetRequirement>? assetRequirements,
+        IEnumerable<RecipePolicyRequirement>? policyRequirements, IEnumerable<RecipeDraftFieldOrigin>? valueOrigins = null,
+        CameraProviderExtensionRequirement? cameraProviderExtension = null,
+        IEnumerable<CalibrationRequirement>? calibrationRequirements = null, PartIdentityRequirement? partIdentityRequirement = null)
     {
+        LifecycleLineage = lifecycleLineage;
         MigrationLineage = migrationLineage;
         RecipeKey = AlgorithmConfigurationValidation.Identifier(recipeKey, nameof(recipeKey));
         DisplayName = AlgorithmContractValidation.BoundedText(displayName, nameof(displayName), 128);
@@ -179,6 +192,7 @@ public sealed class RecipeDraftContent
     }
     public string RecipeKey { get; }
     public RecipeDraftMigrationLineage? MigrationLineage { get; }
+    public RecipeDraftLifecycleLineage? LifecycleLineage { get; }
     public string DisplayName { get; }
     public RecipeAlgorithmBinding Algorithm { get; }
     public AlgorithmConfigurationSnapshot Configuration { get; }
@@ -240,6 +254,8 @@ public sealed class RecipeDraftContent
             parts.AddRange(new[] { "sharpinspect-recipe-draft-migration-lineage-v1", migration.ContentHash });
         if (PartIdentityRequirement is { } partIdentity)
             parts.AddRange(new[] { "sharpinspect-recipe-part-identity-v1", partIdentity.ContentHash });
+        if (LifecycleLineage is { } lifecycle)
+            parts.AddRange(new[] { "sharpinspect-recipe-draft-lifecycle-lineage-v1", lifecycle.ContentHash });
         return AlgorithmContractValidation.HashParts(parts);
     }
     private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
