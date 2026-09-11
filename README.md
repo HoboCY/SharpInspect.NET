@@ -1,5 +1,5 @@
 # SharpInspect.NET
-
+本项目设计部分由Hobo和酱醋茶完成，大部分代码执行均为AI完成，如果有任何建议，欢迎提PR。
 通用工业视觉检测运行框架，围绕消费方提供的托管算法组织工位状态与设备流程。
 实现按 [V1 工单](https://github.com/HoboCY/SharpInspect.NET/issues/1) 顺序推进。
 
