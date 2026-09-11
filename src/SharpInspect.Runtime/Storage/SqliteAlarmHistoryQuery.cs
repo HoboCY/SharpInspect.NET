@@ -84,12 +84,12 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
             var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
             var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
-            var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion;
+            var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion;
             var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25;
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
             StationQualificationReadGuard.RequireConfiguration(schema, _options);
-                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26 or 27 or 28 or 29 or 30,
+                AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26 or 27 or 28 or 29 or 30 or 31,
                     schema < PlcCommunicationStoreOptions.SchemaVersion ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
             if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
                 throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
@@ -225,7 +225,8 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
                 plcCommunicationOptions: _options.PlcCommunication,
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: _options.RecipeSelections);
              RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -997,12 +998,12 @@ internal sealed partial class SqliteCommandStore
              var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
              var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
              var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
-             var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion;
+             var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion;
              var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25;
              SqliteNative.ConfigureSqliteLimit(database, _options, schema);
              TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
              StationQualificationReadGuard.RequireConfiguration(schema, _options);
-                 AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26 or 27 or 28 or 29 or 30,
+                 AuditChainDatabase.Require(schema is 7 or 8 or 9 or 10 or 11 or 12 or 13 or 14 or 15 or 16 or 17 or 18 or 19 or 20 or 21 or 22 or 23 or 24 or 25 or 26 or 27 or 28 or 29 or 30 or 31,
                     schema < PlcCommunicationStoreOptions.SchemaVersion ? "GovernedAlarmMigrationRequired" : "StoreSchemaTooNew");
                 if (_options.ManualInspections is not null && schema < ManualInspectionStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("ManualInspectionGovernedMigrationRequired");
@@ -1139,7 +1140,8 @@ internal sealed partial class SqliteCommandStore
                 plcCommunicationOptions: _options.PlcCommunication,
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: _options.RecipeSelections);
              RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -1276,7 +1278,8 @@ internal sealed partial class SqliteCommandStore
                 plcCommunicationOptions: _options.PlcCommunication,
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: _options.RecipeSelections);
              RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

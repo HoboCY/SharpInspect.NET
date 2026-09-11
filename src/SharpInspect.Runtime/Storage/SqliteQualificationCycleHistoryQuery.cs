@@ -121,7 +121,7 @@ public sealed class SqliteQualificationCycleHistoryQuery : IQualificationCycleHi
         try
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema is QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
                 schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "QualificationCycleConfigurationRequired" :
                     "QualificationCycleGovernedMigrationRequired");
@@ -145,7 +145,8 @@ public sealed class SqliteQualificationCycleHistoryQuery : IQualificationCycleHi
                 plcCommunicationOptions: _options.PlcCommunication,
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: _options.RecipeSelections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullQualificationCycleVerification(database, verification,

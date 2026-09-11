@@ -177,12 +177,16 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+            if (schema == RecipeSelectionStoreOptions.SchemaVersion &&
+                _options.RecipeSelections is null)
+                throw new InvalidOperationException("RecipeSelectionConfigurationRequired");
             if (schema == ProductionRecoveryStoreOptions.SchemaVersion &&
                 _options.ProductionRecovery is null)
                 throw new InvalidOperationException("ProductionRecoveryConfigurationRequired");
             if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
                 PartIdentityStoreOptions.SchemaVersion or
-                ProductionRecoveryStoreOptions.SchemaVersion))
+                ProductionRecoveryStoreOptions.SchemaVersion or
+                RecipeSelectionStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -213,7 +217,8 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                  plcCommunicationOptions: _options.PlcCommunication,
                  productionRecoveryOptions: _options.ProductionRecovery,
                  productionInspectionOptions: production,
-                 partIdentityOptions: _options.PartIdentities);
+                 partIdentityOptions: _options.PartIdentities,
+                 recipeSelectionOptions: _options.RecipeSelections);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database, verification,
                 deadline, production);
             var rows = SqliteCommandStore.ReadProductionInspectionRows(database, production,

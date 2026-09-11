@@ -18,6 +18,18 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         ushort controllerStartAddress, ushort runtimeStartAddress,
         ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout,
         ModbusPartIdentityReadPlan? partIdentity)
+        : this(id, version, address, port, unitId, controllerStartAddress, runtimeStartAddress,
+            communicationBinding, acknowledgementTimeout, partIdentity, null) { }
+
+    /// <summary>
+    /// Creates a profile with an explicit dedicated Recipe Change Handshake block. The
+    /// two pre-existing overloads retain their signatures and, while
+    /// <paramref name="recipeChange"/> is null, their exact v1/v2 content hash algorithm.
+    /// </summary>
+    public ModbusProductionProfile(string id, string version, string address, int port, byte unitId,
+        ushort controllerStartAddress, ushort runtimeStartAddress,
+        ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout,
+        ModbusPartIdentityReadPlan? partIdentity, ModbusRecipeChangeBinding? recipeChange)
     {
         Id = AlgorithmContractValidation.Identifier(id, nameof(id));
         Version = AlgorithmContractValidation.Identifier(version, nameof(version));
@@ -44,6 +56,11 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
             (communicationBinding.RuntimeStartAddress, ModbusCommunicationBinding.RuntimeRegisterCount)
         };
         if (partIdentity is not null) ranges.Add((partIdentity.StartAddress, partIdentity.RegisterCount));
+        if (recipeChange is not null)
+        {
+            ranges.Add((recipeChange.ControllerStartAddress, ModbusRecipeChangeBinding.ControllerRegisterCount));
+            ranges.Add((recipeChange.RuntimeStartAddress, ModbusRecipeChangeBinding.RuntimeRegisterCount));
+        }
         for (var left = 0; left < ranges.Count; left++)
             for (var right = left + 1; right < ranges.Count; right++)
                 if (ModbusCommunicationBinding.Overlaps(ranges[left].Start, ranges[left].Count,
@@ -55,20 +72,37 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         RuntimeStartAddress = runtimeStartAddress;
         AcknowledgementTimeout = acknowledgementTimeout;
         PartIdentity = partIdentity;
+        RecipeChange = recipeChange;
         EndpointBindingHash = AlgorithmContractValidation.HashParts(new[]
         {
             "sharpinspect-modbus-production-endpoint-v1", Address,
             port.ToString(CultureInfo.InvariantCulture), unitId.ToString(CultureInfo.InvariantCulture)
         });
-        var profileParts = new List<string?>
+        List<string?> profileParts;
+        if (recipeChange is null)
         {
-            partIdentity is null ? "sharpinspect-modbus-production-profile-v1" :
-                "sharpinspect-modbus-production-profile-v2", Id, Version, EndpointBindingHash,
-            controllerStartAddress.ToString(CultureInfo.InvariantCulture),
-            runtimeStartAddress.ToString(CultureInfo.InvariantCulture), communicationBinding.BindingHash,
-            acknowledgementTimeout.ToString("c", CultureInfo.InvariantCulture)
-        };
-        if (partIdentity is not null) profileParts.Add(partIdentity.ContentHash);
+            profileParts = new List<string?>
+            {
+                partIdentity is null ? "sharpinspect-modbus-production-profile-v1" :
+                    "sharpinspect-modbus-production-profile-v2", Id, Version, EndpointBindingHash,
+                controllerStartAddress.ToString(CultureInfo.InvariantCulture),
+                runtimeStartAddress.ToString(CultureInfo.InvariantCulture), communicationBinding.BindingHash,
+                acknowledgementTimeout.ToString("c", CultureInfo.InvariantCulture)
+            };
+            if (partIdentity is not null) profileParts.Add(partIdentity.ContentHash);
+        }
+        else
+        {
+            profileParts = new List<string?>
+            {
+                "sharpinspect-modbus-production-profile-v3", Id, Version, EndpointBindingHash,
+                controllerStartAddress.ToString(CultureInfo.InvariantCulture),
+                runtimeStartAddress.ToString(CultureInfo.InvariantCulture), communicationBinding.BindingHash,
+                acknowledgementTimeout.ToString("c", CultureInfo.InvariantCulture),
+                partIdentity is null ? "sharpinspect-modbus-part-identity-absent" : partIdentity.ContentHash,
+                recipeChange.ContentHash
+            };
+        }
         ContentHash = AlgorithmContractValidation.HashParts(profileParts);
     }
 
@@ -86,6 +120,7 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
     public string EndpointBindingHash { get; }
     public string ContentHash { get; }
     public ModbusPartIdentityReadPlan? PartIdentity { get; }
+    public ModbusRecipeChangeBinding? RecipeChange { get; }
     int IModbusInspectionProfile.ControllerEndAddressExclusive => ControllerStartAddress + 6;
     int IModbusInspectionProfile.RuntimeEndAddressExclusive => RuntimeStartAddress + 6;
 }

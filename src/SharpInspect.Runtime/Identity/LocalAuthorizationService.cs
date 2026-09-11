@@ -152,6 +152,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         VerifyImportedCalibrationCommand => Permission.RecordPhysicalCalibrationVerification,
         CalibrationImportCommand => Permission.PublishCalibration,
         ChangePlcResultContractCommand => Permission.ManagePlcResultContract,
+        ChangeRecipeSelectionCommand => Permission.ManageRecipeSelectionMap,
         ReleaseRecipeCommand => Permission.ReleaseRecipe,
         SelectHistoricalCalibrationCommand => Permission.SelectHistoricalCalibration,
         ActivateRecipeCommand => Permission.ActivateRecipe,
@@ -187,6 +188,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             CalibrationGovernanceCommand calibration => calibration.AuthorizationTarget,
             CalibrationImportCommand import => import.AuthorizationTarget,
             ChangePlcResultContractCommand change => change.AuthorizationTarget,
+            ChangeRecipeSelectionCommand selection => selection.AuthorizationTarget,
             ReleaseRecipeCommand release => release.AuthorizationTarget,
             SelectHistoricalCalibrationCommand historical => historical.AuthorizationTarget,
             ActivateRecipeCommand activation => activation.AuthorizationTarget,
@@ -229,6 +231,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ImportCalibrationPackage or AuditedCommandKind.RevalidateImportedCalibration or
             AuditedCommandKind.PublishImportedCalibration => Permission.PublishCalibration,
         AuditedCommandKind.ChangePlcResultContract => Permission.ManagePlcResultContract,
+        AuditedCommandKind.ChangeRecipeSelection => Permission.ManageRecipeSelectionMap,
         AuditedCommandKind.SelectHistoricalCalibration => Permission.SelectHistoricalCalibration,
         AuditedCommandKind.ActivateRecipe => Permission.ActivateRecipe,
         AuditedCommandKind.StartPreview or AuditedCommandKind.Tune or
@@ -277,6 +280,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         VerifyImportedCalibrationCommand => AuditedCommandKind.VerifyImportedCalibration,
         PublishImportedCalibrationCommand => AuditedCommandKind.PublishImportedCalibration,
         ChangePlcResultContractCommand => AuditedCommandKind.ChangePlcResultContract,
+        ChangeRecipeSelectionCommand => AuditedCommandKind.ChangeRecipeSelection,
         ReleaseRecipeCommand => AuditedCommandKind.ReleaseRecipe,
         ReplaceRecipeTrustStoreCommand => AuditedCommandKind.ReplaceRecipeTrustStore,
         CreateRecipeSigningKeyCommand => AuditedCommandKind.CreateRecipeSigningKey,

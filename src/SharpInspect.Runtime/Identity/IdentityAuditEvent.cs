@@ -76,7 +76,8 @@ internal enum IdentityEventKind
     PartIdentityCorrectionAuthorized,
     ProductionRecoveryAuthorized,
     ProductionRecoveryCompleted,
-    ProductionRecoveryFailed
+    ProductionRecoveryFailed,
+    RecipeSelectionChanged
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -98,7 +99,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
     Guid? OperationId = null, Guid? RecoveryCodeId = null, Guid? PreviousRecoveryKitId = null,
     string? RecoverySafetyEvidence = null,
     Guid? CameraRecoveryExpectedCycleId = null, string? CameraRecoveryLogicalRole = null,
-    string? CameraRecoveryReasonCode = null)
+    string? CameraRecoveryReasonCode = null, string? PlcRecipeActivationEvidence = null)
 {
     internal byte[] Encode(long ordinal, int schemaVersion = 6)
     {
@@ -155,14 +156,23 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > ProductionRecoveryStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeSelectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        if (PlcRecipeActivationEvidence is not null)
+        {
+            // The optional 50th field exists only on the schema-31 envelope, so a
+            // store that cannot carry the evidence never silently drops it.
+            if (schemaVersion < RecipeSelectionStoreOptions.SchemaVersion)
+                throw new InvalidOperationException("AuditPlcRecipeActivationEvidenceUnsupported");
+            fields.Add(PlcRecipeActivationEvidence);
+        }
+
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > ProductionRecoveryStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > RecipeSelectionStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -187,11 +197,19 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionRecoveryStoreOptions.SchemaVersion => 49, _ => 0 };
-            AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
-                ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionRecoveryStoreOptions.SchemaVersion => 49, RecipeSelectionStoreOptions.SchemaVersion => 49, _ => 0 };
+            // Schema 31 may append the one optional PLC evidence field; every other
+            // schema keeps exactly its own length, so existing rows stay 49 fields.
+            var maximumCount = schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion
+                ? expectedCount + 1 : expectedCount;
+            var version = ReadInteger();
+            var label = ReadValue();
+            var declaredCount = ReadInteger();
+            AuditChainDatabase.Require(version == AuditCanonical.CanonicalizationVersion &&
+                label == "IdentityEvent" && declaredCount >= expectedCount && declaredCount <= maximumCount,
                 "AuditIdentityPayloadInvalid");
-            var fields = Enumerable.Range(0, expectedCount).Select(index => ReadValue(
+            var fields = Enumerable.Range(0, declaredCount).Select(index => ReadValue(
+                index == 49 ? PlcRecipeActivationIdentityCodec.MaximumEvidenceLength :
                 schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion && index == 45 ? 2048 : 1024)).ToArray();
             AuditChainDatabase.Require(input.Position == input.Length &&
                 fields[0] == ordinal.ToString(CultureInfo.InvariantCulture) && fields[4] == stationId &&
@@ -272,6 +290,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     legacyKind is not (IdentityEventKind.ProductionRecoveryAuthorized or
                         IdentityEventKind.ProductionRecoveryCompleted or
                         IdentityEventKind.ProductionRecoveryFailed), "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.RecipeSelectionChanged, "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -360,6 +380,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     (schemaVersion >= TraceStoragePolicyStoreOptions.SchemaVersion || actionKind != AuditedCommandKind.PublishTraceStoragePolicy) &&
                     (schemaVersion >= ProductionRecoveryStoreOptions.SchemaVersion ||
                         actionKind != AuditedCommandKind.ManualProductionRecovery) &&
+                     (schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
+                         actionKind != AuditedCommandKind.ChangeRecipeSelection) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
@@ -411,6 +433,16 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         expectedCycle != Guid.Empty && IsStableAsciiIdentifier(fields[47]) &&
                         IsStableAsciiIdentifier(fields[48]), "AuditCameraRecoveryPayloadInvalid");
                 }
+            }
+
+            if (fields.Length == 50)
+            {
+                // The optional 50th field exists only on the schema-31 envelope and
+                // only for a true PLC Adapter system request; it is bounded evidence,
+                // never authority.
+                AuditChainDatabase.Require(fields[49] is not null, "AuditPlcRecipeActivationEvidenceMissing");
+                AuditChainDatabase.Require(IsPlcRecipeActivationEvidenceRow(fields),
+                    "AuditPlcRecipeActivationEvidenceInvalid");
             }
 
             return revision;
@@ -515,42 +547,94 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         {
             _ = VerifyPayload(payload, ordinal, stationId, schemaVersion);
             var fields = DecodeFields(payload);
-            var expectedPermission = record.HistoricalSelection is null ? Permission.ActivateRecipe :
-                Permission.SelectHistoricalCalibration;
-            var expectedCommandKind = record.HistoricalSelection is null ? AuditedCommandKind.ActivateRecipe :
-                AuditedCommandKind.SelectHistoricalCalibration;
-            if (fields.Length != 49 || fields[2] != ActivationKind(record.Outcome.State).ToString() ||
-                fields[3] != record.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) ||
-                fields[4] != stationId || fields[9] != record.Outcome.ReasonCode ||
-                fields[33] != expectedPermission.ToString() ||
-                fields[37] != record.AuthorizationTarget ||
-                fields[38] is not { Length: 36 } || !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) ||
-                boundCorrelation != record.OperationId || fields[39] != expectedCommandKind.ToString() ||
-                fields[42] != record.OperationId.ToString("D") ||
-                // An unauthenticated pre-admission rejection has no policy on the
-                // activation record.  The identity writer still binds the active
-                // deployment policy to its signed event, so the absence of a
-                // record policy must not require those payload fields to be null.
-                // Authenticated records remain an exact policy match.
-                (record.AuthorizationPolicy is not null &&
-                    (fields[27] != record.AuthorizationPolicy.Id || fields[28] != record.AuthorizationPolicy.Version ||
-                     fields[29] != record.AuthorizationPolicy.ContentHash)) ||
-                (record.ActorPrincipalId is null
-                    ? fields[5] is not null || fields[30] is not null
-                    : fields[5] != record.ActorPrincipalId.Value.ToString("D") ||
-                      fields[30] != record.ActorPrincipalId.Value.ToString("D")) ||
-                (record.ActorSessionId is null
-                    ? fields[25] is not null
-                    : fields[25] != record.ActorSessionId.Value.ToString("D")) ||
-                (record.ActorAuthorizationRevision is null
-                    ? fields[35] != "0"
-                    : fields[35] != record.ActorAuthorizationRevision.Value.ToString(CultureInfo.InvariantCulture)))
-                return false;
-            return fields[31] == fields[38] && fields[34] == fields[5];
+            return record.Actor is { IsPlcAdapter: true }
+                ? MatchesPlcRecipeActivationAuthorization(fields, record, stationId)
+                : MatchesHumanRecipeActivationAuthorization(fields, record, stationId);
         }
         catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
             DecoderFallbackException or InvalidOperationException or FormatException)
         { return false; }
+    }
+
+    private static bool MatchesHumanRecipeActivationAuthorization(string?[] fields,
+        RecipeActivationRecord record, string stationId)
+    {
+        var expectedPermission = record.HistoricalSelection is null ? Permission.ActivateRecipe :
+            Permission.SelectHistoricalCalibration;
+        var expectedCommandKind = record.HistoricalSelection is null ? AuditedCommandKind.ActivateRecipe :
+            AuditedCommandKind.SelectHistoricalCalibration;
+        if (fields.Length != 49 || fields[2] != ActivationKind(record.Outcome.State).ToString() ||
+            fields[3] != record.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) ||
+            fields[4] != stationId || fields[9] != record.Outcome.ReasonCode ||
+            fields[33] != expectedPermission.ToString() ||
+            fields[37] != record.AuthorizationTarget ||
+            fields[38] is not { Length: 36 } || !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) ||
+            boundCorrelation != record.OperationId || fields[39] != expectedCommandKind.ToString() ||
+            fields[42] != record.OperationId.ToString("D") ||
+            // An unauthenticated pre-admission rejection has no policy on the
+            // activation record.  The identity writer still binds the active
+            // deployment policy to its signed event, so the absence of a
+            // record policy must not require those payload fields to be null.
+            // Authenticated records remain an exact policy match.
+            (record.AuthorizationPolicy is not null &&
+                (fields[27] != record.AuthorizationPolicy.Id || fields[28] != record.AuthorizationPolicy.Version ||
+                 fields[29] != record.AuthorizationPolicy.ContentHash)) ||
+            (record.ActorPrincipalId is null
+                ? fields[5] is not null || fields[30] is not null
+                : fields[5] != record.ActorPrincipalId.Value.ToString("D") ||
+                  fields[30] != record.ActorPrincipalId.Value.ToString("D")) ||
+            (record.ActorSessionId is null
+                ? fields[25] is not null
+                : fields[25] != record.ActorSessionId.Value.ToString("D")) ||
+            (record.ActorAuthorizationRevision is null
+                ? fields[35] != "0"
+                : fields[35] != record.ActorAuthorizationRevision.Value.ToString(CultureInfo.InvariantCulture)))
+            return false;
+        return fields[31] == fields[38] && fields[34] == fields[5];
+    }
+
+    /// <summary>
+    /// A PLC adapter record is bound to the schema-31 envelope: the exact request
+    /// context, the exact correlated command and action target, the absence of every
+    /// human field, and the accepted/rejected operation and reason shape the identity
+    /// writer produced for that same event.
+    /// </summary>
+    private static bool MatchesPlcRecipeActivationAuthorization(string?[] fields,
+        RecipeActivationRecord record, string stationId)
+    {
+        var actor = record.Actor;
+        var evidence = fields.Length == 50 ? fields[49] : null;
+        if (actor is null || evidence is null) return false;
+        PlcRecipeActivationRequestContext context;
+        try { context = PlcRecipeActivationIdentityCodec.Decode(evidence); }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or
+            FormatException)
+        { return false; }
+        if (!actor.PlcRequestContext!.Matches(context)) return false;
+        var accepted = record.Outcome.State is RecipeActivationOutcomeState.Admitted or
+            RecipeActivationOutcomeState.Succeeded;
+        if (fields[5] is not null || fields[25] is not null || fields[30] is not null || fields[32] is not null ||
+            fields[33] is not null || fields[34] is not null || fields[35] != "0")
+            return false;
+        if (fields[2] != ActivationKind(record.Outcome.State).ToString() ||
+            fields[3] != record.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) ||
+            fields[4] != stationId || fields[9] != record.Outcome.ReasonCode ||
+            fields[37] != record.AuthorizationTarget ||
+            fields[39] != AuditedCommandKind.ActivateRecipe.ToString() ||
+            fields[38] is not { Length: 36 } || !Guid.TryParseExact(fields[38], "D", out var boundCorrelation) ||
+            boundCorrelation != record.OperationId)
+            return false;
+        // An accepted activation carries the operation correlation; a rejection may
+        // record the correlated command without an operation of its own.
+        if (accepted
+            ? fields[31] != fields[38] || fields[42] != fields[38]
+            : (fields[31] is not null && fields[31] != fields[38]) ||
+                (fields[42] is not null && fields[42] != fields[38]))
+            return false;
+        return record.AuthorizationPolicy is null ||
+            (fields[27] == record.AuthorizationPolicy.Id &&
+             fields[28] == record.AuthorizationPolicy.Version &&
+             fields[29] == record.AuthorizationPolicy.ContentHash);
     }
 
     internal static bool MatchesPreviewAuthorization(byte[] payload, long ordinal,
@@ -1418,7 +1502,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
         var countBytes = reader.ReadBytes(4);
         if (countBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
         var count = BinaryPrimitives.ReadInt32BigEndian(countBytes);
-        if (count is not (46 or 49)) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
+        if (count is not (46 or 49 or 50)) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
         var fields = new string?[count];
         for (var index = 0; index < fields.Length; index++)
         {
@@ -1428,9 +1512,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             var lengthBytes = reader.ReadBytes(4);
             if (lengthBytes.Length != 4) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             var length = BinaryPrimitives.ReadInt32BigEndian(lengthBytes);
-            var maximumBytes = index == 45 && fields[2] is nameof(IdentityEventKind.ProductionRecoveryAuthorized)
-                or nameof(IdentityEventKind.ProductionRecoveryCompleted) or nameof(IdentityEventKind.ProductionRecoveryFailed)
-                ? 2048 : 1024;
+            var maximumBytes = index switch
+            {
+                49 => PlcRecipeActivationIdentityCodec.MaximumEvidenceLength,
+                45 when fields[2] is nameof(IdentityEventKind.ProductionRecoveryAuthorized) or
+                        nameof(IdentityEventKind.ProductionRecoveryCompleted) or
+                        nameof(IdentityEventKind.ProductionRecoveryFailed) => 2048,
+                _ => 1024
+            };
             if (length < 0 || length > maximumBytes) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
             var bytes = reader.ReadBytes(length);
             if (bytes.Length != length) throw new InvalidOperationException("AuditIdentityPayloadInvalid");
@@ -1442,6 +1531,54 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
     private static bool IsHash(string? value) => value is { Length: 64 } &&
         value.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
+
+    /// <summary>
+    /// The schema-31 PLC envelope is a closed shape. Only one of the existing
+    /// activation facts or a rejected ActivateRecipe management fact may carry it,
+    /// and that row must describe a true PLC Adapter system request: no human
+    /// principal, session, Step-Up grant, or human permission, a neutral
+    /// authorization revision that keeps the outer format compatible, the exact
+    /// correlated command, and a valid bounded request context.
+    /// </summary>
+    private static bool IsPlcRecipeActivationEvidenceRow(string?[] fields)
+    {
+        if (fields.Length != 50 || fields[49] is null ||
+            !Enum.TryParse<IdentityEventKind>(fields[2], out var kind) ||
+            kind is not (IdentityEventKind.RecipeActivationAdmitted or
+                IdentityEventKind.RecipeActivationCompleted or IdentityEventKind.RecipeActivationFailed or
+                IdentityEventKind.RecipeActivationCancelled or IdentityEventKind.ManagementRejected) ||
+            fields[39] != AuditedCommandKind.ActivateRecipe.ToString() ||
+            fields[5] is not null || fields[25] is not null || fields[30] is not null ||
+            fields[32] is not null || fields[33] is not null || fields[34] is not null || fields[35] != "0" ||
+            fields[37] is null || !IsSafeIdentifier(fields[37]) ||
+            fields[27] is null || fields[28] is null || fields[29] is null)
+            return false;
+        // A PLC request has no credential, Windows identity, authentication attempt,
+        // recovery token or camera-recovery action. Deployment policy/state fields
+        // remain part of the common identity ledger envelope.
+        if (new[] { 6, 7, 8, 10, 11, 12, 13, 14, 21, 24, 36, 40, 41, 43, 44, 45, 46, 47, 48 }
+                .Any(index => fields[index] is not null) ||
+            new[] { 16, 17, 22, 23, 26 }.Any(index => fields[index] != "0"))
+            return false;
+        // The bound command correlation is the exact correlated action. Only an
+        // accepted admission or completion must also carry the operation id.
+        if (fields[38] is not { Length: 36 } || !Guid.TryParseExact(fields[38], "D", out _)) return false;
+        if (kind is IdentityEventKind.RecipeActivationAdmitted or IdentityEventKind.RecipeActivationCompleted)
+        {
+            if (fields[31] != fields[38] || fields[42] != fields[38]) return false;
+        }
+        else if ((fields[31] is not null && fields[31] != fields[38]) ||
+            (fields[42] is not null && fields[42] != fields[38]))
+        {
+            return false;
+        }
+
+        try { _ = PlcRecipeActivationIdentityCodec.Decode(fields[49]!); }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or
+            FormatException)
+        { return false; }
+        return true;
+    }
 
     private static bool IsSafeIdentifier(string? value) => value is { Length: > 0 and <= 128 } &&
         value.Trim() == value && !value.Any(char.IsControl);

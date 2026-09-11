@@ -11,8 +11,10 @@ public sealed partial class StationRuntime
     private long _activationPhysicalPhaseSequence;
     private bool _activationRecoveryBlocked;
     private ActivationPreparedBundle? _activeActivation;
+    private RecipeActivationReference? _currentRecipeActivationReference;
     private bool RecipeActivationConfigurationBlockedLocked => _activationReservation is not null ||
-        _activationRecoveryBlocked || _activationStartupPending || _activationStartupBlocked;
+        _activationRecoveryBlocked || _activationStartupPending || _activationStartupBlocked ||
+        _recipeSelectionChangeInProgress || _recipeChangeInProgress;
 
     internal void ConfigureRecipeActivationService(IRecipeActivationService service)
     {
@@ -68,7 +70,8 @@ public sealed partial class StationRuntime
                     (reason, recovery) => PublishRecipeActivationTerminal(reservation, reason, recovery),
                     () => ReleaseRecipeActivation(reservation),
                     () => ReadRecipeActivationBlocker(reservation),
-                    () => TryBeginRecipeActivationPhysicalPhase(reservation));
+                    () => TryBeginRecipeActivationPhysicalPhase(reservation),
+                    record => RecordCommittedRecipeActivation(reservation, record));
             }
         }
         finally { _commandGate.Release(); }
@@ -76,12 +79,17 @@ public sealed partial class StationRuntime
 
     private string? RecipeActivationBlockerLocked(ActivationReservation? reservation)
     {
+        if (_recipeSelectionChangeInProgress) return "RecipeSelectionChangeInProgress";
+        // A rejected PLC request blocks new entrants, never the transition which
+        // already owned the reservation when that request was observed.
+        if (_recipeChangeInProgress && reservation is null) return "RecipeChangeHandshakeInProgress";
         if (ProductionInspectionConfigurationBlockedLocked) return "ProductionInspectionInProgress";
         if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (PreviewConfigurationBlockedLocked) return "PreviewSessionInProgress";
         if (ManualInspectionConfigurationBlockedLocked) return "ManualInspectionSessionInProgress";
         if (_importPhysicalReservation is not null) return "CalibrationImportPhysicalVerificationInProgress";
         if (reservation is { CommitClaimed: true } && ReferenceEquals(_activationReservation, reservation)) return null;
+        if (reservation?.ExternalBlocker?.Invoke() is { } external) return external;
         if (reservation is { InFlightPhysicalPhaseId: not 0 }) return "RecipeActivationPhysicalPhaseInProgress";
         if (_activationStartupPending) return "RecipeActivationStartupRecoveryPending";
         if (_activationStartupBlocked) return "RecipeActivationStartupRecoveryRequired";
@@ -161,7 +169,10 @@ public sealed partial class StationRuntime
     private async ValueTask<RecipeActivationCommitLease> EnterRecipeActivationCommitAsync(
         ActivationReservation reservation, CancellationToken token)
     {
-        if (!await _commandGate.WaitAsync(_audit?.CommitTimeout ?? TimeSpan.FromSeconds(2), token).ConfigureAwait(false))
+        token.ThrowIfCancellationRequested();
+        var entered = reservation.PlcOwned ? _commandGate.Wait(0) :
+            await _commandGate.WaitAsync(_audit?.CommitTimeout ?? TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+        if (!entered)
             return new(() => "RecipeActivationRuntimeBusy");
         return new(() => ReadRecipeActivationBlocker(reservation), () => _commandGate.Release(),
             () =>
@@ -194,6 +205,17 @@ public sealed partial class StationRuntime
                     AdmissionBlockers = new AdmissionBlockers(_snapshot.AdmissionBlockers
                         .Where(code => code is not "ActiveRecipeMissing" and not "ActiveRecipePreparationRequired")) });
             return new(true, previous?.Algorithm);
+        }
+    }
+
+    private void RecordCommittedRecipeActivation(ActivationReservation reservation, RecipeActivationRecord record)
+    {
+        lock (_sync)
+        {
+            if (!ReferenceEquals(_activationReservation, reservation) || !reservation.CommitClaimed ||
+                !record.Outcome.Succeeded || record.OperationId != reservation.CorrelationId)
+                throw new InvalidOperationException("RecipeActivationCommittedReferenceMismatch");
+            if (record.CanBeActive) _currentRecipeActivationReference = record.Reference;
         }
     }
 
@@ -269,6 +291,8 @@ public sealed partial class StationRuntime
         internal CancellationTokenSource Cancellation { get; }
         internal TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool Committed { get; set; }
+        internal bool PlcOwned { get; init; }
+        internal Func<string?>? ExternalBlocker { get; set; }
         internal bool CommitClaimed { get; set; }
         internal long InFlightPhysicalPhaseId { get; set; }
         internal bool TerminalPublished { get; set; }

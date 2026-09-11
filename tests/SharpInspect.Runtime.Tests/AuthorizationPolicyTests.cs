@@ -16,6 +16,7 @@ public sealed class AuthorizationPolicyTests
         Assert.Equal(1, (int)SystemPermission.RecordCommand);
         Assert.Equal(5, (int)SystemPermission.CleanupRetention);
         Assert.Equal(7, (int)SystemPermission.RecordProductionInspection);
+        Assert.Equal(8, (int)SystemPermission.RequestMappedRecipeActivation);
 
         Assert.Equal("SharpInspect.Runtime", SystemPrincipalId.Runtime);
         Assert.Equal("SharpInspect.Outbox", SystemPrincipalId.Outbox);
@@ -36,8 +37,10 @@ public sealed class AuthorizationPolicyTests
         Assert.Equal(new[] { SystemPermission.CleanupRetention },
             SystemPrincipalCatalog.RetentionCleanup.Permissions);
         Assert.Equal("SharpInspect.PlcAdapter", SystemPrincipalCatalog.PlcAdapter.Id);
-        Assert.Equal(new[] { SystemPermission.RecordPlcCommunication },
+        Assert.Equal(new[] { SystemPermission.RecordPlcCommunication, SystemPermission.RequestMappedRecipeActivation },
             SystemPrincipalCatalog.PlcAdapter.Permissions);
+        Assert.All(SystemPrincipalCatalog.All.Where(principal => principal.Id != SystemPrincipalId.PlcAdapter),
+            principal => Assert.DoesNotContain(SystemPermission.RequestMappedRecipeActivation, principal.Permissions));
         Assert.DoesNotContain(SystemPrincipalCatalog.All,
             principal => principal.Permissions.Contains(SystemPermission.None));
         Assert.All(SystemPrincipalCatalog.All.Where(principal => principal.Id != SystemPrincipalId.Runtime),

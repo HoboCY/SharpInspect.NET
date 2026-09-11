@@ -72,9 +72,15 @@ internal sealed partial class RecipeActivationService
                 restored.ReasonCode, baseline is null ? null : RecipeActivationValidation.CameraHash(baseline.CameraSetup),
                 restored.Snapshot is null ? null : RecipeActivationValidation.CameraHash(restored.Snapshot), restored.Snapshot);
             var intent = admitted.Admission;
-            var invocation = new CommandInvocation(CommandSource.PhysicalConsole,
-                intent.ActorPrincipalId.ToString("D"), intent.ActorSessionId);
-            var command = intent.HistoricalSelection is { } historical
+            var invocation = intent.Actor.IsPlcAdapter
+                ? new CommandInvocation(CommandSource.Integration, SystemPrincipalId.PlcAdapter)
+                : new CommandInvocation(CommandSource.PhysicalConsole, intent.ActorPrincipalId.ToString("D"), intent.ActorSessionId);
+            // Reconstruct evidence for finalizing the original failure only. This path
+            // never mints an executable PLC capability and cannot replay the request.
+            var command = intent.Actor.PlcRequestContext is { } plcContext
+                ? new ActivateRecipeCommand(admitted.OperationId, invocation, plcContext, intent.ExpectedActive,
+                    intent.ChangeReason, admitted.OperationId)
+                : intent.HistoricalSelection is { } historical
                 ? new SelectHistoricalCalibrationCommand(admitted.OperationId, invocation, intent.Candidate,
                     intent.ReleaseId, intent.ReleaseRecordContentHash, intent.ExpectedActive,
                     intent.CalibrationSelections, historical, admitted.OperationId)

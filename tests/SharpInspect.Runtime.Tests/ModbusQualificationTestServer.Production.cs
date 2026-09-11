@@ -6,12 +6,12 @@ namespace SharpInspect.Runtime.Tests;
 internal sealed partial class ModbusQualificationTestServer
 {
     internal ModbusProductionProfile CreateProductionProfile(PlcCommunicationPolicy? policy = null,
-        ModbusPartIdentityReadPlan? partIdentity = null)
+        ModbusPartIdentityReadPlan? partIdentity = null, ModbusRecipeChangeBinding? recipeChange = null)
     {
         var wire = CreateCommunicationProfile(policy: policy);
-        lock (_stateSync) { _productionPeer = true; _partIdentityPlan = partIdentity; }
+        lock (_stateSync) { _productionPeer = true; _partIdentityPlan = partIdentity; _recipeChangeBinding = recipeChange; }
         return new("V142.Modbus.Production", "1", wire.LoopbackAddress, wire.Port, wire.UnitId,
             wire.ControllerStartAddress, wire.RuntimeStartAddress, wire.CommunicationBinding!,
-            wire.AcknowledgementTimeout, partIdentity);
+            wire.AcknowledgementTimeout, partIdentity, recipeChange);
     }
 }

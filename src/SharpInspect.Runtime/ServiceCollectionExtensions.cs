@@ -288,6 +288,29 @@ public static class ServiceCollectionExtensions
                                     : ValueTask.FromResult<RecipeActivationDeploymentEvidence?>(null),
                                 partIdentities: p.GetRequiredService<PartIdentityBindingRegistry>()));
                             services.TryAddSingleton<IRecipeActivationService>(p => p.GetRequiredService<RecipeActivationService>());
+                            if (options.RecipeSelections is not null)
+                            {
+                                // One concrete query instance serves both the presentation
+                                // history capability and the authority decisions; only its
+                                // same-snapshot authority read grants release authority.
+                                services.TryAddSingleton(p => new SqliteRecipeSelectionQuery(options));
+                                services.TryAddSingleton<IRecipeSelectionQuery>(p =>
+                                    p.GetRequiredService<SqliteRecipeSelectionQuery>());
+                                services.TryAddSingleton<IRecipeChangeHistoryQuery>(p =>
+                                    p.GetRequiredService<SqliteRecipeSelectionQuery>());
+                                services.TryAddSingleton(p => new RecipeSelectionService(
+                                    p.GetRequiredService<RecipeDraftService>(),
+                                    p.GetRequiredService<IRecipeSelectionQuery>(),
+                                    p.GetRequiredService<SqliteRecipeSelectionQuery>(),
+                                    p.GetRequiredService<LocalAuthorizationService>(), options,
+                                    token => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
+                                        ? authority.ReserveRecipeSelectionChangeAsync(token)
+                                        : ValueTask.FromResult(new RecipeSelectionRuntimeLease(Guid.Empty,
+                                            "RecipeSelectionRuntimeUnavailable")),
+                                    () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+                                services.TryAddSingleton<IRecipeSelectionService>(p =>
+                                    p.GetRequiredService<RecipeSelectionService>());
+                            }
                         }
                     }
                 }
@@ -330,6 +353,8 @@ public static class ServiceCollectionExtensions
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);
             if (options.RecipeActivations is not null)
                 runtime.ConfigureRecipeActivationService(p.GetRequiredService<RecipeActivationService>());
+            if (options.RecipeSelections is not null)
+                runtime.ConfigureRecipeSelectionService(p.GetRequiredService<RecipeSelectionService>());
             if (options.PreviewSessions is not null)
                 runtime.ConfigurePreviewSessions(p.GetService<PreviewSessionOptions>() ?? new PreviewSessionOptions(),
                     p.GetRequiredService<RecipeDraftService>(), options);

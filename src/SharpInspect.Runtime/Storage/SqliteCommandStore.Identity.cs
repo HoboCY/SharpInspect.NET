@@ -83,6 +83,7 @@ internal sealed partial class SqliteCommandStore
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
+            var recipeSelectionStore = RecipeSelectionEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -105,7 +106,8 @@ internal sealed partial class SqliteCommandStore
                  plcCommunicationOptions: _options.PlcCommunication,
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -181,6 +183,7 @@ internal sealed partial class SqliteCommandStore
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
+            var recipeSelectionStore = RecipeSelectionEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -203,7 +206,8 @@ internal sealed partial class SqliteCommandStore
                  plcCommunicationOptions: _options.PlcCommunication,
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -569,6 +573,7 @@ internal sealed partial class SqliteCommandStore
             var plcCommunicationStore = _options.PlcCommunication is not null;
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
+            var recipeSelectionStore = RecipeSelectionEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -591,7 +596,8 @@ internal sealed partial class SqliteCommandStore
                  plcCommunicationOptions: _options.PlcCommunication,
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
-                partIdentityOptions: _options.PartIdentities);
+                partIdentityOptions: _options.PartIdentities,
+                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -694,6 +700,8 @@ internal sealed partial class SqliteCommandStore
                 ReadRecipeReleaseCommandState(database, work.RecipeReleaseCommand, deadline);
             var contractState = work.PlcResultContractCommand is null ? null :
                 ReadPlcResultContractCommandState(database, deadline);
+            var selectionState = work.RecipeSelectionCommand is null ? null :
+                ReadRecipeSelectionCommandState(database, deadline);
             var activationState = work.RecipeActivationCommand is null ? null :
                 ReadRecipeActivationCommandState(database, deadline);
             var previewState = work.PreviewSessionCommand is null ? null :
@@ -714,11 +722,11 @@ internal sealed partial class SqliteCommandStore
                     work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                         cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                         releaseState, contractState, activationState, previewState, previewInput, importState,
-                        manualState, manualInput, stationQualificationState, stationQualificationInput)
+                        manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState)
                 : work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                     cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                     releaseState, contractState, activationState, previewState, previewInput, importState,
-                    manualState, manualInput, stationQualificationState, stationQualificationInput);
+                    manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState);
             if (evaluated.Result is ProductionAdmissionTerminalRequest terminalRequest)
                 evaluated = BuildProductionAdmissionTerminal(database, state, terminalRequest, deadline);
             decision = evaluated;
@@ -744,7 +752,7 @@ internal sealed partial class SqliteCommandStore
                     evaluated.PreviewSession is null && evaluated.CalibrationImport is null &&
                     evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
                     evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
-                    evaluated.ProductionRecoveryFailure is null &&
+                    evaluated.ProductionRecoveryFailure is null && evaluated.RecipeSelection is null &&
                     guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
@@ -973,6 +981,9 @@ internal sealed partial class SqliteCommandStore
                 AppendPlcResultContractIdentityMutation(database, evaluated, contractState!,
                     work.PlcResultContractCommand!, deadline);
             }
+            if (evaluated.RecipeSelection is not null)
+                AppendRecipeSelectionIdentityMutation(database, evaluated, selectionState!,
+                    work.RecipeSelectionCommand!, deadline);
             if (evaluated.RecipeActivation is not null)
             {
                 AppendRecipeActivationIdentityMutation(database, evaluated, activationState!,
@@ -1315,6 +1326,13 @@ internal sealed partial class SqliteCommandStore
 
     private sealed class IdentityWork
     {
+        internal IdentityWork(ChangeRecipeSelectionCommand command,
+            Func<IdentityAuthorityState, RecipeSelectionCommandState, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            RecipeSelectionCommand = command;
+            RecipeSelectionUpdate = update;
+        }
         internal IdentityWork(StationQualificationCommand command,
             Func<IdentityAuthorityState, StationQualificationCommandState,
                 StationQualificationAdmissionInput?, bool, IdentityUpdate> update)
@@ -1453,6 +1471,8 @@ internal sealed partial class SqliteCommandStore
         internal Func<IdentityAuthorityState, RecipeReleaseCommandState, bool, IdentityUpdate>?
             RecipeReleaseUpdate { get; }
         internal ChangePlcResultContractCommand? PlcResultContractCommand { get; }
+        internal ChangeRecipeSelectionCommand? RecipeSelectionCommand { get; }
+        internal Func<IdentityAuthorityState, RecipeSelectionCommandState, bool, IdentityUpdate>? RecipeSelectionUpdate { get; }
         internal Func<IdentityAuthorityState, PlcResultContractCommandState, bool, IdentityUpdate>?
             PlcResultContractUpdate { get; }
         internal ActivateRecipeCommand? RecipeActivationCommand { get; }
@@ -1485,7 +1505,9 @@ internal sealed partial class SqliteCommandStore
             ManualInspectionCommandState? manualInspectionState = null,
             ManualInspectionAdmissionInput? manualInspectionInput = null,
             StationQualificationCommandState? stationQualificationState = null,
-            StationQualificationAdmissionInput? stationQualificationInput = null) =>
+            StationQualificationAdmissionInput? stationQualificationInput = null,
+            RecipeSelectionCommandState? recipeSelectionState = null) =>
+            RecipeSelectionUpdate is not null ? RecipeSelectionUpdate(state, recipeSelectionState!, duplicateCorrelation) :
             CalibrationImportUpdate is not null ? CalibrationImportUpdate(state, calibrationImportState!, duplicateCorrelation) :
             RecipeActivationUpdate is not null ? RecipeActivationUpdate(state, recipeActivationState!, duplicateCorrelation) :
             RecipeReleaseUpdate is not null ? RecipeReleaseUpdate(state, releaseState!, duplicateCorrelation) :
@@ -1530,5 +1552,6 @@ internal sealed record IdentityUpdate(
       PartIdentityWriteRequest? PartIdentity = null,
       ProductionRecoveryWriteRequest? ProductionRecovery = null,
       ProductionRecoveryCompletionWriteRequest? ProductionRecoveryCompletion = null,
-      ProductionRecoveryFailureWriteRequest? ProductionRecoveryFailure = null);
+      ProductionRecoveryFailureWriteRequest? ProductionRecoveryFailure = null,
+      RecipeSelectionMutation? RecipeSelection = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

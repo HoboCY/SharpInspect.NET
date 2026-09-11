@@ -14,17 +14,20 @@ internal sealed class RecipeActivationRuntimeLease : IDisposable
     private readonly Action<string, bool>? _publishTerminal;
     private readonly Func<string?>? _blocker;
     private readonly Func<RecipeActivationPhysicalPhaseClaim>? _beginPhysicalPhase;
+    private readonly Action<RecipeActivationRecord>? _committed;
     private int _disposed;
     internal RecipeActivationRuntimeLease(Guid epoch, string? failure, CancellationToken token,
         CameraSetupRuntime? camera = null,
         Func<CancellationToken, ValueTask<RecipeActivationCommitLease>>? enterCommit = null,
         Func<RecipeActivationSnapshot, PreparedAlgorithm, RecipeActivationResourceInstallResult>? install = null,
         Action<string, bool>? publishTerminal = null, Action? release = null, Func<string?>? blocker = null,
-        Func<RecipeActivationPhysicalPhaseClaim>? beginPhysicalPhase = null)
+        Func<RecipeActivationPhysicalPhaseClaim>? beginPhysicalPhase = null,
+        Action<RecipeActivationRecord>? committed = null)
     {
         RuntimeEpoch = epoch; Failure = failure; Token = token; Camera = camera;
         _enterCommit = enterCommit; _install = install; _publishTerminal = publishTerminal; _release = release;
         _blocker = blocker; _beginPhysicalPhase = beginPhysicalPhase;
+        _committed = committed;
     }
     internal Guid RuntimeEpoch { get; }
     internal string? Failure { get; }
@@ -60,6 +63,7 @@ internal sealed class RecipeActivationRuntimeLease : IDisposable
             "RecipeActivationReservationUnavailable")) : _enterCommit(token);
     internal RecipeActivationResourceInstallResult Install(RecipeActivationSnapshot snapshot, PreparedAlgorithm prepared) =>
         !Available || _install is null ? new(false, null) : _install(snapshot, prepared);
+    internal void RecordCommitted(RecipeActivationRecord record) => _committed?.Invoke(record);
     internal void PublishTerminal(string reason, bool recoveryRequired)
     { if (Available) _publishTerminal?.Invoke(reason, recoveryRequired); }
     public void Dispose()

@@ -60,8 +60,22 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
     public ValueTask<RecipeActivationPage> QueryAsync(RecipeActivationFilter filter,
         CancellationToken cancellationToken = default) => _history.QueryAsync(filter, cancellationToken);
 
-    public async ValueTask<RecipeActivationResult> ActivateAsync(ActivateRecipeCommand command,
-        CancellationToken cancellationToken = default)
+    public ValueTask<RecipeActivationResult> ActivateAsync(ActivateRecipeCommand command,
+        CancellationToken cancellationToken = default) => ActivateCoreAsync(command, null, cancellationToken);
+
+    internal ValueTask<RecipeActivationResult> ActivatePlcAsync(ActivateRecipeCommand command,
+        PlcRecipeActivationCapability capability, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(capability);
+        if (_fixture is not null || !capability.TryConsume(command))
+            return ValueTask.FromResult(new RecipeActivationResult(new(command.CorrelationId, CommandDisposition.Rejected,
+                "RecipeChangeCapabilityInvalid", AuditPersistence.NotAttempted, Guid.NewGuid())));
+        return ActivateCoreAsync(command, capability, cancellationToken);
+    }
+
+    private async ValueTask<RecipeActivationResult> ActivateCoreAsync(ActivateRecipeCommand command,
+        PlcRecipeActivationCapability? plc, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
         if (command.HistoricalSelection is not null && !_store.CalibrationImportEnabled)
@@ -72,7 +86,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         var checks = new RecipeActivationChecks();
         var entered = Interlocked.Increment(ref _active) <= 2;
         if (!entered) Interlocked.Decrement(ref _active);
-        RecipeActivationRuntimeLease? runtime = null;
+        RecipeActivationRuntimeLease? runtime = plc?.Runtime;
         RecipeActivationRecord? admitted = null;
         RecipeActivationRecord? previous = null;
         var execution = new RecipeActivationExecution();
@@ -85,7 +99,13 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         {
             try
             {
-                if (failure is null)
+                if (failure is null && plc is not null)
+                {
+                    failure = plc.RevocationFailure ?? runtime!.GetBlocker();
+                    checks.Observe(1, failure is null, failure ?? "MappedPlcRecipeActivationCapability");
+                    checks.Observe(2, failure is null, failure ?? "RecipeActivationQuiescenceReserved");
+                }
+                if (failure is null && plc is null)
                 {
                     var access = await _authorization.GetRecipeActivationAccessAsync(command.Invocation,
                         command.HistoricalSelection is not null, cancellationToken).ConfigureAwait(false);
@@ -135,8 +155,8 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                 admission = await _authorization.AdmitRecipeActivationAsync(command, epoch, attempt, kind,
                     checks.Snapshot(), failure,
                     () => runtime is null ? "RecipeActivationRuntimeUnavailable" : runtime.GetBlocker(),
-                    new StoreDeadline(remaining), runtime?.Token ?? cancellationToken).ConfigureAwait(false);
-                if (!IsRetryableRuntimeBusy(admission) || runtime is null) break;
+                    new StoreDeadline(remaining), runtime?.Token ?? cancellationToken, plc).ConfigureAwait(false);
+                if (plc is not null || !IsRetryableRuntimeBusy(admission) || runtime is null) break;
                 // The identity writer rolled back the transient contention. Wait
                 // outside that transaction and reuse the same command/attempt.
                 try
@@ -275,10 +295,11 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                                             OutstandingLeases: 0, ActiveReaders: 0 })
                                             return "RecipeActivationFramePoolChanged";
                                         return commit.TryBeginCommit();
-                                    }, new StoreDeadline(transactionRemaining), token).ConfigureAwait(false);
+                                    }, new StoreDeadline(transactionRemaining), token, plc).ConfigureAwait(false);
                                 if (committed.Committed && committed.Result is { } result)
                                 {
                                     durableSuccess = true;
+                                    if (result.Record is { } committedRecord) runtime.RecordCommitted(committedRecord);
                                     var installed = execution.InstallCommitted(runtime);
                                     // Do not hold the Runtime command gate while an old
                                     // prepared algorithm retires outside the transaction.
@@ -296,7 +317,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                             }
                         }
                     }
-                    if (!RecipeActivationRuntimeLease.IsRuntimeBusy(failure)) break;
+                    if (plc is not null || !RecipeActivationRuntimeLease.IsRuntimeBusy(failure)) break;
                     // The candidate is already prepared. A busy final claim is a
                     // rolled-back transaction, so retry only the durable commit.
                     try

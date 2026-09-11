@@ -838,6 +838,9 @@ try {
             -IdentityPolicy $taskIdentityPolicy -AuditKey $taskAuditKeyName `
             -AuditKeyDirectory $taskAuditKeyDirectory
     }
+    if ($Ticket -ge 46) {
+        & (Join-Path $PSScriptRoot 'Test-RecipeSelectionConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

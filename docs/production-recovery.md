@@ -18,4 +18,4 @@ dotnet SharpInspect.SampleHost.dll `
 
 schema30 是显式 opt-in 的新库格式。旧 schema28/29 数据不会被本功能自动迁移或复制；启用恢复的进程必须创建一个新的 schema30 数据库，并提供对应的审计身份、密钥和配置。缺少 `ProductionRecovery` 配置时，schema30 读写应拒绝并报告配置缺失；旧 schema 数据需要经过受控的独立迁移流程后才能用于新部署。
 
-`tools/Test-ProductionRecoveryConsumer.ps1` 会复制 SampleHost 消费者源文件并从 NuGet 包构建，不引用仓库项目。它在全新的输出路径创建 schema30 数据库，复用显式的 identity policy 和 audit key 输入，不会复制 legacy SQLite 文件；V144-N01 只验证公共 UI/存储边界和 fail-closed 行为，不宣称真实物理恢复已执行。
+`tools/Test-ProductionRecoveryConsumer.ps1` 会复制 SampleHost 消费者源文件并从 NuGet 包构建，不引用仓库项目。它在全新的输出路径创建 schema30 数据库，使用显式 identity policy，并为新库生成独立的一次性测试签名密钥；结束时仅删除本消费者拥有的密钥，不会复制 legacy SQLite 文件。为兼容旧调用保留的 `-AuditKey`、`-AuditKeyDirectory` 不再作为签名输入，证据会记录是否提供及未使用。直接运行上面的 SampleHost 命令仍须提供适合该数据库的真实签名输入。V144-N01 只验证公共 UI/存储边界和 fail-closed 行为，不宣称真实物理恢复已执行。

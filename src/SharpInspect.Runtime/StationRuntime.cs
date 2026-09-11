@@ -129,6 +129,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureProductionAdmission(productionStoreOptions, productionAdmissionFactsSource);
         ConfigureCalibration(calibrationSessionOptions, calibrationProcedures, productionStoreOptions);
         ConfigureRecipeActivationStartup(productionStoreOptions?.RecipeActivations is not null);
+        ConfigureRecipeSelectionStartup(productionStoreOptions?.RecipeSelections is not null);
         ConfigurePreviewStartup(productionStoreOptions?.PreviewSessions is not null);
         ConfigureManualInspectionStartup(productionStoreOptions?.ManualInspections is not null);
         ConfigureStationQualificationStartup(productionStoreOptions?.StationQualifications is not null);
@@ -232,6 +233,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitRecipeActivationAsync(activate, cancellationToken).ConfigureAwait(false);
         if (command is ChangePlcResultContractCommand plcContract)
             return await SubmitPlcResultContractAsync(plcContract, cancellationToken).ConfigureAwait(false);
+        if (command is ChangeRecipeSelectionCommand selection)
+            return await SubmitRecipeSelectionAsync(selection, cancellationToken).ConfigureAwait(false);
         if (command is ReleaseRecipeCommand release)
             return await SubmitRecipeReleaseAsync(release, cancellationToken).ConfigureAwait(false);
         if (command is CalibrationImportCommand import)

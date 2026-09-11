@@ -81,7 +81,8 @@ public enum SystemPermission : byte
     ScrubEvidence = 4,
     CleanupRetention = 5,
     RecordPlcCommunication = 6,
-    RecordProductionInspection = 7
+    RecordProductionInspection = 7,
+    RequestMappedRecipeActivation = 8
 }
 
 /// <summary>
@@ -143,8 +144,8 @@ public static class SystemPrincipalCatalog
         new[] { SystemPermission.CleanupRetention });
 
     public static SystemPrincipalDescriptor PlcAdapter { get; } = new(
-        SystemPrincipalId.PlcAdapter, "PLC communication facts",
-        new[] { SystemPermission.RecordPlcCommunication });
+        SystemPrincipalId.PlcAdapter, "PLC communication facts and explicitly enabled exact mapped recipe requests",
+        new[] { SystemPermission.RecordPlcCommunication, SystemPermission.RequestMappedRecipeActivation });
 
     private static readonly ReadOnlyCollection<SystemPrincipalDescriptor> s_all =
         new(new[] { Runtime, Outbox, EvidenceFinalizer, EvidenceScrubber, RetentionCleanup, PlcAdapter });

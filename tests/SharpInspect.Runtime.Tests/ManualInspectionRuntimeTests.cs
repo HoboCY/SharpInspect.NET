@@ -392,7 +392,9 @@ public sealed partial class ManualInspectionRuntimeTests
             Action<IServiceCollection>? configureAdditionalServices = null,
             bool allowPartIdentityCorrection = true, bool allowProductionRecovery = true,
             bool enableProductionRecovery = false, AlarmPolicyRule? productionTestAlarm = null,
-            PlcCommunicationPolicy? productionCommunicationPolicy = null, TimeSpan? heartbeatInterval = null)
+            PlcCommunicationPolicy? productionCommunicationPolicy = null, TimeSpan? heartbeatInterval = null,
+            ModbusRecipeChangeBinding? recipeChangeBinding = null,
+            IReadOnlyList<VirtualCameraConfigurationPlan>? cameraConfigurationPlans = null)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             if (!allowPartIdentityCorrection)
@@ -431,6 +433,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionInspections: productionPeer is null ? null : productionStore ?? new ProductionInspectionStoreOptions(),
                 partIdentities: partIdentityStore,
                 productionRecovery: enableProductionRecovery ? new ProductionRecoveryStoreOptions() : null,
+                recipeSelections: recipeChangeBinding is null ? null : new RecipeSelectionStoreOptions(),
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
                     { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) });
 
@@ -447,7 +450,7 @@ public sealed partial class ManualInspectionRuntimeTests
 
                 var clock = new VirtualCameraClock(productionPeer is not null ? DateTimeOffset.UtcNow :
                     new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-                var cameraProvider = CreateProvider(clock, timeout);
+                var cameraProvider = CreateProvider(clock, timeout, cameraConfigurationPlans);
                 var registrations = new ServiceCollection();
                 if (productionPeer is not null)
                 {
@@ -465,7 +468,7 @@ public sealed partial class ManualInspectionRuntimeTests
                         Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>());
                     registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
                         ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(
-                            productionCommunicationPolicy, partIdentity: partIdentityReadPlan),
+                            productionCommunicationPolicy, partIdentity: partIdentityReadPlan, recipeChange: recipeChangeBinding),
                         publication.Snapshot!.Version, publication.Snapshot.ContentHash,
                         TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
                 }
@@ -721,7 +724,7 @@ public sealed partial class ManualInspectionRuntimeTests
             }, TimeSpan.FromMinutes(1));
 
         internal static VirtualCameraProvider CreateProvider(VirtualCameraClock clock,
-            bool timeout)
+            bool timeout, IReadOnlyList<VirtualCameraConfigurationPlan>? configurationPlans = null)
         {
             var capabilities = new CameraCapabilities(
                 new[] { ProductionAcquisitionMode.SoftwareTrigger },
@@ -738,7 +741,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     ? Array.Empty<VirtualCameraSignal>()
                     : new[] { new VirtualCameraSignal(TimeSpan.FromMilliseconds(100),
                         VirtualCameraSignalKind.Frame, image.Id) })).ToArray();
-            var configurations = Enumerable.Repeat(
+            var configurations = configurationPlans ?? Enumerable.Repeat(
                 new VirtualCameraConfigurationPlan(VirtualCameraConfigurationOutcome.Success,
                     TimeSpan.Zero), 32).ToArray();
             var scenario = new VirtualCameraScenario("V135.Manual", "1", Seed,
@@ -808,6 +811,12 @@ public sealed partial class ManualInspectionRuntimeTests
         private bool _cooperativeExecutionCancellation;
         private readonly TaskCompletionSource<bool> _executionEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _executionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _holdNextCreate;
+        private readonly TaskCompletionSource<bool> _nextCreateEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _nextCreateReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal Task NextCreateEntered => _nextCreateEntered.Task;
+        internal void HoldNextCreate() => Interlocked.Exchange(ref _holdNextCreate, 1);
+        internal void ReleaseNextCreate() => _nextCreateReleased.TrySetResult(true);
 
         internal ManualFactory(string? preparationBarrierStage = null,
             bool failUnpublishedDispose = false)
@@ -862,6 +871,11 @@ public sealed partial class ManualInspectionRuntimeTests
             AlgorithmConfigurationSnapshot configuration,
             CancellationToken cancellationToken = default)
         {
+            if (Interlocked.Exchange(ref _holdNextCreate, 0) != 0)
+            {
+                _nextCreateEntered.TrySetResult(true);
+                await _nextCreateReleased.Task.ConfigureAwait(false);
+            }
             await WaitForPreparationCallbackAsync("create", cancellationToken)
                 .ConfigureAwait(false);
             Interlocked.Increment(ref _created);

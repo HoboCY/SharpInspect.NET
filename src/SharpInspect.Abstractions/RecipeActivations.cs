@@ -145,6 +145,7 @@ public sealed class RecipeActivationOutcome
 /// </summary>
 public sealed class RecipeActivationAdmission
 {
+    /// <summary>Human-requester admission; the public human identity contract is unchanged.</summary>
     internal RecipeActivationAdmission(long position, Guid activationId, Guid attemptId, Guid operationId,
         RecipeReference candidate, Guid releaseId, string releaseRecordContentHash,
         RecipeActivationReference? expectedActive, RecipeActivationReference? previousActivation,
@@ -154,6 +155,39 @@ public sealed class RecipeActivationAdmission
         RecipeContractReference authorizationPolicy, string authorizationTarget,
         RecipeActivationEvidenceKind evidenceKind, DateTimeOffset admittedAtUtc,
         HistoricalCalibrationSelectionIntent? historicalSelection = null)
+        : this(position, activationId, attemptId, operationId, candidate, releaseId, releaseRecordContentHash,
+            expectedActive, previousActivation, previousRecipe, previousSnapshotContentHash, calibrationSelections,
+            changeReason, HumanActor(actorPrincipalId, actorSessionId, actorAuthorizationRevision),
+            authorizationPolicy, authorizationTarget, evidenceKind, admittedAtUtc, historicalSelection)
+    {
+    }
+
+    /// <summary>
+    /// System-requester admission. It carries the complete PLC request context and
+    /// therefore admits no calibration choice and no historical calibration selection.
+    /// </summary>
+    internal RecipeActivationAdmission(long position, Guid activationId, Guid attemptId, Guid operationId,
+        RecipeReference candidate, Guid releaseId, string releaseRecordContentHash,
+        RecipeActivationReference? expectedActive, RecipeActivationReference? previousActivation,
+        RecipeReference? previousRecipe, string? previousSnapshotContentHash,
+        IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
+        RecipeActivationActor actor, RecipeContractReference authorizationPolicy, string authorizationTarget,
+        RecipeActivationEvidenceKind evidenceKind, DateTimeOffset admittedAtUtc)
+        : this(position, activationId, attemptId, operationId, candidate, releaseId, releaseRecordContentHash,
+            expectedActive, previousActivation, previousRecipe, previousSnapshotContentHash, calibrationSelections,
+            changeReason, actor, authorizationPolicy, authorizationTarget, evidenceKind, admittedAtUtc,
+            historicalSelection: null)
+    {
+    }
+
+    private RecipeActivationAdmission(long position, Guid activationId, Guid attemptId, Guid operationId,
+        RecipeReference candidate, Guid releaseId, string releaseRecordContentHash,
+        RecipeActivationReference? expectedActive, RecipeActivationReference? previousActivation,
+        RecipeReference? previousRecipe, string? previousSnapshotContentHash,
+        IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
+        RecipeActivationActor actor, RecipeContractReference authorizationPolicy, string authorizationTarget,
+        RecipeActivationEvidenceKind evidenceKind, DateTimeOffset admittedAtUtc,
+        HistoricalCalibrationSelectionIntent? historicalSelection)
     {
         if (position < 1 || activationId == Guid.Empty || attemptId == Guid.Empty || operationId == Guid.Empty)
             throw new ArgumentException("RecipeActivationAdmissionIdentityInvalid");
@@ -181,18 +215,28 @@ public sealed class RecipeActivationAdmission
         if (HistoricalSelection is not null &&
             !string.Equals(HistoricalSelection.Reason, ChangeReason, StringComparison.Ordinal))
             throw new ArgumentException("RecipeActivationHistoricalReasonMismatch", nameof(changeReason));
-        ActorPrincipalId = RecipeActivationValidation.RequiredGuid(actorPrincipalId, nameof(actorPrincipalId));
-        ActorSessionId = RecipeActivationValidation.RequiredGuid(actorSessionId, nameof(actorSessionId));
-        if (actorAuthorizationRevision < 0)
-            throw new ArgumentOutOfRangeException(nameof(actorAuthorizationRevision));
-        ActorAuthorizationRevision = actorAuthorizationRevision;
+        Actor = actor ?? throw new ArgumentNullException(nameof(actor));
+        if (Actor.IsPlcAdapter)
+        {
+            var plcContext = Actor.PlcRequestContext!;
+            if (HistoricalSelection is not null)
+                throw new ArgumentException("RecipeActivationPlcHistoricalSelectionInvalid",
+                    nameof(historicalSelection));
+            if (CalibrationSelections.Count != 0)
+                throw new ArgumentException("RecipeActivationPlcCalibrationSelectionInvalid",
+                    nameof(calibrationSelections));
+            if (Candidate != plcContext.Candidate || ReleaseId != plcContext.ReleaseId ||
+                !string.Equals(ReleaseRecordContentHash, plcContext.ReleaseRecordContentHash, StringComparison.Ordinal))
+                throw new ArgumentException("RecipeActivationPlcContextMismatch", nameof(candidate));
+        }
         AuthorizationPolicy = authorizationPolicy ?? throw new ArgumentNullException(nameof(authorizationPolicy));
         AuthorizationTarget = RecipeActivationValidation.Hash(authorizationTarget, nameof(authorizationTarget));
         EvidenceKind = AlgorithmConfigurationValidation.Enum(evidenceKind, nameof(evidenceKind));
         AdmittedAtUtc = RecipeActivationValidation.Utc(admittedAtUtc, nameof(admittedAtUtc));
         var hashParts = new List<string?>
         {
-            HistoricalSelection is null ? "sharpinspect-recipe-activation-admission-v1" :
+            HistoricalSelection is null ? Actor.IsPlcAdapter ? "sharpinspect-recipe-activation-admission-v3" :
+                "sharpinspect-recipe-activation-admission-v1" :
                 "sharpinspect-recipe-activation-admission-v2", Position.ToString(CultureInfo.InvariantCulture),
             ActivationId.ToString("D"), AttemptId.ToString("D"), OperationId.ToString("D"),
             Candidate.Id, Candidate.Version, Candidate.ContentHash, ReleaseId.ToString("D"),
@@ -213,14 +257,34 @@ public sealed class RecipeActivationAdmission
             hashParts.Add(HistoricalSelection.Reason);
             hashParts.Add(HistoricalSelection.ContentHash);
         }
+        hashParts.Add(ChangeReason);
+        if (Actor.IsPlcAdapter)
+        {
+            hashParts.Add(Actor.ContentHash);
+            hashParts.Add(Actor.PlcRequestContext!.ContentHash);
+        }
+        else
+        {
+            hashParts.Add(Actor.HumanPrincipalId!.Value.ToString("D"));
+            hashParts.Add(Actor.HumanSessionId!.Value.ToString("D"));
+            hashParts.Add(Actor.HumanAuthorizationRevision!.Value.ToString(CultureInfo.InvariantCulture));
+        }
         hashParts.AddRange(new[]
         {
-            ChangeReason, ActorPrincipalId.ToString("D"), ActorSessionId.ToString("D"),
-            ActorAuthorizationRevision.ToString(CultureInfo.InvariantCulture),
             AuthorizationPolicy.Id, AuthorizationPolicy.Version, AuthorizationPolicy.ContentHash,
             AuthorizationTarget, EvidenceKind.ToString(), AdmittedAtUtc.ToString("O", CultureInfo.InvariantCulture)
         });
         ContentHash = AlgorithmContractValidation.HashParts(hashParts);
+    }
+
+    private static RecipeActivationActor HumanActor(Guid actorPrincipalId, Guid actorSessionId,
+        long actorAuthorizationRevision)
+    {
+        var principalId = RecipeActivationValidation.RequiredGuid(actorPrincipalId, nameof(actorPrincipalId));
+        var sessionId = RecipeActivationValidation.RequiredGuid(actorSessionId, nameof(actorSessionId));
+        if (actorAuthorizationRevision < 0)
+            throw new ArgumentOutOfRangeException(nameof(actorAuthorizationRevision));
+        return RecipeActivationActor.Human(principalId, sessionId, actorAuthorizationRevision);
     }
 
     public long Position { get; }
@@ -237,9 +301,17 @@ public sealed class RecipeActivationAdmission
     public ReadOnlyCollection<CalibrationProfileSelection> CalibrationSelections { get; }
     public string ChangeReason { get; }
     public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
-    public Guid ActorPrincipalId { get; }
-    public Guid ActorSessionId { get; }
-    public long ActorAuthorizationRevision { get; }
+    /// <summary>Exact requester of this admission, human or PLC adapter.</summary>
+    public RecipeActivationActor Actor { get; }
+    /// <summary>The human requester; a PLC adapter admission is not a human requester.</summary>
+    public Guid ActorPrincipalId => Actor.HumanPrincipalId ??
+        throw new InvalidOperationException("RecipeActivationActorIsNotHuman");
+    /// <summary>The human interactive session; a PLC adapter admission has no session.</summary>
+    public Guid ActorSessionId => Actor.HumanSessionId ??
+        throw new InvalidOperationException("RecipeActivationActorIsNotHuman");
+    /// <summary>The human authorization revision; a PLC adapter admission has no revision.</summary>
+    public long ActorAuthorizationRevision => Actor.HumanAuthorizationRevision ??
+        throw new InvalidOperationException("RecipeActivationActorIsNotHuman");
     public RecipeContractReference AuthorizationPolicy { get; }
     public string AuthorizationTarget { get; }
     public RecipeActivationEvidenceKind EvidenceKind { get; }
@@ -351,6 +423,57 @@ public record ActivateRecipeCommand : RuntimeCommand
             HistoricalSelection);
     }
 
+    /// <summary>
+    /// Internal PLC-requested activation. The command never carries a human
+    /// identity, a human session, a Step-Up grant, a calibration choice, a
+    /// historical selection, or a caller-supplied expected active baseline; the
+    /// candidate and release are the ones the immutable selection map resolved.
+    /// The overload without a baseline keeps exactly this behavior.
+    /// </summary>
+    internal ActivateRecipeCommand(Guid correlationId, CommandInvocation invocation,
+        PlcRecipeActivationRequestContext plcRequestContext, string changeReason, Guid? operationId = null)
+        : this(correlationId, invocation, plcRequestContext, expectedActive: null, changeReason: changeReason,
+            operationId: operationId)
+    {
+    }
+
+    /// <summary>
+    /// Internal PLC-requested activation that also freezes the active baseline the
+    /// Runtime observed under its non-blocking reservation. The baseline is bound
+    /// into the same candidate authorization target a human command uses, before
+    /// the immutable PLC request context is layered on top of it.
+    /// </summary>
+    internal ActivateRecipeCommand(Guid correlationId, CommandInvocation invocation,
+        PlcRecipeActivationRequestContext plcRequestContext, RecipeActivationReference? expectedActive,
+        string changeReason, Guid? operationId = null)
+        : base(correlationId, invocation)
+    {
+        if (correlationId == Guid.Empty)
+            throw new ArgumentException("RecipeActivationCorrelationRequired");
+        ArgumentNullException.ThrowIfNull(invocation);
+        PlcRequestContext = plcRequestContext ?? throw new ArgumentNullException(nameof(plcRequestContext));
+        if (invocation.Source != CommandSource.Integration)
+            throw new ArgumentException("RecipeActivationPlcInvocationInvalid", nameof(invocation));
+        if (!string.Equals(invocation.PrincipalId, SystemPrincipalId.PlcAdapter, StringComparison.Ordinal))
+            throw new ArgumentException("RecipeActivationPlcPrincipalInvalid", nameof(invocation));
+        if (invocation.SessionId is not null || invocation.StepUpGrantId is not null)
+            throw new ArgumentException("RecipeActivationPlcInvocationInvalid", nameof(invocation));
+        Candidate = PlcRequestContext.Candidate;
+        ReleaseId = PlcRequestContext.ReleaseId;
+        ReleaseRecordContentHash = PlcRequestContext.ReleaseRecordContentHash;
+        ExpectedActive = RecipeActivationValidation.Reference(expectedActive);
+        CalibrationSelections = RecipeActivationValidation.CopySelections(null);
+        ChangeReason = RecipeActivationValidation.Reason(changeReason, nameof(changeReason));
+        HistoricalSelection = null;
+        OperationId = operationId ?? correlationId;
+        if (OperationId == Guid.Empty)
+            throw new ArgumentException("RecipeActivationOperationRequired", nameof(operationId));
+        if (OperationId != correlationId)
+            throw new ArgumentException("RecipeActivationOperationCorrelationMismatch", nameof(operationId));
+        AuthorizationTarget = ComputePlcAuthorizationTarget(ComputeAuthorizationTarget(Candidate, ReleaseId,
+            ReleaseRecordContentHash, ExpectedActive, null, ChangeReason), PlcRequestContext);
+    }
+
     internal static string ComputeAuthorizationTarget(RecipeReference candidate, Guid releaseId,
         string releaseRecordContentHash, RecipeActivationReference? expectedActive,
         IEnumerable<CalibrationProfileSelection>? calibrationSelections, string changeReason,
@@ -384,6 +507,20 @@ public record ActivateRecipeCommand : RuntimeCommand
         return AlgorithmContractValidation.HashParts(parts);
     }
 
+    /// <summary>
+    /// PLC authorization target: the original candidate target stays exactly the
+    /// human command target for the same candidate and release, and the PLC request
+    /// context is bound on top without changing that human target.
+    /// </summary>
+    internal static string ComputePlcAuthorizationTarget(string candidateAuthorizationTarget,
+        PlcRecipeActivationRequestContext plcRequestContext) =>
+        AlgorithmContractValidation.HashParts(new[]
+        {
+            "sharpinspect-plc-activate-recipe-command-v1",
+            RecipeActivationValidation.Hash(candidateAuthorizationTarget, nameof(candidateAuthorizationTarget)),
+            (plcRequestContext ?? throw new ArgumentNullException(nameof(plcRequestContext))).ContentHash
+        });
+
     public Guid OperationId { get; }
     public RecipeReference Candidate { get; }
     public Guid ReleaseId { get; }
@@ -393,11 +530,14 @@ public record ActivateRecipeCommand : RuntimeCommand
     public string ChangeReason { get; }
     public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
     public string AuthorizationTarget { get; }
+    /// <summary>The exact PLC request context; null for a human command.</summary>
+    public PlcRecipeActivationRequestContext? PlcRequestContext { get; }
 }
 
 /// <summary>One append-only activation event, either an admission or a terminal outcome.</summary>
 public sealed class RecipeActivationRecord
 {
+    /// <summary>Human-requester record; the public nullable human identity contract is unchanged.</summary>
     internal RecipeActivationRecord(long position, Guid activationId, Guid attemptId, Guid operationId,
         RecipeActivationReference? admissionReference, RecipeActivationReference? previousActivation,
         RecipeReference? previousRecipe, string? previousSnapshotContentHash, RecipeReference candidate,
@@ -408,6 +548,29 @@ public sealed class RecipeActivationRecord
         long? actorAuthorizationRevision, RecipeContractReference? authorizationPolicy,
         string changeReason, string authorizationTarget, DateTimeOffset recordedAtUtc,
         RecipeActivationAdmission? admission = null,
+        HistoricalCalibrationSelectionIntent? historicalSelection = null)
+        : this(position, activationId, attemptId, operationId, admissionReference, previousActivation,
+            previousRecipe, previousSnapshotContentHash, candidate, releaseId, releaseRecordContentHash,
+            resultingRecipe, outcome, checks, restoration, successfulSnapshot, evidenceKind,
+            HumanActor(actorPrincipalId, actorSessionId, actorAuthorizationRevision, authorizationPolicy, outcome),
+            authorizationPolicy, changeReason, authorizationTarget, recordedAtUtc, admission, historicalSelection)
+    {
+    }
+
+    /// <summary>
+    /// Actor-aware record. It carries the exact requester of the operation, so a
+    /// PLC adapter record keeps its request context and never invents a human
+    /// principal, session, or authorization revision.
+    /// </summary>
+    internal RecipeActivationRecord(long position, Guid activationId, Guid attemptId, Guid operationId,
+        RecipeActivationReference? admissionReference, RecipeActivationReference? previousActivation,
+        RecipeReference? previousRecipe, string? previousSnapshotContentHash, RecipeReference candidate,
+        Guid releaseId, string releaseRecordContentHash, RecipeReference? resultingRecipe,
+        RecipeActivationOutcome outcome, IEnumerable<RecipeActivationCheck> checks,
+        RecipeActivationRestoration restoration, RecipeActivationSnapshot? successfulSnapshot,
+        RecipeActivationEvidenceKind evidenceKind, RecipeActivationActor? actor,
+        RecipeContractReference? authorizationPolicy, string changeReason, string authorizationTarget,
+        DateTimeOffset recordedAtUtc, RecipeActivationAdmission? admission = null,
         HistoricalCalibrationSelectionIntent? historicalSelection = null)
     {
         if (position < 1 || activationId == Guid.Empty || attemptId == Guid.Empty || operationId == Guid.Empty)
@@ -449,11 +612,19 @@ public sealed class RecipeActivationRecord
             !Equals(historicalSelection, admission.HistoricalSelection))
             throw new ArgumentException("RecipeActivationHistoricalSelectionMismatch", nameof(historicalSelection));
 
-        ValidateActor(actorPrincipalId, actorSessionId, actorAuthorizationRevision, authorizationPolicy,
+        ValidateActor(actor, authorizationPolicy,
             Outcome.State is RecipeActivationOutcomeState.Admitted or RecipeActivationOutcomeState.Succeeded);
-        ActorPrincipalId = actorPrincipalId;
-        ActorSessionId = actorSessionId;
-        ActorAuthorizationRevision = actorAuthorizationRevision;
+        if (actor is { IsPlcAdapter: true })
+        {
+            var plcContext = actor.PlcRequestContext!;
+            if (HistoricalSelection is not null)
+                throw new ArgumentException("RecipeActivationPlcHistoricalSelectionInvalid",
+                    nameof(historicalSelection));
+            if (Candidate != plcContext.Candidate || ReleaseId != plcContext.ReleaseId ||
+                !string.Equals(ReleaseRecordContentHash, plcContext.ReleaseRecordContentHash, StringComparison.Ordinal))
+                throw new ArgumentException("RecipeActivationPlcContextMismatch", nameof(candidate));
+        }
+        Actor = actor;
         AuthorizationPolicy = authorizationPolicy;
 
         if (Outcome.State == RecipeActivationOutcomeState.Admitted)
@@ -492,7 +663,8 @@ public sealed class RecipeActivationRecord
 
         var hashParts = new List<string?>
         {
-            HistoricalSelection is null ? "sharpinspect-recipe-activation-record-v1" :
+            Actor is { IsPlcAdapter: true } ? "sharpinspect-recipe-activation-record-v3" :
+                HistoricalSelection is null ? "sharpinspect-recipe-activation-record-v1" :
                 "sharpinspect-recipe-activation-record-v2", Position.ToString(CultureInfo.InvariantCulture),
             ActivationId.ToString("D"), AttemptId.ToString("D"), OperationId.ToString("D"),
             Outcome.ContentHash, EvidenceKind.ToString(),
@@ -513,10 +685,19 @@ public sealed class RecipeActivationRecord
             hashParts.Add(HistoricalSelection.Reason);
             hashParts.Add(HistoricalSelection.ContentHash);
         }
+        if (Actor is { IsPlcAdapter: true })
+        {
+            hashParts.Add(Actor.ContentHash);
+            hashParts.Add(Actor.PlcRequestContext!.ContentHash);
+        }
+        else
+        {
+            hashParts.Add(Actor?.HumanPrincipalId?.ToString("D"));
+            hashParts.Add(Actor?.HumanSessionId?.ToString("D"));
+            hashParts.Add(Actor?.HumanAuthorizationRevision?.ToString(CultureInfo.InvariantCulture));
+        }
         hashParts.AddRange(new[]
         {
-            actorPrincipalId?.ToString("D"), actorSessionId?.ToString("D"),
-            actorAuthorizationRevision?.ToString(CultureInfo.InvariantCulture),
             authorizationPolicy?.Id, authorizationPolicy?.Version, authorizationPolicy?.ContentHash,
             AuthorizationTarget, RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture),
             Restoration.ContentHash, SuccessfulSnapshot?.ContentHash,
@@ -550,8 +731,7 @@ public sealed class RecipeActivationRecord
             ReleaseRecordContentHash != admission.ReleaseRecordContentHash ||
             PreviousActivation != admission.PreviousActivation || PreviousRecipe != admission.PreviousRecipe ||
             PreviousSnapshotContentHash != admission.PreviousSnapshotContentHash ||
-            ActorPrincipalId != admission.ActorPrincipalId || ActorSessionId != admission.ActorSessionId ||
-            ActorAuthorizationRevision != admission.ActorAuthorizationRevision ||
+            Actor is null || !Actor.Matches(admission.Actor) ||
             AuthorizationPolicy != admission.AuthorizationPolicy ||
             AuthorizationTarget != admission.AuthorizationTarget || ChangeReason != admission.ChangeReason ||
             EvidenceKind != admission.EvidenceKind ||
@@ -559,9 +739,10 @@ public sealed class RecipeActivationRecord
             throw new ArgumentException("RecipeActivationAdmissionRecordMismatch");
     }
 
-    private static void ValidateActor(Guid? principalId, Guid? sessionId, long? authorizationRevision,
-        RecipeContractReference? authorizationPolicy, bool required)
+    private static RecipeActivationActor? HumanActor(Guid? principalId, Guid? sessionId,
+        long? authorizationRevision, RecipeContractReference? authorizationPolicy, RecipeActivationOutcome? outcome)
     {
+        var required = outcome is { State: RecipeActivationOutcomeState.Admitted or RecipeActivationOutcomeState.Succeeded };
         if (principalId is Guid principal && principal == Guid.Empty)
             throw new ArgumentException("RecipeActivationActorInvalid", nameof(principalId));
         if (sessionId is Guid session && session == Guid.Empty)
@@ -576,6 +757,24 @@ public sealed class RecipeActivationRecord
         if (required && (!principalId.HasValue || !sessionId.HasValue ||
                 !authorizationRevision.HasValue || authorizationPolicy is null))
             throw new ArgumentException("RecipeActivationAuthorizedActorRequired");
+        return principalId.HasValue
+            ? RecipeActivationActor.Human(principalId.Value, sessionId!.Value, authorizationRevision!.Value)
+            : null;
+    }
+
+    private static void ValidateActor(RecipeActivationActor? actor,
+        RecipeContractReference? authorizationPolicy, bool required)
+    {
+        if (actor is null || authorizationPolicy is null)
+        {
+            if (actor is null && authorizationPolicy is null)
+            {
+                if (required)
+                    throw new ArgumentException("RecipeActivationAuthorizedActorRequired");
+                return;
+            }
+            throw new ArgumentException("RecipeActivationActorBindingIncomplete");
+        }
     }
 
     public long Position { get; }
@@ -597,9 +796,14 @@ public sealed class RecipeActivationRecord
     public RecipeActivationAdmission? Admission { get; }
     public HistoricalCalibrationSelectionIntent? HistoricalSelection { get; }
     public RecipeActivationEvidenceKind EvidenceKind { get; }
-    public Guid? ActorPrincipalId { get; }
-    public Guid? ActorSessionId { get; }
-    public long? ActorAuthorizationRevision { get; }
+    /// <summary>Exact requester of this event; absent only for an unauthenticated pre-admission rejection.</summary>
+    public RecipeActivationActor? Actor { get; }
+    /// <summary>The human requester; a PLC adapter request has no human identity.</summary>
+    public Guid? ActorPrincipalId => Actor?.HumanPrincipalId;
+    /// <summary>The human interactive session; a PLC adapter request has no session.</summary>
+    public Guid? ActorSessionId => Actor?.HumanSessionId;
+    /// <summary>The human authorization revision; a PLC adapter request has no revision.</summary>
+    public long? ActorAuthorizationRevision => Actor?.HumanAuthorizationRevision;
     public RecipeContractReference? AuthorizationPolicy { get; }
     public string ChangeReason { get; }
     public string AuthorizationTarget { get; }

@@ -14,8 +14,11 @@ internal sealed partial class LocalAuthorizationService
     internal async ValueTask<RecipeActivationCommitAttempt> TryCommitRecipeActivationAsync(
         ActivateRecipeCommand command, Guid epoch, RecipeActivationRecord admitted, RecipeActivationSnapshot snapshot,
         IReadOnlyList<RecipeActivationCheck> checks, Func<string?> claimRuntimeCommit,
-        StoreDeadline deadline, CancellationToken callerCancellation)
+        StoreDeadline deadline, CancellationToken callerCancellation, PlcRecipeActivationCapability? plc = null)
     {
+        if (plc is not null)
+            return await TryCommitPlcRecipeActivationAsync(command, epoch, admitted, snapshot, checks,
+                claimRuntimeCommit, deadline, callerCancellation, plc).ConfigureAwait(false);
         try
         {
             var write = await _store.UpdateRecipeActivationCommandAsync(command, (identity, state, _) =>
@@ -148,8 +151,11 @@ internal sealed partial class LocalAuthorizationService
     internal async ValueTask<RecipeActivationAdmissionDecision> AdmitRecipeActivationAsync(
         ActivateRecipeCommand command, Guid epoch, Guid attemptId, RecipeActivationEvidenceKind evidenceKind,
         IReadOnlyList<RecipeActivationCheck> checks, string? preflightFailure, Func<string?> runtimeBlocker,
-        StoreDeadline deadline, CancellationToken callerCancellation)
+        StoreDeadline deadline, CancellationToken callerCancellation, PlcRecipeActivationCapability? plc = null)
     {
+        if (plc is not null)
+            return await AdmitPlcRecipeActivationAsync(command, epoch, attemptId, evidenceKind, checks,
+                preflightFailure, deadline, callerCancellation, plc).ConfigureAwait(false);
         try
         {
             var write = await _store.UpdateRecipeActivationCommandAsync(command, (identity, state, duplicate) =>
@@ -406,6 +412,20 @@ internal sealed partial class LocalAuthorizationService
         var previousReference = admission?.PreviousActivation ?? previous?.Reference;
         var previousRecipe = admission?.PreviousRecipe ?? previous?.SuccessfulSnapshot?.Recipe;
         var previousHash = admission?.PreviousSnapshotContentHash ?? previous?.SuccessfulSnapshot?.ContentHash;
+        if (command.PlcRequestContext is { } context)
+        {
+            var plcActor = admission?.Actor ?? RecipeActivationActor.PlcAdapter(context);
+            if (!plcActor.IsPlcAdapter || !plcActor.PlcRequestContext!.Matches(context))
+                throw new InvalidOperationException("RecipeActivationPlcActorChanged");
+            var plcIntent = outcome == RecipeActivationOutcomeState.Admitted ? new RecipeActivationAdmission(position,
+                id, attemptId, command.OperationId, command.Candidate, command.ReleaseId, command.ReleaseRecordContentHash,
+                command.ExpectedActive, previousReference, previousRecipe, previousHash, command.CalibrationSelections,
+                command.ChangeReason, plcActor, policy!, command.AuthorizationTarget, evidenceKind, time) : null;
+            return new(position, id, attemptId, command.OperationId, admission?.Reference, previousReference,
+                previousRecipe, previousHash, command.Candidate, command.ReleaseId, command.ReleaseRecordContentHash,
+                snapshot?.Recipe, new(outcome, reason), checks, restoration, snapshot, evidenceKind, plcActor,
+                policy, command.ChangeReason, command.AuthorizationTarget, time, plcIntent);
+        }
         var intent = outcome == RecipeActivationOutcomeState.Admitted ? new RecipeActivationAdmission(position,
             id, attemptId, command.OperationId, command.Candidate, command.ReleaseId, command.ReleaseRecordContentHash,
             command.ExpectedActive, previousReference, previousRecipe, previousHash, command.CalibrationSelections,
@@ -454,10 +474,36 @@ internal sealed partial class LocalAuthorizationService
             RecipeActivationOutcomeState.Cancelled => IdentityEventKind.RecipeActivationCancelled,
             _ => IdentityEventKind.RecipeActivationFailed
         };
-        var audit = AuthorizationEvent(identity, kind, record.Outcome.ReasonCode, Binding(command),
+        var audit = record.Actor is { IsPlcAdapter: true, PlcRequestContext: { } plcContext }
+            ? new IdentityAuditEvent(Guid.NewGuid(), kind, record.RecordedAtUtc, identity.StationId,
+                null, null, null, null, record.Outcome.ReasonCode,
+                AuthorizationPolicyId: record.AuthorizationPolicy!.Id,
+                AuthorizationPolicyVersion: record.AuthorizationPolicy.Version,
+                AuthorizationPolicyHash: record.AuthorizationPolicy.ContentHash,
+                CommandCorrelationId: command.CorrelationId,
+                ActionTargetId: command.AuthorizationTarget, BoundCommandCorrelationId: command.CorrelationId,
+                ActionCommandKind: AuditedCommandKind.ActivateRecipe.ToString(),
+                OperationId: command.OperationId, PlcRecipeActivationEvidence: PlcRecipeActivationIdentityCodec.Encode(plcContext))
+            : AuthorizationEvent(identity, kind, record.Outcome.ReasonCode, Binding(command),
             record.ActorPrincipalId, record.ActorSessionId, fact.ClaimedStepUpGrantId, command.CorrelationId,
             record.ActorAuthorizationRevision ?? 0, targetPrincipalId: record.ActorPrincipalId,
             capturedTime: record.RecordedAtUtc) with { OperationId = command.OperationId };
+        if (record.Actor?.IsPlcAdapter == true)
+        {
+            audit = audit with
+            {
+                AuthenticationPolicyId = _options.AuthenticationPolicy.Id,
+                AuthenticationPolicyVersion = _options.AuthenticationPolicy.Version,
+                AuthenticationPolicyHash = _options.AuthenticationPolicy.ContentHash
+            };
+            // Validate the closed shape before it can reach the append-only identity writer.
+            // Encode also serves corruption fixtures and deliberately is not an authority gate.
+            var payload = audit.Encode(1, RecipeSelectionStoreOptions.SchemaVersion);
+            IdentityAuditEvent.VerifyPayload(payload, 1, identity.StationId, RecipeSelectionStoreOptions.SchemaVersion);
+            if (!IdentityAuditEvent.MatchesRecipeActivationAuthorization(payload, 1, identity.StationId,
+                    record, RecipeSelectionStoreOptions.SchemaVersion))
+                throw new InvalidOperationException("RecipeActivationPlcIdentityBindingInvalid");
+        }
         return new(result, new[] { audit }, new[] { fact }, guard, RecipeActivation: new(record));
     }
 }

@@ -17,6 +17,9 @@ internal static class RecipeActivationStorageCodec
     private const int Magic = 0x31414152; // RAA1
     private const byte FormatVersion = 1;
     private const byte HistoricalFormatVersion = 2;
+    // Version 3 exists only for the PLC adapter requester. A human record keeps the
+    // exact version 1/2 bytes it has always had.
+    private const byte PlcFormatVersion = 3;
     private const int MaximumStringBytes = 256 * 1024;
     private const int MaximumIdentifierBytes = 1024;
     private const int MaximumCheckCount = 256;
@@ -57,7 +60,8 @@ internal static class RecipeActivationStorageCodec
         using (var writer = new BinaryWriter(stream, new UTF8Encoding(false, true), leaveOpen: true))
         {
             writer.Write(Magic);
-            var version = record.HistoricalSelection is null ? FormatVersion : HistoricalFormatVersion;
+            var version = record.Actor is { IsPlcAdapter: true } ? PlcFormatVersion :
+                record.HistoricalSelection is null ? FormatVersion : HistoricalFormatVersion;
             writer.Write(version);
             WriteRecord(writer, record, version);
             WriteString(writer, record.ContentHash, 64);
@@ -79,11 +83,13 @@ internal static class RecipeActivationStorageCodec
             if (reader.ReadInt32() != Magic)
                 throw new InvalidOperationException("RecipeActivationPayloadVersionUnsupported");
             var version = reader.ReadByte();
-            if (version is not (FormatVersion or HistoricalFormatVersion))
+            if (version is not (FormatVersion or HistoricalFormatVersion or PlcFormatVersion))
                 throw new InvalidOperationException("RecipeActivationPayloadVersionUnsupported");
             var record = ReadRecord(reader, profileResolver, version);
             if ((version == HistoricalFormatVersion) != (record.HistoricalSelection is not null))
                 throw new InvalidOperationException("RecipeActivationHistoricalSelectionVersionMismatch");
+            if ((version == PlcFormatVersion) != (record.Actor is { IsPlcAdapter: true }))
+                throw new InvalidOperationException("RecipeActivationPlcActorVersionMismatch");
             var savedHash = ReadString(reader, 64);
             if (!string.Equals(savedHash, record.ContentHash, StringComparison.Ordinal))
                 throw new InvalidOperationException("RecipeActivationContentHashMismatch");
@@ -129,6 +135,7 @@ internal static class RecipeActivationStorageCodec
         writer.Write(record.RecordedAtUtc.UtcTicks);
         if (version >= HistoricalFormatVersion) WriteHistoricalSelection(writer, record.HistoricalSelection);
         WriteAdmission(writer, record.Admission, version);
+        if (version >= PlcFormatVersion) WritePlcActor(writer, record.Actor);
     }
 
     private static RecipeActivationRecord ReadRecord(BinaryReader reader,
@@ -155,6 +162,9 @@ internal static class RecipeActivationStorageCodec
         var actorPrincipal = ReadNullableGuid(reader);
         var actorSession = ReadNullableGuid(reader);
         var actorRevision = ReadNullableInt64(reader);
+        if (version >= PlcFormatVersion &&
+            (actorPrincipal is not null || actorSession is not null || actorRevision is not null))
+            throw new InvalidOperationException("RecipeActivationPlcActorMixed");
         var authorizationPolicy = ReadContractReference(reader);
         var changeReason = ReadString(reader, MaximumStringBytes) ??
             throw new InvalidOperationException("RecipeActivationChangeReasonMissing");
@@ -163,10 +173,23 @@ internal static class RecipeActivationStorageCodec
         var recordedAtUtc = new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero);
         var historicalSelection = version >= HistoricalFormatVersion ? ReadHistoricalSelection(reader) : null;
         var admission = ReadAdmission(reader, profileResolver, version);
+        RecipeActivationActor? actor;
+        if (version >= PlcFormatVersion)
+        {
+            actor = ReadPlcActor(reader, "RecipeActivationPlcRecordActorInvalid");
+            if (admission is not null && !actor.Matches(admission.Actor))
+                throw new InvalidOperationException("RecipeActivationPlcContextMismatch");
+        }
+        else
+        {
+            actor = actorPrincipal is null && actorSession is null && actorRevision is null ? null :
+                RecipeActivationActor.Human(actorPrincipal ?? Guid.Empty, actorSession ?? Guid.Empty,
+                    actorRevision ?? -1);
+        }
         return new RecipeActivationRecord(position, activationId, attemptId, operationId,
             admissionReference, previousActivation, previousRecipe, previousSnapshotHash,
             candidate, releaseId, releaseHash, resultingRecipe, outcome, checks, restoration,
-            snapshot, evidenceKind, actorPrincipal, actorSession, actorRevision, authorizationPolicy,
+            snapshot, evidenceKind, actor, authorizationPolicy,
             changeReason, authorizationTarget, recordedAtUtc, admission, historicalSelection);
     }
 
@@ -187,15 +210,25 @@ internal static class RecipeActivationStorageCodec
         WriteString(writer, admission.PreviousSnapshotContentHash, 64);
         WriteSelections(writer, admission.CalibrationSelections);
         WriteString(writer, admission.ChangeReason, MaximumStringBytes);
-        WriteGuid(writer, admission.ActorPrincipalId);
-        WriteGuid(writer, admission.ActorSessionId);
-        writer.Write(admission.ActorAuthorizationRevision);
+        if (version >= PlcFormatVersion)
+        {
+            WriteNullableGuid(writer, admission.Actor.HumanPrincipalId);
+            WriteNullableGuid(writer, admission.Actor.HumanSessionId);
+            WriteNullableInt64(writer, admission.Actor.HumanAuthorizationRevision);
+        }
+        else
+        {
+            WriteGuid(writer, admission.ActorPrincipalId);
+            WriteGuid(writer, admission.ActorSessionId);
+            writer.Write(admission.ActorAuthorizationRevision);
+        }
         WriteContractReference(writer, admission.AuthorizationPolicy);
         WriteString(writer, admission.AuthorizationTarget, 64);
         writer.Write((byte)admission.EvidenceKind);
         writer.Write(admission.AdmittedAtUtc.UtcTicks);
         if (version >= HistoricalFormatVersion) WriteHistoricalSelection(writer, admission.HistoricalSelection);
         WriteString(writer, admission.ContentHash, 64);
+        if (version >= PlcFormatVersion) WritePlcActor(writer, admission.Actor);
     }
 
     private static RecipeActivationAdmission? ReadAdmission(BinaryReader reader,
@@ -215,22 +248,89 @@ internal static class RecipeActivationStorageCodec
         var previousSnapshotHash = ReadString(reader, 64);
         var selections = ReadSelections(reader);
         var reason = ReadString(reader, MaximumStringBytes) ?? throw new InvalidOperationException("RecipeActivationAdmissionReasonMissing");
-        var actorPrincipal = ReadGuid(reader);
-        var actorSession = ReadGuid(reader);
-        var actorRevision = reader.ReadInt64();
+        Guid? actorPrincipal = version >= PlcFormatVersion ? ReadNullableGuid(reader) : ReadGuid(reader);
+        Guid? actorSession = version >= PlcFormatVersion ? ReadNullableGuid(reader) : ReadGuid(reader);
+        long? actorRevision = version >= PlcFormatVersion ? ReadNullableInt64(reader) : reader.ReadInt64();
         var policy = ReadContractReference(reader) ?? throw new InvalidOperationException("RecipeActivationAdmissionPolicyMissing");
         var target = ReadString(reader, 64) ?? throw new InvalidOperationException("RecipeActivationAdmissionTargetMissing");
         var evidenceKind = ReadEnum<RecipeActivationEvidenceKind>(reader.ReadByte(), "RecipeActivationEvidenceKindInvalid");
         var admittedAt = new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero);
         var historicalSelection = version >= HistoricalFormatVersion ? ReadHistoricalSelection(reader) : null;
         var contentHash = ReadString(reader, 64);
-        var admission = new RecipeActivationAdmission(position, activationId, attemptId, operationId,
-            candidate, releaseId, releaseHash, expectedActive, previousActivation, previousRecipe,
-            previousSnapshotHash, selections, reason, actorPrincipal, actorSession, actorRevision,
-            policy, target, evidenceKind, admittedAt, historicalSelection);
+        RecipeActivationAdmission admission;
+        if (version >= PlcFormatVersion)
+        {
+            if (actorPrincipal is not null || actorSession is not null || actorRevision is not null)
+                throw new InvalidOperationException("RecipeActivationPlcActorMixed");
+            if (historicalSelection is not null)
+                throw new InvalidOperationException("RecipeActivationPlcHistoricalSelectionInvalid");
+            var actor = ReadPlcActor(reader, "RecipeActivationPlcAdmissionActorInvalid");
+            admission = new RecipeActivationAdmission(position, activationId, attemptId, operationId,
+                candidate, releaseId, releaseHash, expectedActive, previousActivation, previousRecipe,
+                previousSnapshotHash, selections, reason, actor, policy, target, evidenceKind, admittedAt);
+        }
+        else
+        {
+            admission = new RecipeActivationAdmission(position, activationId, attemptId, operationId,
+                candidate, releaseId, releaseHash, expectedActive, previousActivation, previousRecipe,
+                previousSnapshotHash, selections, reason, actorPrincipal!.Value, actorSession!.Value, actorRevision!.Value,
+                policy, target, evidenceKind, admittedAt, historicalSelection);
+        }
         if (!string.Equals(contentHash, admission.ContentHash, StringComparison.Ordinal))
             throw new InvalidOperationException("RecipeActivationAdmissionContentHashMismatch");
         return admission;
+    }
+
+    private static void WritePlcActor(BinaryWriter writer, RecipeActivationActor? actor)
+    {
+        if (actor is not { IsPlcAdapter: true } || actor.PlcRequestContext is null)
+            throw new InvalidOperationException("RecipeActivationPlcActorRequired");
+        writer.Write((byte)actor.Kind);
+        WriteString(writer, actor.SystemPrincipalId, MaximumIdentifierBytes);
+        var context = actor.PlcRequestContext;
+        WriteGuid(writer, context.RuntimeEpoch);
+        WriteString(writer, context.EndpointContentHash, 64);
+        WriteContractReference(writer, context.ProtocolProfile);
+        writer.Write(context.ControllerEpoch);
+        writer.Write(context.RequestSequence);
+        writer.Write(context.SelectionCode);
+        WriteContractReference(writer, context.SelectionPolicy);
+        WriteContractReference(writer, context.SelectionMap);
+        WriteRecipe(writer, context.Candidate);
+        WriteGuid(writer, context.ReleaseId);
+        WriteString(writer, context.ReleaseRecordContentHash, 64);
+        WriteString(writer, context.ContentHash, 64);
+        WriteString(writer, context.RequestIdentityHash, 64);
+    }
+
+    private static RecipeActivationActor ReadPlcActor(BinaryReader reader, string reason)
+    {
+        var kind = reader.ReadByte();
+        if (kind != (byte)RecipeActivationActorKind.PlcAdapter)
+            throw new InvalidOperationException(reason);
+        var principalId = ReadString(reader, MaximumIdentifierBytes);
+        if (!string.Equals(principalId, SystemPrincipalId.PlcAdapter, StringComparison.Ordinal))
+            throw new InvalidOperationException(reason);
+        var runtimeEpoch = ReadGuid(reader);
+        var endpointHash = ReadString(reader, 64) ?? throw new InvalidOperationException(reason);
+        var protocolProfile = ReadContractReference(reader) ?? throw new InvalidOperationException(reason);
+        var controllerEpoch = reader.ReadUInt32();
+        var requestSequence = reader.ReadUInt32();
+        var selectionCode = reader.ReadUInt32();
+        var selectionPolicy = ReadContractReference(reader) ?? throw new InvalidOperationException(reason);
+        var selectionMap = ReadContractReference(reader) ?? throw new InvalidOperationException(reason);
+        var candidate = ReadRecipe(reader) ?? throw new InvalidOperationException(reason);
+        var releaseId = ReadGuid(reader);
+        var releaseHash = ReadString(reader, 64) ?? throw new InvalidOperationException(reason);
+        var savedContextHash = ReadString(reader, 64) ?? throw new InvalidOperationException(reason);
+        var savedIdentityHash = ReadString(reader, 64) ?? throw new InvalidOperationException(reason);
+        var context = new PlcRecipeActivationRequestContext(runtimeEpoch, endpointHash, protocolProfile,
+            controllerEpoch, requestSequence, selectionCode, selectionPolicy, selectionMap, candidate,
+            releaseId, releaseHash);
+        if (!string.Equals(savedContextHash, context.ContentHash, StringComparison.Ordinal) ||
+            !string.Equals(savedIdentityHash, context.RequestIdentityHash, StringComparison.Ordinal))
+            throw new InvalidOperationException("RecipeActivationPlcContextHashMismatch");
+        return RecipeActivationActor.PlcAdapter(context);
     }
 
     private static void WriteOutcome(BinaryWriter writer, RecipeActivationOutcome value)

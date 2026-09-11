@@ -516,7 +516,7 @@ public sealed partial class RecipeActivationServiceTests
         throw new XunitException(timeoutReason + ":" + last?.LastCommand?.ReasonCode);
     }
 
-    private sealed partial class VirtualCameraProvider
+    internal sealed partial class VirtualCameraProvider
     {
         internal int ActivationApplyCount => _activationDevice.ApplyCount;
         internal int ActivationPreviewStartCount => _activationDevice.PreviewStartCalls;

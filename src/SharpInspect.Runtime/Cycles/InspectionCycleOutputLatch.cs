@@ -11,13 +11,16 @@ internal sealed class InspectionCycleOutputLatch
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<bool, bool, bool, bool, bool, CancellationToken, Task> _write;
+    private readonly Func<bool, bool, bool, bool, bool, CancellationToken, Task>? _ownedWrite;
     private bool _ready, _busy, _valid, _fault, _violation;
     private bool _unavailable;
-    internal InspectionCycleOutputLatch(Func<bool, bool, bool, bool, bool, CancellationToken, Task> write) => _write = write;
+    internal InspectionCycleOutputLatch(Func<bool, bool, bool, bool, bool, CancellationToken, Task> write,
+        Func<bool, bool, bool, bool, bool, CancellationToken, Task>? ownedWrite = null)
+    { _write = write; _ownedWrite = ownedWrite; }
     internal bool? ConfirmedResultValid => Volatile.Read(ref _unavailable) ? null : Volatile.Read(ref _valid);
 
     internal async Task ChangeAsync(CancellationToken token, bool? ready = null, bool? busy = null,
-        bool? valid = null, bool? fault = null, bool? violation = null)
+        bool? valid = null, bool? fault = null, bool? violation = null, bool requireOwner = false)
     {
         await _gate.WaitAsync(token).ConfigureAwait(false);
         try
@@ -27,7 +30,8 @@ internal sealed class InspectionCycleOutputLatch
             var nextFault = fault ?? _fault; var nextViolation = violation ?? _violation;
             try
             {
-                await _write(nextReady, nextBusy, nextValid, nextFault, nextViolation, token).ConfigureAwait(false);
+                var writer = requireOwner ? _ownedWrite ?? throw new InvalidOperationException("InspectionCycleOwnedWriteUnavailable") : _write;
+                await writer(nextReady, nextBusy, nextValid, nextFault, nextViolation, token).ConfigureAwait(false);
             }
             catch (PlcRequestRevokedException)
             {

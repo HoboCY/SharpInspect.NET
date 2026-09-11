@@ -15,8 +15,9 @@ public sealed partial class StationRuntime
         {
             await _storeInitialization.WaitAsync(_lifetime.Token).ConfigureAwait(false);
             await Task.WhenAll(WaitForRecipeActivationStartupAsync(), WaitForPreviewStartupAsync(),
-                WaitForManualInspectionStartupAsync(), WaitForStationQualificationStartupAsync())
+                WaitForManualInspectionStartupAsync(), WaitForStationQualificationStartupAsync(), WaitForRecipeSelectionStartupAsync())
                 .WaitAsync(_lifetime.Token).ConfigureAwait(false);
+            await FinalizeInterruptedRecipeChangesAsync(_lifetime.Token).ConfigureAwait(false);
             lock (_sync)
                 if (!ProductionStartupDependenciesReconciledLocked())
                     throw new InvalidOperationException("ProductionInspectionStartupDependencyUnavailable");
@@ -111,7 +112,7 @@ public sealed partial class StationRuntime
         await using var channel = new ModbusQualificationChannel(profile,
             start => StartProductionCycleWrite(owner, start),
             start => StartProductionModbusRequest(owner, start), ShouldReadProductionPartIdentity);
-        var output = new InspectionCycleOutputLatch(channel.WriteStateAsync);
+        var output = new InspectionCycleOutputLatch(channel.WriteStateAsync, channel.WriteRecipeChangeOwnedStateAsync);
         var initialized = false;
         InspectionCycleRequestObserver? observer = null;
         try
@@ -120,12 +121,31 @@ public sealed partial class StationRuntime
             var initial = await channel.ReadRuntimeStateAsync(token).ConfigureAwait(false);
             if (initial.QualificationReady || initial.ProductionReady || initial.Busy || initial.ResultValid ||
                 initial.CycleFault || initial.ProtocolViolation)
+            {
+                // Residual runtime-owned state is an unresolved session even without an
+                // InspectionId in this process. Preserve the recovery requirement on refusal.
+                lock (_sync)
+                    if (ReferenceEquals(_productionInspectionOwner, owner))
+                        _productionInspectionRecoveryBlocked = true;
                 throw new InvalidOperationException("ProductionInspectionInitialControllerStateNotClear");
+            }
             await output.ChangeAsync(token).ConfigureAwait(false);
             initialized = true;
-            await communication.SynchronizeAsync(channel, token).ConfigureAwait(false);
+            try { await communication.SynchronizeAsync(channel, token).ConfigureAwait(false); }
+            catch (Exception exception) when (profile.RecipeChange is not null &&
+                exception is not OutOfMemoryException && !token.IsCancellationRequested)
+            {
+                // Dedicated fields can prevent initial synchronization before a handshake or
+                // InspectionId exists. Keep that failed session in recovery without clearing it.
+                lock (_sync)
+                    if (ReferenceEquals(_productionInspectionOwner, owner) && !_disposed &&
+                        !_shutdownRequested && !_lifetime.IsCancellationRequested && !token.IsCancellationRequested)
+                        _productionInspectionRecoveryBlocked = true;
+                throw;
+            }
+            await InitializeRecipeChangeHandshakeAsync(owner, channel, owner.Health!.ControllerEpoch!.Value, token).ConfigureAwait(false);
             lock (_sync) ProjectProductionProgressLocked(owner);
-            observer = owner.Observer = new(ct => communication.ReadAsync(channel, ct), profile.PollInterval,
+            observer = owner.Observer = new(ct => ReadProductionAndRecipeChangeAsync(owner, channel, output, ct), profile.PollInterval,
                 knownKeys, () => owner.Coordinator.SetPhase(InspectionCyclePhase.Accepted),
                 reason => { lock (_sync) AbortProductionInspectionLocked(owner, reason); },
                 token, communication.RequireHealthy);
@@ -309,6 +329,7 @@ public sealed partial class StationRuntime
         finally
         {
             if (observer is not null) await observer.DisposeAsync().ConfigureAwait(false);
+            await RetireRecipeChangeHandshakeAsync(owner).ConfigureAwait(false);
             owner.Observer = null;
             await communication.DisposeAsync().ConfigureAwait(false);
         }
@@ -316,6 +337,8 @@ public sealed partial class StationRuntime
 
     private bool CanAcceptProductionTriggerLocked(ProductionInspectionOwner owner) =>
         !LocalStopPendingLocked &&
+        _activationReservation is null && !_recipeSelectionChangeInProgress && owner.RecipeChangeActivation is null &&
+        (_productionInspectionStoreOptions?.RecipeSelections is null || _recipeSelectionStartupVerified) &&
         ReferenceEquals(_productionInspectionOwner, owner) && !owner.Aborted && owner.Current is null &&
         !_disposed && !_shutdownRequested && _productionInspectionStartupVerified &&
         !_productionInspectionRecoveryBlocked && owner.Health is { Healthy: true } &&

@@ -63,6 +63,7 @@ public sealed partial class StationRuntime
         _storeReady = _baseStoreReady && !_activationStartupBlocked;
         if (_disposed) return;
         var current = result.Current is { CanBeActive: true } ? result.Current : null;
+        _currentRecipeActivationReference = current?.Reference;
         var blockers = _snapshot.AdmissionBlockers.Where(code =>
             code is not "RecipeActivationStartupRecoveryPending" and not "RecipeActivationStartupRecoveryRequired").ToList();
         if (!result.Available)

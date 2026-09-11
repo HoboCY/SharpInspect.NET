@@ -411,7 +411,7 @@ public sealed partial class RecipeActivationServiceTests
         Assert.False(station.Ready);
     }
 
-    private sealed class ActivationHarness : IAsyncDisposable
+    internal sealed class ActivationHarness : IAsyncDisposable
     {
         private const string TestPassword = "V132 activation integration password 2026!";
         private readonly ServiceProvider _provider;
@@ -493,6 +493,10 @@ public sealed partial class RecipeActivationServiceTests
             _provider.GetRequiredService<ICalibrationImportRuntime>();
         internal ICalibrationImportQuery CalibrationImportQuery =>
             _provider.GetRequiredService<ICalibrationImportQuery>();
+        internal IRecipeSelectionService RecipeSelections =>
+            _provider.GetRequiredService<IRecipeSelectionService>();
+        internal IRecipeChangeHistoryQuery RecipeChangeHistory =>
+            _provider.GetRequiredService<IRecipeChangeHistoryQuery>();
 
         internal CommandInvocation Invocation() => new(CommandSource.Integration,
             Sessions.Current.PrincipalId, Sessions.Current.SessionId);
@@ -531,6 +535,25 @@ public sealed partial class RecipeActivationServiceTests
 
         internal async Task WaitForVerifiedAsync() => await WaitForVerifiedAsync(Store);
 
+        /// <summary>
+        /// Waits for the station's schema-31 selection startup verification. The task is
+        /// private to the runtime, so this observes only the published admission blocker.
+        /// </summary>
+        internal async Task WaitForRecipeSelectionStartupAsync()
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                var station = await Runtime.GetSnapshotAsync();
+                if (station.AdmissionBlockers.Contains("RecipeSelectionStartupVerificationRequired"))
+                    throw new XunitException("Recipe selection startup verification failed: " +
+                        string.Join(",", station.AdmissionBlockers));
+                if (!station.AdmissionBlockers.Contains("RecipeSelectionStartupVerificationPending")) return;
+                await Task.Delay(25);
+            }
+            throw new XunitException("Recipe selection startup verification did not complete.");
+        }
+
         internal static async Task WaitForVerifiedAsync(SqliteCommandStore store)
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
@@ -547,7 +570,8 @@ public sealed partial class RecipeActivationServiceTests
 
         internal static async Task<ActivationHarness> CreateAsync(
             AuthorizationPolicy? authorizationPolicy = null, bool enablePreview = false,
-            bool enableImports = false, bool importPhysicalRequired = false)
+            bool enableImports = false, bool importPhysicalRequired = false,
+            bool enableRecipeSelections = false)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe activation integration requires Windows machine-key protection.");
@@ -606,6 +630,8 @@ public sealed partial class RecipeActivationServiceTests
                 RecipeReleases = new RecipeReleaseStoreOptions(governance),
                 PlcResultContracts = new PlcResultContractStoreOptions(),
                 RecipeActivations = new RecipeActivationStoreOptions(),
+                RecipeSelections = enableRecipeSelections ? new RecipeSelectionStoreOptions() : null,
+                PlcCommunication = enableRecipeSelections ? new PlcCommunicationStoreOptions() : null,
                 PreviewSessions = previewEnabled ? new PreviewSessionStoreOptions() : null,
                 CalibrationImports = enableImports ? new CalibrationImportStoreOptions
                 {
@@ -862,7 +888,7 @@ public sealed partial class RecipeActivationServiceTests
         }
     }
 
-    private sealed class ActivationFactory : IVisionAlgorithmFactory
+    internal sealed class ActivationFactory : IVisionAlgorithmFactory
     {
         internal ActivationFactory(AlgorithmDescriptor descriptor) => Descriptor = descriptor;
         private int _createCalls;
@@ -902,7 +928,7 @@ public sealed partial class RecipeActivationServiceTests
         }
     }
 
-    private sealed partial class VirtualCameraProvider : ICameraProvider
+    internal sealed partial class VirtualCameraProvider : ICameraProvider
     {
         private readonly ConcurrentQueue<ICameraDevice> _devices;
         private readonly IReadOnlyList<VirtualCameraDevice> _all;

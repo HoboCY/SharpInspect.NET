@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$PackageFeed,
     [string]$Database,
     [string]$IdentityPolicy,
+    # Retained for older Test-Development invocations; this new database uses an independent test key.
     [string]$AuditKey,
     [string]$AuditKeyDirectory
 )
@@ -34,25 +35,8 @@ foreach ($databaseSuffix in @('', '-wal', '-shm')) {
 if ([string]::IsNullOrWhiteSpace($IdentityPolicy)) {
     $IdentityPolicy = Join-Path $recoveryRun 'development-identity-policy.json'
 }
-if ([string]::IsNullOrWhiteSpace($AuditKey)) {
-    $keyIdentityFile = Join-Path $recoveryRun 'development-key-identity.txt'
-    if (Test-Path -LiteralPath $keyIdentityFile -PathType Leaf) {
-        $AuditKey = (Get-Content -LiteralPath $keyIdentityFile -Raw).Trim()
-    }
-}
-if ([string]::IsNullOrWhiteSpace($AuditKeyDirectory)) {
-    $AuditKeyDirectory = Join-Path $recoveryRun 'private-keys'
-}
-foreach ($requiredInput in @($IdentityPolicy, $AuditKey, $AuditKeyDirectory)) {
-    if ([string]::IsNullOrWhiteSpace($requiredInput)) {
-        throw 'Production recovery consumer requires the Test-Development identity and audit inputs.'
-    }
-}
 if (-not (Test-Path -LiteralPath $IdentityPolicy -PathType Leaf)) {
     throw "Production recovery consumer identity policy is missing: $IdentityPolicy"
-}
-if (-not (Test-Path -LiteralPath $AuditKeyDirectory -PathType Container)) {
-    throw "Production recovery consumer audit key directory is missing: $AuditKeyDirectory"
 }
 
 $recoverySource = Join-Path $recoveryRepo 'samples\SharpInspect.SampleHost'
@@ -98,10 +82,45 @@ foreach ($recoveryPackage in 'Abstractions', 'Runtime', 'Wpf', 'Cameras.Virtual'
 
 $databaseBefore = 'absent'
 $recoveryDll = Join-Path $recoveryCopy 'bin\Release\net6.0-windows\SharpInspect.SampleHost.dll'
-Invoke-RecoveryConsumerDotnet 'production-recovery-consumer-run.log' @(
-    $recoveryDll, '--smoke', '--production-recovery-ui', '--trace-db', $recoveryDatabase,
-    '--audit-key', $AuditKey, '--audit-key-directory', $AuditKeyDirectory,
-    '--identity-policy', $IdentityPolicy)
+# Initial provisioning of a new database rejects an already existing signing key.
+# Reopening an initialized database may reuse its key; this fixture always creates a new database.
+$recoverySigningKey = 'SharpInspect.ProductionRecoveryConsumer.' + [Guid]::NewGuid().ToString('N')
+$recoverySigningDirectory = Join-Path $recoveryEvidence 'private-keys'
+if (Test-Path -LiteralPath $recoverySigningDirectory) {
+    throw 'Production recovery consumer requires a fresh private key directory.'
+}
+$recoverySigningHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+    [Text.Encoding]::UTF8.GetBytes($recoverySigningKey)))
+$recoverySigningPath = [IO.Path]::GetFullPath((Join-Path $recoverySigningDirectory ($recoverySigningHash + '.key')))
+$recoveryKeyCreated = $false
+$recoveryRunFailure = $null
+try {
+    Invoke-RecoveryConsumerDotnet 'production-recovery-consumer-run.log' @(
+        $recoveryDll, '--smoke', '--production-recovery-ui', '--trace-db', $recoveryDatabase,
+        '--audit-key', $recoverySigningKey, '--audit-key-directory', $recoverySigningDirectory,
+        '--identity-policy', $IdentityPolicy)
+    $recoveryKeyCreated = Test-Path -LiteralPath $recoverySigningPath -PathType Leaf
+    if (-not $recoveryKeyCreated) { throw 'Consumer did not provision its independent signing identity.' }
+}
+catch {
+    $recoveryRunFailure = $_
+    throw
+}
+finally {
+    try {
+        $recoveryEvidenceRoot = [IO.Path]::GetFullPath($recoveryEvidence) + [IO.Path]::DirectorySeparatorChar
+        if (-not $recoverySigningPath.StartsWith($recoveryEvidenceRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Disposable consumer key escaped its evidence directory.'
+        }
+        if (Test-Path -LiteralPath $recoverySigningPath -PathType Leaf) {
+            Remove-Item -LiteralPath $recoverySigningPath
+        }
+    }
+    catch {
+        if ($null -eq $recoveryRunFailure) { throw }
+        Write-Warning 'Disposable consumer key cleanup failed; the original consumer failure is preserved.'
+    }
+}
 
 if (-not (Test-Path -LiteralPath $recoveryDatabase -PathType Leaf)) {
     throw 'Production recovery consumer did not create the independent schema30 database.'
@@ -129,6 +148,12 @@ $consumerHash = (Get-FileHash -LiteralPath $recoveryDll -Algorithm SHA256).Hash
     DatabaseHashBefore = $databaseBefore
     DatabaseHashAfter = $databaseAfter
     CandidatePackageFeed = $recoveryFeed
+    IndependentSigningKeyCreated = $recoveryKeyCreated
+    DisposableSigningKeyRemoved = -not (Test-Path -LiteralPath $recoverySigningPath)
+    ParentAuditKeyInputsUsed = $false
+    ParentAuditKeyProvided = -not [string]::IsNullOrWhiteSpace($AuditKey)
+    ParentAuditKeyDirectoryProvided = -not [string]::IsNullOrWhiteSpace($AuditKeyDirectory)
+    IndependentSigningKeyName = $recoverySigningKey
 } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (
     Join-Path $recoveryEvidence 'production-recovery-consumer-evidence.json') -Encoding utf8
 

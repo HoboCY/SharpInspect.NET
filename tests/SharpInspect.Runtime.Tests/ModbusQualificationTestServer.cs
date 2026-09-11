@@ -332,6 +332,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
 
     private byte[] ReadRegisters(ModbusRequest request, ModbusQualificationProfile profile)
     {
+        if (TryReadRecipeChange(request, out var recipeChange)) return recipeChange;
         if (TryReadPartIdentity(request, out var identity)) return identity;
         if (TryReadCommunication(request, profile, out var communication)) return communication;
         if (request.Pdu.Length != 5 || ReadUInt16(request.Pdu, 3) != 6)
@@ -392,7 +393,8 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
             return ExceptionResponse(request, 0x10, 0x03);
         var data = request.Pdu.AsSpan(6, bytes).ToArray();
         _writes.Enqueue(new(address, data, 0x10));
-        if (TryWriteHeartbeat(profile, address, count, data)) { }
+        if (TryWriteRecipeChange(address, count, data)) { }
+        else if (TryWriteHeartbeat(profile, address, count, data)) { }
         else if (address == profile.RuntimeStartAddress && count == 6)
         {
             bool resultValid;

@@ -401,6 +401,13 @@ public sealed partial class ManualInspectionRuntimeTests
             fixture.Store, fixture.Options, preparation, preparationOptions, harness.Service<FrameBufferPool>(),
             (correlation, token) => restarted.ReserveRecipeActivationAsync(correlation, token),
             () => restarted.GetSnapshotAsync()));
+        if (fixture.Options.RecipeSelections is not null)
+        {
+            var selectionQuery = new SqliteRecipeSelectionQuery(fixture.Options);
+            restarted.ConfigureRecipeSelectionService(new RecipeSelectionService(drafts, selectionQuery,
+                selectionQuery, fixture.Authorization, fixture.Options,
+                restarted.ReserveRecipeSelectionChangeAsync, () => restarted.GetSnapshotAsync()));
+        }
         restarted.ConfigureManualInspectionSessions(new ManualInspectionSessionOptions(), drafts, releases,
             preparation, preparationOptions, harness.Service<AlgorithmExecutionOptions>(), fixture.Options, clock);
         return restarted;

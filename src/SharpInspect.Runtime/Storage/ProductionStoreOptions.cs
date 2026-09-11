@@ -113,4 +113,8 @@ public sealed class ProductionStoreOptions
     /// <summary>Explicit opt-in for schema 30 audited manual production recovery.
     /// Requires production inspections, local identity and central audit integrity.</summary>
     public ProductionRecoveryStoreOptions? ProductionRecovery { get; init; }
+
+    /// <summary>Explicit opt-in for schema 31 immutable recipe selection governance and PLC handshakes.
+    /// Requires recipe activation, PLC communication, local identity and central audit integrity.</summary>
+    public RecipeSelectionStoreOptions? RecipeSelections { get; init; }
 }

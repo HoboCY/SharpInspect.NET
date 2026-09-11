@@ -89,7 +89,7 @@ public sealed partial class RecipeActivationServiceTests
 
 public sealed partial class RecipeActivationServiceTests
 {
-    private sealed partial class VirtualCameraProvider
+    internal sealed partial class VirtualCameraProvider
     {
         internal Task ActivationPreviewReadCancellationEntered =>
             _activationDevice.PreviewReadCancellationEntered;

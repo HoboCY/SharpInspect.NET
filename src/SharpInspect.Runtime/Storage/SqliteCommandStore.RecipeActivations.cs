@@ -192,7 +192,9 @@ internal sealed partial class SqliteCommandStore
             value => ReadFact(database, value.AttemptId, aggregateSequence: 1, deadline) ??
                 throw new InvalidOperationException("RecipeActivationAdmissionCommandMissing"));
         return new(true, drafts, releases, contracts, records, current, pending, cameras, imagingSetups,
-            governance.Records, governance.Position, governance.ContentHash, admissionCommands);
+            governance.Records, governance.Position, governance.ContentHash, admissionCommands,
+            _options.RecipeSelections is { } selections ? ReadRecipeSelectionRows(database, selections, deadline).LastOrDefault()?.Revision : null,
+            _options.RecipeSelections is { } changes ? ReadRecipeChangeRows(database, changes, deadline).Select(value => value.Event).ToArray() : null);
     }
 
     private void AppendRecipeActivationIdentityMutation(sqlite3 database, IdentityUpdate update,
@@ -490,6 +492,7 @@ internal sealed partial class SqliteCommandStore
             terminal.EvidenceKind != admission.EvidenceKind ||
             terminal.ActorPrincipalId != admission.ActorPrincipalId || terminal.ActorSessionId != admission.ActorSessionId ||
             terminal.ActorAuthorizationRevision != admission.ActorAuthorizationRevision ||
+            terminal.Actor?.ContentHash != admission.Actor?.ContentHash ||
             !ContractReferenceEquals(terminal.AuthorizationPolicy, admission.AuthorizationPolicy) ||
             terminal.AuthorizationTarget != admission.AuthorizationTarget ||
             terminal.ChangeReason != admission.ChangeReason ||
@@ -1088,6 +1091,8 @@ internal sealed record RecipeActivationCommandState(bool Enabled,
     IReadOnlyList<object>? CalibrationGovernanceRecords = null,
     long CalibrationGovernancePosition = 0,
     string? CalibrationGovernanceContentHash = null,
-    IReadOnlyDictionary<Guid, CommandAuditFact>? AdmissionCommands = null);
+    IReadOnlyDictionary<Guid, CommandAuditFact>? AdmissionCommands = null,
+    RecipeSelectionRevision? Selection = null,
+    IReadOnlyList<RecipeChangeHistoryEvent>? RecipeChanges = null);
 
 internal sealed record RecipeActivationMutation(RecipeActivationRecord Record);

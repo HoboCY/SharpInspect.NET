@@ -189,11 +189,20 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
             while (true)
             {
                 var signals = await SampleAsync(channel, deadline.Token).ConfigureAwait(false);
+                var recipeChangeClear = true;
+                if (_profile is ModbusProductionProfile { RecipeChange: not null })
+                {
+                    var request = await channel.ReadRecipeChangeControllerAsync(deadline.Token).ConfigureAwait(false);
+                    var response = await channel.ReadRecipeChangeRuntimeAsync(deadline.Token).ConfigureAwait(false);
+                    recipeChangeClear = !request.Request && !request.Acknowledgement && request.RequestSequence == 0 &&
+                        request.SelectionCode == 0 && !response.ResponseValid && response.Outcome == 0 && response.Reason == 0 &&
+                        response.RequestSequence == 0 && response.SelectionCode == 0;
+                }
                 var complete = false;
                 lock (_sync)
                 {
                     var now = Stopwatch.GetTimestamp();
-                    var clean = !pending && signals.ControllerEpoch != 0 && !signals.Trigger && !signals.ResultAck &&
+                    var clean = !pending && recipeChangeClear && signals.ControllerEpoch != 0 && !signals.Trigger && !signals.ResultAck &&
                         FreshnessFailure(now) is null;
                     if (!clean || auditedEpoch is { } audited && audited != signals.ControllerEpoch)
                     {

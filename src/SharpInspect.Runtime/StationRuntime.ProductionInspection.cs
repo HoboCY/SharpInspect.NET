@@ -121,6 +121,7 @@ public sealed partial class StationRuntime
     {
         if (!ReferenceEquals(_productionInspectionOwner, owner)) return;
         owner.Aborted = true;
+        owner.RecipeChangeActivation?.Revoke();
         owner.FailureReason = reason;
         owner.Observer?.StopAccepting();
         _productionInspectionRecoveryBlocked |= owner.Current is not null;
@@ -234,6 +235,13 @@ public sealed partial class StationRuntime
         internal long PhysicalPhaseId { get; set; }
         internal string FailureReason { get; set; } = "ProductionInspectionInterrupted";
         internal PartIdentityLatchAttempt? PartIdentityAttempt { get; set; }
+        internal PlcRecipeChangeHandshake? RecipeChange { get; set; }
+        internal RecipeChangeRequestEvidence? RecipeChangeRequest { get; set; }
+        internal PlcRecipeActivationCapability? RecipeChangeActivation { get; set; }
+        internal RecipeChangeDecision? RecipeChangeDecision { get; set; }
+        internal bool RecipeChangeFaultRecorded { get; set; }
+        internal TaskCompletionSource<bool>? RecipeChangeReadyCleared { get; set; }
+        internal bool RecipeChangeObservedProductionRequest { get; set; }
         internal Task<PartIdentityProviderObservation>? PartIdentityOperation { get; set; }
     }
 }
