@@ -179,6 +179,8 @@ public sealed partial class StationRuntime
                 if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped", _snapshot.ProductionAdmission);
                 if (LocalStopPendingLocked)
                     return Unavailable("LocalStopPending", _snapshot.ProductionAdmission);
+                if (_automaticProductionArm is { Terminal: false } || _manualMaintenanceArm is { Terminal: false })
+                    return Unavailable("ProductionArmAttemptInProgress", _snapshot.ProductionAdmission);
                 if (_snapshot.LastCommand?.CorrelationId == command.CorrelationId)
                     return Unavailable("DuplicateCorrelationId", _snapshot.ProductionAdmission);
             }
@@ -308,14 +310,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (!_disposed) PublishLocked(_snapshot);
-                stable = auditVerified && durableHeadsVerified && !_shutdownRequested && !_disposed &&
-                    !StationQualificationConfigurationBlockedLocked &&
-                    _snapshot.ProductionAdmission?.CanArm == true &&
-                    _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
-                    _admissionGeneration == capture.Generation &&
-                    string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
-                    !LocalStopPendingLocked &&
-                    _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
+                stable = auditVerified && durableHeadsVerified && ProductionArmLiveFenceLocked(capture);
             }
 
             if (stable)
@@ -329,17 +324,13 @@ public sealed partial class StationRuntime
                     await WaitForProductionAuditVerifiedAsync(deadline).ConfigureAwait(false);
                 var completionHeadsVerified = completionVerified &&
                     await VerifyProductionAdmissionHeadsAsync(facts.DurableHeads, deadline).ConfigureAwait(false);
+                var maintenanceAuthorized = completionHeadsVerified &&
+                    await PrepareManualMaintenanceArmAsync(command, capture, facts.DurableHeads, deadline).ConfigureAwait(false);
                 lock (_sync)
                 {
                     if (!_disposed) PublishLocked(_snapshot);
-                    var stillStable = completionCommitted && completionVerified && completionHeadsVerified && !_disposed &&
-                        !StationQualificationConfigurationBlockedLocked &&
-                        _snapshot.ProductionAdmission?.CanArm == true &&
-                        !_shutdownRequested && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
-                        _admissionGeneration == capture.Generation &&
-                        string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
-                        !LocalStopPendingLocked &&
-                        _snapshot.Mode == ExclusiveMode.None && _snapshot.Recovery == RecoveryState.None;
+                    var stillStable = completionCommitted && completionVerified && completionHeadsVerified && maintenanceAuthorized &&
+                        ProductionArmLiveFenceLocked(capture);
                     if (stillStable)
                         PublishLocked(_snapshot with { Ready = _productionInspectionOptions is null, ArmState = ProductionArmState.Armed,
                             ProductionAdmission = report,
@@ -385,6 +376,13 @@ public sealed partial class StationRuntime
         }
         finally
         {
+            ManualMaintenanceArmCapability? unarmed;
+            lock (_sync) unarmed = _manualMaintenanceArm is { Terminal: false } pending &&
+                pending.Admission.CorrelationId == command.CorrelationId && _snapshot.ArmState != ProductionArmState.Armed
+                    ? pending : null;
+            if (unarmed is not null)
+                await FailManualMaintenanceArmAsync(unarmed, null, "ProductionArmManualMaintenanceAdmissionFailed")
+                    .ConfigureAwait(false);
             if (entered) _commandGate.Release();
         }
     }

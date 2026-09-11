@@ -47,6 +47,13 @@ public sealed partial class StationRuntime
                 { reason = ownerFailure; return null; }
                 if (_activationReservation is not null)
                 { reason = "RecipeActivationInProgress"; return null; }
+                // The observer checks the automatic attempt before taking this gate, but
+                // that check cannot be atomic with the once-only start-up consideration.
+                // Re-check under the same lock that owns the reservation: a pending
+                // attempt keeps the Runtime, and this request is refused with the same
+                // fixed RuntimeBusy reason instead of being queued behind it.
+                if (_automaticProductionArm is { Terminal: false })
+                { reason = "ProductionArmAttemptInProgress"; return null; }
                 // The observer sets _recipeChangeInProgress only AFTER this atomic admission.
                 if (RecipeActivationBlockerLocked(null) is { } blocker)
                 { reason = blocker; return null; }

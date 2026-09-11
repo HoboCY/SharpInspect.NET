@@ -82,7 +82,9 @@ public enum SystemPermission : byte
     CleanupRetention = 5,
     RecordPlcCommunication = 6,
     RecordProductionInspection = 7,
-    RequestMappedRecipeActivation = 8
+    RequestMappedRecipeActivation = 8,
+    /// <summary>Attempt arming only through Runtime's internal, policy-bound one-shot capability.</summary>
+    AttemptPolicyControlledProductionArm = 9
 }
 
 /// <summary>
@@ -125,7 +127,8 @@ public static class SystemPrincipalCatalog
 {
     public static SystemPrincipalDescriptor Runtime { get; } = new(
         SystemPrincipalId.Runtime, "Runtime command recording",
-        new[] { SystemPermission.RecordCommand, SystemPermission.RecordProductionInspection });
+        new[] { SystemPermission.RecordCommand, SystemPermission.RecordProductionInspection,
+            SystemPermission.AttemptPolicyControlledProductionArm });
 
     public static SystemPrincipalDescriptor Outbox { get; } = new(
         SystemPrincipalId.Outbox, "Outbox delivery",

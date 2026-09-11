@@ -62,6 +62,8 @@ internal static class ProductionConfigurationBuilder
                     store.PartIdentities.BindingHash, store.AuditIntegrityPolicy?.ContentHash,
                     Number(store.QueueCapacity), store.CommitTimeout.ToString("c", CultureInfo.InvariantCulture)));
         Add(ProductionConfigurationBinding.AlarmPolicy, store.AlarmPolicy?.ContentHash);
+        if (store.ProductionArming is { } arming && values.TryGetValue(ProductionConfigurationBinding.StoreProfile, out var priorStore))
+            values[ProductionConfigurationBinding.StoreProfile] = Hash("production-store-profile-v3", priorStore, arming.BindingHash);
         Add(ProductionConfigurationBinding.IdentityPolicy, store.LocalIdentity?.PolicyContentHash);
         if (trace is not null)
             Add(ProductionConfigurationBinding.EvidencePolicy, Hash("production-evidence-policy-v1",

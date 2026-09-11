@@ -581,6 +581,10 @@ internal sealed partial class ModbusQualificationChannel : IAsyncDisposable
                     range.Overlaps(new RegisterInterval(recipeChange.RuntimeStartAddress,
                         recipeChange.RuntimeEndAddressExclusive))))
                 throw new ArgumentException("ModbusProductionPayloadOverlapsRecipeChangeBlock");
+            if (_profile is ModbusProductionProfile { ProductionArmStatus: { } armStatus } &&
+                range.Overlaps(new RegisterInterval(armStatus.RuntimeStartAddress,
+                    armStatus.RuntimeEndAddressExclusive)))
+                throw new ArgumentException("ModbusProductionPayloadOverlapsArmStatusBlock");
         }
     }
 

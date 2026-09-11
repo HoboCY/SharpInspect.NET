@@ -18,6 +18,7 @@ public sealed partial class StationRuntime
                 WaitForManualInspectionStartupAsync(), WaitForStationQualificationStartupAsync(), WaitForRecipeSelectionStartupAsync())
                 .WaitAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedRecipeChangesAsync(_lifetime.Token).ConfigureAwait(false);
+            await FinalizeInterruptedProductionArmAttemptsAsync(_lifetime.Token).ConfigureAwait(false);
             lock (_sync)
                 if (!ProductionStartupDependenciesReconciledLocked())
                     throw new InvalidOperationException("ProductionInspectionStartupDependencyUnavailable");
@@ -157,6 +158,7 @@ public sealed partial class StationRuntime
             }
             var accepting = false;
             var nextAdmissionRefresh = DateTimeOffset.MinValue;
+            lock (_sync) ConsiderStartupProductionArmLocked(owner);
             while (true)
             {
                 token.ThrowIfCancellationRequested();
@@ -174,6 +176,13 @@ public sealed partial class StationRuntime
                     await RefreshProductionAdmissionAsync(token).ConfigureAwait(false);
                     nextAdmissionRefresh = DateTimeOffset.UtcNow.AddSeconds(1);
                 }
+                await ProcessAutomaticProductionArmAsync(owner, channel, output, token).ConfigureAwait(false);
+                ManualMaintenanceArmCapability? invalidManual;
+                lock (_sync) invalidManual = _manualMaintenanceArm is { Terminal: false, Prepared: true } manual &&
+                    ReferenceEquals(manual.Owner, owner) && !ManualMaintenanceReadyPermitLocked(owner) ? manual : null;
+                if (invalidManual is not null)
+                    await FailManualMaintenanceArmAsync(invalidManual, output, "ProductionArmManualReadyPermitRevoked")
+                        .ConfigureAwait(false);
                 bool eligible;
                 lock (_sync) eligible = CanAcceptProductionTriggerLocked(owner);
                 if (!observer.IsAccepting && !observer.HasPendingAdmission) accepting = false;
@@ -195,8 +204,12 @@ public sealed partial class StationRuntime
                                 throw new OperationCanceledException("ProductionInspectionTriggerPermitRevoked");
                         await output.ChangeAsync(token, ready: true, busy: false, valid: false).ConfigureAwait(false);
                         lock (_sync)
-                            if (CanAcceptProductionTriggerLocked(owner))
-                                PublishLocked(_snapshot with { Ready = true });
+                        {
+                            if (!CanAcceptProductionTriggerLocked(owner))
+                                throw new OperationCanceledException("ProductionInspectionTriggerPermitRevoked");
+                            ObservePhysicalProductionArmReadyLocked(owner);
+                            PublishLocked(_snapshot with { Ready = true });
+                        }
                     }, token).ConfigureAwait(false); }
                     catch (OperationCanceledException exception) when (!token.IsCancellationRequested &&
                         owner.Current is null && (exception is PlcRequestRevokedException ||
@@ -207,7 +220,9 @@ public sealed partial class StationRuntime
                         await output.ChangeAsync(token, ready: false).ConfigureAwait(false);
                         continue;
                     }
-                    accepting = true;
+                    await ConfirmAutomaticProductionArmReadyAsync(owner, channel, output).ConfigureAwait(false);
+                    await ConfirmManualMaintenanceReadyAsync(owner, output).ConfigureAwait(false);
+                    accepting = observer.IsAccepting;
                 }
                 if (observer.TryTakeAccepted(out var signals) && signals is not null)
                 {
@@ -286,6 +301,12 @@ public sealed partial class StationRuntime
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             var deliveryCompleted = owner.Coordinator.Phase == InspectionCyclePhase.Completed;
+            if (_automaticProductionArm is { Terminal: false } interrupted && ReferenceEquals(interrupted.Owner, owner))
+                await RejectAutomaticProductionArmAsync(interrupted, channel, output,
+                    ProductionArmReason.Interrupted, "ProductionArmOwnerInterrupted").ConfigureAwait(false);
+            if (_manualMaintenanceArm is { Terminal: false } interruptedManual && ReferenceEquals(interruptedManual.Owner, owner))
+                await FailManualMaintenanceArmAsync(interruptedManual, output, "ProductionArmManualOwnerInterrupted")
+                    .ConfigureAwait(false);
             observer?.RejectPendingAdmission(ProductionFailureReason(exception));
             if (!deliveryCompleted) owner.Coordinator.SetPhase(InspectionCyclePhase.FaultTerminated);
             lock (_sync) AbortProductionInspectionLocked(owner, ProductionFailureReason(exception));
@@ -337,6 +358,8 @@ public sealed partial class StationRuntime
 
     private bool CanAcceptProductionTriggerLocked(ProductionInspectionOwner owner) =>
         !LocalStopPendingLocked &&
+        AutomaticProductionArmReadyPermitLocked(owner) &&
+        ManualMaintenanceReadyPermitLocked(owner) &&
         _activationReservation is null && !_recipeSelectionChangeInProgress && owner.RecipeChangeActivation is null &&
         (_productionInspectionStoreOptions?.RecipeSelections is null || _recipeSelectionStartupVerified) &&
         ReferenceEquals(_productionInspectionOwner, owner) && !owner.Aborted && owner.Current is null &&
@@ -354,6 +377,10 @@ public sealed partial class StationRuntime
         {
             if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Aborted || _disposed ||
                 _shutdownRequested && _productionShutdownDeadline is not { Expired: false })
+                throw new PlcRequestRevokedException();
+            if (owner.ArmStatusWrite is { } status &&
+                (owner.Health is not { Healthy: true } health || health.ControllerEpoch != status.ControllerEpoch ||
+                    health.ConnectionGeneration != status.ConnectionGeneration))
                 throw new PlcRequestRevokedException();
             return start();
         }

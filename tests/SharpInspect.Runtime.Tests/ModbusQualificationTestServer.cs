@@ -51,6 +51,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
     private bool _lastControllerSampleTrigger;
     private uint _expectedControllerSampleEpoch;
     private uint _expectedControllerSampleSequence;
+    private bool _expectedControllerSampleTrigger = true;
     private bool _controllerSampleExpected;
     private bool _qualificationReady;
     private bool _productionReady;
@@ -141,15 +142,16 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
         _controllerLowObserved.Task.WaitAsync(cancellationToken);
 
     internal Task WaitForControllerSampleAsync(uint controllerEpoch, uint cycleSequence,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool trigger = true)
     {
         lock (_stateSync)
         {
             _expectedControllerSampleEpoch = controllerEpoch;
             _expectedControllerSampleSequence = cycleSequence;
+            _expectedControllerSampleTrigger = trigger;
             _controllerSampleExpected = true;
             _controllerSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (_lastControllerSampleTrigger &&
+            if (_lastControllerSampleTrigger == trigger &&
                 _lastControllerSampleEpoch == controllerEpoch &&
                 _lastControllerSampleSequence == cycleSequence)
                 _controllerSample.TrySetResult(true);
@@ -347,7 +349,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
                 _lastControllerSampleTrigger = _trigger;
                 _lastControllerSampleEpoch = _controllerEpoch;
                 _lastControllerSampleSequence = _cycleSequence;
-                if (_controllerSampleExpected && _trigger &&
+                if (_controllerSampleExpected && _trigger == _expectedControllerSampleTrigger &&
                     _controllerEpoch == _expectedControllerSampleEpoch &&
                     _cycleSequence == _expectedControllerSampleSequence)
                     _controllerSample.TrySetResult(true);
@@ -393,11 +395,13 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
             return ExceptionResponse(request, 0x10, 0x03);
         var data = request.Pdu.AsSpan(6, bytes).ToArray();
         _writes.Enqueue(new(address, data, 0x10));
-        if (TryWriteRecipeChange(address, count, data)) { }
+        if (TryWriteProductionArmStatus(address, count, data)) { }
+        else if (TryWriteRecipeChange(address, count, data)) { }
         else if (TryWriteHeartbeat(profile, address, count, data)) { }
         else if (address == profile.RuntimeStartAddress && count == 6)
         {
             bool resultValid;
+            bool productionReady;
             bool ackToSet = false;
             bool ackToClear = false;
             lock (_stateSync)
@@ -407,7 +411,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
                 resultValid = BooleanRegister(data, 2);
                 _cycleFault = BooleanRegister(data, 3);
                 _protocolViolation = BooleanRegister(data, 4);
-                var productionReady = _productionReady = BooleanRegister(data, 5);
+                productionReady = _productionReady = BooleanRegister(data, 5);
                 if (productionReady) ProductionReadyWriteCount++;
                 if (productionReady && _productionPeer) _readyWrite.TrySetResult(true);
                 _stateWrites.Enqueue(new(_qualificationReady, _busy, resultValid,
@@ -426,6 +430,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
                 }
                 _resultValid = resultValid;
             }
+            await HoldProductionReadyWriteAsync(productionReady, token).ConfigureAwait(false);
             if (ackToSet) SetControllerAck(true);
             if (ackToClear) SetControllerAck(false);
         }

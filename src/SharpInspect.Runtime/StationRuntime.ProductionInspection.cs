@@ -45,6 +45,17 @@ public sealed partial class StationRuntime
             storeOptions.RecipeActivations is null || storeOptions.LocalIdentity is null ||
             executionOptions.Policy.ContentHash != storeOptions.RecipeDrafts?.ExecutionPolicy.ContentHash)
             throw new ArgumentException("ProductionInspectionDependenciesUnavailable");
+        if (options.Deployment is { } armDeployment)
+        {
+            if ((armDeployment.StartupProduction.Mode == StartupProductionMode.AutomaticArm ||
+                    armDeployment.PostActivationArm.Mode == PostActivationArmMode.AutomaticRearmAfterPlcActivation) &&
+                storeOptions.ProductionArming is null)
+                throw new ArgumentException("ProductionArmStoreConfigurationRequired");
+            if (armDeployment.PostActivationArm.Mode == PostActivationArmMode.AutomaticRearmAfterPlcActivation &&
+                (options.Profile.RecipeChange is null || options.Profile.ProductionArmStatus is null ||
+                    storeOptions.RecipeSelections is null))
+                throw new ArgumentException("ProductionArmPlcHandshakeAndStatusConfigurationRequired");
+        }
         var recovery = CreateProductionRecovery(options, recoverySafetyProviders);
         var attached = false;
         try
@@ -179,6 +190,8 @@ public sealed partial class StationRuntime
 
     private async Task ShutdownProductionInspectionAsync()
     {
+        if (_productionArmMaintenanceEvidence is { } maintenance)
+            maintenance.Changed -= ProductionArmMaintenanceChanged;
         if (_partIdentityRegistry is not null) _partIdentityRegistry.SourceChanged -= PartIdentitySourceChanged;
         Task? operation;
         lock (_sync)
@@ -242,6 +255,10 @@ public sealed partial class StationRuntime
         internal bool RecipeChangeFaultRecorded { get; set; }
         internal TaskCompletionSource<bool>? RecipeChangeReadyCleared { get; set; }
         internal bool RecipeChangeObservedProductionRequest { get; set; }
+        internal long ArmInputSequence { get; set; }
+        internal uint ArmInputCycleSequence { get; set; }
+        internal bool ArmInputsClear { get; set; }
+        internal AutomaticProductionArmCapability? ArmStatusWrite { get; set; }
         internal Task<PartIdentityProviderObservation>? PartIdentityOperation { get; set; }
     }
 }

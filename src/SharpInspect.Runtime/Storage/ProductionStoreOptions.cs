@@ -117,4 +117,10 @@ public sealed class ProductionStoreOptions
     /// <summary>Explicit opt-in for schema 31 immutable recipe selection governance and PLC handshakes.
     /// Requires recipe activation, PLC communication, local identity and central audit integrity.</summary>
     public RecipeSelectionStoreOptions? RecipeSelections { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 32 append-only production-arm audit ledger.
+    /// Every arm event is attributed to the real Runtime actor or, for a manual maintenance
+    /// arm, to the actual authenticated human. Requires production admission, local identity
+    /// and central audit integrity; the other gates may be absent.</summary>
+    public ProductionArmStoreOptions? ProductionArming { get; init; }
 }

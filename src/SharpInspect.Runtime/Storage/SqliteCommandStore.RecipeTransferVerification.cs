@@ -49,7 +49,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections,
                 productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities,
-                recipeSelectionOptions: options.RecipeSelections);
+                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections);
         TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
 
         if (options.AlgorithmResultArchive is not null)

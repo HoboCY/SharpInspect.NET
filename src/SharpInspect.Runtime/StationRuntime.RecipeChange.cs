@@ -26,7 +26,9 @@ public sealed partial class StationRuntime
         RecipeChangeDecision? rejection = null;
         try
         {
-            if (owner.RecipeChangeObservedProductionRequest)
+            if (_automaticProductionArm is { Terminal: false })
+                rejection = new(RecipeChangeOutcome.RejectedBusy, RecipeChangeReason.RuntimeBusy, "ProductionArmAttemptInProgress");
+            else if (owner.RecipeChangeObservedProductionRequest)
                 rejection = new(RecipeChangeOutcome.RejectedBusy, RecipeChangeReason.RuntimeBusy, "RecipeChangeProductionRequestConflict");
             else if (selection?.Policy.Mode != RecipeSelectionMode.PlcRequestedActivation)
                 rejection = new(RecipeChangeOutcome.RejectedUnknownCode, RecipeChangeReason.LocalOperatorOnly, "RecipeChangeLocalOperatorOnly");
@@ -144,11 +146,19 @@ public sealed partial class StationRuntime
         if (transition.Kind == RecipeChangeEventKind.ProtocolFault) owner.RecipeChangeFaultRecorded = true;
         if (transition.Kind == RecipeChangeEventKind.ResetObserved)
         {
-            owner.RecipeChangeRequest = null;
-            owner.RecipeChangeActivation = null;
-            owner.RecipeChangeDecision = null;
-            owner.RecipeChangeReadyCleared = null;
-            _recipeChangeInProgress = false;
+            // Only a durable successful PLC episode can reserve this cause. The
+            // frozen response has already been acknowledged and cleared here.
+            lock (_sync)
+            {
+                var completed = owner.RecipeChangeDecision;
+                owner.RecipeChangeRequest = null;
+                owner.RecipeChangeActivation = null;
+                owner.RecipeChangeDecision = null;
+                owner.RecipeChangeReadyCleared = null;
+                _recipeChangeInProgress = false;
+                if (completed is { Outcome: RecipeChangeOutcome.Succeeded })
+                    ConsiderPostActivationProductionArmLocked(owner, request, completed);
+            }
         }
     }
 
@@ -170,7 +180,11 @@ public sealed partial class StationRuntime
     {
         var communication = owner.Communication!;
         var signals = await communication.ReadAsync(channel, token).ConfigureAwait(false);
-        if (owner.RecipeChange is not { } handshake) return signals;
+        if (owner.RecipeChange is not { } handshake)
+        {
+            ObserveProductionArmInputs(owner, signals, dedicatedClear: true);
+            return signals;
+        }
         var request = await channel.ReadRecipeChangeControllerAsync(token).ConfigureAwait(false);
         var after = await communication.ReadAsync(channel, token).ConfigureAwait(false);
         if (signals.ControllerEpoch != after.ControllerEpoch)
@@ -191,6 +205,9 @@ public sealed partial class StationRuntime
                 throw;
             }
         }
+        ObserveProductionArmInputs(owner, after, !handshake.Active && !request.Request &&
+            !request.Acknowledgement && request.RequestSequence == 0 && request.SelectionCode == 0 &&
+            !signals.Trigger && !signals.ResultAck);
         return after;
     }
 

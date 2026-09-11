@@ -327,6 +327,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IManualInspectionHistoryQuery>(_ => new SqliteManualInspectionQuery(options));
         if (options.ProductionAdmission is not null)
             services.TryAddSingleton<IProductionAdmissionHistoryQuery>(_ => new SqliteProductionAdmissionHistoryQuery(options));
+        if (options.ProductionArming is not null)
+            services.TryAddSingleton<IProductionArmHistoryQuery>(_ => new SqliteProductionArmHistoryQuery(options));
         if (options.PartIdentities is not null)
             services.TryAddSingleton<IPartIdentityHistoryQuery>(_ => new SqlitePartIdentityHistoryQuery(options));
         if (options.StationQualifications is not null)

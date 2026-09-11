@@ -522,9 +522,9 @@ public sealed class RecipeDraftStorageTests
         internal ProductionStoreOptions Options { get; private set; }
         internal LocalIdentityOptions IdentityOptions { get; }
         internal SqliteCommandStore Store { get; private set; }
-        internal LocalIdentityService Identity { get; }
-        internal InteractiveSessionService Sessions { get; }
-        internal LocalAuthorizationService Authorization { get; }
+        internal LocalIdentityService Identity { get; private set; }
+        internal InteractiveSessionService Sessions { get; private set; }
+        internal LocalAuthorizationService Authorization { get; private set; }
         internal string UserName { get; }
         internal string Password { get; }
         internal StoreWriteResult Initialization => Store.Initialization.GetAwaiter().GetResult();
@@ -544,7 +544,8 @@ public sealed class RecipeDraftStorageTests
              ProductionInspectionStoreOptions? productionInspections = null,
              PartIdentityStoreOptions? partIdentities = null,
              ProductionRecoveryStoreOptions? productionRecovery = null,
-             RecipeSelectionStoreOptions? recipeSelections = null)
+             RecipeSelectionStoreOptions? recipeSelections = null,
+             ProductionArmStoreOptions? productionArming = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -601,6 +602,7 @@ public sealed class RecipeDraftStorageTests
                 PartIdentities = partIdentities,
                 ProductionRecovery = productionRecovery,
                 RecipeSelections = recipeSelections,
+                ProductionArming = productionArming,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };
@@ -696,13 +698,25 @@ public sealed class RecipeDraftStorageTests
 
         private Guid GetPrincipalId() => Guid.Parse(Sessions.Current.PrincipalId!);
 
-        internal async Task RestartStoreAsync()
+        internal async Task RestartStoreAsync(bool restartIdentity = false)
         {
+            if (restartIdentity)
+            {
+                Authorization.Dispose();
+                await Sessions.DisposeAsync();
+            }
             await Store.DisposeAsync();
             Store = new SqliteCommandStore(Options);
             var initialized = await Store.Initialization.WaitAsync(TimeSpan.FromSeconds(15));
             Assert.True(initialized.Committed, initialized.ReasonCode);
             await WaitForVerifiedAsync(Store);
+            if (restartIdentity)
+            {
+                Identity = new LocalIdentityService(Store, IdentityOptions, new FixtureConsole());
+                Sessions = new InteractiveSessionService(Identity, IdentityOptions.AuthenticationPolicy,
+                    Identity.PersistSessionEventAsync);
+                Authorization = new LocalAuthorizationService(Store, IdentityOptions, Identity, Sessions);
+            }
         }
 
         internal async Task WaitForVerifiedAsync() => await WaitForVerifiedAsync(Store);

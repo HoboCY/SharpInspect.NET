@@ -30,6 +30,21 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         ushort controllerStartAddress, ushort runtimeStartAddress,
         ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout,
         ModbusPartIdentityReadPlan? partIdentity, ModbusRecipeChangeBinding? recipeChange)
+        : this(id, version, address, port, unitId, controllerStartAddress, runtimeStartAddress,
+            communicationBinding, acknowledgementTimeout, partIdentity, recipeChange, null) { }
+
+    /// <summary>
+    /// Creates a profile with the optional Runtime-owned Production Arm Status observation
+    /// block. The block is additive and grants no acknowledgement, request, activation, or
+    /// execution authority. While <paramref name="productionArmStatus"/> is null every
+    /// pre-existing overload keeps its exact v1/v2/v3 content hash and algorithm; otherwise
+    /// the v4 hash binds that value to the observation block.
+    /// </summary>
+    public ModbusProductionProfile(string id, string version, string address, int port, byte unitId,
+        ushort controllerStartAddress, ushort runtimeStartAddress,
+        ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout,
+        ModbusPartIdentityReadPlan? partIdentity, ModbusRecipeChangeBinding? recipeChange,
+        ModbusProductionArmStatusBinding? productionArmStatus)
     {
         Id = AlgorithmContractValidation.Identifier(id, nameof(id));
         Version = AlgorithmContractValidation.Identifier(version, nameof(version));
@@ -61,6 +76,9 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
             ranges.Add((recipeChange.ControllerStartAddress, ModbusRecipeChangeBinding.ControllerRegisterCount));
             ranges.Add((recipeChange.RuntimeStartAddress, ModbusRecipeChangeBinding.RuntimeRegisterCount));
         }
+        if (productionArmStatus is not null)
+            ranges.Add((productionArmStatus.RuntimeStartAddress,
+                ModbusProductionArmStatusBinding.RuntimeRegisterCount));
         for (var left = 0; left < ranges.Count; left++)
             for (var right = left + 1; right < ranges.Count; right++)
                 if (ModbusCommunicationBinding.Overlaps(ranges[left].Start, ranges[left].Count,
@@ -73,6 +91,7 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         AcknowledgementTimeout = acknowledgementTimeout;
         PartIdentity = partIdentity;
         RecipeChange = recipeChange;
+        ProductionArmStatus = productionArmStatus;
         EndpointBindingHash = AlgorithmContractValidation.HashParts(new[]
         {
             "sharpinspect-modbus-production-endpoint-v1", Address,
@@ -103,7 +122,16 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
                 recipeChange.ContentHash
             };
         }
-        ContentHash = AlgorithmContractValidation.HashParts(profileParts);
+        var profileHash = AlgorithmContractValidation.HashParts(profileParts);
+        // The observation block is additive: with no binding the historic v1/v2/v3 value and
+        // algorithm above are exact, and v4 binds that value to the block so a changed
+        // observation binding can never reuse an older profile hash.
+        ContentHash = productionArmStatus is null ? profileHash :
+            AlgorithmContractValidation.HashParts(new[]
+            {
+                "sharpinspect-modbus-production-profile-v4", profileHash,
+                productionArmStatus.ContentHash
+            });
     }
 
     public string Id { get; }
@@ -121,6 +149,7 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
     public string ContentHash { get; }
     public ModbusPartIdentityReadPlan? PartIdentity { get; }
     public ModbusRecipeChangeBinding? RecipeChange { get; }
+    public ModbusProductionArmStatusBinding? ProductionArmStatus { get; }
     int IModbusInspectionProfile.ControllerEndAddressExclusive => ControllerStartAddress + 6;
     int IModbusInspectionProfile.RuntimeEndAddressExclusive => RuntimeStartAddress + 6;
 }

@@ -63,6 +63,9 @@ public sealed record StationStateSnapshot(
 
     /// <summary>Retained pending inspections and their immutable recovery anchors.</summary>
     public ProductionRecoveryPendingPage? ProductionRecovery { get; init; }
+
+    /// <summary>Latest policy-controlled arm attempt and its observed outcome.</summary>
+    public ProductionArmPolicyStatus? ProductionArming { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>

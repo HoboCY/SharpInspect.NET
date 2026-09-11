@@ -267,6 +267,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             {
                 if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
                     return Unavailable("LocalStopAlreadyPending");
+                _productionArmStopGeneration = checked(_productionArmStopGeneration + 1);
                 _importPhysicalReservation?.Cancel();
             }
             CancelRecipeActivation();
@@ -728,7 +729,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             AlarmState = alarms, ProductionAdmission = admission };
         _snapshot = published;
         if (_productionInspectionOwner is { Current: null, Observer: { } productionObserver } &&
-            (!published.Ready || published.ArmState != ProductionArmState.Armed || admission?.CanArm != true))
+            (!published.Ready || published.ArmState != ProductionArmState.Armed || admission?.CanArm != true) &&
+            !PreserveProductionArmReadyObservationLocked(published, admission))
             productionObserver.RejectPendingAdmission("ProductionTriggerPermitRevoked");
         if (_productionAdmissionEnabled)
             _admissionStateHash = ComputeAdmissionStateHash(published);

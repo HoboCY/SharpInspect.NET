@@ -11,8 +11,9 @@ internal sealed partial class SqliteCommandStore
         var selections = options.RecipeSelections ?? throw new InvalidOperationException("RecipeSelectionConfigurationRequired");
         selections.Validate();
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException("AuditPolicyNotConfigured");
-        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
-            RecipeSelectionStoreOptions.SchemaVersion, "RecipeSelectionGovernedMigrationRequired");
+        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
+            RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion,
+            "RecipeSelectionGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
             new AuditVerificationRequest(0, policy.MaximumVerificationEntries), startup: false, deadline,
@@ -28,7 +29,7 @@ internal sealed partial class SqliteCommandStore
             traceStoragePolicyOptions: options.TraceStoragePolicies, qualificationCycleOptions: options.QualificationCycles,
             plcCommunicationOptions: options.PlcCommunication, productionInspectionOptions: options.ProductionInspections,
             productionRecoveryOptions: options.ProductionRecovery, partIdentityOptions: options.PartIdentities,
-            recipeSelectionOptions: selections);
+            productionArmOptions: options.ProductionArming, recipeSelectionOptions: selections);
         AuditChainDatabase.RequireFullRecipeSelectionVerification(database, report, deadline);
     }
 }

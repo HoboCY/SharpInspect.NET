@@ -56,6 +56,30 @@ public sealed class ProductionDeploymentManifest
             Conformance.ContentHash, UiWorkload.ContentHash
         }.Concat(VendorDependencyPaths));
     }
+
+    /// <summary>
+    /// Declares independent startup and post-PLC-activation arm choices. The
+    /// declaration changes the deployment fingerprint; it supplies no approval,
+    /// qualification, maintenance clearance, or authority to assert Ready.
+    /// </summary>
+    public ProductionDeploymentManifest(string id, string version,
+        ProductionPolicyDocument logging, ProductionPolicyDocument diagnostics,
+        ProductionPolicyDocument backup, ProductionPolicyDocument startup,
+        ProductionPolicyDocument performance, ProductionPolicyDocument conformance,
+        ProductionPolicyDocument uiWorkload, IEnumerable<string> vendorDependencyPaths,
+        StartupProductionPolicy startupProduction, PostActivationArmPolicy postActivationArm)
+        : this(id, version, logging, diagnostics, backup, startup, performance,
+            conformance, uiWorkload, vendorDependencyPaths)
+    {
+        StartupProduction = startupProduction ?? throw new ArgumentNullException(nameof(startupProduction));
+        PostActivationArm = postActivationArm ?? throw new ArgumentNullException(nameof(postActivationArm));
+        HasExplicitArmingPolicies = true;
+        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        {
+            "sharpinspect-production-deployment-manifest-v2", ContentHash,
+            StartupProduction.ContentHash, PostActivationArm.ContentHash
+        });
+    }
     public string Id { get; }
     public string Version { get; }
     public ProductionPolicyDocument Logging { get; }
@@ -67,4 +91,7 @@ public sealed class ProductionDeploymentManifest
     public ProductionPolicyDocument UiWorkload { get; }
     public ReadOnlyCollection<string> VendorDependencyPaths { get; }
     public string ContentHash { get; }
+    public StartupProductionPolicy StartupProduction { get; } = StartupProductionPolicy.Default;
+    public PostActivationArmPolicy PostActivationArm { get; } = PostActivationArmPolicy.Default;
+    public bool HasExplicitArmingPolicies { get; }
 }

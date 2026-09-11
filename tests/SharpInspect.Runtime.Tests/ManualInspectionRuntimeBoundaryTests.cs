@@ -385,13 +385,15 @@ public sealed partial class ManualInspectionRuntimeTests
     }
 
     private static StationRuntime CreateRestartedManualRuntime(ManualHarness harness,
-        IReadOnlyList<ICameraProvider> providers, IFrameAcquisitionClock clock)
+        IReadOnlyList<ICameraProvider> providers, IFrameAcquisitionClock clock,
+        SharpInspect.Runtime.Admission.IProductionAdmissionFactsSource? admissionFactsSource = null,
+        bool productionDeploymentEvidence = false)
     {
         var fixture = harness.Fixture;
         var restarted = new StationRuntime(fixture.Store, TimeSpan.FromMilliseconds(20),
             fixture.Sessions, fixture.Authorization, harness.Service<FrameBufferPool>(),
             cameraProviders: providers, cameraSetupOptions: new CameraSetupOptions(),
-            productionStoreOptions: fixture.Options);
+            productionStoreOptions: fixture.Options, productionAdmissionFactsSource: admissionFactsSource);
         var drafts = harness.Service<RecipeDraftService>();
         var preparation = harness.Service<AlgorithmPreparationService>();
         var preparationOptions = harness.Service<AlgorithmPreparationOptions>();
@@ -400,7 +402,8 @@ public sealed partial class ManualInspectionRuntimeTests
             harness.Service<IPlcResultContractQuery>(), harness.Activations, fixture.Authorization,
             fixture.Store, fixture.Options, preparation, preparationOptions, harness.Service<FrameBufferPool>(),
             (correlation, token) => restarted.ReserveRecipeActivationAsync(correlation, token),
-            () => restarted.GetSnapshotAsync()));
+            () => restarted.GetSnapshotAsync(), deploymentEvidence: productionDeploymentEvidence
+                ? restarted.CaptureRecipeActivationDeploymentEvidenceAsync : null));
         if (fixture.Options.RecipeSelections is not null)
         {
             var selectionQuery = new SqliteRecipeSelectionQuery(fixture.Options);

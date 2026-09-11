@@ -341,7 +341,8 @@ public sealed partial class ManualInspectionRuntimeTests
             ClockPump clockPump, IVisionAlgorithmFactory factory, VirtualCameraProvider cameraProvider,
             IManualInspectionSessionService manual, IManualInspectionHistoryQuery history,
             IRecipeActivationQuery activations, ICameraSetupRuntime camera, IStationRuntime runtime,
-            RecipeDraftRevision draft)
+            RecipeDraftRevision draft, ProductionDeploymentManifest? deployment,
+            TestProductionArmMaintenanceProvider? maintenance)
         {
             Fixture = fixture;
             _services = services;
@@ -354,6 +355,8 @@ public sealed partial class ManualInspectionRuntimeTests
             Camera = camera;
             Runtime = runtime;
             Draft = draft;
+            Deployment = deployment;
+            Maintenance = maintenance;
         }
 
         internal RecipeDraftStorageTests.Fixture Fixture { get; }
@@ -365,6 +368,10 @@ public sealed partial class ManualInspectionRuntimeTests
         internal ICameraSetupRuntime Camera { get; }
         internal IStationRuntime Runtime { get; }
         internal RecipeDraftRevision Draft { get; }
+        /// <summary>The exact deployment bound into the production options, when a production peer is used.</summary>
+        internal ProductionDeploymentManifest? Deployment { get; }
+        /// <summary>The fixture maintenance provider configured before startup, when one was requested.</summary>
+        internal TestProductionArmMaintenanceProvider? Maintenance { get; }
 
         internal T Service<T>() where T : notnull => _services.GetRequiredService<T>();
         internal void PauseClock() => _clockPump.Pause();
@@ -394,7 +401,14 @@ public sealed partial class ManualInspectionRuntimeTests
             bool enableProductionRecovery = false, AlarmPolicyRule? productionTestAlarm = null,
             PlcCommunicationPolicy? productionCommunicationPolicy = null, TimeSpan? heartbeatInterval = null,
             ModbusRecipeChangeBinding? recipeChangeBinding = null,
-            IReadOnlyList<VirtualCameraConfigurationPlan>? cameraConfigurationPlans = null)
+            IReadOnlyList<VirtualCameraConfigurationPlan>? cameraConfigurationPlans = null,
+            StartupProductionPolicy? startupProductionPolicy = null,
+            PostActivationArmPolicy? postActivationArmPolicy = null,
+            ProductionArmStoreOptions? productionArming = null,
+            ModbusProductionArmStatusBinding? productionArmStatusBinding = null,
+            TestProductionArmMaintenanceProvider? productionArmMaintenance = null,
+            ProductionArmMaintenanceState productionArmMaintenanceState = ProductionArmMaintenanceState.ManualArmConfirmed,
+            string? productionArmMaintenanceJournalHead = null)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             if (!allowPartIdentityCorrection)
@@ -435,10 +449,12 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionRecovery: enableProductionRecovery ? new ProductionRecoveryStoreOptions() : null,
                 recipeSelections: recipeChangeBinding is null ? null : new RecipeSelectionStoreOptions(),
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
-                    { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) });
+                    { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) },
+                productionArming: productionPeer is null ? null : productionArming);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
+            ProductionDeploymentManifest? deployment = null;
             try
             {
                 var factory = new ManualFactory(preparationBarrierStage, failUnpublishedDispose);
@@ -458,17 +474,29 @@ public sealed partial class ManualInspectionRuntimeTests
                         await TraceStoragePolicyRuntimeTests.AuthorizedCommand(fixture, 0, TraceStoragePolicyRuntimeTests.Policy()));
                     Assert.True(publication.Succeeded, publication.Outcome.ReasonCode);
                     ProductionPolicyDocument Document(string id, string content) => new(id, "1", content);
-                    var deployment = new ProductionDeploymentManifest("V142.Isolated.Deployment", "1",
-                        Document("Logging", "Isolated test workload: structured command and inspection audit only."),
-                        Document("Diagnostics", "Protected test diagnostics are local and access controlled."),
-                        Document("Backup", "Offline test database; retained test artifacts, no production restore qualification."),
-                        Document("Startup", "Verify all enabled ledgers; pending inspection blocks before opening PLC socket."),
-                        Document("Performance", "Virtual isolated station, one frame per software trigger; 2 second execution budget."),
-                        Document("Conformance", "V142 isolated software contract checks, test issuer only."),
-                        Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>());
+                    deployment = startupProductionPolicy is null && postActivationArmPolicy is null
+                        ? new ProductionDeploymentManifest("V142.Isolated.Deployment", "1",
+                            Document("Logging", "Isolated test workload: structured command and inspection audit only."),
+                            Document("Diagnostics", "Protected test diagnostics are local and access controlled."),
+                            Document("Backup", "Offline test database; retained test artifacts, no production restore qualification."),
+                            Document("Startup", "Verify all enabled ledgers; pending inspection blocks before opening PLC socket."),
+                            Document("Performance", "Virtual isolated station, one frame per software trigger; 2 second execution budget."),
+                            Document("Conformance", "V142 isolated software contract checks, test issuer only."),
+                            Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>())
+                        : new ProductionDeploymentManifest("V142.Isolated.Deployment", "1",
+                            Document("Logging", "Isolated test workload: structured command and inspection audit only."),
+                            Document("Diagnostics", "Protected test diagnostics are local and access controlled."),
+                            Document("Backup", "Offline test database; retained test artifacts, no production restore qualification."),
+                            Document("Startup", "Verify all enabled ledgers; pending inspection blocks before opening PLC socket."),
+                            Document("Performance", "Virtual isolated station, one frame per software trigger; 2 second execution budget."),
+                            Document("Conformance", "V142 isolated software contract checks, test issuer only."),
+                            Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>(),
+                            startupProductionPolicy ?? StartupProductionPolicy.Default,
+                            postActivationArmPolicy ?? PostActivationArmPolicy.Default);
                     registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
                         ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(
-                            productionCommunicationPolicy, partIdentity: partIdentityReadPlan, recipeChange: recipeChangeBinding),
+                            productionCommunicationPolicy, partIdentity: partIdentityReadPlan,
+                            recipeChange: recipeChangeBinding, productionArmStatus: productionArmStatusBinding),
                         publication.Snapshot!.Version, publication.Snapshot.ContentHash,
                         TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
                 }
@@ -508,6 +536,16 @@ public sealed partial class ManualInspectionRuntimeTests
                 var runtime = services.GetRequiredService<IStationRuntime>();
                 if (runtime is not StationRuntime station)
                     throw new XunitException("Manual runtime did not use StationRuntime");
+                // The maintenance provider and its evidence must exist before the production owner
+                // starts: a start-up cause is considered exactly once inside that owner.
+                if (productionArmMaintenance is not null && deployment is not null)
+                {
+                    productionArmMaintenance.Attach(fixture.Options.LocalIdentity!.StationId,
+                        deployment.ContentHash,
+                        productionArmMaintenanceJournalHead ?? new string('A', 64),
+                        productionArmMaintenanceState);
+                    station.ConfigureProductionArmMaintenanceEvidenceProvider(productionArmMaintenance);
+                }
                 await station.WaitForManualInspectionStartupAsync()
                     .WaitAsync(TimeSpan.FromSeconds(30));
                 if (productionPeer is not null)
@@ -538,7 +576,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     await ConfigureCameraAsync(fixture, camera, cameraProvider.Identity);
 
                 return new ManualHarness(fixture, services, pump, factory, cameraProvider,
-                    manual, history, activations, camera, runtime, draft);
+                    manual, history, activations, camera, runtime, draft, deployment, productionArmMaintenance);
             }
             catch
             {
