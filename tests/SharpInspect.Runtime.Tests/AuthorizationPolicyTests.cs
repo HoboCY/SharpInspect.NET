@@ -18,6 +18,7 @@ public sealed class AuthorizationPolicyTests
         Assert.Equal(7, (int)SystemPermission.RecordProductionInspection);
         Assert.Equal(8, (int)SystemPermission.RequestMappedRecipeActivation);
         Assert.Equal(9, (int)SystemPermission.AttemptPolicyControlledProductionArm);
+        Assert.Equal(10, (int)SystemPermission.MigrateStoreAtStartup);
 
         Assert.Equal("SharpInspect.Runtime", SystemPrincipalId.Runtime);
         Assert.Equal("SharpInspect.Outbox", SystemPrincipalId.Outbox);
@@ -28,7 +29,7 @@ public sealed class AuthorizationPolicyTests
         Assert.Equal(6, SystemPrincipalCatalog.All.Count);
         Assert.Equal(SystemPrincipalId.Runtime, SystemPrincipalCatalog.Runtime.Id);
         Assert.Equal(new[] { SystemPermission.RecordCommand, SystemPermission.RecordProductionInspection,
-            SystemPermission.AttemptPolicyControlledProductionArm },
+            SystemPermission.AttemptPolicyControlledProductionArm, SystemPermission.MigrateStoreAtStartup },
             SystemPrincipalCatalog.Runtime.Permissions);
         Assert.Equal(new[] { SystemPermission.DeliverOutbox },
             SystemPrincipalCatalog.Outbox.Permissions);

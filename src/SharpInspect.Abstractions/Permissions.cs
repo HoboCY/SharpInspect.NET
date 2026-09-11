@@ -86,7 +86,9 @@ public enum SystemPermission : byte
     RecordProductionInspection = 7,
     RequestMappedRecipeActivation = 8,
     /// <summary>Attempt arming only through Runtime's internal, policy-bound one-shot capability.</summary>
-    AttemptPolicyControlledProductionArm = 9
+    AttemptPolicyControlledProductionArm = 9,
+    /// <summary>Execute the bundled migration only through an exclusive startup-maintenance session.</summary>
+    MigrateStoreAtStartup = 10
 }
 
 /// <summary>
@@ -128,9 +130,9 @@ public sealed class SystemPrincipalDescriptor
 public static class SystemPrincipalCatalog
 {
     public static SystemPrincipalDescriptor Runtime { get; } = new(
-        SystemPrincipalId.Runtime, "Runtime command recording",
+        SystemPrincipalId.Runtime, "Runtime recording, policy-controlled arming and exclusive startup migration",
         new[] { SystemPermission.RecordCommand, SystemPermission.RecordProductionInspection,
-            SystemPermission.AttemptPolicyControlledProductionArm });
+            SystemPermission.AttemptPolicyControlledProductionArm, SystemPermission.MigrateStoreAtStartup });
 
     public static SystemPrincipalDescriptor Outbox { get; } = new(
         SystemPrincipalId.Outbox, "Outbox delivery",

@@ -1,5 +1,16 @@
-param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot)
+param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
+    [string]$Schema32PackageFeed = $env:SHARPINSPECT_SCHEMA32_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
+if ($Ticket -ge 49) {
+    if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
+        throw 'Ticket 49 and later require an absolute preserved schema-32 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema32PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-32 package feed is incomplete.'
+        }
+    }
+}
 $taskRepo = Split-Path -Parent $PSScriptRoot
 $taskArtifactBase = Join-Path $taskRepo 'artifacts'
 if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
@@ -846,6 +857,10 @@ try {
     }
     if ($Ticket -ge 48) {
         & (Join-Path $PSScriptRoot 'Test-RecipeLifecycleConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
+    if ($Ticket -ge 49) {
+        if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed)) { throw 'A preserved schema-32 package feed is required for the actual old writer migration probe.' }
+        & (Join-Path $PSScriptRoot 'Test-StoreMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -Schema32PackageFeed $Schema32PackageFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
