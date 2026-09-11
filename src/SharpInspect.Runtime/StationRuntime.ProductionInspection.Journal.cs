@@ -54,15 +54,24 @@ public sealed partial class StationRuntime
                 if (committed.ReasonCode is not ("ProductionInspectionAdmissionRevoked" or
                     "ProductionInspectionCommitFenceBusy"))
                     throw new InvalidOperationException(committed.ReasonCode);
+                Task? cancellation;
+                CancellationTokenSource retiredCancellation;
                 lock (_sync)
                 {
+                    cancellation = owner.ExecutionCancellationTask;
+                    retiredCancellation = owner.ExecutionCancellation;
                     owner.Current = null;
                     owner.Core = null;
                     owner.Prepared = null;
+                    owner.ExecutionCancellation = CancellationTokenSource.CreateLinkedTokenSource(owner.Cancellation.Token);
+                    owner.ExecutionCancellationTask = null;
+                    owner.FaultAbortRequested = false;
                     owner.Coordinator.SetPhase(InspectionCyclePhase.AwaitRequest);
                     owner.CycleRetired?.TrySetResult(true);
                     ProjectProductionProgressLocked(owner);
                 }
+                try { if (cancellation is not null) await cancellation.ConfigureAwait(false); }
+                finally { retiredCancellation.Dispose(); }
                 throw new OperationCanceledException("ProductionInspectionTriggerPermitRevoked");
             }
             owner.AdmissionCommitted = true;
@@ -83,7 +92,8 @@ public sealed partial class StationRuntime
         ProductionInspectionOwner owner, InspectionCycleExecutionResult<PlcResultPayloadSnapshot> result)
     {
         var admission = owner.Current ?? throw new InvalidOperationException("ProductionInspectionAdmissionMissing");
-        if (result.Payload is null || result.Outcome is null && result.AcquisitionFailure is null)
+        if (result.Payload is null || result.Outcome is null && result.AcquisitionFailure is null &&
+            !(result.Status == ExecutionStatus.Cancelled && result.Metadata is not null && owner.FaultAbortRequested))
             return null;
         await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
         var timeout = admission.TracePolicySnapshot.Policy.TraceCommitTimeout;

@@ -22,6 +22,9 @@ public sealed partial class StationRuntime
             Execution = owner.Execution,
             ExecutionRequest = new(baseline.Recipe, baseline.Release.Source.Content.AlgorithmExecutionTimeout),
             GuardAsync = () => RequireProductionContinuationAsync(owner),
+            DeliveryGuardAsync = () => RequireProductionContinuationAsync(owner),
+            DeliveryCancellationToken = owner.Cancellation.Token,
+            RuntimeAbortRequested = () => { lock (_sync) return owner.FaultAbortRequested; },
             ClaimExecution = () => ClaimProductionPhysicalPhase(owner),
             AcquireAsync = async token =>
             {
@@ -44,12 +47,17 @@ public sealed partial class StationRuntime
             },
             EncodeFailure = (status, reason) =>
             {
-                // A refusal before a real acquisition attempt has no typed camera result.
-                // It terminates the cycle and must not be promoted to an ordinary Unknown.
-                if (actualAcquisitionFailure is null) return (null, reason);
+                // Only an actual acquisition failure or the Runtime's explicit Fault Abort
+                // can produce this failure payload. Other gate refusals terminate the cycle.
+                bool runtimeAbort;
+                lock (_sync) runtimeAbort = owner.FaultAbortRequested;
+                if (actualAcquisitionFailure is null && !(runtimeAbort && status == ExecutionStatus.Cancelled))
+                    return (null, reason);
                 var effectiveReason = status switch
                 {
                     ExecutionStatus.Timeout => "CameraAcquisitionTimeout",
+                    ExecutionStatus.Cancelled when actualAcquisitionFailure is null &&
+                        reason == "AlgorithmExecutionCancelled" => "AlgorithmExecutionCancelled",
                     ExecutionStatus.Cancelled => "CameraAcquisitionCancelled",
                     _ => "CameraAcquisitionError"
                 };
@@ -62,24 +70,31 @@ public sealed partial class StationRuntime
             CommitAsync = result => CommitProductionCoreAsync(owner, result),
             PublishAsync = async (receipt, token) =>
             {
-                // A logical acquisition/execution result can precede physical retirement.
-                // Keep the durable cycle pending until resources have actually retired;
-                // no PLC payload or ACK lifecycle can complete an unsafe old owner.
-                await RetireProductionCameraAsync(owner).ConfigureAwait(false);
+                // Delivery of the fixed outcome has its own authority. Outstanding provider
+                // work retains its frame and owner through the later physical-retirement gate.
                 await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
-                await publish(receipt, token).ConfigureAwait(false);
+                await publish(receipt, owner.Cancellation.Token).ConfigureAwait(false);
             }
         };
-        var completed = await owner.Coordinator.ExecuteAsync(pipeline, owner.Cancellation.Token).ConfigureAwait(false);
+        var completed = await owner.Coordinator.ExecuteAsync(pipeline, owner.ExecutionCancellation.Token).ConfigureAwait(false);
         if (owner.Coordinator.Phase == InspectionCyclePhase.FaultTerminated)
             owner.FailureReason = completed.ReasonCode;
     }
 
     private async Task RetireProductionCameraAsync(ProductionInspectionOwner owner)
     {
+        owner.RetirementDeadline ??= new StoreDeadline(_productionInspectionOptions!.RetirementTimeout);
+        TimeSpan Remaining()
+        {
+            var remaining = owner.RetirementDeadline.Remaining;
+            lock (_sync)
+                if (_productionShutdownDeadline is { } shutdown && shutdown.Remaining < remaining)
+                    remaining = shutdown.Remaining;
+            return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        }
         if (owner.Camera is { } camera)
         {
-            var retired = await camera.WaitForManualRetirementAsync(_productionInspectionOptions!.RetirementTimeout,
+            var retired = await camera.WaitForManualRetirementAsync(Remaining(),
                 CancellationToken.None).ConfigureAwait(false);
             if (!retired.Completed || !retired.SafeToReplace)
             {
@@ -90,11 +105,9 @@ public sealed partial class StationRuntime
             await camera.DisposeAsync().ConfigureAwait(false);
             owner.Camera = null;
         }
-        var started = Stopwatch.GetTimestamp();
         while (owner.Execution.ActiveExecutionCount != 0)
         {
-            if ((Stopwatch.GetTimestamp() - started) / (double)Stopwatch.Frequency >=
-                _productionInspectionOptions!.RetirementTimeout.TotalSeconds)
+            if (Remaining() <= TimeSpan.Zero)
             {
                 lock (_sync) _productionInspectionRecoveryBlocked = true;
                 throw new InvalidOperationException("ProductionInspectionExecutionRetirementIncomplete");

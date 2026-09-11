@@ -38,6 +38,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private Task? _completion;
     private Task? _shutdown;
     private CommandAuditFact? _pendingAudit;
+    private Task<bool>? _pendingProductionStopRetirement;
     private bool LocalStopPendingLocked => Volatile.Read(ref _pendingLocalStops) != 0 ||
         _pendingAudit is not null ||
         _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" };
@@ -409,6 +410,10 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 if (outcome.Disposition == CommandDisposition.Accepted)
                 {
                     _pendingAudit = fact;
+                    // Preserve the cycle accepted by this Stop even if it retires before
+                    // the heartbeat starts the completion worker.
+                    _pendingProductionStopRetirement = _productionInspectionOwner is { Current: not null } production
+                        ? production.CycleRetired?.Task : null;
                     _completion = null;
                     PublishLocked(_snapshot with
                     {
@@ -594,13 +599,14 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         Task? physicalRetirement;
         Task? manualRetirement;
         Task? qualificationRetirement;
-        Task? productionRetirement;
+        Task<bool>? productionRetirement;
+        var productionStoppedNormally = true;
         lock (_sync)
         {
             physicalRetirement = _importPhysicalReservation?.Retirement;
             manualRetirement = _manualOwner?.Retired.Task;
             qualificationRetirement = _stationQualificationOwner?.Retired.Task;
-            productionRetirement = _productionInspectionOwner?.CycleRetired?.Task;
+            productionRetirement = _pendingProductionStopRetirement;
         }
         if (physicalRetirement is not null)
         {
@@ -624,7 +630,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         }
         if (productionRetirement is not null)
         {
-            try { await productionRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
+            try { productionStoppedNormally = await productionRetirement.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         }
         await _commandGate.WaitAsync().ConfigureAwait(false);
@@ -638,15 +644,17 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             }
             if (admitted is null) return;
             var terminal = admitted with { EventId = Guid.NewGuid(), OccurredAtUtc = DateTimeOffset.UtcNow,
-                Phase = CommandAuditPhase.Completed, Disposition = null, ReasonCode = "LocallyDisarmed" };
+                Phase = productionStoppedNormally ? CommandAuditPhase.Completed : CommandAuditPhase.Failed,
+                Disposition = null, ReasonCode = productionStoppedNormally ? "LocallyDisarmed" : "ProductionStopInterrupted" };
             var result = await _audit!.AppendAsync(terminal, new StoreDeadline(_audit.CommitTimeout)).ConfigureAwait(false);
             if (!result.Committed) MarkAuditFault(result.ReasonCode);
             lock (_sync)
             {
                 _pendingAudit = null;
+                _pendingProductionStopRetirement = null;
                 PublishLocked(_snapshot with { LastCommand = new CommandProgress(admitted.CorrelationId,
-                    result.Committed ? OperationState.Completed : OperationState.Failed,
-                    result.Committed ? "LocallyDisarmed" : "TraceAuditUnavailable") });
+                    result.Committed && productionStoppedNormally ? OperationState.Completed : OperationState.Failed,
+                    result.Committed ? terminal.ReasonCode : "TraceAuditUnavailable") });
             }
         }
         finally { _commandGate.Release(); }
@@ -735,14 +743,20 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // the command gate settles first; shutdown never rewrites an immutable terminal fact.
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
+        if (_productionInspectionOptions is not null)
+            _productionShutdownDeadline = new StoreDeadline(_productionInspectionOptions.RetirementTimeout);
+        RequestProductionInspectionAbort("ProductionInspectionRuntimeShutdown");
+        PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed });
         RequestStationQualificationStop("StationQualificationRuntimeShutdown", abort: true);
         if (_productionAdmissionEnabled && _audit is SqliteCommandStore admissionStore)
             admissionStore.ProductionAdmissionMaterialChanging -= OnProductionAdmissionMaterialChanging;
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;
-        _lifetime.Cancel();
+        // A controlled close cancels computation first. Keep durable delivery and the
+        // ACK observer alive for the accepted cycle, under one monotonic deadline.
+        try { await ShutdownProductionInspectionAsync().ConfigureAwait(false); }
+        finally { _lifetime.Cancel(); }
         await _heartbeat.ConfigureAwait(false);
         await ShutdownProductionRecoveryAsync().ConfigureAwait(false);
-        await ShutdownProductionInspectionAsync().ConfigureAwait(false);
         await ShutdownManualInspectionAsync().ConfigureAwait(false);
         await ShutdownStationQualificationAsync().ConfigureAwait(false);
         await ShutdownPreviewAsync().ConfigureAwait(false);

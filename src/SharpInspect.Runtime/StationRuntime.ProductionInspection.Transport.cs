@@ -81,6 +81,9 @@ public sealed partial class StationRuntime
             {
                 await RetireProductionCameraAsync(owner).ConfigureAwait(false);
                 await RetirePartIdentityOperationAsync(owner).ConfigureAwait(false);
+                if (owner.ExecutionCancellationTask is { } cancellation)
+                    await cancellation.ConfigureAwait(false);
+                owner.ExecutionCancellation.Dispose();
                 owner.Cancellation.Dispose();
             }
         }
@@ -138,6 +141,14 @@ public sealed partial class StationRuntime
             {
                 token.ThrowIfCancellationRequested();
                 observer.RequireHealthy();
+                bool closing;
+                lock (_sync) closing = _shutdownRequested && owner.Current is null;
+                if (closing)
+                {
+                    observer.StopAccepting();
+                    await output.ChangeAsync(token, ready: false).ConfigureAwait(false);
+                    break;
+                }
                 if (DateTimeOffset.UtcNow >= nextAdmissionRefresh)
                 {
                     await RefreshProductionAdmissionAsync(token).ConfigureAwait(false);
@@ -215,18 +226,31 @@ public sealed partial class StationRuntime
                             profile.AcknowledgementTimeout, profile.PollInterval, ct)).ConfigureAwait(false);
                     if (owner.Coordinator.Phase == InspectionCyclePhase.FaultTerminated)
                         throw new InvalidOperationException("ProductionInspectionCoreNotCommitted");
-                    owner.CycleRetired?.TrySetResult(true);
+                    await RetireProductionCameraAsync(owner).ConfigureAwait(false);
                     observer.CompleteCycle();
+                    Task? cancellation;
+                    CancellationTokenSource retiredCancellation;
                     lock (_sync)
                     {
+                        // Atomically detach this cycle's cancellation source before exposing
+                        // idle state. A concurrent Abort can never cancel the next cycle.
+                        cancellation = owner.ExecutionCancellationTask;
+                        retiredCancellation = owner.ExecutionCancellation;
+                        owner.CycleRetired?.TrySetResult(!owner.FaultAbortRequested && !_shutdownRequested);
                         owner.Current = null;
                         owner.AdmissionCommitted = false;
                         owner.Core = null;
                         owner.Prepared = null;
                         owner.PartIdentityAttempt = null;
                         owner.PartIdentityOperation = null;
+                        owner.ExecutionCancellation = CancellationTokenSource.CreateLinkedTokenSource(owner.Cancellation.Token);
+                        owner.ExecutionCancellationTask = null;
+                        owner.FaultAbortRequested = false;
+                        owner.RetirementDeadline = null;
                         ProjectProductionProgressLocked(owner);
                     }
+                    if (cancellation is not null) await cancellation.ConfigureAwait(false);
+                    retiredCancellation.Dispose();
                 }
                 // Drain the bounded observer ring; rejected edges do not allocate InspectionIds.
                 // Their protocol-fault flag prevents them being mistaken for queued work.
@@ -241,8 +265,9 @@ public sealed partial class StationRuntime
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
+            var deliveryCompleted = owner.Coordinator.Phase == InspectionCyclePhase.Completed;
             observer?.RejectPendingAdmission(ProductionFailureReason(exception));
-            owner.Coordinator.SetPhase(InspectionCyclePhase.FaultTerminated);
+            if (!deliveryCompleted) owner.Coordinator.SetPhase(InspectionCyclePhase.FaultTerminated);
             lock (_sync) AbortProductionInspectionLocked(owner, ProductionFailureReason(exception));
             if (observer is not null)
                 await observer.DisposeAsync().ConfigureAwait(false);
@@ -271,14 +296,14 @@ public sealed partial class StationRuntime
                 catch (Exception failure) when (failure is not OutOfMemoryException)
                 { MarkAuditFault("PartIdentityRejectionJournalUnavailable", alarmAuthorityUnavailable: true); }
             }
-            if (owner.Current is not null)
+            if (owner.Current is not null && !deliveryCompleted)
             {
                 await RecordProductionFaultAsync(owner, owner.FailureReason).ConfigureAwait(false);
                 await RefreshProductionRecoveryAsync(CancellationToken.None).ConfigureAwait(false);
             }
             await RetireProductionCameraAsync(owner).ConfigureAwait(false);
-            owner.CycleRetired?.TrySetResult(true);
-            if (communication.Failure is not null && !_lifetime.IsCancellationRequested)
+            owner.CycleRetired?.TrySetResult(false);
+            if (communication.Failure is not null && !_shutdownRequested && !_lifetime.IsCancellationRequested)
                 await communication.RecoverAsync(channel, owner.Current is not null, _lifetime.Token).ConfigureAwait(false);
         }
         finally
@@ -304,7 +329,8 @@ public sealed partial class StationRuntime
     {
         lock (_sync)
         {
-            if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Aborted || _shutdownRequested || _disposed)
+            if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Aborted || _disposed ||
+                _shutdownRequested && _productionShutdownDeadline is not { Expired: false })
                 throw new PlcRequestRevokedException();
             return start();
         }

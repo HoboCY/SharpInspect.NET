@@ -1011,7 +1011,8 @@ internal sealed partial class SqliteCommandStore
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             var reason = ex is InvalidOperationException && (ex.Message.StartsWith("Identity", StringComparison.Ordinal) ||
-                ex.Message.StartsWith("ProductionAdmission", StringComparison.Ordinal))
+                ex.Message.StartsWith("ProductionAdmission", StringComparison.Ordinal) ||
+                ex.Message == "ProductionRecoveryCommitFenceBusy")
                 ? ex.Message : SqliteAuditIntegrityQuery.FaultReason(ex, "IdentityCommitFailed");
             if (reason.StartsWith("Audit", StringComparison.Ordinal) &&
                 !AuditChainDatabase.IsCapacityReason(reason))

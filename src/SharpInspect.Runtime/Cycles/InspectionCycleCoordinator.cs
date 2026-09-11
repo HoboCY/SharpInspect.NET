@@ -73,8 +73,11 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
                     outcome = attempt.Outcome;
                     status = outcome?.ExecutionStatus ?? ExecutionStatus.Error;
                     reason = outcome?.ReasonCode ?? attempt.ReasonCode;
+                    if (outcome is null && attempt.ReasonCode == "AlgorithmExecutionCancelledBeforeStart" &&
+                        pipeline.RuntimeAbortRequested?.Invoke() == true)
+                    { status = ExecutionStatus.Cancelled; reason = "AlgorithmExecutionCancelled"; }
                 }
-                if (outcome is not null)
+                if (outcome is not null && pipeline.DeliveryGuardAsync is null)
                 {
                     await pipeline.GuardAsync().ConfigureAwait(false);
                     SetPhase(InspectionCyclePhase.Encoding);
@@ -89,12 +92,35 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
         { status = ExecutionStatus.Cancelled; reason = pipeline.CancellationReasonCode; }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         { status = ExecutionStatus.Error; reason = pipeline.FailureReasonCode; }
-        finally { frame?.Dispose(); }
+        finally { frame?.Dispose(); frame = null; }
+
+        if (outcome is not null && pipeline.DeliveryGuardAsync is { } deliveryGuard)
+        {
+            // Once the execution service fixes an outcome, a later delivery revocation
+            // must not be caught by the execution classifier and rewrite that outcome.
+            await deliveryGuard().ConfigureAwait(false);
+            SetPhase(InspectionCyclePhase.Encoding);
+            var encoded = pipeline.Encode(outcome);
+            payload = encoded.Payload;
+            if (payload is null) reason = encoded.ReasonCode;
+        }
+
+        var cancelledByRuntime = status == ExecutionStatus.Cancelled &&
+            pipeline.RuntimeAbortRequested?.Invoke() == true;
+        if (cancelledByRuntime && outcome is null && metadata is not null && acquisitionFailure is null)
+            reason = "AlgorithmExecutionCancelled";
+        if (cancelledByRuntime && outcome is null && metadata is null && acquisitionFailure is null)
+        {
+            // Cancellation of the accepted acquisition phase can precede a device call.
+            // No acquisition timestamp, frame or algorithm result is manufactured.
+            acquisitionFailure = new(CameraAcquisitionFailureKind.Cancelled, "CameraAcquisitionCancelled");
+            reason = acquisitionFailure.ReasonCode;
+        }
 
         // A production acquisition failure may have no frame and therefore no algorithm
         // outcome. An optional entry adapter can encode its typed PLC failure using the same
         // contract, while qualification/manual pipelines retain their historical behavior.
-        if (outcome is null && frame is null && metadata is null && payload is null &&
+        if (outcome is null && frame is null && (metadata is null || cancelledByRuntime) && payload is null &&
             status is (ExecutionStatus.Error or ExecutionStatus.Timeout or ExecutionStatus.Cancelled) &&
             pipeline.EncodeFailure is { } encodeFailure)
         {
@@ -133,9 +159,9 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
         }
         if (receipt.Correlation != pipeline.Correlation || payload is null)
             throw new InvalidOperationException("InspectionCycleCommitReceiptMismatch");
-        await pipeline.GuardAsync().ConfigureAwait(false);
+        await (pipeline.DeliveryGuardAsync ?? pipeline.GuardAsync)().ConfigureAwait(false);
         SetPhase(InspectionCyclePhase.WritingPayload);
-        await pipeline.PublishAsync(receipt, cancellationToken).ConfigureAwait(false);
+        await pipeline.PublishAsync(receipt, pipeline.DeliveryCancellationToken ?? cancellationToken).ConfigureAwait(false);
         SetPhase(InspectionCyclePhase.Completed);
         return result;
     }
@@ -159,6 +185,9 @@ internal sealed class InspectionCyclePipeline<TPayload> where TPayload : class
     internal AlgorithmExecutionService Execution { get; init; } = null!;
     internal AlgorithmExecutionRequest ExecutionRequest { get; init; } = null!;
     internal Func<Task> GuardAsync { get; init; } = null!;
+    internal Func<Task>? DeliveryGuardAsync { get; init; }
+    internal CancellationToken? DeliveryCancellationToken { get; init; }
+    internal Func<bool>? RuntimeAbortRequested { get; init; }
     internal Func<CancellationToken, ValueTask<ManualCameraAcquisitionResult>> AcquireAsync { get; init; } = null!;
     internal Func<RecipeActivationPhysicalPhaseClaim> ClaimExecution { get; init; } = null!;
     internal Func<AlgorithmExecutionOutcome, (TPayload? Payload, string ReasonCode)> Encode { get; init; } = null!;

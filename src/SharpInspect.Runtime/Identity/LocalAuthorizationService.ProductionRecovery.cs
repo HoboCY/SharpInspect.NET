@@ -37,15 +37,26 @@ internal sealed partial class LocalAuthorizationService
 
         try
         {
-            var written = await _store.UpdateIdentityCommandAsync(command.CorrelationId,
-                (state, duplicate) => AuthorizeProductionRecovery(state, command, runtimeEpoch,
-                    attemptId, safetyCapture, observation, forcedRejection, finalGuard,
-                    duplicate, cancellationToken),
-                CancellationToken.None, new StoreDeadline(_store.CommitTimeout)).ConfigureAwait(false);
-            if (written.Committed && written.Result is ProductionRecoveryAuthorizationResult result)
-                return result;
-            return new(Unavailable(written.Committed ? "ProductionRecoveryAuthorizationResultMissing" :
-                written.ReasonCode), RecoveryAttemptId: attemptId);
+            var deadline = new StoreDeadline(_store.CommitTimeout);
+            while (true)
+            {
+                var written = await _store.UpdateIdentityCommandAsync(command.CorrelationId,
+                    (state, duplicate) => AuthorizeProductionRecovery(state, command, runtimeEpoch,
+                        attemptId, safetyCapture, observation, forcedRejection, finalGuard,
+                        duplicate, cancellationToken), CancellationToken.None, deadline).ConfigureAwait(false);
+                // The writer has rolled back and released the unconsumed Step-Up lease.
+                // Retry only this transient fence under the original attempt and deadline;
+                // a committed authorization is never retried or physically executed here.
+                if (!written.Committed && written.ReasonCode == "ProductionRecoveryCommitFenceBusy" && !deadline.Expired)
+                {
+                    await Task.Delay(1).ConfigureAwait(false);
+                    continue;
+                }
+                if (written.Committed && written.Result is ProductionRecoveryAuthorizationResult result)
+                    return result;
+                return new(Unavailable(written.Committed ? "ProductionRecoveryAuthorizationResultMissing" :
+                    written.ReasonCode), RecoveryAttemptId: attemptId);
+            }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {

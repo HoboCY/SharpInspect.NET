@@ -18,6 +18,7 @@ public sealed partial class StationRuntime
     private ProductionInspectionOwner? _productionInspectionOwner;
     private TraceStoragePolicySnapshot? _productionInspectionPolicy;
     private Task? _productionInspectionTask;
+    private StoreDeadline? _productionShutdownDeadline;
     private bool _productionInspectionStartupVerified;
     private bool _productionInspectionRecoveryBlocked;
     private long _productionPhysicalSequence;
@@ -81,7 +82,7 @@ public sealed partial class StationRuntime
         lock (_sync)
         {
             if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Current is null ||
-                owner.Aborted || owner.Cancellation.IsCancellationRequested || _disposed || _shutdownRequested)
+                owner.Aborted || owner.FaultAbortRequested || owner.Cancellation.IsCancellationRequested || _disposed || _shutdownRequested)
                 return RecipeActivationPhysicalPhaseClaim.Unavailable("ProductionInspectionRevoked");
             if (owner.PhysicalPhaseId != 0)
                 return RecipeActivationPhysicalPhaseClaim.Unavailable("ProductionPhysicalOperationInProgress");
@@ -107,9 +108,9 @@ public sealed partial class StationRuntime
 
     private string? ProductionContinuationFailureLocked(ProductionInspectionOwner owner) =>
         !ReferenceEquals(_productionInspectionOwner, owner) || owner.Current is not { } current ||
-        owner.RuntimeEpoch != _snapshot.RuntimeEpoch || owner.Aborted || _disposed || _shutdownRequested ||
+        owner.RuntimeEpoch != _snapshot.RuntimeEpoch || owner.Aborted || _disposed ||
+        _shutdownRequested && _productionShutdownDeadline is not { Expired: false } ||
         owner.Cancellation.IsCancellationRequested || _auditFault || !_storeReady ||
-        _snapshot.AlarmState?.Instances.Any(value => value.ProductionImpact == ProductionImpact.FaultAbort) == true ||
         owner.Health is not { Healthy: true } health ||
         health.ConnectionGeneration != current.ConnectionGeneration ||
         health.ControllerEpoch != current.ControllerCycle.ControllerEpoch ||
@@ -132,7 +133,25 @@ public sealed partial class StationRuntime
     private void RequestProductionInspectionAbort(string reason)
     {
         lock (_sync)
-            if (_productionInspectionOwner is { } owner) AbortProductionInspectionLocked(owner, reason);
+        {
+            if (_productionInspectionOwner is not { } owner || owner.Aborted) return;
+            owner.Observer?.StopAccepting();
+            if (owner.Current is not null && !owner.FaultAbortRequested)
+            {
+                owner.FaultAbortRequested = true;
+                // Fault Abort cancels computation, while the accepted cycle retains its
+                // persistence and healthy communication authority for its fixed outcome.
+                owner.Execution.RequestProductionCancellation(new(ExecutionKind.Production,
+                    owner.Current.CorrelationId));
+                var cancellation = owner.ExecutionCancellation;
+                owner.ExecutionCancellationTask = Task.Run(() =>
+                {
+                    try { cancellation.Cancel(); }
+                    catch (ObjectDisposedException) { }
+                });
+            }
+            PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed });
+        }
     }
 
     private void ProjectProductionProgressLocked(ProductionInspectionOwner owner)
@@ -163,13 +182,25 @@ public sealed partial class StationRuntime
         Task? operation;
         lock (_sync)
         {
-            if (_productionInspectionOwner is { } owner)
-                AbortProductionInspectionLocked(owner, "ProductionInspectionRuntimeShutdown");
+            // Startup has no accepted work to settle and may still be waiting on another
+            // service's lifetime. An existing protocol owner drains under the shared budget.
+            if (_productionInspectionOwner is null) _lifetime.Cancel();
             operation = _productionInspectionTask;
         }
         if (operation is null) return;
-        try { await operation.WaitAsync(_productionInspectionOptions!.RetirementTimeout).ConfigureAwait(false); }
-        catch (TimeoutException) { throw new InvalidOperationException("ProductionInspectionShutdownIncomplete"); }
+        try
+        {
+            var remaining = _productionShutdownDeadline!.Remaining;
+            if (!operation.IsCompleted && remaining <= TimeSpan.Zero) throw new TimeoutException();
+            await operation.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            lock (_sync)
+                if (_productionInspectionOwner is { } owner)
+                    AbortProductionInspectionLocked(owner, "ProductionInspectionShutdownIncomplete");
+            throw new InvalidOperationException("ProductionInspectionShutdownIncomplete");
+        }
     }
 
     private sealed class ProductionInspectionOwner
@@ -179,10 +210,15 @@ public sealed partial class StationRuntime
         {
             RuntimeEpoch = runtimeEpoch;
             Cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+            ExecutionCancellation = CancellationTokenSource.CreateLinkedTokenSource(Cancellation.Token);
             Execution = new AlgorithmExecutionService(executionOptions);
         }
         internal Guid RuntimeEpoch { get; }
         internal CancellationTokenSource Cancellation { get; }
+        internal CancellationTokenSource ExecutionCancellation { get; set; }
+        internal Task? ExecutionCancellationTask { get; set; }
+        internal bool FaultAbortRequested { get; set; }
+        internal StoreDeadline? RetirementDeadline { get; set; }
         internal AlgorithmExecutionService Execution { get; }
         internal InspectionCycleCoordinator<PlcResultPayloadSnapshot> Coordinator { get; } = new();
         internal ProductionInspectionAdmission? Current { get; set; }

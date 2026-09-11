@@ -72,6 +72,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
     private readonly Action? _beforeExecutionStartForTesting;
     private readonly bool _suppressGraceWatchdogForTesting;
     private Attempt? _running;
+    private ExecutionCorrelationId? _cancelledProduction;
     private string? _blockedReason;
     private bool _disposed;
     private long _droppedDiagnostics;
@@ -104,6 +105,20 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         CancellationToken runtimeCancellationToken) =>
         ExecuteCoreAsync(prepared, frameLease, request, correlation, runtimeCancellationToken);
 
+    // Runtime fixes the semantic outcome before scheduling consumer cancellation callbacks.
+    // The correlation latch also covers a physical claim whose invocation has not started.
+    internal void RequestProductionCancellation(ExecutionCorrelationId correlation)
+    {
+        if (correlation.Kind != ExecutionKind.Production || correlation.Value == Guid.Empty)
+            throw new ArgumentException("ProductionExecutionCancellationIdentityRequired", nameof(correlation));
+        lock (_sync)
+        {
+            _cancelledProduction = correlation;
+            if (_running is { } pending && pending.Correlation == correlation)
+                pending.FixCancellation();
+        }
+    }
+
     private async ValueTask<AlgorithmExecutionAttempt> ExecuteCoreAsync(PreparedAlgorithm prepared,
         FrameBufferLease frameLease, AlgorithmExecutionRequest request, ExecutionCorrelationId? productionOwner,
         CancellationToken runtimeCancellationToken)
@@ -127,6 +142,8 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             lock (_sync)
             {
                 if (_disposed) return Rejected("AlgorithmExecutionServiceDisposed");
+                if (productionOwner is not null && productionOwner == _cancelledProduction)
+                    return Rejected("AlgorithmExecutionCancelledBeforeStart");
                 if (_blockedReason is not null) return Rejected(_blockedReason);
                 if (_running is not null) return Rejected("AlgorithmExecutionBusy");
                 if (!prepared.TryBeginExecution(out var algorithm))
@@ -211,6 +228,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         }
         public TaskCompletionSource<AlgorithmExecutionOutcome> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ExecutionCorrelationId Correlation => _metadata.Correlation;
         public TaskCompletionSource<bool> PhysicalCompletion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TimeSpan Remaining => _timeout - TimeSpan.FromSeconds(

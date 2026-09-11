@@ -9,7 +9,7 @@ namespace SharpInspect.Runtime.Tests;
 public sealed partial class ManualInspectionRuntimeTests
 {
     [Fact]
-    public async Task V142_R12_LateAlgorithmRetirementKeepsCorePendingAndPreventsAnyPublication()
+    public async Task V142_R12_LateAlgorithmRetirementDeliversFixedCoreWithoutReleasingItsFrame()
     {
         const string childFlag = "SHARPINSPECT_V142_RETIREMENT_CHILD";
         if (Environment.GetEnvironmentVariable(childFlag) != "1")
@@ -27,7 +27,7 @@ public sealed partial class ManualInspectionRuntimeTests
             start.ArgumentList.Add("vstest");
             start.ArgumentList.Add(typeof(ManualInspectionRuntimeTests).Assembly.Location);
             start.ArgumentList.Add("/TestCaseFilter:FullyQualifiedName=SharpInspect.Runtime.Tests.ManualInspectionRuntimeTests." +
-                nameof(V142_R12_LateAlgorithmRetirementKeepsCorePendingAndPreventsAnyPublication));
+                nameof(V142_R12_LateAlgorithmRetirementDeliversFixedCoreWithoutReleasingItsFrame));
             start.ArgumentList.Add("/Logger:trx;LogFileName=retirement.trx");
             start.ArgumentList.Add("/ResultsDirectory:" + results);
             using var process = Process.Start(start)!;
@@ -63,19 +63,26 @@ public sealed partial class ManualInspectionRuntimeTests
                 "Logical timeout must commit Core while physical algorithm remains owned");
             var coreEvent = Assert.Single(corePage.Events, value => value.Kind == ProductionInspectionEventKind.CoreCommitted);
             Assert.Equal(ExecutionStatus.Timeout, coreEvent.Core!.ExecutionStatus);
-            var faulted = await WaitForProductionHistoryAsync(harness,
-                page => page.Events.Any(value => value.Kind == ProductionInspectionEventKind.FaultTerminated),
-                "Physical retirement timeout must terminate the pending Core");
-            Assert.DoesNotContain(faulted.Events, value => value.Kind is
-                ProductionInspectionEventKind.PublicationPrepared or ProductionInspectionEventKind.ResultValidRaised or
-                ProductionInspectionEventKind.ResultAcknowledged or ProductionInspectionEventKind.AcknowledgementReset);
-            Assert.Equal(0, peer.ResultValidHighCount);
-            Assert.Equal(0, CountProductionPayloadWrites(peer));
-            Assert.Equal(0, peer.AckLowCount);
+            await peer.WaitForResultValidAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            peer.SetTrigger(false);
+            await peer.WaitForAckLowAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            var delivered = await WaitForProductionHistoryAsync(harness,
+                page => page.Events.Any(value => value.Kind == ProductionInspectionEventKind.AcknowledgementReset),
+                "The fixed timeout must complete its healthy handshake while the frame remains owned");
+            Assert.DoesNotContain(delivered.Events, value => value.Kind == ProductionInspectionEventKind.FaultTerminated);
+            Assert.Equal(1, peer.ResultValidHighCount);
+            Assert.True(CountProductionPayloadWrites(peer) > 0);
+            Assert.Equal(1, peer.AckLowCount);
             Assert.False(peer.RuntimeResultValid);
+            var state = await harness.Runtime.GetSnapshotAsync();
+            Assert.False(state.Ready);
+            Assert.NotNull(state.CurrentExecution);
+            Assert.Equal(1, harness.Factory.Created);
+            Assert.True(harness.Service<SharpInspect.Runtime.Frames.FrameBufferPool>()
+                .GetSnapshot().OutstandingLeases > 0);
             var cold = await new SqliteProductionInspectionHistoryQuery(harness.Fixture.Options).ReadCurrentAsync();
             Assert.True(cold.Available, cold.ReasonCode);
-            Assert.True(cold.RecoveryRequired);
+            Assert.False(cold.RecoveryRequired);
             Assert.Equal(coreEvent.Core.ContentHash, cold.Latest!.Core!.ContentHash);
         }
         finally { harness.Factory.ReleaseExecution(); }

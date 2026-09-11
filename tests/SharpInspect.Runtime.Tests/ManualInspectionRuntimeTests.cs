@@ -391,7 +391,8 @@ public sealed partial class ManualInspectionRuntimeTests
             PartIdentityStoreOptions? partIdentityStore = null,
             Action<IServiceCollection>? configureAdditionalServices = null,
             bool allowPartIdentityCorrection = true, bool allowProductionRecovery = true,
-            bool enableProductionRecovery = false)
+            bool enableProductionRecovery = false, AlarmPolicyRule? productionTestAlarm = null,
+            PlcCommunicationPolicy? productionCommunicationPolicy = null, TimeSpan? heartbeatInterval = null)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             if (!allowPartIdentityCorrection)
@@ -411,6 +412,10 @@ public sealed partial class ManualInspectionRuntimeTests
                             Permission.ActivateRecipe, Permission.ArmProduction, Permission.ManageProductionPolicy }).Distinct()
                         : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             var alarm = CreateAlarmPolicy();
+            if (productionTestAlarm is not null)
+                alarm = new AlarmPolicy("V145.Production.Alarm", "1",
+                    alarm.Rules.Concat(new[] { productionTestAlarm }), alarm.SourceObservationFreshness,
+                    alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             var releasePolicy = new RecipeGovernancePolicy("V135.Release", "1",
                 RecipeGovernanceMode.SingleApproverRelease);
             var fixture = await RecipeDraftStorageTests.Fixture.CreateAsync(
@@ -459,7 +464,8 @@ public sealed partial class ManualInspectionRuntimeTests
                         Document("Conformance", "V142 isolated software contract checks, test issuer only."),
                         Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>());
                     registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
-                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(partIdentity: partIdentityReadPlan),
+                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(
+                            productionCommunicationPolicy, partIdentity: partIdentityReadPlan),
                         publication.Snapshot!.Version, publication.Snapshot.ContentHash,
                         TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
                 }
@@ -493,7 +499,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     ShutdownTimeout = TimeSpan.FromSeconds(2)
                 });
                 registrations.AddSharpInspectSqliteRuntime(fixture.Options,
-                    TimeSpan.FromMilliseconds(20));
+                    heartbeatInterval ?? TimeSpan.FromMilliseconds(20));
                 configureAdditionalServices?.Invoke(registrations);
                 services = registrations.BuildServiceProvider();
                 var runtime = services.GetRequiredService<IStationRuntime>();
@@ -799,6 +805,7 @@ public sealed partial class ManualInspectionRuntimeTests
         private int _validationCalls;
         private int _algorithmDisposeFailures;
         private int _holdExecution;
+        private bool _cooperativeExecutionCancellation;
         private readonly TaskCompletionSource<bool> _executionEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _executionReleased = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -829,7 +836,11 @@ public sealed partial class ManualInspectionRuntimeTests
         internal Task PreparationCallbackCompleted => _preparationCallbackCompleted.Task;
         internal Task AlgorithmDisposeCompleted => _algorithmDisposeCompleted.Task;
         internal Task ExecutionEntered => _executionEntered.Task;
-        internal void HoldExecution() => Volatile.Write(ref _holdExecution, 1);
+        internal void HoldExecution(bool cooperativeCancellation = false)
+        {
+            _cooperativeExecutionCancellation = cooperativeCancellation;
+            Volatile.Write(ref _holdExecution, 1);
+        }
         internal void ReleaseExecution() => _executionReleased.TrySetResult(true);
 
         internal void ReleasePreparationCallback() =>
@@ -912,8 +923,11 @@ public sealed partial class ManualInspectionRuntimeTests
                 if (Volatile.Read(ref _factory._holdExecution) != 0)
                 {
                     _factory._executionEntered.TrySetResult(true);
-                    // Model an external algorithm that ignores cancellation and retains its input.
-                    await _factory._executionReleased.Task.ConfigureAwait(false);
+                    if (_factory._cooperativeExecutionCancellation)
+                        await _factory._executionReleased.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    else
+                        // Model an external algorithm that ignores cancellation and retains its input.
+                        await _factory._executionReleased.Task.ConfigureAwait(false);
                 }
                 var sequence = Interlocked.Increment(ref _sequence);
                 var decision = sequence switch

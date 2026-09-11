@@ -179,6 +179,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
     internal void ReleasePayloadWrite() => _payloadRelease.TrySetResult(true);
 
     internal void AcknowledgeResult() => SetControllerAck(true);
+    internal void ResetResultAcknowledgement() => SetControllerAck(false);
 
     internal void RaiseTrigger(uint controllerEpoch, uint cycleSequence)
     {

@@ -119,10 +119,12 @@ public sealed partial class StationRuntime
             await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             bool stopPending;
             lock (_sync) stopPending = Volatile.Read(ref _pendingLocalStops) > 0 ||
-                _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" };
+                _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" } &&
+                _pendingProductionStopRetirement is null;
             if (!stopPending && _audit?.Integrity?.State != AuditIntegrityState.Verifying) return;
-            // Queued observations yield to Stop admission/terminal transactions and wait
-            // for the preceding write's verification without occupying the command gate.
+            // Idle Stop retains its bounded priority through completion. An accepted
+            // production Stop must keep observing alarms while its cycle may need Abort.
+            // Audit verification still completes without occupying the command gate.
             _commandGate.Release();
             await Task.Delay(10, cancellationToken).ConfigureAwait(false);
         }

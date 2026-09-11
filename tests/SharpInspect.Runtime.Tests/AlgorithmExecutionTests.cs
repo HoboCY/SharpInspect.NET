@@ -6,7 +6,7 @@ using Xunit;
 
 namespace SharpInspect.Runtime.Tests;
 
-public sealed class AlgorithmExecutionTests
+public sealed partial class AlgorithmExecutionTests
 {
     [Fact]
     public async Task V112_E01_NormalDecisionsReuseOnePreparedInstanceWithoutRewarmOrCreate()
