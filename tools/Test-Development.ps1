@@ -830,6 +830,9 @@ try {
     if ($Ticket -ge 42) {
         & (Join-Path $PSScriptRoot 'Test-ProductionInspectionConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
+    if ($Ticket -ge 43) {
+        & (Join-Path $PSScriptRoot 'Test-PartIdentityConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {

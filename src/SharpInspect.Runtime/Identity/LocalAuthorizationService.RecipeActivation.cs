@@ -286,7 +286,8 @@ internal sealed partial class LocalAuthorizationService
         if (release is null || snapshot.Release.ContentHash != release.ContentHash ||
             snapshot.EvidenceKind != admitted.EvidenceKind) return "RecipeActivationReleaseChanged";
         var content = release.Source.Content;
-        if (content.PartIdentityRequirement?.Mode != PartIdentityRequirementMode.None ||
+        if (content.PartIdentityRequirement is null ||
+            content.PartIdentityRequirement.Mode != PartIdentityRequirementMode.None && !_store.PartIdentityEnabled ||
             content.AssetRequirements.Count != 0 || content.CameraProviderExtension is not null)
             return "RecipeActivationDependenciesUnavailable";
         if (snapshot.AlgorithmExecutionPolicy.ContentHash != _store.RecipeDraftOptions!.ExecutionPolicy.ContentHash)

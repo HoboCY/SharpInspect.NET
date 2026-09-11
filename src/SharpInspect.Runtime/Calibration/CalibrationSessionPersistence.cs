@@ -1643,7 +1643,8 @@ internal sealed partial class SqliteCommandStore
             traceStoragePolicyOptions: _options.TraceStoragePolicies,
              qualificationCycleOptions: _options.QualificationCycles,
              plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections);
+                productionInspectionOptions: _options.ProductionInspections,
+                partIdentityOptions: _options.PartIdentities);
         RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)
@@ -1686,9 +1687,10 @@ internal sealed partial class SqliteCommandStore
     private StoreWriteResult AppendCalibrationEventCore(sqlite3 database, CalibrationEventWork work,
         StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified)
-            return new(false, Integrity?.ReasonCode ?? "CalibrationAuditUnavailable",
-                RetryAfterIntegrityRecheck: Integrity?.State == AuditIntegrityState.Verifying);
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "CalibrationAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new(false, "TraceStoreWalLimit");
         var committed = false;

@@ -126,10 +126,33 @@ internal sealed partial class CameraSetupRuntime
     internal async ValueTask<ActivationDeviceCloseResult> CloseActivationSlotDeviceAsync(
         string logicalRole)
     {
+        // Recovery/lease cleanup callers do not carry the original command
+        // token.  Keep the physical retirement wait bounded rather than
+        // passing CancellationToken.None through an active health probe.
+        using var cleanup = CreateActivationCleanupToken();
+        try
+        {
+            return await CloseActivationSlotDeviceAsync(logicalRole, cleanup.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The bounded cleanup token can expire while the provider still
+            // owns a physical call. CloseSlotDeviceAsync has already handed
+            // that owner to the late-retirement tracker; preserve the wrapper's
+            // historical Transferred result instead of leaking cancellation.
+            return ActivationDeviceCloseResult.TransferredResult;
+        }
+    }
+
+    internal async ValueTask<ActivationDeviceCloseResult> CloseActivationSlotDeviceAsync(
+        string logicalRole, CancellationToken operationCancellationToken)
+    {
         var slot = GetSlot(logicalRole);
         if (slot is null)
             return ActivationDeviceCloseResult.ClosedResult;
-        var result = await CloseSlotDeviceAsync(slot).ConfigureAwait(false);
+        var result = await CloseSlotDeviceAsync(slot, operationCancellationToken)
+            .ConfigureAwait(false);
         return result switch
         {
             DeviceCloseOutcome.Closed => ActivationDeviceCloseResult.ClosedResult,
@@ -156,13 +179,17 @@ internal sealed partial class CameraSetupRuntime
     {
         BeginActivationGeneration(baseline.LogicalRole);
         if (GetSlot(baseline.LogicalRole)?.Device is not null)
-            return await CloseActivationSlotDeviceAsync(baseline.LogicalRole).ConfigureAwait(false);
+            return token.CanBeCanceled
+                ? await CloseActivationSlotDeviceAsync(baseline.LogicalRole, token).ConfigureAwait(false)
+                : await CloseActivationSlotDeviceAsync(baseline.LogicalRole).ConfigureAwait(false);
         if (ActivationPhysicalCleanupPending) return ActivationDeviceCloseResult.RetainedResult;
         // After a restart, an empty slot is only a projection. Prove the old
         // physical binding is stopped and closed before opening another role.
         var opened = await OpenActivationExactAsync(baseline.Binding!.Target, token).ConfigureAwait(false);
-        return opened is null ? ActivationDeviceCloseResult.RetainedResult :
-            await StopAndDisposeActivationDeviceAsync(opened).ConfigureAwait(false);
+        if (opened is null) return ActivationDeviceCloseResult.RetainedResult;
+        return token.CanBeCanceled
+            ? await StopAndDisposeActivationDeviceAsync(opened, token).ConfigureAwait(false)
+            : await StopAndDisposeActivationDeviceAsync(opened).ConfigureAwait(false);
     }
 
     internal async ValueTask<ICameraDevice?> OpenActivationExactAsync(
@@ -206,8 +233,28 @@ internal sealed partial class CameraSetupRuntime
     internal async ValueTask<ActivationDeviceCloseResult> StopAndDisposeActivationDeviceAsync(
         ICameraDevice device)
     {
+        // This wrapper is also used by cold recovery owners after their
+        // operation token has left scope.  A fresh bounded cleanup token keeps
+        // a non-cooperative probe/stop owned without making cleanup unbounded.
+        using var cleanup = CreateActivationCleanupToken();
+        try
+        {
+            return await StopAndDisposeActivationDeviceAsync(device, cleanup.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // StopAndDisposeBoundedAsync tracks a still-running Stop/Dispose
+            // before propagating this bounded cleanup cancellation.
+            return ActivationDeviceCloseResult.TransferredResult;
+        }
+    }
+
+    internal async ValueTask<ActivationDeviceCloseResult> StopAndDisposeActivationDeviceAsync(
+        ICameraDevice device, CancellationToken operationCancellationToken)
+    {
         var result = await StopAndDisposeBoundedAsync(device,
-            () => ReleaseRetiringDevice(device)).ConfigureAwait(false);
+            () => ReleaseRetiringDevice(device), operationCancellationToken).ConfigureAwait(false);
         return result switch
         {
             DeviceCloseOutcome.Closed => ActivationDeviceCloseResult.ClosedResult,
@@ -554,7 +601,7 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                     return await FailApplyAsync(requested, extension, closePhase.Failure)
                         .ConfigureAwait(false);
                 MarkHardwareTouched();
-                close = await _owner.CloseActivationSlotDeviceAsync(_logicalRole)
+                close = await _owner.CloseActivationSlotDeviceAsync(_logicalRole, operation.Token)
                     .ConfigureAwait(false);
             }
             if (!close.Closed)
@@ -699,6 +746,16 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
                 return await FailApplyAsync(requested, extension,
                     "CameraActivationPrepareFailed", opened).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return await FailApplyAsync(requested, extension,
+                "CameraOperationCancelled").ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return await FailApplyAsync(requested, extension,
+                "CameraOperationTimeout").ConfigureAwait(false);
         }
         finally
         {
@@ -847,7 +904,8 @@ internal sealed partial class RecipeActivationCameraLease : IAsyncDisposable
             var cleanup = await CleanupCandidateAsync().ConfigureAwait(false);
             if (cleanup && crossRole)
             {
-                var closed = await _owner.CloseActivationSlotDeviceAsync(_logicalRole).ConfigureAwait(false);
+                var closed = await _owner.CloseActivationSlotDeviceAsync(_logicalRole)
+                    .ConfigureAwait(false);
                 cleanup = closed.Closed && !_owner.ActivationPhysicalCleanupPending &&
                     _owner.PublishActivationSafeClosed(_logicalRole, _currentSnapshot,
                         "CameraActivationCandidateRoleClosed") is not null;

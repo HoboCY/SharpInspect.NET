@@ -34,7 +34,8 @@ public sealed partial class StationRuntime
         var qualification = await provider.CaptureAsync(observed.Configuration, state, candidate, token).ConfigureAwait(false);
         var policy = await ReadProductionInspectionPolicyAsync(token).ConfigureAwait(false);
         return new(observed.Configuration, qualification, _productionInspectionOptions,
-            _productionInspectionStoreOptions, policy, writerAvailable, reconciled);
+            _productionInspectionStoreOptions, policy, writerAvailable, reconciled, observed.PartIdentity,
+            _audit is SqliteCommandStore { PartIdentityEnabled: true });
     }
 
     private bool ProductionStartupDependenciesReconciledLocked() => _storeReady && !_auditFault &&
@@ -56,8 +57,11 @@ public sealed partial class StationRuntime
             ? _cameraSetupRuntime.ProductionProviderBinaryHash(binding.Target.Provider) : null;
         var algorithmHash = activation is not null && _recipeActivations is RecipeActivationService activationService
             ? activationService.ProductionPreparedBinaryHash(activation.PreparedAlgorithmInstanceId) : null;
+        var partIdentity = _partIdentityRegistry is null ? null :
+            (await _partIdentityRegistry.CaptureAsync(activation?.Release.Source.Content.PartIdentityRequirement, token)
+                .ConfigureAwait(false)).Observation;
         var configuration = ProductionConfigurationBuilder.Build(options, storeOptions, options.Deployment,
-            activation, policy.Snapshot, identity.InstallationKeyId, providerHash, algorithmHash);
+            activation, policy.Snapshot, identity.InstallationKeyId, providerHash, algorithmHash, partIdentity);
         var preflight = TraceStoragePreflightEvaluator.Evaluate(policy, storeOptions.TraceStoragePolicies?.DeploymentScope,
             TraceStoragePreflightEvaluator.Observe(storeOptions), store.VerifiedProfile, DateTimeOffset.UtcNow);
         var capacityGates = new[] { TraceStoragePreflightGate.Policy, TraceStoragePreflightGate.RouteInventory,
@@ -76,7 +80,7 @@ public sealed partial class StationRuntime
             options.StationId == identity.StationId && storeOptions.LocalIdentity?.StationId == options.StationId &&
             storeOptions.AlarmPolicy is not null;
         return new(configuration, activation?.ContentHash, policyExact,
-            configuration.MissingBindings.Count == 0, identityReady, capacityFailure, DateTimeOffset.UtcNow);
+            configuration.MissingBindings.Count == 0, identityReady, capacityFailure, DateTimeOffset.UtcNow, partIdentity);
     }
 
     private ProductionAdmissionGateResult ProductionDeploymentGate(ProductionAdmissionGate gate)
@@ -106,5 +110,5 @@ public sealed partial class StationRuntime
 
     private sealed record ProductionDeploymentObservation(ProductionConfiguration Configuration,
         string? ActivationHash, bool PoliciesExact, bool VersionsComplete, bool IdentityRecoveryAvailable,
-        string? CapacityFailure, DateTimeOffset ObservedAtUtc);
+        string? CapacityFailure, DateTimeOffset ObservedAtUtc, PartIdentityBindingObservation? PartIdentity = null);
 }

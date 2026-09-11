@@ -26,6 +26,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
     private readonly RecipeActivationInternalFixture? _fixture;
     private readonly Func<RecipeActivationSnapshot, CancellationToken,
         ValueTask<RecipeActivationDeploymentEvidence?>>? _deploymentEvidence;
+    private readonly PartIdentityBindingRegistry? _partIdentities;
     private int _active;
 
     internal RecipeActivationService(RecipeDraftService drafts, IReleasedRecipeQuery releases,
@@ -35,9 +36,10 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         Func<Guid, CancellationToken, ValueTask<RecipeActivationRuntimeLease>> reserveRuntime,
         Func<ValueTask<StationStateSnapshot>> readStation, RecipeActivationInternalFixture? fixture = null,
         Func<RecipeActivationSnapshot, CancellationToken,
-            ValueTask<RecipeActivationDeploymentEvidence?>>? deploymentEvidence = null)
+            ValueTask<RecipeActivationDeploymentEvidence?>>? deploymentEvidence = null,
+        PartIdentityBindingRegistry? partIdentities = null)
     {
-        _preparation = new(drafts, releases, contracts, options); _history = history;
+        _preparation = new(drafts, releases, contracts, options, partIdentities); _history = history;
         // Startup recovery is an authority decision. Public query registrations
         // are capabilities for consumers and cannot attest that recovery is done.
         _startupHistory = new SqliteRecipeActivationQuery(options);
@@ -46,6 +48,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         _preparationTimeout = preparationOptions?.MaximumPreparationTimeout ?? TimeSpan.FromSeconds(5);
         _frames = frames; _reserveRuntime = reserveRuntime; _readStation = readStation; _fixture = fixture;
         _deploymentEvidence = deploymentEvidence;
+        _partIdentities = partIdentities;
     }
 
     public ValueTask<RecipeActivationAccess> GetAccessAsync(CommandInvocation invocation,
@@ -75,6 +78,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         var execution = new RecipeActivationExecution();
         var durableSuccess = false;
         RecipeActivationDeploymentEvidence? stagedEvidence = null;
+        PartIdentityBindingObservation? commitPartIdentity = null;
         Guid epoch = Guid.Empty;
         string? failure = entered ? null : "RecipeActivationCapacityExceeded";
         try
@@ -216,6 +220,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                     {
                         checks.VerifyDeploymentEvidence(execution.Snapshot, finalEvidence);
                         failure = checks.Failure;
+                        commitPartIdentity = finalEvidence.PartIdentity;
                     }
                 }
             }
@@ -257,6 +262,14 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                                 var committed = await _authorization.TryCommitRecipeActivationAsync(command, epoch,
                                     admitted, execution.Snapshot, checks.Snapshot(), () =>
                                     {
+                                        // Observe only registry-owned state at the final writer
+                                        // decision. A provider callback must never run here.
+                                        if (_fixture is null && execution.Snapshot.Release.Source.Content
+                                                .PartIdentityRequirement?.Mode != PartIdentityRequirementMode.None &&
+                                            (commitPartIdentity is null || _partIdentities is null ||
+                                             _partIdentities.RevisionFor(commitPartIdentity.Provider) !=
+                                             commitPartIdentity.RegistryRevision))
+                                            return "PartIdentitySourceChangedBeforeCommit";
                                         var pool = _frames?.GetSnapshot();
                                         if (pool is not { IsDisposed: false, ProductionFaultLatched: false,
                                             OutstandingLeases: 0, ActiveReaders: 0 })

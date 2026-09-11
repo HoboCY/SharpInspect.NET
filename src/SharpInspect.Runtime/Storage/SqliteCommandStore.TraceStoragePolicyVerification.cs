@@ -25,7 +25,7 @@ internal sealed partial class SqliteCommandStore
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException(
             "AuditPolicyNotConfigured");
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-        AuditChainDatabase.Require(schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion,
+        AuditChainDatabase.Require(schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
             schema > ProductionInspectionStoreOptions.SchemaVersion
                 ? "TraceStoragePolicyGovernedMigrationRequired"
                 : "TraceStoragePolicyConfigurationRequired");
@@ -54,7 +54,8 @@ internal sealed partial class SqliteCommandStore
             traceStoragePolicyOptions: traceOptions,
             qualificationCycleOptions: options.QualificationCycles,
             plcCommunicationOptions: options.PlcCommunication,
-                productionInspectionOptions: options.ProductionInspections);
+                productionInspectionOptions: options.ProductionInspections,
+                partIdentityOptions: options.PartIdentities);
 
         if (options.AlgorithmResultArchive is not null)
             AuditChainDatabase.RequireFullAlgorithmResultVerification(database, report, deadline);

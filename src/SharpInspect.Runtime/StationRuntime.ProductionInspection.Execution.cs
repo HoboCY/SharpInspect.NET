@@ -122,7 +122,7 @@ public sealed partial class StationRuntime
             result.AcquisitionFailure?.Kind, result.AcquisitionFailure?.ReasonCode,
             result.Metadata, result.Provenance, prepared.InstanceId, prepared.Descriptor.Identity,
             prepared.Configuration, prepared.Descriptor.ResultSchema, document?.Result, overlay,
-            result.Outcome?.Timing, result.Payload, document?.PayloadJson, document?.PayloadHash, null,
+            result.Outcome?.Timing, result.Payload, document?.PayloadJson, document?.PayloadHash, admission.PartIdentityEvidence?.Value,
             DateTimeOffset.UtcNow, Stopwatch.GetTimestamp(), Array.Empty<TraceRetentionObligation>(), result.AcquisitionStart,
             result.Outcome?.AdmittedMonotonicTimestamp, result.Outcome?.MonotonicFrequency);
     }

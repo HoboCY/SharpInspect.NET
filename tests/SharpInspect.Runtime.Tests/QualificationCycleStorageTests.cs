@@ -224,11 +224,13 @@ public sealed partial class ManualInspectionRuntimeTests
     [Fact]
     public async Task V140_S23_EndpointAndControllerKeyCannotBeReusedAcrossSessions()
     {
+        using var persistenceFailures = new QualificationPersistenceFailureCapture();
         await using var controller = ModbusQualificationTestServer.Start();
         controller.HoldFirstPayloadWrite = false;
         await using var harness = await QualificationHarness.CreateAsync(
             maximumRuns: 1, allowDisposeFailure: true,
             profileFactory: snapshot => controller.CreateProfile(snapshot));
+        persistenceFailures.Observe(harness.Fixture.Store);
 
         AssertAccepted(await harness.StartWithFreshStepUpAsync(),
             "qualification cycle first session start");
@@ -318,9 +320,65 @@ public sealed partial class ManualInspectionRuntimeTests
             value.EndpointBindingHash == harness.Plan.TransientControllerConfiguration.EndpointBindingHash &&
             value.ControllerEpoch == 41 && value.CycleSequence == 7).ToArray();
         Assert.Single(admissions);
-        Assert.Contains(page.Events, value =>
-            value.Kind == QualificationCycleEventKind.ProtocolRequestRejected &&
-            value.SessionId == secondSessionId);
+        if (!page.Events.Any(value =>
+                value.Kind == QualificationCycleEventKind.ProtocolRequestRejected &&
+                value.SessionId == secondSessionId))
+        {
+            var diagnostic = $"SecondSession={secondSessionId};" +
+                $"{await DescribeQualificationSnapshotAsync(harness)};" +
+                $"{await DescribeQualificationCycleAsync(harness, secondSessionId)};" +
+                "PersistenceExceptions=" + persistenceFailures.Describe();
+            var evidenceDirectory = Path.Combine(Path.GetTempPath(),
+                "v140-s23-failure-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(evidenceDirectory);
+            await File.WriteAllTextAsync(Path.Combine(evidenceDirectory, "failure.txt"), diagnostic);
+            await using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = harness.Fixture.Options.DatabasePath,
+                Mode = SqliteOpenMode.ReadOnly, Pooling = false
+            }.ToString());
+            await using var backup = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = Path.Combine(evidenceDirectory, "failure.sqlite"),
+                Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false
+            }.ToString());
+            await source.OpenAsync();
+            await backup.OpenAsync();
+            source.BackupDatabase(backup);
+            throw new XunitException("Duplicate cycle rejection missing; " + diagnostic +
+                "; Evidence=" + evidenceDirectory);
+        }
+    }
+
+    private sealed class QualificationPersistenceFailureCapture : IDisposable
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _failures = new();
+        private readonly EventHandler<System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs> _handler;
+        private SqliteCommandStore? _store;
+
+        internal QualificationPersistenceFailureCapture()
+        {
+            _handler = (_, args) =>
+            {
+                var exception = args.Exception;
+                var stack = exception.StackTrace ?? string.Empty;
+                if (exception is not SharpInspect.Runtime.Cycles.InspectionCyclePersistenceException &&
+                    !(exception is TimeoutException or OperationCanceledException &&
+                      (stack.Contains("SqliteAuditIntegrityQuery", StringComparison.Ordinal) ||
+                       stack.Contains("SqliteNative", StringComparison.Ordinal)))) return;
+                var integrity = _store?.Integrity;
+                _failures.Enqueue(DateTimeOffset.UtcNow.ToString("O") + ":" +
+                    exception.GetType().Name + ":" + exception.Message +
+                    ";LocalIntegrity=" + integrity?.State + "/" + integrity?.ReasonCode +
+                    ";Stack=" + stack);
+                while (_failures.Count > 64) _failures.TryDequeue(out var discarded);
+            };
+            AppDomain.CurrentDomain.FirstChanceException += _handler;
+        }
+
+        internal void Observe(SqliteCommandStore store) => _store = store;
+        internal string Describe() => string.Join("|", _failures.ToArray());
+        public void Dispose() => AppDomain.CurrentDomain.FirstChanceException -= _handler;
     }
 
     [Fact]

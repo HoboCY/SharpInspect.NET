@@ -17,8 +17,7 @@ public sealed partial class StationRuntime
         if (!active.Available || active.RecoveryRequired || active.Record is not { ProductionAuthority: true,
                 SuccessfulSnapshot: { } baseline } record)
             throw new InvalidOperationException("ProductionInspectionActiveRecipeUnavailable");
-        if (baseline.Release.Source.Content.PartIdentityRequirement?.Mode != PartIdentityRequirementMode.None)
-            throw new InvalidOperationException("ProductionInspectionPartIdentityUnavailable");
+        var partIdentity = await LatchProductionPartIdentityAsync(owner, signals, baseline).ConfigureAwait(false);
         var deadline = new StoreDeadline(_audit!.CommitTimeout);
         if (!await _commandGate.WaitAsync(PositiveRemaining(deadline), owner.Cancellation.Token).ConfigureAwait(false))
             throw new InvalidOperationException("ProductionInspectionAdmissionBusy");
@@ -27,8 +26,11 @@ public sealed partial class StationRuntime
             ProductionInspectionAdmission admission;
             lock (_sync)
             {
+                if (PartIdentityAllocationFreshnessFailure(partIdentity) is { } identityFailure)
+                    throw new PartIdentityAdmissionRejectedException(identityFailure, partIdentity!);
                 if (!CanAcceptProductionTriggerLocked(owner) || _activeActivation!.Snapshot.ContentHash != baseline.ContentHash ||
-                    owner.Health!.ControllerEpoch != signals.ControllerEpoch)
+                    owner.Health!.ControllerEpoch != signals.ControllerEpoch ||
+                    !PartIdentityAdmissionStillCurrentLocked(owner, partIdentity))
                     throw new OperationCanceledException("ProductionInspectionTriggerPermitRevoked");
                 var inspectionId = Guid.NewGuid();
                 admission = new(inspectionId, inspectionId, owner.RuntimeEpoch, options.StationId, _admissionGeneration,
@@ -36,7 +38,7 @@ public sealed partial class StationRuntime
                     record.Reference, baseline, options.Profile.EndpointBindingHash, options.Profile.ContentHash,
                     options.Profile.CommunicationBinding.Policy.ContentHash, owner.Health.ConnectionGeneration,
                     owner.Health.RecoveryAttempt, DateTimeOffset.UtcNow, Stopwatch.GetTimestamp(), policy,
-                    Array.Empty<TraceRetentionObligation>());
+                    Array.Empty<TraceRetentionObligation>(), partIdentity?.Evidence);
                 owner.Current = admission;
                 owner.CycleRetired = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 owner.Prepared = _activeActivation.Algorithm;
@@ -118,7 +120,8 @@ public sealed partial class StationRuntime
             if (ProductionContinuationFailureLocked(owner) is { } failure) return failure;
             if (admissionOnly && (LocalStopPendingLocked ||
                     _snapshot.ArmState != ProductionArmState.Armed ||
-                    owner.Current!.AdmissionGeneration != _admissionGeneration))
+                    owner.Current!.AdmissionGeneration != _admissionGeneration ||
+                    !PartIdentityAdmissionStillCurrentLocked(owner, owner.PartIdentityAttempt)))
                 return "ProductionInspectionAdmissionRevoked";
             return null;
         }

@@ -675,14 +675,19 @@ public sealed partial class StationRuntime
                 ownerReady && _productionInspectionStartupVerified &&
                 !_productionInspectionRecoveryBlocked && activation is { Snapshot.ProductionAuthority: true,
                     Snapshot: { } snapshot, Algorithm.IsRetired: false } && current.ActiveRecipe == snapshot.Recipe &&
-                content?.PartIdentityRequirement?.Mode ==
-                    PartIdentityRequirementMode.None && policy is { Policy.RequiredRoutes.Count: 0 } &&
+                ProductionPartIdentityReadyLocked(content?.PartIdentityRequirement) &&
+                policy is { Policy.RequiredRoutes.Count: 0 } &&
                 storeOptions.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
             return exact
                 ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "ProductionCycleConfigured",
+                    content!.PartIdentityRequirement!.Mode == PartIdentityRequirementMode.None ?
                     ProductionAdmissionCanonical.Hash("production-cycle-v1", options!.ContentHash,
                         storeOptions!.ProductionInspections!.BindingHash, activation!.Snapshot.ContentHash,
-                        policy!.ContentHash, owner!.RuntimeEpoch.ToString("D")))
+                        policy!.ContentHash, owner!.RuntimeEpoch.ToString("D")) :
+                    ProductionAdmissionCanonical.Hash("production-cycle-v2", options!.ContentHash,
+                        storeOptions!.ProductionInspections!.BindingHash, storeOptions.PartIdentities!.BindingHash,
+                        activation!.Snapshot.ContentHash, policy!.ContentHash, owner!.RuntimeEpoch.ToString("D"),
+                        _productionDeploymentObservation!.PartIdentity!.MaterialHash))
                 : RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                     "ProductionCycleUnavailable");
         }

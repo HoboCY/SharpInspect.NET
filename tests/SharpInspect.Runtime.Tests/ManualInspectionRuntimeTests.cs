@@ -7,6 +7,7 @@ using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Frames;
 using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Manual;
+using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Production;
 using SharpInspect.Runtime.Storage;
 using SharpInspect.Runtime.StoragePolicies;
@@ -384,9 +385,19 @@ public sealed partial class ManualInspectionRuntimeTests
             bool minimalStore = false, ManualInspectionStoreOptions? manualStoreOptions = null,
             int? maximumAuditEntries = null, bool activationReadyDraft = false, bool productionAdmission = false,
             ModbusQualificationTestServer? productionPeer = null,
-            ProductionInspectionStoreOptions? productionStore = null)
+            ProductionInspectionStoreOptions? productionStore = null,
+            PartIdentityRequirement? productionPartRequirement = null,
+            ModbusPartIdentityReadPlan? partIdentityReadPlan = null,
+            PartIdentityStoreOptions? partIdentityStore = null,
+            Action<IServiceCollection>? configureAdditionalServices = null,
+            bool allowPartIdentityCorrection = true)
         {
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
+            if (!allowPartIdentityCorrection)
+                policy = new AuthorizationPolicy("V143.CorrectionDenied.Authorization", "1",
+                    policy.RoleBundles.ToDictionary(pair => pair.Key,
+                        pair => pair.Value.Where(permission => permission != Permission.CorrectHistoricalFact)),
+                    policy.StepUpPermissions);
             if (productionPeer is not null)
                 policy = new AuthorizationPolicy("V142.Production.Authorization", "1",
                     policy.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
@@ -407,6 +418,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionAdmission: productionAdmission || productionPeer is not null ? new ProductionAdmissionStoreOptions() : null,
                 plcCommunication: productionPeer is null ? null : new PlcCommunicationStoreOptions(),
                 productionInspections: productionPeer is null ? null : productionStore ?? new ProductionInspectionStoreOptions(),
+                partIdentities: partIdentityStore,
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
                     { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) });
 
@@ -415,7 +427,7 @@ public sealed partial class ManualInspectionRuntimeTests
             try
             {
                 var factory = new ManualFactory(preparationBarrierStage, failUnpublishedDispose);
-                var content = CreateContent(fixture.Options, activationReadyDraft);
+                var content = CreateContent(fixture.Options, activationReadyDraft, productionPartRequirement);
                 var saved = await fixture.SaveAsync(Guid.NewGuid(), Guid.NewGuid(), 0, null,
                     Encode(content), "V135 create manual integration draft");
                 Assert.True(saved.Saved, saved.ReasonCode);
@@ -440,7 +452,7 @@ public sealed partial class ManualInspectionRuntimeTests
                         Document("Conformance", "V142 isolated software contract checks, test issuer only."),
                         Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>());
                     registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
-                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(),
+                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(partIdentity: partIdentityReadPlan),
                         publication.Snapshot!.Version, publication.Snapshot.ContentHash,
                         TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
                 }
@@ -475,6 +487,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 });
                 registrations.AddSharpInspectSqliteRuntime(fixture.Options,
                     TimeSpan.FromMilliseconds(20));
+                configureAdditionalServices?.Invoke(registrations);
                 services = registrations.BuildServiceProvider();
                 var runtime = services.GetRequiredService<IStationRuntime>();
                 if (runtime is not StationRuntime station)
@@ -494,7 +507,9 @@ public sealed partial class ManualInspectionRuntimeTests
                     Assert.True(startupActivation.Available, startupActivation.ReasonCode);
                     var startupState = await runtime.GetSnapshotAsync();
                     Assert.True(startupState.Mode == ExclusiveMode.None,
-                        $"Startup mode={startupState.Mode}, blockers={string.Join(",", startupState.AdmissionBlockers)}");
+                        $"Startup mode={startupState.Mode}, integrity={fixture.Store.Integrity?.ReasonCode}, " +
+                        $"alarm={startupState.AlarmState?.ReasonCode}, store={startupState.Store.ReasonCode}, " +
+                        $"blockers={string.Join(",", startupState.AdmissionBlockers)}");
                 }
                 pump = ClockPump.Start(clock);
 
@@ -616,7 +631,8 @@ public sealed partial class ManualInspectionRuntimeTests
             return document!;
         }
 
-        private static RecipeDraftContent CreateContent(ProductionStoreOptions options, bool activationReadyDraft = false)
+        private static RecipeDraftContent CreateContent(ProductionStoreOptions options, bool activationReadyDraft = false,
+            PartIdentityRequirement? productionPartRequirement = null)
         {
             var schema = new AlgorithmConfigurationSchema("V135.Manual.Config", "1",
                 Array.Empty<AlgorithmFieldDefinition>());
@@ -640,7 +656,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     new RecipePolicyRequirement(RecipePolicyKind.AlgorithmExecution,
                         new RecipeContractReference(execution.Id, execution.Version,
                             execution.ContentHash))
-                }, partIdentityRequirement: activationReadyDraft ? PartIdentityRequirement.None : null);
+                }, partIdentityRequirement: activationReadyDraft ? productionPartRequirement ?? PartIdentityRequirement.None : null);
         }
 
         private static RequestedCameraConfiguration RequestedCamera() =>

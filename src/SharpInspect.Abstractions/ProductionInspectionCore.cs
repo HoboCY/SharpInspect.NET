@@ -54,6 +54,24 @@ public sealed class ProductionInspectionAdmission
         int connectionAttempt, DateTimeOffset acceptedAtUtc,
         long acceptedMonotonicTimestamp, TraceStoragePolicySnapshot tracePolicySnapshot,
         IEnumerable<TraceRetentionObligation>? retentionObligations = null)
+        : this(inspectionId, correlationId, runtimeEpoch, stationId, admissionGeneration,
+            controllerCycle, evidenceRequirement, activationReference, activationSnapshot,
+            endpointBindingHash, plcProfileHash, plcPolicyHash, connectionGeneration,
+            connectionAttempt, acceptedAtUtc, acceptedMonotonicTimestamp, tracePolicySnapshot,
+            retentionObligations, partIdentityEvidence: null)
+    {
+    }
+
+    internal ProductionInspectionAdmission(Guid inspectionId, Guid correlationId,
+        Guid runtimeEpoch, string stationId, long admissionGeneration,
+        PlcControllerCycle controllerCycle, ProductionEvidenceRequirement evidenceRequirement,
+        RecipeActivationReference activationReference,
+        RecipeActivationSnapshot activationSnapshot, string endpointBindingHash,
+        string plcProfileHash, string plcPolicyHash, long connectionGeneration,
+        int connectionAttempt, DateTimeOffset acceptedAtUtc,
+        long acceptedMonotonicTimestamp, TraceStoragePolicySnapshot tracePolicySnapshot,
+        IEnumerable<TraceRetentionObligation>? retentionObligations,
+        PartIdentityEvidence? partIdentityEvidence)
     {
         if (inspectionId == Guid.Empty || correlationId == Guid.Empty || runtimeEpoch == Guid.Empty)
             throw new ArgumentException("ProductionInspectionAdmissionIdentityInvalid");
@@ -65,7 +83,8 @@ public sealed class ProductionInspectionAdmission
         if (admissionGeneration < 0 || connectionGeneration < 0 || connectionAttempt < 0)
             throw new ArgumentOutOfRangeException(nameof(connectionGeneration));
         StationId = AlgorithmConfigurationValidation.Identifier(stationId, nameof(stationId));
-        if (!Enum.IsDefined(evidenceRequirement) || evidenceRequirement != ProductionEvidenceRequirement.None)
+        if (!Enum.IsDefined(typeof(ProductionEvidenceRequirement), evidenceRequirement) ||
+            evidenceRequirement != ProductionEvidenceRequirement.None)
             throw new InvalidOperationException("ProductionInspectionEvidenceRequirementUnavailable");
         if (acceptedAtUtc == default || acceptedAtUtc.Offset != TimeSpan.Zero)
             throw new ArgumentException("ProductionInspectionTimestampInvalid", nameof(acceptedAtUtc));
@@ -89,11 +108,59 @@ public sealed class ProductionInspectionAdmission
         AcceptedMonotonicTimestamp = acceptedMonotonicTimestamp;
         TracePolicySnapshot = tracePolicySnapshot ??
             throw new ArgumentNullException(nameof(tracePolicySnapshot));
+        var declaredPartIdentity = activationSnapshot.Release.Source.Content.PartIdentityRequirement;
+        if (declaredPartIdentity is null || declaredPartIdentity.Mode == PartIdentityRequirementMode.None)
+        {
+            if (partIdentityEvidence is not null)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityEvidenceUnexpected");
+        }
+        else
+        {
+            if (partIdentityEvidence is null)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityEvidenceMissing");
+            if (partIdentityEvidence.LogicalRole != declaredPartIdentity!.LogicalRole ||
+                partIdentityEvidence.FormatHash != declaredPartIdentity.Format!.ContentHash)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityBindingMismatch");
+            if (partIdentityEvidence.Cycle.RuntimeEpoch != runtimeEpoch ||
+                partIdentityEvidence.Cycle.EndpointBindingHash != EndpointBindingHash ||
+                partIdentityEvidence.Cycle.ConnectionGeneration != connectionGeneration ||
+                partIdentityEvidence.Cycle.ControllerEpoch != controllerCycle.ControllerEpoch ||
+                partIdentityEvidence.Cycle.CycleSequence != controllerCycle.CycleSequence)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityCycleMismatch");
+            if (partIdentityEvidence.Observation.ContentHash != partIdentityEvidence.ObservationHash ||
+                partIdentityEvidence.Observation.Binding.ContentHash != partIdentityEvidence.BindingHash ||
+                partIdentityEvidence.Observation.Cycle.ContentHash != partIdentityEvidence.Cycle.ContentHash ||
+                partIdentityEvidence.Observation.SourceEpoch != partIdentityEvidence.SourceEpoch ||
+                partIdentityEvidence.Observation.SourceGeneration != partIdentityEvidence.SourceGeneration)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityProvenanceMismatch");
+            if (partIdentityEvidence.State == PartIdentityEvidenceState.NotProvided &&
+                declaredPartIdentity.Mode != PartIdentityRequirementMode.Optional)
+                throw new InvalidOperationException("ProductionInspectionRequiredPartIdentityMissing");
+            if (partIdentityEvidence.SourceKind == PartIdentityProviderSourceKind.StablePlc)
+            {
+                if (partIdentityEvidence.StablePlcSnapshot is null ||
+                    partIdentityEvidence.StageToken is not null ||
+                    partIdentityEvidence.StablePlcSnapshot.SourceContractHash !=
+                    partIdentityEvidence.SourceContractHash ||
+                    !partIdentityEvidence.StablePlcSnapshot.Cycle.Matches(partIdentityEvidence.Cycle))
+                    throw new InvalidOperationException("ProductionInspectionPartIdentityPlcProofMismatch");
+            }
+            else if (partIdentityEvidence.SourceKind == PartIdentityProviderSourceKind.Staged)
+            {
+                if (partIdentityEvidence.StablePlcSnapshot is not null ||
+                    (partIdentityEvidence.State == PartIdentityEvidenceState.Provided &&
+                     partIdentityEvidence.StageToken is null))
+                    throw new InvalidOperationException("ProductionInspectionPartIdentityStageProofMismatch");
+            }
+            else
+                throw new InvalidOperationException("ProductionInspectionPartIdentitySourceInvalid");
+        }
         RetentionObligations = CopyObligations(retentionObligations,
             TracePolicySnapshot, nameof(retentionObligations));
-        ContentHash = AlgorithmContractValidation.HashParts(new string?[]
+        var hashParts = new List<string?>
         {
-            "sharpinspect-production-inspection-admission-v1", InspectionId.ToString("D"),
+            partIdentityEvidence is null ? "sharpinspect-production-inspection-admission-v1" :
+                "sharpinspect-production-inspection-admission-v2", InspectionId.ToString("D"),
             CorrelationId.ToString("D"), RuntimeEpoch.ToString("D"), StationId,
             AdmissionGeneration.ToString(CultureInfo.InvariantCulture), EvidenceRequirement.ToString(),
             ControllerCycle.ControllerEpoch.ToString(CultureInfo.InvariantCulture),
@@ -107,7 +174,12 @@ public sealed class ProductionInspectionAdmission
             AcceptedMonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
             TracePolicySnapshot.ContentHash,
             RetentionObligations.Count.ToString(CultureInfo.InvariantCulture)
-        }.Concat(RetentionObligations.Select(value => value.ContentHash)));
+        };
+        hashParts.AddRange(RetentionObligations.Select(value => value.ContentHash));
+        if (partIdentityEvidence is not null)
+            hashParts.Add(partIdentityEvidence.ContentHash);
+        PartIdentityEvidence = partIdentityEvidence;
+        ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
 
     public Guid InspectionId { get; }
@@ -128,6 +200,7 @@ public sealed class ProductionInspectionAdmission
     public long AcceptedMonotonicTimestamp { get; }
     public TraceStoragePolicySnapshot TracePolicySnapshot { get; }
     public ReadOnlyCollection<TraceRetentionObligation> RetentionObligations { get; }
+    public PartIdentityEvidence? PartIdentityEvidence { get; }
     public string ContentHash { get; }
 
     private static string Hash(string value, string parameterName) =>
@@ -178,9 +251,23 @@ public sealed class ProductionInspectionCore
         Admission = admission ?? throw new ArgumentNullException(nameof(admission));
         if (Admission.EvidenceRequirement != ProductionEvidenceRequirement.None)
             throw new InvalidOperationException("ProductionInspectionEvidenceRequirementUnavailable");
-        if (Admission.ActivationSnapshot.Release.Source.Content.PartIdentityRequirement?.Mode !=
-            PartIdentityRequirementMode.None)
-            throw new InvalidOperationException("ProductionInspectionPartIdentityUnavailable");
+        var declaredPartIdentity = Admission.ActivationSnapshot.Release.Source.Content.PartIdentityRequirement;
+        if (declaredPartIdentity is null || declaredPartIdentity.Mode == PartIdentityRequirementMode.None)
+        {
+            if (Admission.PartIdentityEvidence is not null || partIdentity is not null)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityEvidenceUnexpected");
+        }
+        else
+        {
+            if (Admission.PartIdentityEvidence is null)
+                throw new InvalidOperationException("ProductionInspectionPartIdentityEvidenceMissing");
+            if (Admission.PartIdentityEvidence.State == PartIdentityEvidenceState.NotProvided &&
+                declaredPartIdentity.Mode != PartIdentityRequirementMode.Optional)
+                throw new InvalidOperationException("ProductionInspectionRequiredPartIdentityMissing");
+            if (!string.Equals(partIdentity, Admission.PartIdentityEvidence.Value,
+                    StringComparison.Ordinal))
+                throw new InvalidOperationException("ProductionInspectionPartIdentityValueMismatch");
+        }
         if (Admission.TracePolicySnapshot.Policy.RequiredRoutes.Count != 0)
             throw new InvalidOperationException("ProductionInspectionTraceRoutesUnavailable");
         if (!Enum.IsDefined(state) || state is ProductionInspectionState.Admitted)
@@ -213,8 +300,6 @@ public sealed class ProductionInspectionCore
             !SameResultSchema(resultSchema, Admission.ActivationSnapshot.PlcResultContract.ResultSchema)))
             throw new ArgumentException("ProductionInspectionResultSchemaActivationMismatch",
                 nameof(resultSchema));
-        if (partIdentity is not null)
-            throw new InvalidOperationException("ProductionInspectionPartIdentityUnavailable");
         if (acquisitionFailureKind.HasValue != (acquisitionFailureReasonCode is not null))
             throw new ArgumentException("ProductionInspectionAcquisitionFailureMismatch");
         if (acquisitionFailureReasonCode is not null)
@@ -324,7 +409,10 @@ public sealed class ProductionInspectionCore
         PlcPayload = plcPayload;
         StructuredResultJson = structuredResultJson;
         StructuredResultHash = structuredResultHash;
-        PartIdentity = partIdentity;
+        // The durable Core projection is always derived from the accepted
+        // admission evidence.  The caller-supplied value is only a binding
+        // check above; it must not become a second source of truth.
+        PartIdentity = Admission.PartIdentityEvidence?.Value;
         CommittedAtUtc = committedAtUtc;
         CommittedMonotonicTimestamp = committedMonotonicTimestamp;
         AcquisitionStart = acquisitionStart;
@@ -332,9 +420,10 @@ public sealed class ProductionInspectionCore
         ExecutionMonotonicFrequency = executionMonotonicFrequency;
         RetentionObligations = ProductionInspectionCoreValidation.CopyObligations(
             retentionObligations, admission.TracePolicySnapshot);
-        ContentHash = AlgorithmContractValidation.HashParts(new string?[]
+        var hashParts = new List<string?>
         {
-            "sharpinspect-production-inspection-core-v1", Admission.ContentHash, State.ToString(),
+            Admission.PartIdentityEvidence is null ? "sharpinspect-production-inspection-core-v1" :
+                "sharpinspect-production-inspection-core-v2", Admission.ContentHash, State.ToString(),
             ExecutionStatus.ToString(), Decision.ToString(), ReasonCode,
             AcquisitionFailureKind?.ToString(), AcquisitionFailureReasonCode,
             FrameHash(FrameMetadata), ProvenanceHash(FrameProvenance),
@@ -347,7 +436,9 @@ public sealed class ProductionInspectionCore
             ExecutionAdmittedMonotonicTimestamp?.ToString(CultureInfo.InvariantCulture),
             ExecutionMonotonicFrequency?.ToString(CultureInfo.InvariantCulture),
             RetentionObligations.Count.ToString(CultureInfo.InvariantCulture)
-        }.Concat(RetentionObligations.Select(value => value.ContentHash)));
+        };
+        hashParts.AddRange(RetentionObligations.Select(value => value.ContentHash));
+        ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
 
     public ProductionInspectionAdmission Admission { get; }

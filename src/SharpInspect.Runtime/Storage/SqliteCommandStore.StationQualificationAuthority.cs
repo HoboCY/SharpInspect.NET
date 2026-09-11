@@ -34,7 +34,8 @@ internal sealed partial class SqliteCommandStore
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
                 plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections);
+                productionInspectionOptions: _options.ProductionInspections,
+                partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, report, deadline, _options);
             if (_options.PlcCommunication is not null)
                 AuditChainDatabase.RequireFullPlcCommunicationVerification(database, report, deadline,

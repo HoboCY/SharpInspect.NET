@@ -483,7 +483,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
             // provider/configuration failure must never reactivate the same
             // one-time Step-Up grant for another camera operation.
             authorization.Reservation?.Commit();
-            var closeOutcome = await CloseSlotDeviceAsync(previous).ConfigureAwait(false);
+            var closeOutcome = await CloseSlotDeviceAsync(previous, linked.Token).ConfigureAwait(false);
             if (closeOutcome != DeviceCloseOutcome.Closed)
             {
                 // A previous physical handle that does not acknowledge Stop is
@@ -709,7 +709,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
             // Admission is the grant consumption point; terminal success is
             // deliberately independent from Step-Up reuse.
             authorization.Reservation?.Commit();
-            var closeOutcome = await CloseSlotDeviceAsync(previous).ConfigureAwait(false);
+            var closeOutcome = await CloseSlotDeviceAsync(previous, linked.Token).ConfigureAwait(false);
             if (closeOutcome != DeviceCloseOutcome.Closed)
             {
                 return await CompleteFailureAsync(request.LogicalRole, generation, previous, admitted,
@@ -1178,7 +1178,8 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
             await DisposeDeviceBoundedAsync(device, _options.OperationTimeout).ConfigureAwait(false);
     }
 
-    private async Task<DeviceCloseOutcome> CloseSlotDeviceAsync(CameraSlot? slot)
+    private async Task<DeviceCloseOutcome> CloseSlotDeviceAsync(CameraSlot? slot,
+        CancellationToken operationCancellationToken)
     {
         ICameraDevice? device = null;
         HealthProbeRegistration? activeProbe = null;
@@ -1201,14 +1202,28 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         if (activeProbe is not null)
         {
             // Do not call Stop/Dispose while a heartbeat is in GetHealthSnapshot.
-            // The probe's completion is the ownership handoff point.
-            TrackDeferredPhysical(RetireAfterHealthProbeAsync(activeProbe.Completed.Task, device),
-                () => ReleaseRetiringDevice(device));
-            return DeviceCloseOutcome.Transferred;
+            // A normal probe handoff is part of the current operation: wait for
+            // the real provider call to complete before closing and reopening.
+            // If the operation deadline wins, keep the owner and defer the
+            // physical retirement until that same provider call actually ends.
+            try
+            {
+                await activeProbe.Completed.Task.WaitAsync(operationCancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TrackDeferredPhysical(RetireAfterHealthProbeAsync(activeProbe.Completed.Task, device),
+                    () => ReleaseRetiringDevice(device));
+                throw;
+            }
         }
 
         var outcome = await StopAndDisposeBoundedAsync(device,
-            () => ReleaseRetiringDevice(device)).ConfigureAwait(false);
+            () => ReleaseRetiringDevice(device), operationCancellationToken).ConfigureAwait(false);
+        if (operationCancellationToken.IsCancellationRequested &&
+            outcome != DeviceCloseOutcome.Closed)
+            throw new OperationCanceledException(operationCancellationToken);
         lock (_stateSync)
         {
             if (outcome == DeviceCloseOutcome.Closed)
@@ -1218,7 +1233,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
     }
 
     private async Task<DeviceCloseOutcome> StopAndDisposeBoundedAsync(
-        ICameraDevice device, Action onRetired)
+        ICameraDevice device, Action onRetired, CancellationToken operationCancellationToken)
     {
         Task<CameraOperationResult>? stopTask = null;
         var physicalReserved = false;
@@ -1235,12 +1250,14 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
             }
             physicalReserved = true;
             stopTask = device.StopAsync(CancellationToken.None).AsTask();
-            var result = await stopTask.WaitAsync(PositiveTimeout(_options.OperationTimeout))
+            // The caller supplies the bounded operation/cleanup token. Reuse
+            // that single deadline through Stop and Dispose.
+            var result = await stopTask.WaitAsync(operationCancellationToken)
                 .ConfigureAwait(false);
             if (result is null || !result.Succeeded)
             {
                 var disposed = await DisposeWithOwnedPhysicalPermitAsync(device,
-                    _options.OperationTimeout, onRetired).ConfigureAwait(false);
+                    onRetired, operationCancellationToken).ConfigureAwait(false);
                 if (disposed == DeviceDisposeOutcome.Transferred)
                     physicalReserved = false;
                 return disposed switch
@@ -1251,7 +1268,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
                 };
             }
             var closed = await DisposeWithOwnedPhysicalPermitAsync(device,
-                _options.OperationTimeout, onRetired).ConfigureAwait(false);
+                onRetired, operationCancellationToken).ConfigureAwait(false);
             if (closed == DeviceDisposeOutcome.Transferred)
                 physicalReserved = false;
             return closed switch
@@ -1270,7 +1287,32 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
                 return DeviceCloseOutcome.Transferred;
             }
             var disposed = await DisposeWithOwnedPhysicalPermitAsync(device,
-                _options.OperationTimeout, onRetired).ConfigureAwait(false);
+                onRetired, operationCancellationToken).ConfigureAwait(false);
+            if (disposed == DeviceDisposeOutcome.Transferred)
+                physicalReserved = false;
+            return disposed switch
+            {
+                DeviceDisposeOutcome.Completed => DeviceCloseOutcome.Closed,
+                DeviceDisposeOutcome.Transferred => DeviceCloseOutcome.Transferred,
+                _ => DeviceCloseOutcome.Retained
+            };
+        }
+        catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested)
+        {
+            if (stopTask is not null && !stopTask.IsCompleted)
+            {
+                TrackPhysical(FinishLateStopAsync(stopTask, device), onRetired);
+                physicalReserved = false;
+                throw;
+            }
+
+            // Cancellation can race a provider task completing.  If Stop has
+            // already returned, still retire the handle before propagating the
+            // operation cancellation; otherwise it would remain attached to
+            // _retiringDevices without a cleanup owner.
+            var disposed = await DisposeWithOwnedPhysicalPermitAsync(device,
+                onRetired, operationCancellationToken)
+                .ConfigureAwait(false);
             if (disposed == DeviceDisposeOutcome.Transferred)
                 physicalReserved = false;
             return disposed switch
@@ -1283,7 +1325,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             var disposed = await DisposeWithOwnedPhysicalPermitAsync(device,
-                _options.OperationTimeout, onRetired).ConfigureAwait(false);
+                onRetired, operationCancellationToken).ConfigureAwait(false);
             if (disposed == DeviceDisposeOutcome.Transferred)
                 physicalReserved = false;
             return disposed switch
@@ -1343,6 +1385,7 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         physicalReserved = true;
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             providerTask = provider.Provider.OpenAsync(stableIdentity, cancellationToken).AsTask();
             result = await providerTask.WaitAsync(PositiveTimeout(_options.OperationTimeout),
                 cancellationToken).ConfigureAwait(false);
@@ -1814,7 +1857,8 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
     }
 
     private async Task<DeviceDisposeOutcome> DisposeWithOwnedPhysicalPermitAsync(
-        ICameraDevice device, TimeSpan timeout, Action onRetired)
+        ICameraDevice device, Action onRetired,
+        CancellationToken operationCancellationToken)
     {
         lock (_stateSync)
         {
@@ -1825,7 +1869,8 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
         try
         {
             disposeTask = device.DisposeAsync().AsTask();
-            await disposeTask.WaitAsync(PositiveTimeout(timeout)).ConfigureAwait(false);
+            await disposeTask.WaitAsync(operationCancellationToken)
+                .ConfigureAwait(false);
             return DeviceDisposeOutcome.Completed;
         }
         catch (TimeoutException)
@@ -1837,6 +1882,18 @@ internal sealed partial class CameraSetupRuntime : ICameraSetupRuntime, ICameraN
             }
             // Do not treat a synchronous provider TimeoutException as a
             // successful close. The physical owner remains uncertain.
+            RetainDevice(device);
+            return DeviceDisposeOutcome.Faulted;
+        }
+        catch (OperationCanceledException) when (operationCancellationToken.IsCancellationRequested)
+        {
+            if (disposeTask is not null && !disposeTask.IsCompleted)
+            {
+                TrackPhysical(ObserveDeviceDisposeAsync(disposeTask, device), onRetired);
+                return DeviceDisposeOutcome.Transferred;
+            }
+            if (disposeTask?.IsCompletedSuccessfully == true)
+                return DeviceDisposeOutcome.Completed;
             RetainDevice(device);
             return DeviceDisposeOutcome.Faulted;
         }

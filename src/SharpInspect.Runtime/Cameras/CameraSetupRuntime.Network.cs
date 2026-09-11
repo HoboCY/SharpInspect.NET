@@ -420,7 +420,7 @@ internal sealed partial class CameraSetupRuntime
         foreach (var slot in slots)
         {
             operation.ThrowIfCancellationRequested();
-            var result = await CloseSlotDeviceAsync(slot).ConfigureAwait(false);
+            var result = await CloseSlotDeviceAsync(slot, token).ConfigureAwait(false);
             var old = slot.Snapshot!;
             var snapshot = new CameraSetupSnapshot(old.LogicalRole, old.Binding,
                 FailureHealth("CameraRecipeActivationRequired"), old.Requested,

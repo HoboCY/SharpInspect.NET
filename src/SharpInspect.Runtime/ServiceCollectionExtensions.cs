@@ -196,6 +196,8 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
         services.TryAddSingleton(options);
+        services.TryAddSingleton(p => new PartIdentityBindingRegistry(p.GetServices<IPartIdentityProvider>(),
+            p.GetService<ProductionInspectionOptions>()?.Profile.PartIdentity?.ContentHash));
         services.TryAddSingleton<SqliteCommandStore>();
         services.TryAddSingleton<ICommandTraceQuery, SqliteCommandTraceQuery>();
         services.TryAddSingleton<IAuditIntegrityQuery, SqliteAuditIntegrityQuery>();
@@ -283,7 +285,8 @@ public static class ServiceCollectionExtensions
                                 deploymentEvidence: p.GetService<ProductionInspectionOptions>() is null ? null :
                                     (candidate, token) => p.GetRequiredService<IStationRuntime>() is StationRuntime authority
                                     ? authority.CaptureRecipeActivationDeploymentEvidenceAsync(candidate, token)
-                                    : ValueTask.FromResult<RecipeActivationDeploymentEvidence?>(null)));
+                                    : ValueTask.FromResult<RecipeActivationDeploymentEvidence?>(null),
+                                partIdentities: p.GetRequiredService<PartIdentityBindingRegistry>()));
                             services.TryAddSingleton<IRecipeActivationService>(p => p.GetRequiredService<RecipeActivationService>());
                         }
                     }
@@ -301,6 +304,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IManualInspectionHistoryQuery>(_ => new SqliteManualInspectionQuery(options));
         if (options.ProductionAdmission is not null)
             services.TryAddSingleton<IProductionAdmissionHistoryQuery>(_ => new SqliteProductionAdmissionHistoryQuery(options));
+        if (options.PartIdentities is not null)
+            services.TryAddSingleton<IPartIdentityHistoryQuery>(_ => new SqlitePartIdentityHistoryQuery(options));
         if (options.StationQualifications is not null)
             services.TryAddSingleton<IStationQualificationHistoryQuery>(_ => new SqliteStationQualificationHistoryQuery(options));
         if (options.QualificationCycles is not null)
@@ -342,7 +347,8 @@ public static class ServiceCollectionExtensions
                     p.GetService<SharpInspect.Runtime.Qualification.ModbusQualificationProfile>());
             if (p.GetService<SharpInspect.Runtime.Production.ProductionInspectionOptions>() is { } production)
                 runtime.ConfigureProductionInspections(production, options,
-                    p.GetRequiredService<AlgorithmExecutionOptions>(), p.GetRequiredService<IFrameAcquisitionClock>());
+                    p.GetRequiredService<AlgorithmExecutionOptions>(), p.GetRequiredService<IFrameAcquisitionClock>(),
+                    p.GetRequiredService<PartIdentityBindingRegistry>());
             return runtime;
         });
         services.TryAddSingleton<ICameraSetupRuntime>(p =>

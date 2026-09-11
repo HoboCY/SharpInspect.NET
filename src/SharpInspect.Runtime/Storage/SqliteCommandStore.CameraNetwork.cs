@@ -274,7 +274,8 @@ internal sealed partial class SqliteCommandStore
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
                 plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections);
+                productionInspectionOptions: _options.ProductionInspections,
+                partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -319,9 +320,10 @@ internal sealed partial class SqliteCommandStore
     private StoreWriteResult AppendCameraNetworkAdmissionCore(sqlite3 database,
         CameraNetworkAdmissionWork work, StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified)
-            return new(false, Integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
-                RetryAfterIntegrityRecheck: Integrity?.State == AuditIntegrityState.Verifying);
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new(false, "TraceStoreWalLimit");
 
@@ -424,9 +426,10 @@ internal sealed partial class SqliteCommandStore
     private StoreWriteResult AppendCameraNetworkTerminalCore(sqlite3 database,
         CameraNetworkTerminalWork work, StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified)
-            return new(false, Integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
-                RetryAfterIntegrityRecheck: Integrity?.State == AuditIntegrityState.Verifying);
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new(false, "TraceStoreWalLimit");
 
@@ -539,9 +542,10 @@ internal sealed partial class SqliteCommandStore
     private StoreWriteResult AppendCameraNetworkRejectedCore(sqlite3 database,
         CameraNetworkRejectedWork work, StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified)
-            return new(false, Integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
-                RetryAfterIntegrityRecheck: Integrity?.State == AuditIntegrityState.Verifying);
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "CameraNetworkAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new(false, "TraceStoreWalLimit");
 

@@ -133,7 +133,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema != ProductionInspectionStoreOptions.SchemaVersion)
+            if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -162,7 +162,8 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
                 plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: production);
+                productionInspectionOptions: production,
+                partIdentityOptions: _options.PartIdentities);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database, verification,
                 deadline, production);
             var rows = SqliteCommandStore.ReadProductionInspectionRows(database, production,

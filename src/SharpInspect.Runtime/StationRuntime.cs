@@ -219,6 +219,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (command is StationQualificationCommand qualification)
             return await SubmitStationQualificationAsync(qualification, cancellationToken).ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(command);
+        if (command is CorrectProductionPartIdentityCommand partIdentityCorrection)
+            return await SubmitPartIdentityCorrectionAsync(partIdentityCorrection, cancellationToken).ConfigureAwait(false);
         if (command is ManualInspectionCommand manual)
             return await SubmitManualInspectionAsync(manual, cancellationToken).ConfigureAwait(false);
         if (command is PreviewSessionCommand preview)

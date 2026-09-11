@@ -16,7 +16,8 @@ internal sealed class RecipeActivationDeploymentEvidence
     internal RecipeActivationDeploymentEvidence(ProductionConfiguration configuration,
         ProductionQualificationInputs qualifications, ProductionInspectionOptions inspectionOptions,
         ProductionStoreOptions storeOptions, TraceStoragePolicySnapshot tracePolicy,
-        bool productionWriterAvailable, bool startupReconciled)
+        bool productionWriterAvailable, bool startupReconciled,
+        PartIdentityBindingObservation? partIdentity = null, bool partIdentityWriterAvailable = false)
     {
         Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         Qualifications = qualifications ?? throw new ArgumentNullException(nameof(qualifications));
@@ -25,6 +26,8 @@ internal sealed class RecipeActivationDeploymentEvidence
         TracePolicy = tracePolicy ?? throw new ArgumentNullException(nameof(tracePolicy));
         ProductionWriterAvailable = productionWriterAvailable;
         StartupReconciled = startupReconciled;
+        PartIdentity = partIdentity;
+        PartIdentityWriterAvailable = partIdentityWriterAvailable;
         ContentHash = ComputeContentHash();
     }
 
@@ -35,13 +38,16 @@ internal sealed class RecipeActivationDeploymentEvidence
     internal TraceStoragePolicySnapshot TracePolicy { get; }
     internal bool ProductionWriterAvailable { get; }
     internal bool StartupReconciled { get; }
+    internal PartIdentityBindingObservation? PartIdentity { get; }
+    internal bool PartIdentityWriterAvailable { get; }
     internal string ContentHash { get; }
 
     private string ComputeContentHash()
     {
         var parts = new List<string?>
         {
-            "sharpinspect-recipe-activation-deployment-evidence-v1",
+            PartIdentity is null ? "sharpinspect-recipe-activation-deployment-evidence-v1" :
+                "sharpinspect-recipe-activation-deployment-evidence-v2",
             Configuration.ObservedBindingsHash,
             Configuration.FrameworkFingerprint,
             Configuration.ProviderFingerprint,
@@ -68,6 +74,12 @@ internal sealed class RecipeActivationDeploymentEvidence
         }
 
         parts.Add(QualificationsHash(Qualifications));
+        if (PartIdentity is not null)
+        {
+            parts.Add(PartIdentity.StaticHash);
+            parts.Add(StoreOptions.PartIdentities?.BindingHash);
+            parts.Add(PartIdentityWriterAvailable.ToString());
+        }
         return AlgorithmContractValidation.HashParts(parts);
     }
 

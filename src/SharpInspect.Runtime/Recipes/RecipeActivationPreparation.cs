@@ -14,10 +14,11 @@ internal sealed class RecipeActivationPreparation
     private readonly IReleasedRecipeQuery _releases;
     private readonly IPlcResultContractQuery _contracts;
     private readonly ProductionStoreOptions _options;
+    private readonly PartIdentityBindingRegistry? _partIdentities;
 
     internal RecipeActivationPreparation(RecipeDraftService drafts, IReleasedRecipeQuery releases,
-        IPlcResultContractQuery contracts, ProductionStoreOptions options)
-    { _drafts = drafts; _releases = releases; _contracts = contracts; _options = options; }
+        IPlcResultContractQuery contracts, ProductionStoreOptions options, PartIdentityBindingRegistry? partIdentities = null)
+    { _drafts = drafts; _releases = releases; _contracts = contracts; _options = options; _partIdentities = partIdentities; }
 
     internal async ValueTask<RecipeActivationPreparedInputs?> PrepareAsync(ActivateRecipeCommand command,
         RecipeActivationChecks checks, CancellationToken token)
@@ -32,12 +33,18 @@ internal sealed class RecipeActivationPreparation
             command.ReleaseRecordContentHash, release?.Record.ContentHash);
         if (!exact) return null;
         var content = release!.Content;
-        var partReason = content.PartIdentityRequirement is null ? "PartIdentityDeclarationMissing" :
-            content.PartIdentityRequirement.Mode != PartIdentityRequirementMode.None ?
-                "PartIdentityBindingUnavailable" : "PartIdentityExplicitNone";
-        checks.Set(4, content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None ?
-            RecipeActivationCheckStatus.NotApplicable : RecipeActivationCheckStatus.Failed,
-            partReason, content.PartIdentityRequirement?.ContentHash);
+        if (content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None)
+            checks.Set(4, RecipeActivationCheckStatus.NotApplicable, "PartIdentityExplicitNone",
+                content.PartIdentityRequirement.ContentHash);
+        else
+        {
+            var identity = _partIdentities is null ? new PartIdentityBindingReadResult(
+                content.PartIdentityRequirement is null ? "PartIdentityDeclarationMissing" : "PartIdentityBindingUnavailable") :
+                await _partIdentities.CaptureAsync(content.PartIdentityRequirement, token).ConfigureAwait(false);
+            checks.PartIdentity = identity.Observation;
+            checks.Observe(4, identity.Available, identity.ReasonCode,
+                content.PartIdentityRequirement?.ContentHash, identity.Observation?.StaticHash);
+        }
 
         var execution = _options.RecipeDrafts!.ExecutionPolicy;
         var executionReference = new RecipeContractReference(execution.Id, execution.Version, execution.ContentHash);

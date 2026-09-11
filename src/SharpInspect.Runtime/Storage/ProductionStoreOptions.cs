@@ -104,4 +104,9 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit opt-in for the schema 28 immutable production inspection Core ledger.</summary>
     public ProductionInspectionStoreOptions? ProductionInspections { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 29 part-identity rejection/correction ledger.
+    /// Accepted identity evidence remains in the production admission/Core records; this
+    /// independent ledger stores rejected triggers and authorized historical corrections.</summary>
+    public PartIdentityStoreOptions? PartIdentities { get; init; }
 }

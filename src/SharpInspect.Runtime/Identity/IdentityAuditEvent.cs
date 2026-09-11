@@ -71,7 +71,9 @@ internal enum IdentityEventKind
     TraceStoragePolicyAuthorized,
     ProductionInspectionAdmitted,
     ProductionInspectionCoreCommitted,
-    ProductionInspectionFailed
+    ProductionInspectionFailed,
+    PartIdentityRejectedTriggerRecorded,
+    PartIdentityCorrectionAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -150,14 +152,14 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
-        if (schemaVersion is < 3 or > ProductionInspectionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PartIdentityStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         return AuditCanonical.Encode("IdentityEvent", fields.ToArray());
     }
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
-        if (schemaVersion is < 3 or > ProductionInspectionStoreOptions.SchemaVersion)
+        if (schemaVersion is < 3 or > PartIdentityStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 
         using var input = new MemoryStream(payload, writable: false);
@@ -182,7 +184,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
         try
         {
-            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= ProductionInspectionStoreOptions.SchemaVersion => 49, _ => 0 };
+            var expectedCount = schemaVersion switch { 3 => 18, 4 => 27, 5 => 42, 6 or 7 or 8 or 9 or 10 => 46, >= 11 and <= PartIdentityStoreOptions.SchemaVersion => 49, _ => 0 };
             AuditChainDatabase.Require(ReadInteger() == AuditCanonical.CanonicalizationVersion &&
                 ReadValue() == "IdentityEvent" && ReadInteger() == expectedCount,
                 "AuditIdentityPayloadInvalid");
@@ -258,6 +260,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                     legacyKind is not (IdentityEventKind.ProductionInspectionAdmitted or
                         IdentityEventKind.ProductionInspectionCoreCommitted or
                         IdentityEventKind.ProductionInspectionFailed), "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(schemaVersion >= PartIdentityStoreOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.PartIdentityRejectedTriggerRecorded or
+                        IdentityEventKind.PartIdentityCorrectionAuthorized), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -708,6 +713,62 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                 accepted.AuthenticatedHumanPrincipalId == value.Header.ActorPrincipalId.ToString("D") &&
                 (value.CommandKind != AuditedCommandKind.StartStationQualificationSession ||
                     accepted.ClaimedStepUpGrantId == value.Header.StepUpGrantId);
+        }
+        catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
+            DecoderFallbackException or InvalidOperationException or FormatException)
+        { return false; }
+    }
+
+    /// <summary>
+    /// Matches the signed authorization tuple for a historical PartIdentity
+    /// correction.  The command and identity events have independent event
+    /// identifiers; their correlation, attempt, actor, policy, grant and
+    /// canonical target are the binding.  The current authorization policy is
+    /// intentionally not reconstructed from the protected identity blob here;
+    /// its signed id/version/hash tuple is required and can be checked against
+    /// live configuration by the owning service.
+    /// </summary>
+    internal static bool MatchesPartIdentityCorrectionAuthorization(byte[] payload,
+        long ordinal, string stationId, PartIdentityHistoryEvent value,
+        SharpInspect.Runtime.CommandAuditFact accepted,
+        RecipeContractReference? authorizationPolicy = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(accepted);
+        try
+        {
+            _ = VerifyPayload(payload, ordinal, stationId, PartIdentityStoreOptions.SchemaVersion);
+            var fields = DecodeFields(payload);
+            if (fields.Length != 49) return false;
+            var policyMatches = fields[27] is { Length: > 0 } && fields[28] is { Length: > 0 } &&
+                IsHash(fields[29]) && (authorizationPolicy is null ||
+                    (fields[27] == authorizationPolicy.Id && fields[28] == authorizationPolicy.Version &&
+                     fields[29] == authorizationPolicy.ContentHash));
+            return policyMatches &&
+                fields[1] != accepted.EventId.ToString("D") &&
+                fields[2] == IdentityEventKind.PartIdentityCorrectionAuthorized.ToString() &&
+                value.RecordedAtUtc == accepted.OccurredAtUtc &&
+                fields[3] == accepted.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture) &&
+                fields[4] == stationId && fields[5] == value.ActorPrincipalId?.ToString("D") &&
+                fields[9] == "PartIdentityCorrectionAuthorized" &&
+                fields[25] == value.ActorSessionId?.ToString("D") &&
+                fields[30] == value.ActorPrincipalId?.ToString("D") &&
+                fields[31] == value.CorrelationId.ToString("D") &&
+                fields[32] == accepted.ClaimedStepUpGrantId?.ToString("D") &&
+                fields[33] == Permission.CorrectHistoricalFact.ToString() && fields[34] is null &&
+                fields[35] == value.AuthorizationRevision.ToString(CultureInfo.InvariantCulture) &&
+                fields[37] == value.AuthorizationTarget &&
+                fields[38] == value.CorrelationId.ToString("D") &&
+                fields[39] == AuditedCommandKind.CorrectHistoricalFact.ToString() &&
+                fields[42] is null && accepted.Phase == CommandAuditPhase.Outcome &&
+                accepted.Disposition == CommandDisposition.Accepted &&
+                accepted.Source == CommandSource.PhysicalConsole &&
+                accepted.CommandKind == AuditedCommandKind.CorrectHistoricalFact &&
+                accepted.AttemptId == value.AttemptId && accepted.CorrelationId == value.CorrelationId &&
+                accepted.ClaimedPrincipalId == value.ActorPrincipalId?.ToString("D") &&
+                accepted.ClaimedSessionId == value.ActorSessionId &&
+                accepted.AuthenticatedHumanPrincipalId == value.ActorPrincipalId?.ToString("D") &&
+                accepted.ClaimedStepUpGrantId == value.StepUpGrantId;
         }
         catch (Exception exception) when (exception is ArgumentException or EndOfStreamException or
             DecoderFallbackException or InvalidOperationException or FormatException)

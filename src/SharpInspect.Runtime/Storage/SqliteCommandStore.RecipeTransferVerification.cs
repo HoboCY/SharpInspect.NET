@@ -46,7 +46,8 @@ internal sealed partial class SqliteCommandStore
              traceStoragePolicyOptions: options.TraceStoragePolicies,
                 qualificationCycleOptions: options.QualificationCycles,
                 plcCommunicationOptions: options.PlcCommunication,
-                productionInspectionOptions: options.ProductionInspections);
+                productionInspectionOptions: options.ProductionInspections,
+                partIdentityOptions: options.PartIdentities);
         TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
 
         if (options.AlgorithmResultArchive is not null)

@@ -21,6 +21,7 @@ public sealed partial class StationRuntime
     private bool _productionInspectionStartupVerified;
     private bool _productionInspectionRecoveryBlocked;
     private long _productionPhysicalSequence;
+    private PartIdentityBindingRegistry? _partIdentityRegistry;
 
     // Communication monitoring does not own the camera or block configuration.
     // Only a durably accepted production cycle owns inspection resources.
@@ -29,7 +30,7 @@ public sealed partial class StationRuntime
 
     internal void ConfigureProductionInspections(ProductionInspectionOptions options,
         ProductionStoreOptions storeOptions, AlgorithmExecutionOptions executionOptions,
-        IFrameAcquisitionClock clock)
+        IFrameAcquisitionClock clock, PartIdentityBindingRegistry? partIdentityRegistry = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(storeOptions);
@@ -52,6 +53,8 @@ public sealed partial class StationRuntime
             _productionInspectionStoreOptions = storeOptions;
             _productionInspectionExecutionOptions = executionOptions;
             _productionInspectionClock = clock;
+            _partIdentityRegistry = partIdentityRegistry;
+            if (partIdentityRegistry is not null) partIdentityRegistry.SourceChanged += PartIdentitySourceChanged;
             _productionInspectionTask = Task.Run(RunProductionInspectionsAsync);
         }
     }
@@ -146,6 +149,7 @@ public sealed partial class StationRuntime
 
     private async Task ShutdownProductionInspectionAsync()
     {
+        if (_partIdentityRegistry is not null) _partIdentityRegistry.SourceChanged -= PartIdentitySourceChanged;
         Task? operation;
         lock (_sync)
         {
@@ -183,5 +187,7 @@ public sealed partial class StationRuntime
         internal bool Aborted { get; set; }
         internal long PhysicalPhaseId { get; set; }
         internal string FailureReason { get; set; } = "ProductionInspectionInterrupted";
+        internal PartIdentityLatchAttempt? PartIdentityAttempt { get; set; }
+        internal Task<PartIdentityProviderObservation>? PartIdentityOperation { get; set; }
     }
 }

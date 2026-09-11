@@ -331,6 +331,7 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
 
     private byte[] ReadRegisters(ModbusRequest request, ModbusQualificationProfile profile)
     {
+        if (TryReadPartIdentity(request, out var identity)) return identity;
         if (TryReadCommunication(request, profile, out var communication)) return communication;
         if (request.Pdu.Length != 5 || ReadUInt16(request.Pdu, 3) != 6)
             return ExceptionResponse(request, 0x03, 0x03);

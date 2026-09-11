@@ -95,7 +95,7 @@ internal sealed partial class SqliteCommandStore
             AdmissionGeneration INTEGER NOT NULL CHECK(AdmissionGeneration>=0),
             ControllerEpoch INTEGER NOT NULL CHECK(ControllerEpoch>=0),
             CycleSequence INTEGER NOT NULL CHECK(CycleSequence>=0),
-            EvidenceRequirement INTEGER NOT NULL CHECK(EvidenceRequirement=1),
+            EvidenceRequirement INTEGER NOT NULL CHECK(EvidenceRequirement IN (1,2,3)),
             ActivationPosition INTEGER NOT NULL CHECK(ActivationPosition>0),
             ActivationId TEXT NOT NULL CHECK(length(ActivationId)=36),
             ActivationHash TEXT NOT NULL CHECK(length(ActivationHash)=64),
@@ -754,16 +754,50 @@ internal sealed partial class SqliteCommandStore
         sqlite3 database, ProductionInspectionStoreOptions options,
         ProductionInspectionAdmission candidate, StoreDeadline deadline)
     {
-        var history = ReadProductionInspectionRows(database, options, deadline);
+        var history = ReadProductionInspectionRows(database, options, deadline)
+            .Where(value => value.Event.Kind == ProductionInspectionEventKind.Admitted)
+            .ToArray();
         foreach (var row in history)
         {
             var admission = row.Event.Admission;
             AuditChainDatabase.Require(admission.InspectionId != candidate.InspectionId &&
                 admission.CorrelationId != candidate.CorrelationId,
                 "ProductionInspectionAdmissionDuplicate");
+            ValidateProductionInspectionPartIdentityUniqueness(admission, candidate);
             AuditChainDatabase.Require(!(admission.EndpointBindingHash == candidate.EndpointBindingHash &&
                 admission.ControllerCycle == candidate.ControllerCycle),
                 "ProductionInspectionControllerCycleDuplicate");
+        }
+    }
+
+    private static void ValidateProductionInspectionPartIdentityUniqueness(
+        ProductionInspectionAdmission existing, ProductionInspectionAdmission candidate)
+    {
+        if (existing.PartIdentityEvidence is not { } prior ||
+            candidate.PartIdentityEvidence is not { } current)
+            return;
+
+        if (prior.SourceKind != current.SourceKind)
+            return;
+
+        if (current.SourceKind == PartIdentityProviderSourceKind.StablePlc)
+        {
+            if (prior.StablePlcSnapshot is { } priorPlc &&
+                current.StablePlcSnapshot is { } currentPlc &&
+                string.Equals(prior.SourceContractHash, current.SourceContractHash,
+                    StringComparison.Ordinal) &&
+                string.Equals(prior.Cycle.EndpointBindingHash,
+                    current.Cycle.EndpointBindingHash, StringComparison.Ordinal) &&
+                prior.Cycle.ControllerEpoch == current.Cycle.ControllerEpoch &&
+                priorPlc.Revision == currentPlc.Revision)
+                throw new InvalidOperationException("ProductionInspectionPartIdentitySourceTokenDuplicate");
+        }
+        else if (current.SourceKind == PartIdentityProviderSourceKind.Staged &&
+            prior.SourceEpoch == current.SourceEpoch &&
+            prior.StageToken is { } priorToken && current.StageToken is { } currentToken &&
+            priorToken == currentToken)
+        {
+            throw new InvalidOperationException("ProductionInspectionPartIdentitySourceTokenDuplicate");
         }
     }
 

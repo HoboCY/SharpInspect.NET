@@ -66,7 +66,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
             _admissionVersion++;
             if (_accepted is not { } pending) return;
             if (_rejections.Count < 256)
-                _rejections.Enqueue(new(new(pending.ControllerEpoch, pending.CycleSequence), reason));
+                _rejections.Enqueue(new(new(pending.ControllerEpoch, pending.CycleSequence), reason, pending));
             else _failure = "InspectionCycleProtocolFactCapacityExceeded";
             _accepted = null;
             _activeEpoch = null;
@@ -92,7 +92,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 // Run. Retain a rejection fact if Stop wins the admission race.
                 if (_rejections.Count < 256)
                     _rejections.Enqueue(new(new(pending.ControllerEpoch, pending.CycleSequence),
-                        "QualificationRequestRevokedBeforeAdmission"));
+                        "QualificationRequestRevokedBeforeAdmission", pending));
                 else _failure = "InspectionCycleProtocolFactCapacityExceeded";
                 _accepted = null;
             }
@@ -160,7 +160,11 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         lock (_sync) { ThrowIfFailed(); signals = _accepted; _accepted = null; return signals is not null; }
     }
     internal RejectedCycleRequest? TakeRejected()
-    { lock (_sync) { ThrowIfFailed(); return _rejections.Count > 0 ? _rejections.Dequeue() : null; } }
+    {
+        // Facts already observed remain drainable after observer failure/retirement.
+        // Admission and transport health are checked by their own operations.
+        lock (_sync) return _rejections.Count > 0 ? _rejections.Dequeue() : null;
+    }
     internal void RequireHealthy() { lock (_sync) ThrowIfFailed(); }
     private void ThrowIfFailed()
     {
@@ -213,7 +217,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                                 if (_rejections.Count >= 256)
                                     throw new InvalidOperationException("InspectionCycleProtocolFactCapacityExceeded");
                                 _rejections.Enqueue(new(key, invalidIdentity ?? (repeated ? "QualificationDuplicateCycleRejected" :
-                                    "QualificationTriggerRejectedWhileNotReady")));
+                                    "QualificationTriggerRejectedWhileNotReady"), signals));
                             }
                         }
                         _wasHigh = signals.Trigger;
@@ -257,4 +261,5 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     }
 }
 
-internal sealed record RejectedCycleRequest(PlcControllerCycle Key, string ReasonCode);
+internal sealed record RejectedCycleRequest(PlcControllerCycle Key, string ReasonCode,
+    ModbusControllerSignals? Signals = null);

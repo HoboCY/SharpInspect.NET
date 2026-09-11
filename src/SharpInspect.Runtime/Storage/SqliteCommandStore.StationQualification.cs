@@ -242,6 +242,13 @@ internal sealed partial class SqliteCommandStore
         ArgumentNullException.ThrowIfNull(auditPayload);
         var row = ReadStationQualificationRows(database, options, deadline)
             .SingleOrDefault(value => value.Position == position);
+        VerifyStationQualificationAuditPayload(row, auditPayload);
+    }
+
+    internal static void VerifyStationQualificationAuditPayload(StationQualificationStoredRow? row,
+        byte[] auditPayload)
+    {
+        ArgumentNullException.ThrowIfNull(auditPayload);
         AuditChainDatabase.Require(row is not null, "StationQualificationAuditBindingMissing");
         var expected = EncodeStationQualificationAuditPayload(row!.Event);
         AuditChainDatabase.Require(expected.SequenceEqual(auditPayload) &&
@@ -407,7 +414,7 @@ internal sealed partial class SqliteCommandStore
         {
             var schema = checked((int)AuditChainDatabase.Scalar(database,
                 "PRAGMA user_version;", deadline));
-            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(schema is StationQualificationStoreOptions.SchemaVersion or RecipeTransferStoreOptions.SchemaVersion or TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion,
                 schema < PlcCommunicationStoreOptions.SchemaVersion
                     ? "StationQualificationGovernedMigrationRequired" : "StoreSchemaTooNew");
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
@@ -428,7 +435,8 @@ internal sealed partial class SqliteCommandStore
                 traceStoragePolicyOptions: _options.TraceStoragePolicies,
                 qualificationCycleOptions: _options.QualificationCycles,
                 plcCommunicationOptions: _options.PlcCommunication,
-                productionInspectionOptions: _options.ProductionInspections);
+                productionInspectionOptions: _options.ProductionInspections,
+                partIdentityOptions: _options.PartIdentities);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -685,9 +693,10 @@ internal sealed partial class SqliteCommandStore
     private StoreWriteResult AppendStationQualificationProgressCore(sqlite3 database,
         StationQualificationProgressWork work, StoreDeadline deadline)
     {
-        if (Integrity?.State != AuditIntegrityState.Verified)
-            return new(false, Integrity?.ReasonCode ?? "StationQualificationAuditUnavailable",
-                RetryAfterIntegrityRecheck: Integrity?.State == AuditIntegrityState.Verifying);
+        var integrity = Integrity;
+        if (integrity?.State != AuditIntegrityState.Verified)
+            return new(false, integrity?.ReasonCode ?? "StationQualificationAuditUnavailable",
+                RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new(false, "TraceStoreWalLimit");
         var options = _options.StationQualifications ??

@@ -18,7 +18,8 @@ internal static class ProductionConfigurationBuilder
     internal static ProductionConfiguration Build(ProductionInspectionOptions options,
         ProductionStoreOptions store, ProductionDeploymentManifest? manifest,
         RecipeActivationSnapshot? activation, TraceStoragePolicySnapshot? trace,
-        string? installationKeyId, string? providerBinaryHash, string? algorithmBinaryHash)
+        string? installationKeyId, string? providerBinaryHash, string? algorithmBinaryHash,
+        PartIdentityBindingObservation? partIdentity = null)
     {
         var values = new Dictionary<ProductionConfigurationBinding, string>();
         void Add(ProductionConfigurationBinding key, string? value)
@@ -54,9 +55,12 @@ internal static class ProductionConfigurationBuilder
         Add(ProductionConfigurationBinding.PlcEndpoint, options.Profile.EndpointBindingHash);
         Add(ProductionConfigurationBinding.PlcPolicy, options.Profile.ContentHash);
         if (store.ProductionInspections is { } core && store.TraceStoragePolicies is { } storagePolicy)
-            Add(ProductionConfigurationBinding.StoreProfile, Hash("production-store-profile-v1",
+            Add(ProductionConfigurationBinding.StoreProfile, store.PartIdentities is null ? Hash("production-store-profile-v1",
                 core.BindingHash, storagePolicy.BindingHash, store.AuditIntegrityPolicy?.ContentHash,
-                Number(store.QueueCapacity), store.CommitTimeout.ToString("c", CultureInfo.InvariantCulture)));
+                Number(store.QueueCapacity), store.CommitTimeout.ToString("c", CultureInfo.InvariantCulture)) :
+                Hash("production-store-profile-v2", core.BindingHash, storagePolicy.BindingHash,
+                    store.PartIdentities.BindingHash, store.AuditIntegrityPolicy?.ContentHash,
+                    Number(store.QueueCapacity), store.CommitTimeout.ToString("c", CultureInfo.InvariantCulture)));
         Add(ProductionConfigurationBinding.AlarmPolicy, store.AlarmPolicy?.ContentHash);
         Add(ProductionConfigurationBinding.IdentityPolicy, store.LocalIdentity?.PolicyContentHash);
         if (trace is not null)
@@ -106,7 +110,11 @@ internal static class ProductionConfigurationBuilder
             Add(ProductionConfigurationBinding.Calibration, Hash("production-calibration-bindings-v1",
                 activation.CalibrationBindings.OrderBy(binding => binding.RequirementContentHash, StringComparer.Ordinal)
                     .Select(binding => binding.ContentHash).ToArray()));
-            Add(ProductionConfigurationBinding.PartIdentity, content.PartIdentityRequirement?.ContentHash);
+            Add(ProductionConfigurationBinding.PartIdentity,
+                content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None
+                    ? content.PartIdentityRequirement.ContentHash
+                    : partIdentity?.RequirementHash == content.PartIdentityRequirement?.ContentHash
+                        ? partIdentity?.StaticHash : null);
             Add(ProductionConfigurationBinding.PlcResultContract, activation.PlcResultContract.ContentHash);
         }
         return new(values);

@@ -77,6 +77,7 @@ public sealed partial class StationRuntime
             if (owner is not null)
             {
                 await RetireProductionCameraAsync(owner).ConfigureAwait(false);
+                await RetirePartIdentityOperationAsync(owner).ConfigureAwait(false);
                 owner.Cancellation.Dispose();
             }
         }
@@ -103,7 +104,7 @@ public sealed partial class StationRuntime
         var communication = owner.Communication = CreateProductionCommunicationOwner(owner);
         await using var channel = new ModbusQualificationChannel(profile,
             start => StartProductionCycleWrite(owner, start),
-            start => StartProductionModbusRequest(owner, start));
+            start => StartProductionModbusRequest(owner, start), ShouldReadProductionPartIdentity);
         var output = new InspectionCycleOutputLatch(channel.WriteStateAsync);
         var initialized = false;
         InspectionCycleRequestObserver? observer = null;
@@ -179,11 +180,26 @@ public sealed partial class StationRuntime
                     observer.StopAccepting();
                     accepting = false;
                     try { await AdmitProductionTriggerAsync(owner, signals).ConfigureAwait(false); }
+                    catch (PartIdentityAdmissionRejectedException exception)
+                    {
+                        await RecordRejectedProductionTriggerAsync(owner, signals, exception.Message, exception.Attempt).ConfigureAwait(false);
+                        observer.CompleteCycle();
+                        if (owner.PartIdentityOperation is { IsCompleted: false })
+                            throw new InvalidOperationException("PartIdentitySourceRetirementRequired");
+                        owner.PartIdentityAttempt = null;
+                        owner.PartIdentityOperation = null;
+                        owner.Coordinator.SetPhase(InspectionCyclePhase.AwaitRequest);
+                        await output.ChangeAsync(token, ready: false, violation: true).ConfigureAwait(false);
+                        continue;
+                    }
                     catch (OperationCanceledException exception) when (!token.IsCancellationRequested &&
                         owner.Current is null && exception.Message == "ProductionInspectionTriggerPermitRevoked")
                     {
+                        await RecordRejectedProductionTriggerAsync(owner, signals, exception.Message,
+                            owner.PartIdentityAttempt).ConfigureAwait(false);
                         observer.RejectPendingAdmission("ProductionTriggerPermitRevoked");
                         observer.CompleteCycle();
+                        owner.PartIdentityAttempt = null;
                         await output.ChangeAsync(token, ready: false).ConfigureAwait(false);
                         continue;
                     }
@@ -204,22 +220,30 @@ public sealed partial class StationRuntime
                         owner.AdmissionCommitted = false;
                         owner.Core = null;
                         owner.Prepared = null;
+                        owner.PartIdentityAttempt = null;
+                        owner.PartIdentityOperation = null;
                         ProjectProductionProgressLocked(owner);
                     }
                 }
                 // Drain the bounded observer ring; rejected edges do not allocate InspectionIds.
                 // Their protocol-fault flag prevents them being mistaken for queued work.
-                while (observer.TakeRejected() is not null)
+                while (observer.TakeRejected() is { } rejected)
+                {
+                    if (rejected.Signals is { } rejectedSignals)
+                        await RecordRejectedProductionTriggerAsync(owner, rejectedSignals, rejected.ReasonCode).ConfigureAwait(false);
                     await output.ChangeAsync(token, violation: true).ConfigureAwait(false);
+                }
                 await Task.Delay(profile.PollInterval, token).ConfigureAwait(false);
             }
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            observer?.StopAccepting();
+            observer?.RejectPendingAdmission(ProductionFailureReason(exception));
             owner.Coordinator.SetPhase(InspectionCyclePhase.FaultTerminated);
             lock (_sync) AbortProductionInspectionLocked(owner, ProductionFailureReason(exception));
-            // No Core receipt means no ordinary result, even if the storage call finished late.
+            if (observer is not null)
+                await observer.DisposeAsync().ConfigureAwait(false);
+            // Publish the fault before durable rejection writes can wait on storage.
             // A post-publication fault preserves the immutable payload and unresolved delivery.
             try
             {
@@ -227,9 +251,25 @@ public sealed partial class StationRuntime
                     valid: owner.Core is null ? false : null, fault: true).ConfigureAwait(false);
             }
             catch (Exception fault) when (fault is not OutOfMemoryException) { }
+            if (observer is not null)
+            {
+                while (observer.TakeRejected() is { } rejected)
+                {
+                    if (rejected.Signals is not { } rejectedSignals) continue;
+                    try { await RecordRejectedProductionTriggerAsync(owner, rejectedSignals, rejected.ReasonCode).ConfigureAwait(false); }
+                    catch (Exception failure) when (failure is not OutOfMemoryException)
+                    { MarkAuditFault("PartIdentityRejectionJournalUnavailable", alarmAuthorityUnavailable: true); break; }
+                }
+            }
+            if (owner.Current is null && owner.PartIdentityAttempt is { RejectionRecorded: false } pendingIdentity)
+            {
+                try { await RecordRejectedProductionTriggerAsync(owner, pendingIdentity.Signals,
+                    ProductionFailureReason(exception), pendingIdentity).ConfigureAwait(false); }
+                catch (Exception failure) when (failure is not OutOfMemoryException)
+                { MarkAuditFault("PartIdentityRejectionJournalUnavailable", alarmAuthorityUnavailable: true); }
+            }
             if (owner.Current is not null)
                 await RecordProductionFaultAsync(owner, owner.FailureReason).ConfigureAwait(false);
-            if (observer is not null) await observer.DisposeAsync().ConfigureAwait(false);
             await RetireProductionCameraAsync(owner).ConfigureAwait(false);
             owner.CycleRetired?.TrySetResult(true);
             if (communication.Failure is not null && !_lifetime.IsCancellationRequested)
@@ -251,7 +291,8 @@ public sealed partial class StationRuntime
         _snapshot.ArmState == ProductionArmState.Armed && _snapshot.ProductionAdmission is { CanArm: true } &&
         _snapshot.Mode == ExclusiveMode.None && !_snapshot.Busy && _snapshot.Recovery == RecoveryState.None &&
         _snapshot.CurrentExecution is null && _activeActivation is { Algorithm.IsRetired: false } &&
-        _activeActivation.Snapshot.ProductionAuthority;
+        _activeActivation.Snapshot.ProductionAuthority &&
+        ProductionPartIdentityReadyLocked(_activeActivation.Snapshot.Release.Source.Content.PartIdentityRequirement);
 
     private Task StartProductionModbusRequest(ProductionInspectionOwner owner, Func<Task> start)
     {

@@ -13,7 +13,10 @@ internal sealed record ModbusControllerSignals(
     bool Trigger,
     bool ResultAck,
     uint ControllerEpoch,
-    uint CycleSequence);
+    uint CycleSequence)
+{
+    internal ModbusPartIdentitySnapshot? PartIdentity { get; init; }
+}
 
 /// <summary>Runtime-owned handshake state read from the qualification controller.</summary>
 internal sealed record ModbusRuntimeSignals(
@@ -34,7 +37,7 @@ internal sealed record ModbusCommunicationSignals(
 /// Narrow Modbus TCP transport for a registered qualification facility. The channel owns only
 /// protocol I/O. It does not advance Runtime state, execute algorithms, or persist results.
 /// </summary>
-internal sealed class ModbusQualificationChannel : IAsyncDisposable
+internal sealed partial class ModbusQualificationChannel : IAsyncDisposable
 {
     private const byte ReadHoldingRegistersFunction = 0x03;
     private const byte WriteSingleRegisterFunction = 0x06;
@@ -48,6 +51,7 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private readonly bool _production;
     private readonly Func<Func<Task>, Task>? _startCycleWrite;
     private readonly Func<Func<Task>, Task>? _startOwnedRequest;
+    private readonly Func<bool>? _readPartIdentity;
     private readonly SemaphoreSlim _transportGate = new(1, 1);
     private readonly object _stateGate = new();
     private TcpClient? _client;
@@ -57,12 +61,14 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     private ushort _transactionId;
 
     internal ModbusQualificationChannel(IModbusInspectionProfile profile,
-        Func<Func<Task>, Task>? startCycleWrite = null, Func<Func<Task>, Task>? startOwnedRequest = null)
+        Func<Func<Task>, Task>? startCycleWrite = null, Func<Func<Task>, Task>? startOwnedRequest = null,
+        Func<bool>? readPartIdentity = null)
     {
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
         _production = profile is ModbusProductionProfile;
         _startCycleWrite = startCycleWrite;
         _startOwnedRequest = startOwnedRequest;
+        _readPartIdentity = readPartIdentity;
     }
 
     internal Task ConnectAsync(CancellationToken cancellationToken = default) =>
@@ -208,6 +214,16 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
     }
 
     private async Task<ModbusControllerSignals> ReadCoreAsync(CancellationToken cancellationToken)
+    {
+        var signals = await ReadRawControllerCoreAsync(cancellationToken).ConfigureAwait(false);
+        if (signals.Trigger && _profile is ModbusProductionProfile { PartIdentity: { } plan } &&
+            _readPartIdentity?.Invoke() == true)
+            return signals with { PartIdentity = await ReadPartIdentitySnapshotAsync(signals, plan,
+                cancellationToken).ConfigureAwait(false) };
+        return signals;
+    }
+
+    private async Task<ModbusControllerSignals> ReadRawControllerCoreAsync(CancellationToken cancellationToken)
     {
         var body = await ExecuteRequestAsync(
             ReadHoldingRegistersFunction,
@@ -541,6 +557,10 @@ internal sealed class ModbusQualificationChannel : IAsyncDisposable
                     range.Overlaps(new RegisterInterval(binding.RuntimeStartAddress,
                         binding.RuntimeEndAddressExclusive))))
                 throw new ArgumentException("ModbusQualificationPayloadOverlapsCommunicationBlock");
+            if (_profile is ModbusProductionProfile { PartIdentity: { } identity } &&
+                range.Overlaps(new RegisterInterval(identity.StartAddress,
+                    identity.StartAddress + identity.RegisterCount)))
+                throw new ArgumentException("ModbusProductionPayloadOverlapsPartIdentityBlock");
         }
     }
 

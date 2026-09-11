@@ -11,6 +11,13 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
     public ModbusProductionProfile(string id, string version, string address, int port, byte unitId,
         ushort controllerStartAddress, ushort runtimeStartAddress,
         ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout)
+        : this(id, version, address, port, unitId, controllerStartAddress, runtimeStartAddress,
+            communicationBinding, acknowledgementTimeout, null) { }
+
+    public ModbusProductionProfile(string id, string version, string address, int port, byte unitId,
+        ushort controllerStartAddress, ushort runtimeStartAddress,
+        ModbusCommunicationBinding communicationBinding, TimeSpan acknowledgementTimeout,
+        ModbusPartIdentityReadPlan? partIdentity)
     {
         Id = AlgorithmContractValidation.Identifier(id, nameof(id));
         Version = AlgorithmContractValidation.Identifier(version, nameof(version));
@@ -30,14 +37,15 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         CommunicationBinding = communicationBinding ?? throw new ArgumentNullException(nameof(communicationBinding));
         if (acknowledgementTimeout < TimeSpan.FromMilliseconds(1) || acknowledgementTimeout > TimeSpan.FromMinutes(5))
             throw new ArgumentOutOfRangeException(nameof(acknowledgementTimeout));
-        var ranges = new (int Start, int Count)[]
+        var ranges = new List<(int Start, int Count)>
         {
             (controllerStartAddress, 6), (runtimeStartAddress, 6),
             (communicationBinding.ControllerStartAddress, ModbusCommunicationBinding.ControllerRegisterCount),
             (communicationBinding.RuntimeStartAddress, ModbusCommunicationBinding.RuntimeRegisterCount)
         };
-        for (var left = 0; left < ranges.Length; left++)
-            for (var right = left + 1; right < ranges.Length; right++)
+        if (partIdentity is not null) ranges.Add((partIdentity.StartAddress, partIdentity.RegisterCount));
+        for (var left = 0; left < ranges.Count; left++)
+            for (var right = left + 1; right < ranges.Count; right++)
                 if (ModbusCommunicationBinding.Overlaps(ranges[left].Start, ranges[left].Count,
                         ranges[right].Start, ranges[right].Count))
                     throw new ArgumentException("ModbusProductionRegisterBlocksOverlap");
@@ -46,18 +54,22 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
         ControllerStartAddress = controllerStartAddress;
         RuntimeStartAddress = runtimeStartAddress;
         AcknowledgementTimeout = acknowledgementTimeout;
+        PartIdentity = partIdentity;
         EndpointBindingHash = AlgorithmContractValidation.HashParts(new[]
         {
             "sharpinspect-modbus-production-endpoint-v1", Address,
             port.ToString(CultureInfo.InvariantCulture), unitId.ToString(CultureInfo.InvariantCulture)
         });
-        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        var profileParts = new List<string?>
         {
-            "sharpinspect-modbus-production-profile-v1", Id, Version, EndpointBindingHash,
+            partIdentity is null ? "sharpinspect-modbus-production-profile-v1" :
+                "sharpinspect-modbus-production-profile-v2", Id, Version, EndpointBindingHash,
             controllerStartAddress.ToString(CultureInfo.InvariantCulture),
             runtimeStartAddress.ToString(CultureInfo.InvariantCulture), communicationBinding.BindingHash,
             acknowledgementTimeout.ToString("c", CultureInfo.InvariantCulture)
-        });
+        };
+        if (partIdentity is not null) profileParts.Add(partIdentity.ContentHash);
+        ContentHash = AlgorithmContractValidation.HashParts(profileParts);
     }
 
     public string Id { get; }
@@ -73,6 +85,7 @@ public sealed class ModbusProductionProfile : IModbusInspectionProfile
     public TimeSpan AcknowledgementTimeout { get; }
     public string EndpointBindingHash { get; }
     public string ContentHash { get; }
+    public ModbusPartIdentityReadPlan? PartIdentity { get; }
     int IModbusInspectionProfile.ControllerEndAddressExclusive => ControllerStartAddress + 6;
     int IModbusInspectionProfile.RuntimeEndAddressExclusive => RuntimeStartAddress + 6;
 }

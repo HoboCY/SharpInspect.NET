@@ -18,6 +18,7 @@ internal sealed class RecipeActivationChecks
     };
     private readonly Dictionary<string, RecipeActivationCheck> _major = new(StringComparer.Ordinal);
     private readonly List<RecipeActivationCheck> _detail = new();
+    internal PartIdentityBindingObservation? PartIdentity { get; set; }
 
     internal RecipeActivationChecks()
     {
@@ -183,17 +184,22 @@ internal sealed class RecipeActivationChecks
             evidence.Configuration.ObservedBindingsHash, evidence.Configuration.Get(ProductionConfigurationBinding.DeploymentPolicy));
 
         var content = snapshot.Release.Source.Content;
+        var partIdentityPassed = content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None ||
+            PartIdentity is { } preparedIdentity && evidence.PartIdentity is { } observedIdentity &&
+            preparedIdentity.RequirementHash == content.PartIdentityRequirement?.ContentHash &&
+            preparedIdentity.StaticHash == observedIdentity.StaticHash &&
+            evidence.StoreOptions.PartIdentities is not null && evidence.PartIdentityWriterAvailable;
         var cyclePassed = snapshot.ProductionAuthority && evidence.ProductionWriterAvailable &&
             evidence.StoreOptions.ProductionInspections is not null &&
             evidence.Configuration.Get(ProductionConfigurationBinding.PlcEndpoint) == profile.EndpointBindingHash &&
-            content.PartIdentityRequirement?.Mode == PartIdentityRequirementMode.None &&
+            partIdentityPassed &&
             content.AssetRequirements.Count == 0 && content.CameraProviderExtension is null &&
             evidence.InspectionOptions.EvidenceRequirement == ProductionEvidenceRequirement.None;
         Observe(18, cyclePassed, cyclePassed ? "ProductionCycleWriterExactlyMatches" :
             !snapshot.ProductionAuthority ? "ProductionActivationAuthorityRequired" :
             !evidence.ProductionWriterAvailable ? "ProductionInspectionWriterUnavailable" :
             evidence.StoreOptions.ProductionInspections is null ? "ProductionInspectionStoreUnavailable" :
-            content.PartIdentityRequirement?.Mode != PartIdentityRequirementMode.None ? "ProductionPartIdentityMustBeNone" :
+            !partIdentityPassed ? "ProductionPartIdentityBindingUnavailable" :
             content.AssetRequirements.Count != 0 || content.CameraProviderExtension is not null ?
                 "ProductionRecipeAssetsUnsupported" : "ProductionInspectionEvidenceRequirementMismatch",
             snapshot.ContentHash, evidence.ContentHash);

@@ -14,14 +14,20 @@ namespace SharpInspect.Runtime.Storage;
 internal static class ProductionInspectionStorageCodec
 {
     internal const int MaximumStringBytes = 4 * 1024 * 1024;
-    private const int EnvelopeVersion = 1;
+    private const int LegacyEnvelopeVersion = 1;
+    private const int PartIdentityEnvelopeVersion = 2;
     private const int MaximumEnvelopeBytes = 16 * 1024 * 1024;
     private const int MaximumSegments = 2048;
     private const int MaximumObligations = 64;
     private static readonly byte[] EnvelopeMagic = Encoding.ASCII.GetBytes("SI-PROD-CORE");
 
-    internal static byte[] EncodeAdmission(ProductionInspectionAdmission value) => AuditCanonical.Encode(
-        "ProductionInspectionAdmissionV1", value.InspectionId.ToString("D"),
+    internal static byte[] EncodeAdmission(ProductionInspectionAdmission value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var fields = new List<string?>
+        {
+            value.PartIdentityEvidence is null ? "ProductionInspectionAdmissionV1" :
+                "ProductionInspectionAdmissionV2", value.InspectionId.ToString("D"),
         value.CorrelationId.ToString("D"), value.RuntimeEpoch.ToString("D"), value.StationId,
         value.AdmissionGeneration.ToString(CultureInfo.InvariantCulture),
         value.ControllerCycle.ControllerEpoch.ToString(CultureInfo.InvariantCulture),
@@ -37,10 +43,20 @@ internal static class ProductionInspectionStorageCodec
         value.TracePolicySnapshot.ContentHash,
         value.RetentionObligations.Count.ToString(CultureInfo.InvariantCulture),
         string.Join("\n", value.RetentionObligations.Select(item => item.ContentHash)),
-        value.ContentHash);
+        value.ContentHash
+        };
+        if (value.PartIdentityEvidence is { } evidence)
+            fields.Add(evidence.ContentHash);
+        return AuditCanonical.Encode(fields[0]!, fields.Skip(1).ToArray());
+    }
 
-    internal static byte[] EncodeCore(ProductionInspectionCore value) => AuditCanonical.Encode(
-        "ProductionInspectionCoreV1", value.Admission.InspectionId.ToString("D"),
+    internal static byte[] EncodeCore(ProductionInspectionCore value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var fields = new List<string?>
+        {
+        value.Admission.PartIdentityEvidence is null ? "ProductionInspectionCoreV1" :
+            "ProductionInspectionCoreV2", value.Admission.InspectionId.ToString("D"),
         value.Admission.ContentHash, value.State.ToString(), value.ExecutionStatus.ToString(),
         value.Decision.ToString(), value.ReasonCode, value.AcquisitionFailureKind?.ToString(),
         value.AcquisitionFailureReasonCode, FrameHash(value.FrameMetadata),
@@ -55,7 +71,12 @@ internal static class ProductionInspectionStorageCodec
         AcquisitionStartHash(value.AcquisitionStart),
         value.RetentionObligations.Count.ToString(CultureInfo.InvariantCulture),
         string.Join("\n", value.RetentionObligations.Select(item => item.ContentHash)),
-        value.ContentHash);
+        value.ContentHash
+        };
+        if (value.Admission.PartIdentityEvidence is { } evidence)
+            fields.Add(evidence.ContentHash);
+        return AuditCanonical.Encode(fields[0]!, fields.Skip(1).ToArray());
+    }
 
     /// <summary>Central audit payload excludes final audit sequence/hash to avoid self-binding.</summary>
     internal static byte[] EncodeAuditBinding(ProductionInspectionHistoryEvent value) =>
@@ -82,7 +103,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        using (var writer = NewWriter(stream, EnvelopeKind.Admission))
+        var version = value.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        using (var writer = NewWriter(stream, EnvelopeKind.Admission, version))
         {
             WriteGuid(writer, value.InspectionId);
             WriteGuid(writer, value.CorrelationId);
@@ -92,6 +114,8 @@ internal static class ProductionInspectionStorageCodec
             writer.Write(value.ControllerCycle.ControllerEpoch);
             writer.Write(value.ControllerCycle.CycleSequence);
             writer.Write((byte)value.EvidenceRequirement);
+            if (version >= PartIdentityEnvelopeVersion)
+                WritePartIdentityEvidence(writer, value.PartIdentityEvidence);
             writer.Write(value.ActivationReference.Position);
             WriteGuid(writer, value.ActivationReference.ActivationId);
             WriteString(writer, value.ActivationReference.ContentHash, 64);
@@ -116,7 +140,8 @@ internal static class ProductionInspectionStorageCodec
         ReadOnlyMemory<byte> payload,
         Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? calibrationResolver = null)
     {
-        using var reader = OpenReader(payload, EnvelopeKind.Admission, out var stream);
+        using var reader = OpenReader(payload, EnvelopeKind.Admission, out var stream,
+            out var envelopeVersion);
         var inspectionId = ReadGuid(reader);
         var correlationId = ReadGuid(reader);
         var runtimeEpoch = ReadGuid(reader);
@@ -126,6 +151,8 @@ internal static class ProductionInspectionStorageCodec
         var cycleSequence = reader.ReadUInt32();
         var evidence = ReadEnum<ProductionEvidenceRequirement>(reader.ReadByte(),
             "ProductionInspectionEvidenceInvalid");
+        var partIdentityEvidence = envelopeVersion >= PartIdentityEnvelopeVersion
+            ? ReadPartIdentityEvidence(reader) : null;
         var activationPosition = reader.ReadInt64();
         var activationId = ReadGuid(reader);
         var activationHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionActivationHashMissing");
@@ -148,7 +175,8 @@ internal static class ProductionInspectionStorageCodec
             stationId, admissionGeneration, new PlcControllerCycle(controllerEpoch, cycleSequence),
             evidence, new RecipeActivationReference(activationPosition, activationId, activationHash),
             activation, endpointHash, profileHash, policyHash, connectionGeneration,
-            connectionAttempt, acceptedAt, acceptedMonotonic, policySnapshot, obligations);
+            connectionAttempt, acceptedAt, acceptedMonotonic, policySnapshot, obligations,
+            partIdentityEvidence);
         RequireHash(value.ContentHash, expectedHash, "ProductionInspectionAdmissionHashMismatch");
         return value;
     }
@@ -157,7 +185,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        using (var writer = NewWriter(stream, EnvelopeKind.Core))
+        var version = value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        using (var writer = NewWriter(stream, EnvelopeKind.Core, version))
         {
             WriteString(writer, value.Admission.ContentHash, 64);
             writer.Write((byte)value.State);
@@ -197,7 +226,7 @@ internal static class ProductionInspectionStorageCodec
         ReadOnlyMemory<byte> payload, ProductionInspectionAdmission admission)
     {
         ArgumentNullException.ThrowIfNull(admission);
-        using var reader = OpenReader(payload, EnvelopeKind.Core, out var stream);
+        using var reader = OpenReader(payload, EnvelopeKind.Core, out var stream, out _);
         var admissionHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionAdmissionHashMissing");
         RequireHash(admission.ContentHash, admissionHash, "ProductionInspectionAdmissionMissing");
         var state = ReadEnum<ProductionInspectionState>(reader.ReadByte(), "ProductionInspectionStateInvalid");
@@ -264,7 +293,8 @@ internal static class ProductionInspectionStorageCodec
         var value = new ProductionInspectionCore(admission, state, executionStatus, decision,
             reason, failureKind, failureReason, frame, provenance, prepared, algorithm,
             configuration, resultSchema, result, overlay, timing, plc, structuredJson,
-            structuredHash, null, committedAt, committedMonotonic, obligations, acquisitionStart,
+            structuredHash, admission.PartIdentityEvidence?.Value, committedAt, committedMonotonic,
+            obligations, acquisitionStart,
             executionAdmitted, executionFrequency);
         RequireHash(value.ContentHash, expectedHash, "ProductionInspectionCoreHashMismatch");
         return value;
@@ -274,7 +304,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        using (var writer = NewWriter(stream, EnvelopeKind.Event))
+        var version = value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        using (var writer = NewWriter(stream, EnvelopeKind.Event, version))
         {
             writer.Write(value.Position);
             writer.Write((byte)value.Kind);
@@ -296,7 +327,7 @@ internal static class ProductionInspectionStorageCodec
         ReadOnlyMemory<byte> payload,
         Func<CalibrationProfileReference, PublishedCalibrationProfileVersion?>? calibrationResolver = null)
     {
-        using var reader = OpenReader(payload, EnvelopeKind.Event, out var stream);
+        using var reader = OpenReader(payload, EnvelopeKind.Event, out var stream, out _);
         var position = reader.ReadInt64();
         var kind = ReadEnum<ProductionInspectionEventKind>(reader.ReadByte(),
             "ProductionInspectionEventKindInvalid");
@@ -319,11 +350,14 @@ internal static class ProductionInspectionStorageCodec
 
     private enum EnvelopeKind : byte { Admission = 1, Core = 2, Event = 3 }
 
-    private static BinaryWriter NewWriter(Stream stream, EnvelopeKind kind)
+    private static BinaryWriter NewWriter(Stream stream, EnvelopeKind kind) =>
+        NewWriter(stream, kind, LegacyEnvelopeVersion);
+
+    private static BinaryWriter NewWriter(Stream stream, EnvelopeKind kind, int version)
     {
         var writer = new BinaryWriter(stream, StrictUtf8, leaveOpen: true);
         writer.Write(EnvelopeMagic);
-        writer.Write(EnvelopeVersion);
+        writer.Write(version);
         writer.Write((byte)kind);
         return writer;
     }
@@ -338,12 +372,20 @@ internal static class ProductionInspectionStorageCodec
     private static BinaryReader OpenReader(ReadOnlyMemory<byte> payload, EnvelopeKind kind,
         out MemoryStream stream)
     {
+        return OpenReader(payload, kind, out stream, out _);
+    }
+
+    private static BinaryReader OpenReader(ReadOnlyMemory<byte> payload, EnvelopeKind kind,
+        out MemoryStream stream, out int version)
+    {
         if (payload.Length is <= 0 or > MaximumEnvelopeBytes)
             throw Corrupt("ProductionInspectionPayloadCapacityExceeded");
         stream = new MemoryStream(payload.ToArray(), writable: false);
         var reader = new BinaryReader(stream, StrictUtf8, leaveOpen: true);
         var magic = reader.ReadBytes(EnvelopeMagic.Length);
-        if (!magic.AsSpan().SequenceEqual(EnvelopeMagic) || reader.ReadInt32() != EnvelopeVersion ||
+        version = reader.ReadInt32();
+        if (!magic.AsSpan().SequenceEqual(EnvelopeMagic) ||
+            version is not (LegacyEnvelopeVersion or PartIdentityEnvelopeVersion) ||
             reader.ReadByte() != (byte)kind)
             throw Corrupt("ProductionInspectionEnvelopeVersionInvalid");
         return reader;
@@ -425,6 +467,33 @@ internal static class ProductionInspectionStorageCodec
         return bytes;
     }
 
+    private static void WritePossiblyEmptyBytes(BinaryWriter writer, byte[] value, int maximumBytes)
+    {
+        if (value is null || value.Length > maximumBytes)
+            throw Corrupt("ProductionInspectionPayloadCapacityExceeded");
+        writer.Write(value.Length);
+        writer.Write(value);
+    }
+
+    private static byte[] ReadPossiblyEmptyBytes(BinaryReader reader, int maximumBytes)
+    {
+        var length = reader.ReadInt32();
+        if (length < 0 || length > maximumBytes)
+            throw Corrupt("ProductionInspectionPayloadCapacityExceeded");
+        var bytes = reader.ReadBytes(length);
+        if (bytes.Length != length) throw Corrupt("ProductionInspectionPayloadTruncated");
+        return bytes;
+    }
+
+    private static void WriteNullableGuid(BinaryWriter writer, Guid? value)
+    {
+        writer.Write(value.HasValue);
+        if (value is { } guid) WriteGuid(writer, guid);
+    }
+
+    private static Guid? ReadNullableGuid(BinaryReader reader) =>
+        reader.ReadBoolean() ? ReadGuid(reader) : null;
+
     private static DateTimeOffset ReadUtc(BinaryReader reader, string reason)
     {
         try { return new DateTimeOffset(reader.ReadInt64(), TimeSpan.Zero); }
@@ -435,6 +504,179 @@ internal static class ProductionInspectionStorageCodec
     {
         var typed = (T)Enum.ToObject(typeof(T), value);
         return Enum.IsDefined(typeof(T), typed) ? typed : throw Corrupt(reason);
+    }
+
+    private static void WritePartIdentityEvidence(BinaryWriter writer,
+        PartIdentityEvidence? value)
+    {
+        writer.Write(value is not null);
+        if (value is null) return;
+        writer.Write((byte)value.State);
+        WriteNullableString(writer, value.Value, 4096);
+        WritePartIdentityObservation(writer, value.Observation);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static PartIdentityEvidence? ReadPartIdentityEvidence(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean()) return null;
+        var state = ReadEnum<PartIdentityEvidenceState>(reader.ReadByte(),
+            "ProductionInspectionPartIdentityEvidenceStateInvalid");
+        var value = ReadNullableString(reader, 4096);
+        var observation = ReadPartIdentityObservation(reader);
+        var evidence = new PartIdentityEvidence(state, value, observation);
+        var expectedHash = ReadString(reader, 64) ??
+            throw Corrupt("ProductionInspectionPartIdentityEvidenceHashMissing");
+        RequireHash(evidence.ContentHash, expectedHash,
+            "ProductionInspectionPartIdentityEvidenceHashMismatch");
+        return evidence;
+    }
+
+    private static void WritePartIdentityBinding(BinaryWriter writer,
+        PartIdentityProviderBinding value)
+    {
+        WriteString(writer, value.BindingId, 128);
+        WriteString(writer, value.BindingVersion, 64);
+        WriteString(writer, value.LogicalRole, 128);
+        writer.Write((byte)value.SourceKind);
+        WriteString(writer, value.ProviderId, 128);
+        WriteString(writer, value.ProviderVersion, 64);
+        WriteString(writer, value.SourceContractHash, 64);
+        WriteString(writer, value.Format.Id, 128);
+        WriteString(writer, value.Format.Version, 64);
+        writer.Write(value.Format.MinimumLength);
+        writer.Write(value.Format.MaximumLength);
+        WriteString(writer, value.Format.AllowedCharacters, 256);
+        WriteNullableString(writer, value.Format.RequiredPrefix, 256);
+        WriteNullableString(writer, value.Format.RequiredSuffix, 256);
+        writer.Write(value.FreshnessLimit.Ticks);
+        writer.Write(value.LatchTimeout.Ticks);
+        writer.Write(value.MaximumCallsPerCycle);
+    }
+
+    private static PartIdentityProviderBinding ReadPartIdentityBinding(BinaryReader reader)
+    {
+        var bindingId = ReadString(reader, 128) ?? throw Corrupt("ProductionInspectionPartIdentityBindingMissing");
+        var bindingVersion = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionPartIdentityBindingVersionMissing");
+        var logicalRole = ReadString(reader, 128) ?? throw Corrupt("ProductionInspectionPartIdentityRoleMissing");
+        var sourceKind = ReadEnum<PartIdentityProviderSourceKind>(reader.ReadByte(),
+            "ProductionInspectionPartIdentitySourceInvalid");
+        var providerId = ReadString(reader, 128) ?? throw Corrupt("ProductionInspectionPartIdentityProviderMissing");
+        var providerVersion = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionPartIdentityProviderVersionMissing");
+        var sourceContract = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionPartIdentitySourceContractMissing");
+        var format = new PartIdentityFormat(
+            ReadString(reader, 128) ?? throw Corrupt("ProductionInspectionPartIdentityFormatMissing"),
+            ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionPartIdentityFormatVersionMissing"),
+            reader.ReadInt32(), reader.ReadInt32(),
+            ReadString(reader, 256) ?? throw Corrupt("ProductionInspectionPartIdentityAllowedCharactersMissing"),
+            ReadNullableString(reader, 256), ReadNullableString(reader, 256));
+        return new PartIdentityProviderBinding(bindingId, bindingVersion, logicalRole, sourceKind,
+            providerId, providerVersion, sourceContract, format,
+            TimeSpan.FromTicks(reader.ReadInt64()), TimeSpan.FromTicks(reader.ReadInt64()),
+            reader.ReadInt32());
+    }
+
+    private static void WritePartIdentityCycle(BinaryWriter writer,
+        PartIdentityCycleBinding value)
+    {
+        WriteGuid(writer, value.RuntimeEpoch);
+        WriteString(writer, value.EndpointBindingHash, 64);
+        writer.Write(value.ConnectionGeneration);
+        writer.Write(value.ControllerEpoch);
+        writer.Write(value.CycleSequence);
+    }
+
+    private static PartIdentityCycleBinding ReadPartIdentityCycle(BinaryReader reader) =>
+        new(ReadGuid(reader), ReadString(reader, 64) ??
+            throw Corrupt("ProductionInspectionPartIdentityEndpointMissing"),
+            reader.ReadInt64(), reader.ReadUInt32(), reader.ReadUInt32());
+
+    private static void WritePartIdentityObservation(BinaryWriter writer,
+        PartIdentityProviderObservation value)
+    {
+        WritePartIdentityBinding(writer, value.Binding);
+        WritePartIdentityCycle(writer, value.Cycle);
+        writer.Write((byte)value.Status);
+        WriteNullableString(writer, value.Value, 4096);
+        WriteString(writer, value.ReasonCode, 256);
+        writer.Write(value.SourceSequence);
+        writer.Write(value.ObservedAtUtc.UtcTicks);
+        writer.Write(value.MonotonicTimestamp);
+        writer.Write(value.MonotonicFrequency);
+        WriteGuid(writer, value.SourceEpoch);
+        writer.Write(value.SourceGeneration);
+        WriteNullableGuid(writer, value.StageToken);
+        writer.Write(value.StablePlcSnapshot is not null);
+        if (value.StablePlcSnapshot is { } stable)
+            WriteStablePartIdentitySnapshot(writer, stable);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static PartIdentityProviderObservation ReadPartIdentityObservation(BinaryReader reader)
+    {
+        var binding = ReadPartIdentityBinding(reader);
+        var cycle = ReadPartIdentityCycle(reader);
+        var status = ReadEnum<PartIdentityObservationStatus>(reader.ReadByte(),
+            "ProductionInspectionPartIdentityObservationStatusInvalid");
+        var value = ReadNullableString(reader, 4096);
+        var reason = ReadString(reader, 256) ??
+            throw Corrupt("ProductionInspectionPartIdentityObservationReasonMissing");
+        var sequence = reader.ReadInt64();
+        var observedAt = ReadUtc(reader, "ProductionInspectionPartIdentityObservationTimestampInvalid");
+        var monotonic = reader.ReadInt64();
+        var frequency = reader.ReadInt64();
+        var sourceEpoch = ReadGuid(reader);
+        var sourceGeneration = reader.ReadInt64();
+        var stageToken = ReadNullableGuid(reader);
+        var stable = reader.ReadBoolean() ? ReadStablePartIdentitySnapshot(reader, cycle) : null;
+        var observation = new PartIdentityProviderObservation(binding, cycle, status, value, reason,
+            sequence, observedAt, monotonic, frequency, sourceEpoch, sourceGeneration,
+            stageToken, stable);
+        RequireHash(observation.ContentHash,
+            ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionPartIdentityObservationHashMissing"),
+            "ProductionInspectionPartIdentityObservationHashMismatch");
+        return observation;
+    }
+
+    private static void WriteStablePartIdentitySnapshot(BinaryWriter writer,
+        PartIdentityStablePlcSnapshot value)
+    {
+        WriteString(writer, value.SourceContractHash, 64);
+        writer.Write(value.Revision);
+        writer.Write(value.State);
+        writer.Write((byte)value.Status);
+        WritePossiblyEmptyBytes(writer, value.GetRawUtf8Bytes(), 4096);
+        writer.Write(value.SourceSequence);
+        writer.Write(value.ObservedAtUtc.UtcTicks);
+        writer.Write(value.MonotonicTimestamp);
+        writer.Write(value.MonotonicFrequency);
+        WriteString(writer, value.ReadEvidenceHash, 64);
+        WriteString(writer, value.ContentHash, 64);
+    }
+
+    private static PartIdentityStablePlcSnapshot ReadStablePartIdentitySnapshot(
+        BinaryReader reader, PartIdentityCycleBinding cycle)
+    {
+        var sourceContract = ReadString(reader, 64) ??
+            throw Corrupt("ProductionInspectionPartIdentityStableSourceMissing");
+        var revision = reader.ReadUInt32();
+        var state = reader.ReadUInt16();
+        var status = ReadEnum<PartIdentityObservationStatus>(reader.ReadByte(),
+            "ProductionInspectionPartIdentityStableStatusInvalid");
+        var raw = ReadPossiblyEmptyBytes(reader, 4096);
+        var sequence = reader.ReadInt64();
+        var observedAt = ReadUtc(reader, "ProductionInspectionPartIdentityStableTimestampInvalid");
+        var monotonic = reader.ReadInt64();
+        var frequency = reader.ReadInt64();
+        var readEvidenceHash = ReadString(reader, 64) ??
+            throw Corrupt("ProductionInspectionPartIdentityReadEvidenceMissing");
+        var value = new PartIdentityStablePlcSnapshot(cycle, sourceContract, revision, state, status, raw, sequence, observedAt,
+            monotonic, frequency, readEvidenceHash);
+        var expectedHash = ReadString(reader, 64) ??
+            throw Corrupt("ProductionInspectionPartIdentityStableHashMissing");
+        RequireHash(value.ContentHash, expectedHash,
+            "ProductionInspectionPartIdentityStableHashMismatch");
+        return value;
     }
 
     private static void WriteObligations(BinaryWriter writer,

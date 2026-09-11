@@ -339,7 +339,8 @@ internal sealed partial class SqliteCommandStore
             stationQualificationOptions: options.StationQualifications, recipeTransferOptions: options.RecipeTransfers,
             traceStoragePolicyOptions: options.TraceStoragePolicies, qualificationCycleOptions: options.QualificationCycles,
             plcCommunicationOptions: options.PlcCommunication,
-                productionInspectionOptions: options.ProductionInspections);
+                productionInspectionOptions: options.ProductionInspections,
+                partIdentityOptions: options.PartIdentities);
     }
 
     internal static void VerifyPlcCommunicationActivationPayload(sqlite3 database,
