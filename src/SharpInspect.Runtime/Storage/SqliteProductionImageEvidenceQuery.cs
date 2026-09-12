@@ -11,7 +11,8 @@ internal sealed record ImageFinalizationReplayPage(IReadOnlyList<ImageFinalizati
     long ThroughPosition, long? NextAfterPosition, ImageBacklogSnapshot Backlog);
 
 /// <summary>
-/// Read-only, bounded access to the schema-35 production image evidence lifecycle. Every page
+/// Read-only, bounded access to the production image evidence lifecycle in schema 35 or the
+/// explicitly configured schema-36 Outbox profile. Every page
 /// is reconstructed inside one frozen SQLite snapshot after a full central-audit verification,
 /// so the returned audit watermark can never be a stale in-memory projection. The query exposes
 /// no mutation surface and never accepts a filesystem path.
@@ -125,8 +126,10 @@ public sealed class SqliteProductionImageEvidenceQuery : IProductionImageEvidenc
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema != ProductionImageFinalizationStoreOptions.SchemaVersion)
-                throw new InvalidOperationException(schema > ProductionImageFinalizationStoreOptions.SchemaVersion
+            var expectedSchema = _options.Outbox is null ? ProductionImageFinalizationStoreOptions.SchemaVersion
+                : ProductionOutboxStoreOptions.SchemaVersion;
+            if (schema != expectedSchema)
+                throw new InvalidOperationException(schema > expectedSchema
                     ? "ImageFinalizationSchemaTooNew"
                     : "ImageFinalizationGovernedMigrationRequired");
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId,
@@ -160,7 +163,8 @@ public sealed class SqliteProductionImageEvidenceQuery : IProductionImageEvidenc
                 recipeSelectionOptions: _options.RecipeSelections,
                 recipeLifecycleOptions: _options.RecipeLifecycle,
                 imageEvidenceOptions: _options.ImageEvidence,
-                imageFinalizationOptions: finalization);
+                imageFinalizationOptions: finalization,
+                productionOutboxOptions: _options.Outbox);
             AuditChainDatabase.RequireFullImageFinalizationVerification(database, verification,
                 deadline, finalization);
             var auditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;

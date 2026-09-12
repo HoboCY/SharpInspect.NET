@@ -342,7 +342,8 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections,
                 productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities,
-                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections, recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization);
+                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections, recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization,
+                productionOutboxOptions: options.Outbox);
     }
 
     internal static void VerifyPlcCommunicationActivationPayload(sqlite3 database,

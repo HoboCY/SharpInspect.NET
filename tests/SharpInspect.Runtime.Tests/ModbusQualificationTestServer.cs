@@ -397,7 +397,11 @@ internal sealed partial class ModbusQualificationTestServer : IAsyncDisposable
         _writes.Enqueue(new(address, data, 0x10));
         if (TryWriteProductionArmStatus(address, count, data)) { }
         else if (TryWriteRecipeChange(address, count, data)) { }
-        else if (TryWriteHeartbeat(profile, address, count, data)) { }
+        else if (TryWriteHeartbeat(profile, address, count, data))
+        {
+            if (BeforeHeartbeatResponse is { } beforeResponse)
+                await beforeResponse().ConfigureAwait(false);
+        }
         else if (address == profile.RuntimeStartAddress && count == 6)
         {
             bool resultValid;

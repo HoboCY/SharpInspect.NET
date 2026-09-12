@@ -16,6 +16,8 @@ internal static class Program
     {
         if (args.Length > 0 && args[0] == "image-finalize")
             return await ImageFinalizationProbe.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
+        if (args.Length > 0 && args[0] == "outbox-receiver")
+            return await OutboxReceiverProbe.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
         var mode = args.Length == 1 ? args[0] : string.Empty;
         if (mode is "fresh")
             return await RunFreshProcessProbeAsync().ConfigureAwait(false);

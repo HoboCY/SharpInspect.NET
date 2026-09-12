@@ -37,7 +37,8 @@ internal static class TraceStoragePreflightEvaluator
 
     internal static TraceStoragePreflightReport Evaluate(TraceStoragePolicyReadResult current,
         TraceStorageDeploymentScope? scope, TraceStorageVolumeObservation volume,
-        SqliteCommandStore.VerifiedSqliteProfile? profile, DateTimeOffset now)
+        SqliteCommandStore.VerifiedSqliteProfile? profile, DateTimeOffset now,
+        OutboxBacklogSnapshot? outboxBacklog = null)
     {
         var policy = current.Available ? current.Publication?.Policy : null;
         var rows = new List<TraceStoragePreflightRow>();
@@ -74,7 +75,15 @@ internal static class TraceStoragePreflightEvaluator
             Number(policy?.MaximumWalBytes), Number(volume.WalBytes));
         Row(TraceStoragePreflightGate.Checkpoint, TraceStoragePreflightStatus.NotImplemented, "TraceStoragePolicyCheckpointEnforcementUnavailable");
         Row(TraceStoragePreflightGate.ImageBacklog, TraceStoragePreflightStatus.NotImplemented, "TraceStorageImageBacklogUnobserved");
-        Row(TraceStoragePreflightGate.RequiredRouteBacklog, TraceStoragePreflightStatus.NotImplemented, "TraceStorageRouteBacklogUnobserved");
+        if (outboxBacklog is not null && current.Snapshot is { } trace)
+        {
+            var routeFailure = Outbox.ProductionOutboxBinding.RequiredBacklogFailure(trace, outboxBacklog, now);
+            Row(TraceStoragePreflightGate.RequiredRouteBacklog,
+                routeFailure is null ? TraceStoragePreflightStatus.Passed : TraceStoragePreflightStatus.Failed,
+                routeFailure ?? "OutboxRequiredBacklogVerified", observed: Number(outboxBacklog.ThroughAuditSequence));
+        }
+        else Row(TraceStoragePreflightGate.RequiredRouteBacklog, TraceStoragePreflightStatus.NotImplemented,
+            "TraceStorageRouteBacklogUnobserved");
         Row(TraceStoragePreflightGate.EvidenceReconciliation, TraceStoragePreflightStatus.NotImplemented, "TraceStorageEvidenceReconciliationUnavailable");
         Row(TraceStoragePreflightGate.Scrubber, TraceStoragePreflightStatus.NotImplemented, "TraceStorageScrubberEnforcementUnavailable");
         Row(TraceStoragePreflightGate.OtherDeploymentPolicies, TraceStoragePreflightStatus.NotImplemented, "TraceStorageOtherDeploymentPoliciesUnavailable");

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Images;
+using SharpInspect.Runtime.Outbox;
 using SQLitePCL;
 
 namespace SharpInspect.Runtime.Storage;
@@ -22,7 +23,8 @@ internal sealed record ProductionInspectionAdmissionWriteRequest(
 internal sealed record ProductionInspectionCoreWriteRequest(
     ProductionInspectionCore Core,
     Func<string?>? FinalGuard = null,
-    ProductionImageStager.StageCommitClaim? ImageClaim = null);
+    ProductionImageStager.StageCommitClaim? ImageClaim = null,
+    FrozenOutboxBatch? OutboxBatch = null);
 
 internal sealed record ProductionInspectionEventWriteRequest(
     Guid InspectionId,
@@ -498,6 +500,15 @@ internal sealed partial class SqliteCommandStore
                 persisted.AuditSequence.ToString(CultureInfo.InvariantCulture), persisted.AuditHash!);
             InsertProductionInspectionEvent(database, persisted, payload, deadline);
             var durable = ReadPersistedProductionInspectionEvent(database, options, position, deadline).Event;
+            var outboxReason = ProductionOutboxAdmissionFailure(database, request.Admission, deadline);
+            if (outboxReason is not null)
+                return ProductionInspectionRejected(work, outboxReason);
+            // T52: the candidate is durable in this transaction but not yet accepted, so its
+            // complete uncreated outbox liability must fit before the final fence may commit.
+            var outboxCapacityReason = ProductionOutboxAdmissionCapacityFailure(database,
+                request.Admission, deadline);
+            if (outboxCapacityReason is not null)
+                return ProductionInspectionRejected(work, outboxCapacityReason);
             var guardReason = EvaluateProductionFinalGuard(request.FinalGuard);
             if (guardReason is not null)
                 return ProductionInspectionRejected(work, guardReason);
@@ -585,12 +596,15 @@ internal sealed partial class SqliteCommandStore
                 request.Core.CommittedMonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
                 persisted.AuditSequence.ToString(CultureInfo.InvariantCulture), persisted.AuditHash!);
             InsertProductionImageEvidence(database, request, deadline);
+            InsertProductionOutboxBatch(database, request, deadline);
             InsertProductionInspectionEvent(database, persisted, payload, deadline);
             var durable = ReadPersistedProductionInspectionEvent(database, options, position, deadline).Event;
             var guardReason = EvaluateProductionFinalGuard(request.FinalGuard);
             if (guardReason is not null)
                 return ProductionInspectionRejected(work, guardReason);
             ConsumeProductionImageClaim(request);
+            var committedAuditSequence = _options.Outbox is null ? audit.Sequence :
+                AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.EnsureDeadline(deadline, default);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
@@ -603,7 +617,7 @@ internal sealed partial class SqliteCommandStore
             }
             work.Completion.TrySetResult(new(true, "ProductionInspectionCoreCommitted",
                 Core: durable.Core, Event: durable));
-            PublishProductionInspectionIntegrity(policy, audit.Sequence);
+            PublishProductionInspectionIntegrity(policy, committedAuditSequence);
             return new(true, "ProductionInspectionCoreCommitted");
         }
         catch (InvalidOperationException ex) when (AuditChainDatabase.IsCapacityReason(ex.Message))

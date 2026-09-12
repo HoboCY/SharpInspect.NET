@@ -20,6 +20,8 @@
              Link="Fixtures/SyntheticCheckerboardFixture.cs" />
     <Compile Include="../SharpInspect.Calibration.OpenCvSharp.Tests/SyntheticPlanarFixture.cs"
              Link="Fixtures/SyntheticPlanarFixture.cs" />
+    <Compile Include="../SharpInspect.AlgorithmHangProbe/IsolatedOutboxReceiver.cs"
+             Link="Fixtures/IsolatedOutboxReceiver.cs" />
   </ItemGroup>
   <PropertyGroup>
     <AlgorithmHangProbeOutputRoot Condition="'$(Platform)' == 'x64'">$(MSBuildProjectDirectory)/../SharpInspect.AlgorithmHangProbe/bin/x64/$(Configuration)/net6.0</AlgorithmHangProbeOutputRoot>

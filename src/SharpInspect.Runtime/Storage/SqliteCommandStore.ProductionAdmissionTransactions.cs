@@ -62,7 +62,7 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
         }, cancellationToken).ConfigureAwait(false);
     }
 
-    private static IReadOnlyDictionary<string, string> ReadProductionAdmissionDurableHeads(sqlite3 database,
+    private IReadOnlyDictionary<string, string> ReadProductionAdmissionDurableHeads(sqlite3 database,
         IdentityAuthorityState state, StoreDeadline deadline)
     {
         var identity = new List<string?> { state.StationId, state.InstallationKeyId, state.PolicyContentHash,
@@ -93,11 +93,15 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
                 WHERE Kind NOT IN ('CommandFact','IdentityEvent','ProductionAdmissionEvent',
                     'ProductionInspectionEvent','PlcCommunicationEvent','ProductionArmEvent',
                     'ImageFinalizationAttemptStarted','ImageFinalizationAttemptFailed',
-                    'ImageFinalizationSucceeded','ImageFinalizationStageReleased')
+                    'ImageFinalizationSucceeded','ImageFinalizationStageReleased',
+                    'ProductionOutboxCreated','ProductionOutboxAttemptStarted',
+                    'ProductionOutboxAttemptFailed','ProductionOutboxSucceeded')
                 GROUP BY Kind) ORDER BY Kind LIMIT 63;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0)!, Hash: SqliteNative.ColumnText(statement, 1)!));
         AuditChainDatabase.Require(selected.Count <= 62, "ProductionAdmissionDurableHeadsCapacityExceeded");
-        foreach (var row in selected) heads.Add("ledger." + row.Kind, row.Hash);
+        var alarmMaterial = ReadOutboxAlarmMaterialHead(database, deadline);
+        foreach (var row in selected) heads.Add("ledger." + row.Kind,
+            row.Kind == "AlarmEvent" && alarmMaterial is not null ? alarmMaterial : row.Hash);
         return new ReadOnlyDictionary<string, string>(heads);
     }
 
@@ -258,7 +262,7 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

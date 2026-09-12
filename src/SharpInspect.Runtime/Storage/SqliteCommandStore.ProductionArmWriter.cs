@@ -86,11 +86,13 @@ internal sealed partial class SqliteCommandStore
                 rows.Append(row).ToArray(), deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
-            work.Completion.TrySetResult(new ProductionArmWriteResult(true, "ProductionArmEventPersisted", value));
             Interlocked.Exchange(ref _lastCommittedAuditSequence, audit.Sequence);
             PublishIntegrity(SqliteAuditIntegrityQuery.Report(_policy!, AuditIntegrityState.Verifying,
                 _policy!.RequireExternalAnchor ? "AuditAnchorRecheckPending" : "AuditRecheckPending"));
             WakeIntegrityMonitor();
+            // A caller waiting for this Ready receipt must not mistake the
+            // previous Verified report for verification of the new append.
+            work.Completion.TrySetResult(new ProductionArmWriteResult(true, "ProductionArmEventPersisted", value));
             return new(true, "ProductionArmEventPersisted");
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)

@@ -36,9 +36,17 @@ internal static partial class AuditChainDatabase
             Require(imageEvidenceOptions is null && tableCount == 0, "ImageEvidenceGovernedMigrationRequired");
             return null;
         }
+        if (imageEvidenceOptions is null)
+        {
+            // Only a schema-36 store that declares the feature absent may omit the ledger;
+            // every older generation still requires it exactly as before.
+            Require(storedSchemaVersion >= ProductionOutboxStoreOptions.SchemaVersion && tableCount == 0,
+                "ImageEvidenceConfigurationRequired");
+            return null;
+        }
         // Every reader must supply the exact image binding. Presence alone cannot
         // prove which deployment configuration the signed activation describes.
-        Require(tableCount == 3 && imageEvidenceOptions is not null, "ImageEvidenceConfigurationRequired");
+        Require(tableCount == 3, "ImageEvidenceConfigurationRequired");
         SqliteCommandStore.RequireConfiguredImageEvidence(database, imageEvidenceOptions!, deadline);
         Require(Scalar(database, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ImageEvidenceStoreActivated';",
             deadline) == 1, "ImageEvidenceActivationMissing");
@@ -98,7 +106,8 @@ internal static partial class AuditChainDatabase
         ProductionImageEvidenceStoreOptions options, StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
+            ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion
+            or ProductionOutboxStoreOptions.SchemaVersion,
             "ImageEvidenceSchemaRequired");
         Require(kind == SqliteCommandStore.ImageEvidenceActivationKind, "ImageEvidenceAuditKindInvalid");
         options.Validate();

@@ -234,6 +234,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
                 await Task.Delay(_policy.PollInterval, deadline.Token).ConfigureAwait(false);
             }
         }
+        catch (PlcRequestRevokedException) { throw; }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         { throw new TimeoutException("PlcSynchronizationTimedOut"); }
     }

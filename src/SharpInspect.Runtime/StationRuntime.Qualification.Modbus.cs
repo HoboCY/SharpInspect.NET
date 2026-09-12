@@ -53,9 +53,9 @@ public sealed partial class StationRuntime
             }
             if (communication is not null)
             {
-                using var bootstrap = CancellationTokenSource.CreateLinkedTokenSource(
-                    owner.Cancellation.Token, owner.StimulusCancellation.Token);
-                await communication.SynchronizeAsync(channel, bootstrap.Token).ConfigureAwait(false);
+                // Graceful exit revokes the next owned request synchronously;
+                // let issued IO drain under its deadlines. Abort still cancels it.
+                await communication.SynchronizeAsync(channel, owner.Cancellation.Token).ConfigureAwait(false);
             }
             observer = new(communication is null ? channel.ReadAsync : token => communication.ReadAsync(channel, token),
                 profile.PollInterval, knownKeys,

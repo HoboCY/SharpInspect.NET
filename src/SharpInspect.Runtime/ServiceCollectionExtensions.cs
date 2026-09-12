@@ -18,6 +18,17 @@ namespace SharpInspect.Runtime;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>Register only explicitly configured Outbox transports; never scans destinations or assemblies.</summary>
+    public static IServiceCollection AddSharpInspectOutbox(this IServiceCollection services,
+        Outbox.ProductionOutboxOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(services); ArgumentNullException.ThrowIfNull(options);
+        if (services.Any(item => item.ServiceType == typeof(Outbox.ProductionOutboxOptions)))
+            throw new ArgumentException("OutboxAlreadyRegistered", nameof(services));
+        services.AddSingleton(options);
+        return services;
+    }
+
     /// <summary>
     /// Registers one explicitly constructed, non-production acquisition component.
     /// The service provider owns its lifetime; the component exclusively owns its device.
@@ -360,6 +371,8 @@ public static class ServiceCollectionExtensions
         }
         if (options.ImageFinalization is not null)
             services.TryAddSingleton<IProductionImageEvidenceQuery>(_ => new SqliteProductionImageEvidenceQuery(options));
+        if (options.Outbox is not null)
+            services.TryAddSingleton<IProductionOutboxQuery>(_ => new SqliteProductionOutboxQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -369,6 +382,7 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
+            runtime.ConfigureOutbox(options, p.GetService<Outbox.ProductionOutboxOptions>());
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
             if (p.GetService<IRecipeLifecycleService>() is { } lifecycle) runtime.ConfigureRecipeLifecycleService(lifecycle);
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);

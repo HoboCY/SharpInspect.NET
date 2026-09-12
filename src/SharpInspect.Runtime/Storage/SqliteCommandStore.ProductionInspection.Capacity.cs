@@ -68,7 +68,7 @@ internal sealed partial class SqliteCommandStore
             if (schema == ProductionRecoveryStoreOptions.SchemaVersion && !ProductionRecoveryEnabled)
                 return Unavailable("ProductionRecoveryConfigurationRequired");
             if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
-                PartIdentityStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion))
+                PartIdentityStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion))
                 return Unavailable(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -100,7 +100,7 @@ internal sealed partial class SqliteCommandStore
                 productionRecoveryOptions: _options.ProductionRecovery,
                 productionInspectionOptions: production,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database,
                 verification, deadline, production);
             var rows = ReadProductionInspectionRows(database, production, deadline);
@@ -123,15 +123,23 @@ internal sealed partial class SqliteCommandStore
             var canReserveAudit = AuditChainDatabase.CanReserveProductionInspectionAudit(database, _policy, deadline,
                 checked(outstanding.AuditEntries + reservedAuditEntries -
                     ProductionInspectionStoreOptions.ControlVerificationReserve - 1));
+            // With the outbox configured, the prospective cycle must also fit every already
+            // pending cycle's uncreated batch; nothing here fabricates backend state, because the
+            // observation only proves the reservation the admission transaction would require.
+            var outboxReason = _options.Outbox is { } outbox
+                ? ProductionOutboxProspectiveCapacityFailure(database, _policy!, outbox, deadline)
+                : null;
             var canAdmit = remainingEntries >= ProductionInspectionCycleEntries &&
                 remainingBytes >= reservedCyclePayloadBytes &&
-                remainingAuditEntries >= reservedAuditEntries && canReserveAudit;
+                remainingAuditEntries >= reservedAuditEntries && canReserveAudit && outboxReason is null;
             var reason = canAdmit ? "ProductionInspectionCapacityAvailable" :
                 remainingEntries < ProductionInspectionCycleEntries
                     ? "ProductionInspectionEntryCapacityExceeded"
                     : remainingBytes < reservedCyclePayloadBytes
                         ? "ProductionInspectionTotalCapacityExceeded"
-                        : "ProductionInspectionAuditCapacityExceeded";
+                        : remainingAuditEntries < reservedAuditEntries || !canReserveAudit
+                            ? "ProductionInspectionAuditCapacityExceeded"
+                            : outboxReason!;
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             committed = true;
             return new(true, canAdmit, reason, entryCount, payloadBytes, remainingEntries,

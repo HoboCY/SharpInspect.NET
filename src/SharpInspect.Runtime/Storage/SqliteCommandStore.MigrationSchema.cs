@@ -22,7 +22,7 @@ internal sealed partial class SqliteCommandStore
         /// One private, non-running schema model for one maintenance operation. The
         /// operation's target generation is explicit, so the source and target profiles
         /// of the same operation stage and rebuild the identical tables even though
-        /// their own schema versions differ by one.
+        /// their own schema versions differ.
         /// </summary>
         internal StartupMaintenanceSchema(ProductionStoreOptions options, int migrationTargetVersion)
         {
@@ -33,10 +33,33 @@ internal sealed partial class SqliteCommandStore
                 _model.DisposeAsync().GetAwaiter().GetResult();
                 throw new InvalidOperationException(_model._initializationReason);
             }
-            if (_model.SchemaVersion is not (32 or 33 or 34 or 35) ||
-                migrationTargetVersion is not (33 or 34 or 35) ||
-                _model.SchemaVersion > migrationTargetVersion || options.RecipeDrafts is null ||
-                options.ProductionArming is null || options.LocalIdentity is null || _model._policy is null)
+            // One operation stages the identical schema on both sides, so the model's own
+            // generation may never pass the declared target generation; the identity and
+            // central-audit stack is the one prerequisite every governed plan shares.
+            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 &&
+                _model.SchemaVersion <= migrationTargetVersion && options.LocalIdentity is not null &&
+                _model._policy is not null;
+            if (supported && migrationTargetVersion == ProductionOutboxStoreOptions.SchemaVersion)
+            {
+                // A schema-36 operation declares either the schema-36 target itself, which
+                // carries the outbox and, beyond the production Core, the trace policy and the
+                // identity/audit requirements no other mandatory feature, or the derived source
+                // profile of the same declaration with only the outbox removed. The arm ledger
+                // and the draft ledger are therefore never forced: the source generation
+                // declares exactly which legacy features it carried, a generation below schema
+                // 32 has no governed plan and no earlier schema is ever invented.
+                supported = options.Outbox is not null
+                    ? _model.SchemaVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+                        options.ProductionInspections is not null && options.TraceStoragePolicies is not null
+                    : _model.SchemaVersion < ProductionOutboxStoreOptions.SchemaVersion;
+            }
+            else if (supported)
+            {
+                // Every older governed operation targets a production store, exactly as before.
+                supported = _model.SchemaVersion is 32 or 33 or 34 or 35 &&
+                    options.RecipeDrafts is not null && options.ProductionArming is not null;
+            }
+            if (!supported)
             {
                 _model.DisposeAsync().GetAwaiter().GetResult();
                 throw new InvalidOperationException("StoreMigrationUnsupportedSourceProfile");
@@ -83,7 +106,8 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections, productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities, recipeSelectionOptions: options.RecipeSelections,
                 productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle,
-                imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization);
+                imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization,
+                productionOutboxOptions: options.Outbox);
             var tail = AuditChainDatabase.Tail(database, deadline);
             if (report.State != AuditIntegrityState.Verified || report.VerifiedFromSequence != 1 ||
                 report.VerifiedThroughSequence != tail.Sequence)
@@ -105,7 +129,7 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35))
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36))
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
@@ -140,9 +164,13 @@ internal sealed partial class SqliteCommandStore
         /// <summary>
         /// Adds the one feature of the operation's target generation inside the caller's
         /// transaction: the lifecycle ledger for schema 33, the production image evidence
-        /// store for schema 34. Both write their single immutable configuration row and
-        /// their signed activation entry, and both raise PRAGMA user_version to their own
-        /// generation, so the target proof always observes the exact migration target.
+        /// store for schema 34, the image finalization ledger for schema 35 and only the
+        /// production outbox for schema 36. Each candidate writes its single immutable
+        /// configuration row and its signed activation entry and raises PRAGMA user_version
+        /// to its own generation, so the target proof always observes the exact migration
+        /// target. A schema-36 operation adds nothing else: its source profile is the exact
+        /// declared target with only the outbox removed, so every other declared feature
+        /// already exists in the source generation and none is ever enabled by the migration.
         /// </summary>
         internal void AddTargetFeature(sqlite3 database, StoreDeadline deadline)
         {
@@ -171,6 +199,13 @@ internal sealed partial class SqliteCommandStore
                     _model._policy!, key);
                 return;
             }
+            if (_migrationTargetVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+                Options.Outbox is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=36;", deadline);
+                InitializeProductionOutboxSchema(database, Options.Outbox, deadline, _model._policy!, key);
+                return;
+            }
             throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
         }
 
@@ -185,6 +220,7 @@ internal sealed partial class SqliteCommandStore
         public void Dispose() => _model.DisposeAsync().GetAwaiter().GetResult();
         private string StageName(string name) => _migrationTargetVersion switch
         {
+            ProductionOutboxStoreOptions.SchemaVersion => "__sharpinspect_migration35_36_" + name,
             ProductionImageFinalizationStoreOptions.SchemaVersion =>
                 "__sharpinspect_migration34_35_" + name,
             ProductionImageEvidenceStoreOptions.SchemaVersion => "__sharpinspect_migration33_34_" + name,
@@ -267,5 +303,38 @@ internal sealed partial class SqliteCommandStore
         ProductionRecovery = target.ProductionRecovery, RecipeSelections = target.RecipeSelections,
         ProductionArming = target.ProductionArming, RecipeLifecycle = target.RecipeLifecycle,
         ImageEvidence = target.ImageEvidence
+    };
+
+    /// <summary>
+    /// The source profile of a governed schema-36 migration: the exact target configuration with
+    /// only the outbox option removed. Its own derived generation names the schema-32/33/34/35
+    /// plan, and every optional feature the source generation actually carried is retained, so
+    /// the source proof re-verifies exactly that profile. A declared target that carries a legacy
+    /// feature the source generation cannot have is never repaired here: the operation fails
+    /// closed instead of silently enabling a feature the source never had.
+    /// </summary>
+    internal static ProductionStoreOptions MigrationProductionOutboxSourceOptions(
+        ProductionStoreOptions target) => new()
+    {
+        DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout,
+        QueryTimeout = target.QueryTimeout, QueueCapacity = target.QueueCapacity,
+        AuditIntegrityPolicy = target.AuditIntegrityPolicy, LocalIdentity = target.LocalIdentity,
+        AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,
+        AlgorithmResultArchive = target.AlgorithmResultArchive, RecipeDrafts = target.RecipeDrafts,
+        CameraSetup = target.CameraSetup, CameraRecovery = target.CameraRecovery,
+        CameraNetwork = target.CameraNetwork, ImagingSetup = target.ImagingSetup,
+        CalibrationSessions = target.CalibrationSessions,
+        CalibrationGovernance = target.CalibrationGovernance, RecipeReleases = target.RecipeReleases,
+        PlcResultContracts = target.PlcResultContracts, RecipeActivations = target.RecipeActivations,
+        PreviewSessions = target.PreviewSessions, CalibrationImports = target.CalibrationImports,
+        ManualInspections = target.ManualInspections,
+        ProductionAdmission = target.ProductionAdmission,
+        StationQualifications = target.StationQualifications,
+        RecipeTransfers = target.RecipeTransfers, TraceStoragePolicies = target.TraceStoragePolicies,
+        QualificationCycles = target.QualificationCycles, PlcCommunication = target.PlcCommunication,
+        ProductionInspections = target.ProductionInspections, PartIdentities = target.PartIdentities,
+        ProductionRecovery = target.ProductionRecovery, RecipeSelections = target.RecipeSelections,
+        ProductionArming = target.ProductionArming, RecipeLifecycle = target.RecipeLifecycle,
+        ImageEvidence = target.ImageEvidence, ImageFinalization = target.ImageFinalization
     };
 }

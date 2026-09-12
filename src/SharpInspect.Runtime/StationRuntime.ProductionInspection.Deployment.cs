@@ -23,7 +23,7 @@ public sealed partial class StationRuntime
             provider = _productionInspectionQualificationEvidenceProvider;
             state = _snapshot;
             reconciled = ProductionStartupDependenciesReconciledLocked() && _productionInspectionStartupVerified &&
-                !_productionInspectionRecoveryBlocked;
+                !_productionInspectionRecoveryBlocked && ProductionOutboxConfiguredLocked();
             writerAvailable = _audit is SqliteCommandStore { ProductionInspectionEnabled: true } &&
                 _productionInspectionExecutionOptions is not null && _productionInspectionClock is not null &&
                 _frameBufferPool is not null;
@@ -43,6 +43,7 @@ public sealed partial class StationRuntime
         !_activationRecoveryBlocked && !_previewStartupPending && !_previewRecoveryBlocked &&
         !_manualStartupPending && !_manualRecoveryBlocked && !_stationQualificationStartupPending &&
         !_stationQualificationRecoveryBlocked && ProductionImageBacklogReadyLocked(_snapshot) &&
+        ProductionOutboxStartupReadyLocked() &&
         _snapshot.Evidence.PendingDeliveries == 0;
 
     private async ValueTask<ProductionDeploymentObservation?> CaptureProductionDeploymentAsync(
@@ -62,8 +63,10 @@ public sealed partial class StationRuntime
                 .ConfigureAwait(false)).Observation;
         var configuration = ProductionConfigurationBuilder.Build(options, storeOptions, options.Deployment,
             activation, policy.Snapshot, identity.InstallationKeyId, providerHash, algorithmHash, partIdentity);
+        var outboxBacklog = storeOptions.Outbox is { } outbox ? Outbox.ProductionOutboxBinding.CompleteBacklog(outbox,
+            await new SqliteProductionOutboxQuery(storeOptions).ReadBacklogAsync(token).ConfigureAwait(false)) : null;
         var preflight = TraceStoragePreflightEvaluator.Evaluate(policy, storeOptions.TraceStoragePolicies?.DeploymentScope,
-            TraceStoragePreflightEvaluator.Observe(storeOptions), store.VerifiedProfile, DateTimeOffset.UtcNow);
+            TraceStoragePreflightEvaluator.Observe(storeOptions), store.VerifiedProfile, DateTimeOffset.UtcNow, outboxBacklog);
         var capacityGates = new[] { TraceStoragePreflightGate.Policy, TraceStoragePreflightGate.RouteInventory,
             TraceStoragePreflightGate.StoragePath, TraceStoragePreflightGate.SqliteProfile,
             TraceStoragePreflightGate.StorageReserve, TraceStoragePreflightGate.WalCapacity };

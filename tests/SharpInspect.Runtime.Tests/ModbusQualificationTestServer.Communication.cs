@@ -17,6 +17,7 @@ internal sealed partial class ModbusQualificationTestServer
     internal bool FreezeRuntimeEcho { get; set; }
     internal Guid? RuntimeEchoEpochOverride { get; set; }
     internal bool ChangeEpochAfterNextHeartbeatRead { get; set; }
+    internal Func<Task>? BeforeHeartbeatResponse { get; set; }
     internal Guid ReceivedRuntimeEpoch { get { lock (_stateSync) return _receivedRuntimeEpoch; } }
 
     internal void SeedRetainedRuntimeState(bool busy, bool valid, bool fault, bool violation)

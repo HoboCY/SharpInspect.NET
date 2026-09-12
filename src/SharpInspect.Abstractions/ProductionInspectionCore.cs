@@ -310,8 +310,6 @@ public sealed class ProductionInspectionCore
                     StringComparison.Ordinal))
                 throw new InvalidOperationException("ProductionInspectionPartIdentityValueMismatch");
         }
-        if (Admission.TracePolicySnapshot.Policy.RequiredRoutes.Count != 0)
-            throw new InvalidOperationException("ProductionInspectionTraceRoutesUnavailable");
         if (!Enum.IsDefined(state) || state is ProductionInspectionState.Admitted)
             throw new ArgumentOutOfRangeException(nameof(state));
         if (!Enum.IsDefined(executionStatus) || !Enum.IsDefined(decision))

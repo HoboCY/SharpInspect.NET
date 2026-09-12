@@ -20,8 +20,8 @@ internal static partial class AuditChainDatabase
     }
 
     private static RecipeLifecycleVerification? BeginRecipeLifecycleVerification(sqlite3 database,
-        long schemaVersion, RecipeLifecycleStoreOptions? lifecycleOptions, RecipeDraftStoreOptions? draftOptions,
-        StoreDeadline deadline)
+        long schemaVersion, long storedSchemaVersion, RecipeLifecycleStoreOptions? lifecycleOptions,
+        RecipeDraftStoreOptions? draftOptions, StoreDeadline deadline)
     {
         var tableCount = Scalar(database, @"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND
             name IN ('recipe_lifecycle_store_config','recipe_lifecycle_events');", deadline);
@@ -30,9 +30,17 @@ internal static partial class AuditChainDatabase
             Require(lifecycleOptions is null && tableCount == 0, "RecipeLifecycleGovernedMigrationRequired");
             return null;
         }
+        if (lifecycleOptions is null)
+        {
+            // Only a schema-36 store that declares the feature absent may omit the ledger;
+            // every older generation still requires it exactly as before.
+            Require(storedSchemaVersion >= ProductionOutboxStoreOptions.SchemaVersion && tableCount == 0,
+                "RecipeLifecycleConfigurationRequired");
+            return null;
+        }
         // The opt-in is mandatory at schema 33 and the option/tables must match exactly;
         // an absent option, an extra table or a partial ledger fails closed.
-        Require(lifecycleOptions is not null && tableCount == 2, "RecipeLifecycleConfigurationRequired");
+        Require(tableCount == 2, "RecipeLifecycleConfigurationRequired");
         // The lifecycle ledger preserves draft and release revisions, so the draft ledger
         // and the identity/audit stack are required; every other gate may be absent.
         Require(draftOptions is not null, "RecipeDraftConfigurationRequired");
@@ -111,7 +119,8 @@ internal static partial class AuditChainDatabase
         RecipeLifecycleStoreOptions options, StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeLifecycleStoreOptions.SchemaVersion
-            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
+            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion
+            or ProductionOutboxStoreOptions.SchemaVersion,
             "RecipeLifecycleSchemaRequired");
         Require(kind is SqliteCommandStore.RecipeLifecycleActivationKind or
             SqliteCommandStore.RecipeLifecycleEventAuditKind, "RecipeLifecycleAuditKindInvalid");

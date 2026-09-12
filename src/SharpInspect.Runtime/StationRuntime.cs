@@ -763,6 +763,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // ACK observer alive for the accepted cycle, under one monotonic deadline.
         try { await ShutdownProductionInspectionAsync().ConfigureAwait(false); }
         finally { _lifetime.Cancel(); }
+        await ShutdownOutboxAsync().ConfigureAwait(false);
         await ShutdownImageFinalizationAsync().ConfigureAwait(false);
         await _heartbeat.ConfigureAwait(false);
         await ShutdownProductionRecoveryAsync().ConfigureAwait(false);

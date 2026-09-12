@@ -147,17 +147,15 @@ internal sealed class RecipeActivationChecks
             plcPolicy != profile.ContentHash ? "ProductionPlcPolicyMismatch" :
             "ProductionPlcResultContractMismatch", profile.ContentHash, plc.ContentHash);
 
-        var scope = evidence.StoreOptions.TraceStoragePolicies?.DeploymentScope;
-        var noRoutes = evidence.TracePolicy.Policy.RequiredRoutes.Count == 0 &&
-            scope is not null && scope.RequiredRoutes.Count == 0;
+        var routesMatch = Outbox.ProductionOutboxBinding.RoutesMatch(evidence.StoreOptions, evidence.TracePolicy);
         var traceMatchesOptions = evidence.TracePolicy.Version == evidence.InspectionOptions.TracePolicyVersion &&
             evidence.TracePolicy.ContentHash == evidence.InspectionOptions.TracePolicySnapshotHash;
         var policyPassed = evidence.InspectionOptions.EvidenceRequirement == ProductionEvidenceRequirement.None &&
             Images.ProductionImageEvidenceBinding.IsAvailable(evidence.InspectionOptions, evidence.StoreOptions,
-                snapshot.Release.Source.Content) && noRoutes && traceMatchesOptions && evidence.StartupReconciled;
+                snapshot.Release.Source.Content) && routesMatch && traceMatchesOptions && evidence.StartupReconciled;
         Observe(16, policyPassed, policyPassed ? "ProductionEvidencePolicyExactlyMatches" :
             evidence.InspectionOptions.EvidenceRequirement != ProductionEvidenceRequirement.None ?
-                "ProductionEvidenceRequirementMustBeNone" : !noRoutes ? "ProductionTraceRoutesMustBeEmpty" :
+                "ProductionEvidenceRequirementMustBeNone" : !routesMatch ? "ProductionOutboxRoutesUnavailable" :
             !traceMatchesOptions ? "ProductionTracePolicySnapshotMismatch" : !evidence.StartupReconciled ?
                 "ProductionStartupReconciliationRequired" : "ProductionEvidenceCapturePolicyUnavailable",
             evidence.TracePolicy.ContentHash, evidence.InspectionOptions.TracePolicySnapshotHash);

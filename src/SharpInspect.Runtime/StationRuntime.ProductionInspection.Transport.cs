@@ -19,6 +19,8 @@ public sealed partial class StationRuntime
                 .WaitAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedRecipeChangesAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedProductionArmAttemptsAsync(_lifetime.Token).ConfigureAwait(false);
+            if (_outboxWorker is { } outboxWorker)
+                await outboxWorker.Startup.WaitAsync(_lifetime.Token).ConfigureAwait(false);
             if (options.ImageStage is not null)
             {
                 await ReadProductionInspectionPolicyAsync(_lifetime.Token).ConfigureAwait(false);
@@ -102,8 +104,7 @@ public sealed partial class StationRuntime
         var store = _productionInspectionStoreOptions!;
         var read = await new SqliteTraceStoragePolicyQuery(store).ReadAsync(null, token).ConfigureAwait(false);
         if (!read.Available || read.Snapshot is not { } policy || policy.Version != options.TracePolicyVersion ||
-            policy.ContentHash != options.TracePolicySnapshotHash || policy.Policy.RequiredRoutes.Count != 0 ||
-            store.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count != 0)
+            policy.ContentHash != options.TracePolicySnapshotHash || !Outbox.ProductionOutboxBinding.RoutesMatch(store, policy))
             throw new InvalidOperationException("ProductionInspectionStoragePolicyUnavailable");
         lock (_sync) _productionInspectionPolicy = policy;
         return policy;
@@ -363,6 +364,7 @@ public sealed partial class StationRuntime
 
     private bool CanAcceptProductionTriggerLocked(ProductionInspectionOwner owner) =>
         !LocalStopPendingLocked &&
+        ProductionOutboxBacklogFailureLocked() is null &&
         AutomaticProductionArmReadyPermitLocked(owner) &&
         ManualMaintenanceReadyPermitLocked(owner) &&
         _activationReservation is null && !_recipeSelectionChangeInProgress && owner.RecipeChangeActivation is null &&

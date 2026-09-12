@@ -146,4 +146,12 @@ public sealed class ProductionStoreOptions
     /// existing store writer. Leaving this null preserves every existing byte and
     /// generation, including a schema-34 store.</summary>
     public ProductionImageFinalizationStoreOptions? ImageFinalization { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 36 bounded production outbox. It binds the
+    /// frozen deployment routes, every attempt/event/payload budget and the presence and old
+    /// binding hashes of the optional recipe-lifecycle/image-evidence/image-finalization
+    /// features. An absent option leaves every existing byte and generation untouched,
+    /// including a schema-35 store; a schema-36 store always configures it. The outbox never
+    /// opens a network connection, a file or a formatter from this store.</summary>
+    public ProductionOutboxStoreOptions? Outbox { get; init; }
 }

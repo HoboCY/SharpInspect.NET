@@ -411,7 +411,8 @@ public sealed partial class ManualInspectionRuntimeTests
             string? productionArmMaintenanceJournalHead = null, bool enableRecipeLifecycle = false,
             ProductionImageEvidenceStoreOptions? imageEvidence = null,
             EvidenceCapturePolicySnapshot? capturePolicy = null, TraceStoragePolicyDefinition? tracePolicy = null,
-            ProductionImageFinalizationStoreOptions? imageFinalization = null)
+            ProductionImageFinalizationStoreOptions? imageFinalization = null,
+            ProductionOutboxStoreOptions? outbox = null, Outbox.ProductionOutboxOptions? outboxTransports = null)
         {
             enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
@@ -437,6 +438,14 @@ public sealed partial class ManualInspectionRuntimeTests
                             Permission.ActivateRecipe, Permission.ArmProduction, Permission.ManageProductionPolicy }).Distinct()
                         : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             var alarm = CreateAlarmPolicy();
+            if (outbox is not null)
+                alarm = new AlarmPolicy("V152.Outbox.Alarm", "1", alarm.Rules.Concat(new[]
+                {
+                    new AlarmPolicyRule("OutboxRequiredDeliveryBlocked", "Runtime.Outbox", AlarmSeverity.Error,
+                        ProductionImpact.BlockNewTriggers, false, AlarmNotification.None, null),
+                    new AlarmPolicyRule("OutboxBestEffortDeliveryFailed", "Runtime.Outbox", AlarmSeverity.Warning,
+                        ProductionImpact.None, false, AlarmNotification.None, null)
+                }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             if (imageFinalization is not null)
                 alarm = new AlarmPolicy("V151.Images.Alarm", "1", alarm.Rules.Concat(new[]
                 {
@@ -469,11 +478,14 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionRecovery: enableProductionRecovery ? new ProductionRecoveryStoreOptions() : null,
                 recipeSelections: recipeChangeBinding is null ? null : new RecipeSelectionStoreOptions(),
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
-                    { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) },
+                    { DeploymentScope = new("V142.Isolated.Station", "1", outbox is null ?
+                        Array.Empty<TraceStorageRouteIdentity>() : outbox.Routes.Where(route =>
+                            route.Criticality == OutboxRouteCriticality.Required).Select(route =>
+                                new TraceStorageRouteIdentity(route.RouteId, route.Version, route.ContentHash))) },
                 productionArming: productionPeer is null ? null : productionArming ??
                     (imageEvidence is null ? null : new ProductionArmStoreOptions()),
                 recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
-                imageEvidence: imageEvidence, imageFinalization: imageFinalization);
+                imageEvidence: imageEvidence, imageFinalization: imageFinalization, outbox: outbox);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
@@ -558,6 +570,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 });
                 registrations.AddSharpInspectSqliteRuntime(fixture.Options,
                     heartbeatInterval ?? TimeSpan.FromMilliseconds(20));
+                if (outboxTransports is not null) registrations.AddSharpInspectOutbox(outboxTransports);
                 configureAdditionalServices?.Invoke(registrations);
                 services = registrations.BuildServiceProvider();
                 var runtime = services.GetRequiredService<IStationRuntime>();

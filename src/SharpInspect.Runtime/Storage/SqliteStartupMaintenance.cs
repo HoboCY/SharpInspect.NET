@@ -8,14 +8,22 @@ namespace SharpInspect.Runtime.Storage;
 
 /// <summary>
 /// The bundled, exclusive SQLite forward startup migrations: schema 32 to 33
-/// (RecipeLifecycle) and schema 33 to 34 (bounded production image evidence).
-/// All existing configuration remains pinned; each operation adds only its own
-/// feature, and an operation that continues an earlier completed migration
-/// appends a linked operation to the same journal instead of replacing the
-/// earlier evidence. Required remote audit anchoring is not supported by these
-/// local migration plans. Hosts must enter maintenance before opening this
-/// service and perform normal startup reconciliation afterwards. This service
-/// creates no Runtime or production arm.
+/// (RecipeLifecycle), schema 33 to 34 (bounded production image evidence),
+/// schema 34 to 35 (bounded production image finalization) and the governed
+/// schema 32, 33, 34 or 35 to schema 36 operations (bounded production outbox).
+/// A schema-36 operation derives its source profile from the declared target
+/// with only the outbox removed, so the source generation and the optional
+/// features it actually carried decide the plan; no lifecycle, image or arm
+/// ledger is ever invented for a source that never had one, and a source
+/// generation without a governed plan (schema 28 to 31 uses an earlier audit
+/// envelope) is refused without a rewrite. All existing configuration remains
+/// pinned; each operation adds only its own feature, and an operation that
+/// continues an earlier completed migration appends a linked operation to the
+/// same journal instead of replacing the earlier evidence. Required remote
+/// audit anchoring is not supported by these local migration plans. Hosts must
+/// enter maintenance before opening this service and perform normal startup
+/// reconciliation afterwards. This service creates no Runtime or production
+/// arm.
 /// </summary>
 public static class SqliteStartupMaintenance
 {
@@ -34,6 +42,22 @@ public static class SqliteStartupMaintenance
             new(StoreMigrationJournal.ImageFinalizationPlanId,
                 ProductionImageEvidenceStoreOptions.SchemaVersion,
                 ProductionImageFinalizationStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ProductionOutbox32 =
+            new(StoreMigrationJournal.ProductionOutbox32PlanId,
+                ProductionArmStoreOptions.SchemaVersion,
+                ProductionOutboxStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ProductionOutbox33 =
+            new(StoreMigrationJournal.ProductionOutbox33PlanId,
+                RecipeLifecycleStoreOptions.SchemaVersion,
+                ProductionOutboxStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ProductionOutbox34 =
+            new(StoreMigrationJournal.ProductionOutbox34PlanId,
+                ProductionImageEvidenceStoreOptions.SchemaVersion,
+                ProductionOutboxStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ProductionOutbox35 =
+            new(StoreMigrationJournal.ProductionOutboxPlanId,
+                ProductionImageFinalizationStoreOptions.SchemaVersion,
+                ProductionOutboxStoreOptions.SchemaVersion);
 
         internal static StoreMigrationPlan For(int targetVersion) => targetVersion switch
         {
@@ -41,6 +65,23 @@ public static class SqliteStartupMaintenance
             ProductionImageEvidenceStoreOptions.SchemaVersion => ImageEvidence,
             ProductionImageFinalizationStoreOptions.SchemaVersion => ImageFinalization,
             _ => throw new InvalidOperationException("StoreMigrationPathUnsupported")
+        };
+
+        /// <summary>
+        /// The one governed schema-36 plan of a derived source generation. The source profile of
+        /// the operation is the declared target with only the outbox removed, so the generation
+        /// that profile proves names the exact plan: 32 keeps no lifecycle and no image feature,
+        /// 33 keeps the lifecycle ledger alone, 34 preserves image evidence and 35 preserves the
+        /// complete legacy stack. An older profile has no governed plan - schema 28 to 31 uses an
+        /// earlier audit envelope - and fails closed without any rewrite.
+        /// </summary>
+        internal static StoreMigrationPlan ForProductionOutboxSource(int sourceVersion) => sourceVersion switch
+        {
+            ProductionArmStoreOptions.SchemaVersion => ProductionOutbox32,
+            RecipeLifecycleStoreOptions.SchemaVersion => ProductionOutbox33,
+            ProductionImageEvidenceStoreOptions.SchemaVersion => ProductionOutbox34,
+            ProductionImageFinalizationStoreOptions.SchemaVersion => ProductionOutbox35,
+            _ => throw new InvalidOperationException("StoreMigrationSourceGenerationUnsupported")
         };
     }
 
@@ -88,6 +129,8 @@ public static class SqliteStartupMaintenance
         private SqliteCommandStore.StartupMaintenanceSchema? _source;
         private SqliteCommandStore.StartupMaintenanceSchema? _target;
         private StoreMigrationPlan? _plan;
+        private int _declaredTargetVersion = RecipeLifecycleStoreOptions.SchemaVersion;
+        private int? _declaredSourceVersion;
         private StoreMigrationJournal? _journal;
         private StoreMigrationJournalData? _data;
         private bool _transaction;
@@ -108,26 +151,44 @@ public static class SqliteStartupMaintenance
             token.ThrowIfCancellationRequested();
             if (!StoragePathValidator.TryValidate(_targetOptions, out _path, out var reason))
                 throw new InvalidOperationException(reason);
-            if (_targetOptions.RecipeLifecycle is null)
-                throw new InvalidOperationException("StoreMigrationTargetLifecycleRequired");
             if (_targetOptions.AuditIntegrityPolicy is { RequireExternalAnchor: true })
                 throw new InvalidOperationException("StoreMigrationExternalAnchorPlanUnsupported");
-            // The declared target profile determines the operation: an image finalization
-            // target is the schema-34 to schema-35 plan, an image evidence target the
-            // schema-33 to schema-34 plan, otherwise the schema-32 to schema-33 plan. Every
-            // plan keeps the identical exclusive protocol.
-            _plan = StoreMigrationPlan.For(_targetOptions.ImageFinalization is not null
-                ? ProductionImageFinalizationStoreOptions.SchemaVersion
-                : _targetOptions.ImageEvidence is null
-                    ? RecipeLifecycleStoreOptions.SchemaVersion
-                    : ProductionImageEvidenceStoreOptions.SchemaVersion);
-            _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
-            _source = new SqliteCommandStore.StartupMaintenanceSchema(_plan.SourceVersion switch
+            _declaredTargetVersion = _targetOptions.Outbox is not null
+                ? ProductionOutboxStoreOptions.SchemaVersion
+                : _targetOptions.ImageFinalization is not null
+                    ? ProductionImageFinalizationStoreOptions.SchemaVersion
+                    : _targetOptions.ImageEvidence is null
+                        ? RecipeLifecycleStoreOptions.SchemaVersion
+                        : ProductionImageEvidenceStoreOptions.SchemaVersion;
+            if (_targetOptions.Outbox is not null)
             {
-                32 => SqliteCommandStore.MigrationSourceOptions(_targetOptions),
-                33 => SqliteCommandStore.MigrationImageEvidenceSourceOptions(_targetOptions),
-                _ => SqliteCommandStore.MigrationImageFinalizationSourceOptions(_targetOptions)
-            }, _plan.TargetVersion);
+                // A schema-36 target owns one of the four governed schema-32/33/34/35 to schema-36
+                // plans. The source profile is the exact declared target with only the outbox
+                // removed, and the generation that profile proves names the plan, so the operation
+                // always preserves the optional features the source actually carried and never
+                // temporarily enables an unrelated one.
+                _source = new SqliteCommandStore.StartupMaintenanceSchema(
+                    SqliteCommandStore.MigrationProductionOutboxSourceOptions(_targetOptions),
+                    ProductionOutboxStoreOptions.SchemaVersion);
+                _plan = StoreMigrationPlan.ForProductionOutboxSource(_source.Version);
+                _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
+            }
+            else
+            {
+                // The older governed operations: an image finalization target is the schema-34 to
+                // schema-35 plan, an image evidence target the schema-33 to schema-34 plan and
+                // otherwise the schema-32 to schema-33 plan, each with the identical exclusive
+                // protocol and the identical source/target profile derivation as before.
+                _plan = StoreMigrationPlan.For(_declaredTargetVersion);
+                _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
+                _source = new SqliteCommandStore.StartupMaintenanceSchema(_plan.SourceVersion switch
+                {
+                    32 => SqliteCommandStore.MigrationSourceOptions(_targetOptions),
+                    33 => SqliteCommandStore.MigrationImageEvidenceSourceOptions(_targetOptions),
+                    _ => SqliteCommandStore.MigrationImageFinalizationSourceOptions(_targetOptions)
+                }, _plan.TargetVersion);
+            }
+            _declaredSourceVersion = _source.Version;
             if ((_source.Version, _target.Version) != (_plan.SourceVersion, _plan.TargetVersion))
                 throw new InvalidOperationException("StoreMigrationPathUnsupported");
             var deadline = Deadline();
@@ -185,6 +246,8 @@ public static class SqliteStartupMaintenance
                     RecipeLifecycleStoreOptions.SchemaVersion => StoreMigrationJournal.LifecyclePlanId,
                     ProductionImageEvidenceStoreOptions.SchemaVersion =>
                         StoreMigrationJournal.ImageEvidencePlanId,
+                    ProductionImageFinalizationStoreOptions.SchemaVersion =>
+                        StoreMigrationJournal.ImageFinalizationPlanId,
                     _ => null
                 };
                 if (durable.PlanId != predecessorPlanId ||
@@ -224,9 +287,11 @@ public static class SqliteStartupMaintenance
                 _data.SourceApplicationPath != _options.SourceRuntimeAssemblyPath ||
                 _data.SourceApplicationVersion != sourceApplication.Version || _data.SourceApplicationSha256 != sourceApplication.Hash ||
                 _data.TargetApplicationVersion != targetApplication.Version || _data.TargetApplicationSha256 != targetApplication.Hash ||
-                _data.LifecycleConfigurationHash != StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle) ||
+                _data.LifecycleConfigurationHash !=
+                    StoreMigrationJournalGuard.LifecycleHashOrNull(_targetOptions.RecipeLifecycle) ||
                 _data.ImageEvidenceConfigurationHash != _targetOptions.ImageEvidence?.BindingHash ||
-                _data.ImageFinalizationConfigurationHash != _targetOptions.ImageFinalization?.BindingHash)
+                _data.ImageFinalizationConfigurationHash != _targetOptions.ImageFinalization?.BindingHash ||
+                _data.ProductionOutboxConfigurationHash != _targetOptions.Outbox?.BindingHash)
                 throw new InvalidOperationException("StoreMigrationResumeContextMismatch");
             _contextBound = true;
             _status = StatusFor(_journal.Last!);
@@ -278,9 +343,11 @@ public static class SqliteStartupMaintenance
             SourceApplicationPath = _options.SourceRuntimeAssemblyPath,
             SourceApplicationVersion = sourceApplication.Version, SourceApplicationSha256 = sourceApplication.Hash,
             TargetApplicationVersion = targetApplication.Version, TargetApplicationSha256 = targetApplication.Hash,
-            LifecycleConfigurationHash = StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle!),
+            LifecycleConfigurationHash =
+                StoreMigrationJournalGuard.LifecycleHashOrNull(_targetOptions.RecipeLifecycle),
             ImageEvidenceConfigurationHash = _targetOptions.ImageEvidence?.BindingHash,
             ImageFinalizationConfigurationHash = _targetOptions.ImageFinalization?.BindingHash,
+            ProductionOutboxConfigurationHash = _targetOptions.Outbox?.BindingHash,
             PreviousOperationId = previous?.OperationId, PreviousOperationJournalHash = previous?.FrameHash,
             PreviousMarkerBase64 = previous?.MarkerBase64, ReasonCode = "StoreMigrationOpened"
         };
@@ -581,8 +648,8 @@ public static class SqliteStartupMaintenance
             }
             _status = new StoreMigrationStatus(_data?.OperationId ?? Guid.Empty,
                 StoreMigrationPhase.MaintenanceRequired, reason, _journal?.Last?.ContentHash, _status.Backup,
-                _data?.SourceSchemaVersion ?? _plan?.SourceVersion ?? 32,
-                _data?.TargetSchemaVersion ?? _plan?.TargetVersion ?? RecipeLifecycleStoreOptions.SchemaVersion);
+                _data?.SourceSchemaVersion ?? _plan?.SourceVersion ?? _declaredSourceVersion ?? 32,
+                _data?.TargetSchemaVersion ?? _plan?.TargetVersion ?? _declaredTargetVersion);
         }
 
         private void Rollback()

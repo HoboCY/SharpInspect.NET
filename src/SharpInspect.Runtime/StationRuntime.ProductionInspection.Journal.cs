@@ -104,13 +104,16 @@ public sealed partial class StationRuntime
         var timeout = admission.TracePolicySnapshot.Policy.TraceCommitTimeout;
         if (timeout > _audit!.CommitTimeout) timeout = _audit.CommitTimeout;
         var deadline = new StoreDeadline(timeout);
+        var core = CreateProductionInspectionCore(owner, result, staged.Evidence);
+        var outbox = _productionInspectionStoreOptions?.Outbox is { } routes
+            ? Outbox.FrozenOutboxBatch.Prepare(core, routes, owner.Cancellation.Token, deadline) : null;
+        SqliteNative.EnsureDeadline(deadline, owner.Cancellation.Token);
         if (!await _commandGate.WaitAsync(PositiveRemaining(deadline)).ConfigureAwait(false))
             throw new InvalidOperationException("ProductionInspectionCoreWriterBusy");
         try
         {
-            var core = CreateProductionInspectionCore(owner, result, staged.Evidence);
             var committed = await WriteProductionWithFenceAsync(() => ((SqliteCommandStore)_audit).CommitProductionInspectionCoreAsync(
-                new(core, () => ProductionCommitFailure(owner, admissionOnly: false), imageClaim), deadline,
+                new(core, () => ProductionCommitFailure(owner, admissionOnly: false), imageClaim, outbox), deadline,
                 CancellationToken.None), deadline).ConfigureAwait(false);
             if (!committed.Committed || committed.Core is not { PlcPayload: { } payload } durable ||
                 durable.Admission.ContentHash != admission.ContentHash || durable.ContentHash != core.ContentHash ||
@@ -120,6 +123,7 @@ public sealed partial class StationRuntime
             // Assign it before checking time so recovery retains that exact immutable Core.
             owner.Core = durable;
             ProjectCommittedProductionImage(durable, committed.Event?.AuditSequence ?? 0);
+            ProjectCommittedOutbox(outbox, durable.Admission.InspectionId, committed.Event?.AuditSequence ?? 0);
             if (deadline.Expired) throw new TimeoutException("ProductionInspectionCoreCommitTimeout");
             await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
             return new(new(ExecutionKind.Production, admission.CorrelationId), durable.ContentHash, payload);

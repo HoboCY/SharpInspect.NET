@@ -368,6 +368,10 @@ public sealed partial class StationRuntime
                       IsFrameBufferAlarmMappingValid(policy)) &&
                     !(pair.Key == ImageBacklogAlarmCode && _imageFinalizationWorker is not null &&
                       IsProductionImageBacklogAlarmMappingValid()) &&
+                    !(pair.Key == OutboxRequiredAlarmCode && _outboxWorker is not null &&
+                      IsOutboxAlarmMappingValid(OutboxRequiredAlarmCode, ProductionImpact.BlockNewTriggers)) &&
+                    !(pair.Key == OutboxBestEffortAlarmCode && _outboxWorker is not null &&
+                      IsOutboxAlarmMappingValid(OutboxBestEffortAlarmCode, ProductionImpact.None)) &&
                     !(_cameraRecoveryService is not null &&
                       (pair.Key is CameraDisconnectedAlarmCode or CameraRecoveryFailedAlarmCode) &&
                       IsCameraRecoveryAlarmMappingValid(policy)) && pair.Value.Healthy &&
@@ -380,6 +384,10 @@ public sealed partial class StationRuntime
             lock (_sync) imageBacklog = ImageBacklogObservationLocked(policy);
             if (imageBacklog is not null)
                 await ObserveAlarmCoreAsync(imageBacklog, _lifetime.Token).ConfigureAwait(false);
+            IReadOnlyList<AlarmObservation> outboxObservations;
+            lock (_sync) outboxObservations = OutboxObservationsLocked(policy);
+            foreach (var observation in outboxObservations)
+                await ObserveAlarmCoreAsync(observation, _lifetime.Token).ConfigureAwait(false);
             if (refreshFrameBuffer)
             {
                 AlarmObservation? frameObservation = null;

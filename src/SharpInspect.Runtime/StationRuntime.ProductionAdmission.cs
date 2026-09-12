@@ -678,8 +678,7 @@ public sealed partial class StationRuntime
                     Snapshot: { } snapshot, Algorithm.IsRetired: false } && current.ActiveRecipe == snapshot.Recipe &&
                 ProductionPartIdentityReadyLocked(content?.PartIdentityRequirement) &&
                 Images.ProductionImageEvidenceBinding.IsAvailable(options, storeOptions, content) &&
-                policy is { Policy.RequiredRoutes.Count: 0 } &&
-                storeOptions.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
+                Outbox.ProductionOutboxBinding.RoutesMatch(storeOptions, policy) && ProductionOutboxConfiguredLocked();
             return exact
                 ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "ProductionCycleConfigured",
                     content!.PartIdentityRequirement!.Mode == PartIdentityRequirementMode.None ?
@@ -702,12 +701,12 @@ public sealed partial class StationRuntime
                     "ProductionImageBacklogLimitExceeded");
             var noPending = ProductionImageBacklogReadyLocked(current) &&
                 current.Evidence.PendingDeliveries == 0;
-            var noRoutes = _productionInspectionOptions?.EvidenceRequirement ==
+            var routesReady = _productionInspectionOptions?.EvidenceRequirement ==
                     ProductionEvidenceRequirement.None &&
-                _productionInspectionPolicy is { Policy.RequiredRoutes.Count: 0 } &&
-                _productionInspectionStoreOptions?.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
+                Outbox.ProductionOutboxBinding.RoutesMatch(_productionInspectionStoreOptions, _productionInspectionPolicy) &&
+                ProductionOutboxConfiguredLocked();
             if (_productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked && noPending &&
-                noRoutes && current.Evidence.State != HealthState.Faulted)
+                routesReady && current.Evidence.State != HealthState.Faulted)
                 return RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
                     "ProductionEvidenceLedgerVerified");
             return current.Evidence.State == HealthState.Faulted
@@ -720,6 +719,8 @@ public sealed partial class StationRuntime
         ProductionAdmissionGateResult BacklogGate(ProductionAdmissionGate gate,
             bool ownedProgress)
         {
+            if (ProductionOutboxBacklogFailureLocked() is { } outboxFailure)
+                return RuntimeGate(gate, ProductionAdmissionGateStatus.Failed, outboxFailure);
             if (_productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked &&
                 (_productionInspectionOwner?.Current is null || ownedProgress))
                 return RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
@@ -751,7 +752,7 @@ public sealed partial class StationRuntime
             state.Handshake.ToString(), state.Recovery.ToString(), state.CurrentExecution?.ToString(),
             state.ActiveRecipe?.ToString(), cameraMaterial, state.Plc.ToString(),
             state.Store.ToString(), evidenceMaterial, state.Qualification.ToString(),
-            state.Performance.ToString(), state.Alarms.ToString(), cameraSetupMaterial,
+            state.Performance.ToString(), OutboxAdmissionAlarmSummaryLocked(state).ToString(), cameraSetupMaterial,
             state.CameraRecovery is { } recovery
                 ? string.Join("|", recovery.State, recovery.AttemptCount, recovery.MaximumAttempts,
                     recovery.SourceHealthy, recovery.ReasonCode, recovery.Health?.ToString()) : null,

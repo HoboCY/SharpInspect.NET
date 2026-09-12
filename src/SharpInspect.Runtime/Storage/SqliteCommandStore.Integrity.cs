@@ -103,7 +103,10 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("AlgorithmResultArchiveConfigurationRequired");
         if (version > 0 && version < SchemaVersion)
             throw new InvalidOperationException(MigrationReason((int)version));
-        if (version > SchemaVersion) throw new InvalidOperationException("StoreSchemaTooNew");
+        if (version > SchemaVersion)
+            throw new InvalidOperationException(!ProductionOutboxEnabled &&
+                version == ProductionOutboxStoreOptions.SchemaVersion
+                ? "ProductionOutboxConfigurationRequired" : "StoreSchemaTooNew");
     }
 
     private void SetIntegrityFault(string reason, bool latch = false)

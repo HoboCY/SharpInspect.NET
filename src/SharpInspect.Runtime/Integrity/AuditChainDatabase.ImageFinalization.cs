@@ -40,8 +40,15 @@ internal static partial class AuditChainDatabase
                 "ImageFinalizationGovernedMigrationRequired");
             return null;
         }
-        Require(tableCount == 3 && finalizationOptions is not null,
-            "ImageFinalizationConfigurationRequired");
+        if (finalizationOptions is null)
+        {
+            // Only a schema-36 store that declares the feature absent may omit the ledger;
+            // every older generation still requires it exactly as before.
+            Require(storedSchemaVersion >= ProductionOutboxStoreOptions.SchemaVersion && tableCount == 0,
+                "ImageFinalizationConfigurationRequired");
+            return null;
+        }
+        Require(tableCount == 3, "ImageFinalizationConfigurationRequired");
         SqliteCommandStore.RequireConfiguredImageFinalization(database, finalizationOptions!, deadline);
         var rows = SqliteCommandStore.ReadImageFinalizationRows(database, finalizationOptions!, deadline);
         Require(Scalar(database,
@@ -142,8 +149,9 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, ProductionImageFinalizationStoreOptions options,
         StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionImageFinalizationStoreOptions.SchemaVersion, "ImageFinalizationSchemaRequired");
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion,
+            "ImageFinalizationSchemaRequired");
         options.Validate();
         var payload = options.EncodeActivationPayload();
         Require(payload.Length is > 0 and <= ProductionImageFinalizationStoreOptions.MaximumAuditPayloadBytes,
@@ -171,8 +179,9 @@ internal static partial class AuditChainDatabase
         byte[] payload, ProductionImageFinalizationStoreOptions options, long futureReserve,
         StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionImageFinalizationStoreOptions.SchemaVersion, "ImageFinalizationSchemaRequired");
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion,
+            "ImageFinalizationSchemaRequired");
         options.Validate();
         Require(futureReserve >= 0, "ImageFinalizationAuditReservationInvalid");
         Require(payload is { Length: > 0 } &&

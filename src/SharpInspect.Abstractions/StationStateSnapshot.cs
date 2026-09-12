@@ -66,6 +66,9 @@ public sealed record StationStateSnapshot(
 
     /// <summary>Latest policy-controlled arm attempt and its observed outcome.</summary>
     public ProductionArmPolicyStatus? ProductionArming { get; init; }
+
+    /// <summary>External durable delivery backlog; independent from PLC result recovery.</summary>
+    public OutboxBacklogSnapshot? Outbox { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>

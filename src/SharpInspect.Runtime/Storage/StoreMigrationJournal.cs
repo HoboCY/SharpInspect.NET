@@ -25,7 +25,14 @@ internal sealed record StoreMigrationJournalData
     public string SourceApplicationSha256 { get; init; } = string.Empty;
     public string TargetApplicationVersion { get; init; } = string.Empty;
     public string TargetApplicationSha256 { get; init; } = string.Empty;
-    public string LifecycleConfigurationHash { get; init; } = string.Empty;
+    /// <summary>
+    /// The exact lifecycle activation hash of an operation that binds the schema-33 ledger. It
+    /// stays null for a schema-32 to schema-36 operation, whose derived source generation never
+    /// carried the ledger; a bound generation still writes the identical non-null field, so every
+    /// journal written before this generation stays byte-identical.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? LifecycleConfigurationHash { get; init; }
     public string? SourceFingerprint { get; init; }
     public MigrationTableFingerprint[]? SourceTables { get; init; }
     public long? SourceAuditSequence { get; init; }
@@ -59,9 +66,24 @@ internal sealed record StoreMigrationJournalData
     public string? ImageEvidenceConfigurationHash { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ImageFinalizationConfigurationHash { get; init; }
+    /// <summary>
+    /// The exact outbox option binding of a schema-35 to schema-36 operation. It stays null
+    /// for every earlier plan, so every journal written before the outbox generation stays
+    /// byte-identical.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ProductionOutboxConfigurationHash { get; init; }
 }
 
 internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data, string ContentHash);
+
+/// <summary>
+/// The optional features one supported operation binds. A feature stays false for an operation
+/// whose source and target generation do not carry it, so the durable frame can neither claim a
+/// later feature nor omit one it declares.
+/// </summary>
+internal readonly record struct StoreMigrationPlanBinding(bool Lifecycle, bool ImageEvidence,
+    bool ImageFinalization, bool ProductionOutbox);
 
 /// <summary>
 /// A framed, hash-linked external journal. Only a complete frame followed by a
@@ -74,6 +96,14 @@ internal sealed class StoreMigrationJournal : IDisposable
     internal const string LifecyclePlanId = "SharpInspect.StoreMigration.32-33.v1";
     internal const string ImageEvidencePlanId = "SharpInspect.StoreMigration.33-34.v1";
     internal const string ImageFinalizationPlanId = "SharpInspect.StoreMigration.34-35.v1";
+    /// <summary>The schema-35 to schema-36 plan: the only source generation that carried the complete image stack.</summary>
+    internal const string ProductionOutboxPlanId = "SharpInspect.StoreMigration.35-36.v1";
+    /// <summary>The schema-32 to schema-36 plan: no lifecycle and no image feature is invented.</summary>
+    internal const string ProductionOutbox32PlanId = "SharpInspect.StoreMigration.32-36.v1";
+    /// <summary>The schema-33 to schema-36 plan: the lifecycle ledger is the only legacy feature.</summary>
+    internal const string ProductionOutbox33PlanId = "SharpInspect.StoreMigration.33-36.v1";
+    /// <summary>The schema-34 to schema-36 plan: image evidence is preserved, finalization stays absent.</summary>
+    internal const string ProductionOutbox34PlanId = "SharpInspect.StoreMigration.34-36.v1";
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SI-MJ01\n");
     private static readonly byte[] HashDomain = Encoding.ASCII.GetBytes("SharpInspect.StoreMigrationJournal.v1\0");
     private const int MaximumRecordBytes = 128 * 1024;
@@ -208,18 +238,21 @@ internal sealed class StoreMigrationJournal : IDisposable
             !RequiredText(data.SourceApplicationPath, 32768) || !Path.IsPathFullyQualified(data.SourceApplicationPath) ||
             !RequiredText(data.SourceApplicationVersion, 256) || !RequiredText(data.TargetApplicationVersion, 256) ||
             !RequiredText(data.ReasonCode, 256) || !IsHash(data.SourceApplicationSha256) ||
-            !IsHash(data.TargetApplicationSha256) || !IsHash(data.LifecycleConfigurationHash))
+            !IsHash(data.TargetApplicationSha256))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
-        if (data.TargetSchemaVersion is ProductionImageEvidenceStoreOptions.SchemaVersion or
-                ProductionImageFinalizationStoreOptions.SchemaVersion
-                ? !IsHash(data.ImageEvidenceConfigurationHash)
-                : data.ImageEvidenceConfigurationHash is not null)
-            throw new InvalidOperationException("StoreMigrationJournalImageConfigurationInvalid");
-        if (data.TargetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion
-                ? !IsHash(data.ImageEvidenceConfigurationHash) ||
-                    !IsHash(data.ImageFinalizationConfigurationHash)
-                : data.ImageFinalizationConfigurationHash is not null)
-            throw new InvalidOperationException("StoreMigrationJournalImageFinalizationConfigurationInvalid");
+        if (!TryResolvePlan(data.SourceSchemaVersion, data.TargetSchemaVersion, data.PlanId, out var plan))
+            throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
+        // The optional feature bindings are exact per plan. A feature the operation binds must be
+        // one complete hash and a feature it does not bind must stay absent, so no earlier
+        // generation can claim a later binding and no later generation can omit one it declares.
+        if ((plan.Lifecycle ? !IsHash(data.LifecycleConfigurationHash) : data.LifecycleConfigurationHash is not null) ||
+            (plan.ImageEvidence ? !IsHash(data.ImageEvidenceConfigurationHash) :
+                data.ImageEvidenceConfigurationHash is not null) ||
+            (plan.ImageFinalization ? !IsHash(data.ImageFinalizationConfigurationHash) :
+                data.ImageFinalizationConfigurationHash is not null) ||
+            (plan.ProductionOutbox ? !IsHash(data.ProductionOutboxConfigurationHash) :
+                data.ProductionOutboxConfigurationHash is not null))
+            throw new InvalidOperationException("StoreMigrationJournalConfigurationInvalid");
         if ((data.PreviousOperationId is null) != (data.PreviousOperationJournalHash is null) ||
             (data.PreviousOperationId is null) != (data.PreviousMarkerBase64 is null) ||
             data.PreviousOperationId == Guid.Empty ||
@@ -295,6 +328,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.LifecycleConfigurationHash != old.LifecycleConfigurationHash ||
             data.ImageEvidenceConfigurationHash != old.ImageEvidenceConfigurationHash ||
             data.ImageFinalizationConfigurationHash != old.ImageFinalizationConfigurationHash ||
+            data.ProductionOutboxConfigurationHash != old.ProductionOutboxConfigurationHash ||
             old.SourceFingerprint is not null && data.SourceFingerprint != old.SourceFingerprint ||
             old.TargetFingerprint is not null && data.Attempt == old.Attempt && data.TargetFingerprint != old.TargetFingerprint ||
             old.CommitIntentDurable && data.Attempt == old.Attempt && !data.CommitIntentDurable ||
@@ -315,14 +349,51 @@ internal sealed class StoreMigrationJournal : IDisposable
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximum && value.IndexOf('\0') < 0;
 
     private static bool IsSupportedPlan(int sourceSchemaVersion, int targetSchemaVersion, string planId) =>
-        sourceSchemaVersion == 32 && targetSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
-            planId == LifecyclePlanId ||
-        sourceSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
+        TryResolvePlan(sourceSchemaVersion, targetSchemaVersion, planId, out _);
+
+    /// <summary>
+    /// The one supported operation of an exact plan id, source generation and target generation
+    /// pair, with the optional features that operation binds. A frame whose plan id, source or
+    /// target disagrees with every supported operation is never accepted, so a durable operation
+    /// can be neither continued nor downgraded under a different plan. The four schema-36 plans
+    /// are exactly the four governed source generations: the schema-32/33/34/35 store each keeps
+    /// the optional profile it actually carried and the plan binds only those features.
+    /// </summary>
+    internal static bool TryResolvePlan(int sourceSchemaVersion, int targetSchemaVersion, string planId,
+        out StoreMigrationPlanBinding binding)
+    {
+        binding = default;
+        if (sourceSchemaVersion == ProductionArmStoreOptions.SchemaVersion &&
+            targetSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion && planId == LifecyclePlanId)
+            binding = new(true, false, false, false);
+        else if (sourceSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
             targetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
-            planId == ImageEvidencePlanId ||
-        sourceSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+            planId == ImageEvidencePlanId)
+            binding = new(true, true, false, false);
+        else if (sourceSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
             targetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
-            planId == ImageFinalizationPlanId;
+            planId == ImageFinalizationPlanId)
+            binding = new(true, true, true, false);
+        else if (sourceSchemaVersion == ProductionArmStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+            planId == ProductionOutbox32PlanId)
+            binding = new(false, false, false, true);
+        else if (sourceSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+            planId == ProductionOutbox33PlanId)
+            binding = new(true, false, false, true);
+        else if (sourceSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+            planId == ProductionOutbox34PlanId)
+            binding = new(true, true, false, true);
+        else if (sourceSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionOutboxStoreOptions.SchemaVersion &&
+            planId == ProductionOutboxPlanId)
+            binding = new(true, true, true, true);
+        else
+            return false;
+        return true;
+    }
 
     private static bool IsMarker(string? value)
     {

@@ -28,8 +28,8 @@ internal sealed partial class SqliteCommandStore
         armOptions.Validate();
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException("AuditPolicyNotConfigured");
         AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion
-            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
+            ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion
+            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion,
             "ProductionArmGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
@@ -48,7 +48,7 @@ internal sealed partial class SqliteCommandStore
             plcCommunicationOptions: options.PlcCommunication,
             productionInspectionOptions: options.ProductionInspections,
             productionRecoveryOptions: options.ProductionRecovery, partIdentityOptions: options.PartIdentities,
-            recipeSelectionOptions: options.RecipeSelections, productionArmOptions: armOptions, recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization);
+            recipeSelectionOptions: options.RecipeSelections, productionArmOptions: armOptions, recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization, productionOutboxOptions: options.Outbox);
         AuditChainDatabase.RequireFullProductionArmVerification(database, report, deadline);
     }
 

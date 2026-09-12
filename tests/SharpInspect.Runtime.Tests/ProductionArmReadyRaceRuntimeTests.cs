@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Cycles;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Storage;
 using Xunit;
@@ -68,10 +69,16 @@ public sealed partial class ManualInspectionRuntimeTests
             var failed = await harness.Runtime.GetSnapshotAsync();
             var arms = await new SqliteProductionArmHistoryQuery(harness.Fixture.Options).QueryAsync(new());
             var runs = await new SqliteProductionInspectionHistoryQuery(harness.Fixture.Options).QueryAsync(new(PageSize: 128));
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var owner = typeof(StationRuntime).GetField("_productionInspectionOwner", flags)!.GetValue(harness.Runtime);
+            var observer = owner?.GetType().GetProperty("Observer", flags)?.GetValue(owner) as InspectionCycleRequestObserver;
+            var triggerState = observer is null ? "ObserverUnavailable" :
+                $"accepting={observer.IsAccepting}, pending={observer.HasPendingAdmission}, latest={observer.Latest}";
             throw new XunitException($"Immediate trigger: {failed.ArmState}/{failed.Ready}/{failed.Recovery}; " +
                 $"arm={failed.ProductionArming?.Outcome}/{failed.ProductionArming?.ReasonCode}; " +
                 "arms=" + arms.ReasonCode + ":" + string.Join(";", arms.Events.Select(value => value.Kind + ":" + value.ReasonCode)) +
                 ";runs=" + runs.ReasonCode + ":" + string.Join(";", runs.Events.Select(value => value.Kind + ":" + value.ReasonCode)) +
+                ";trigger=" + triggerState + ";wire=" + string.Join(";", peer.StateWrites.TakeLast(8)) +
                 ";observations=" + observation.Read());
         }
         var history = await WaitForArmAttemptHistoryAsync(harness, value => value.Events.Any(entry =>

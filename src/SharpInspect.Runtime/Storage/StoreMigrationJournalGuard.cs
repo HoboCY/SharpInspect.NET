@@ -173,6 +173,15 @@ internal static class StoreMigrationJournalGuard
         catch (IOException ex) { throw new InvalidOperationException("StoreMigrationJournalUnavailable", ex); }
     }
 
+    /// <summary>
+    /// Re-proves that the completed operation named by the durable frame is exactly the
+    /// generation and optional feature profile the caller now opens. Every feature the
+    /// operation bound must still be present with the recorded hash, and a schema-36
+    /// operation must still carry its recorded outbox binding, so a store can never be
+    /// opened as a different profile than the one the operation migrated. A feature the
+    /// operation did not bind is not inspected here: its own frame already proved that
+    /// feature absent, and any later feature is bound by the operation that adds it.
+    /// </summary>
     internal static void RequireCompletedLineage(StoreMigrationJournalData data, Guid markerId,
         ProductionStoreOptions options, string databasePath)
     {
@@ -180,13 +189,17 @@ internal static class StoreMigrationJournalGuard
             throw new InvalidOperationException("StoreMigrationJournalDatabaseBindingMismatch");
         if (data.Phase != StoreMigrationPhase.Completed || !data.CommitIntentDurable)
             throw new InvalidOperationException("StoreMigrationStartupMaintenanceRequired");
-        if (options.RecipeLifecycle is null || LifecycleHash(options.RecipeLifecycle) != data.LifecycleConfigurationHash)
-            throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
-        if (data.TargetSchemaVersion >= ProductionImageEvidenceStoreOptions.SchemaVersion &&
-            data.ImageEvidenceConfigurationHash != options.ImageEvidence?.BindingHash)
-            throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
-        if (data.TargetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
-            data.ImageFinalizationConfigurationHash != options.ImageFinalization?.BindingHash)
+        if (!StoreMigrationJournal.TryResolvePlan(data.SourceSchemaVersion, data.TargetSchemaVersion,
+                data.PlanId, out var plan))
+            throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
+        if (plan.Lifecycle && (options.RecipeLifecycle is null ||
+                LifecycleHash(options.RecipeLifecycle) != data.LifecycleConfigurationHash) ||
+            plan.ImageEvidence && (options.ImageEvidence is null ||
+                options.ImageEvidence.BindingHash != data.ImageEvidenceConfigurationHash) ||
+            plan.ImageFinalization && (options.ImageFinalization is null ||
+                options.ImageFinalization.BindingHash != data.ImageFinalizationConfigurationHash) ||
+            plan.ProductionOutbox && (options.Outbox is null ||
+                options.Outbox.BindingHash != data.ProductionOutboxConfigurationHash))
             throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         SqliteNative.ConfigureSqliteLimit(connection.Handle!, options);
@@ -205,6 +218,13 @@ internal static class StoreMigrationJournalGuard
 
     internal static string LifecycleHash(RecipeLifecycleStoreOptions options) =>
         Convert.ToHexString(SHA256.HashData(options.EncodeActivationPayload()));
+
+    /// <summary>
+    /// The lifecycle binding hash of a target that declares the ledger, or null when the
+    /// operation's source generation never carried it.
+    /// </summary>
+    internal static string? LifecycleHashOrNull(RecipeLifecycleStoreOptions? options) =>
+        options is null ? null : LifecycleHash(options);
 
     private static byte[] MarkerHash(string databasePath, ReadOnlySpan<byte> operation)
     {
