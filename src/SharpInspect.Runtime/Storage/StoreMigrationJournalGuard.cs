@@ -4,10 +4,13 @@ using SharpInspect.Runtime.Integrity;
 
 namespace SharpInspect.Runtime.Storage;
 
+internal enum MigrationMarkerBoundary { AfterOperationWrite, BeforeFlush, AfterFlush, BeforeReplace, AfterReplace }
+
 internal static class StoreMigrationJournalGuard
 {
     private static readonly byte[] MarkerMagic = Encoding.ASCII.GetBytes("SI-MM01\n");
     internal const long MaximumReadableJournalBytes = 16L * 1024 * 1024;
+    internal const int MarkerByteLength = 56;
     internal static string JournalPath(string databasePath) => DerivedPath(databasePath, "journal");
     internal static string MarkerPath(string databasePath) => DerivedPath(databasePath, "marker");
     internal static string BackupPath(string databasePath, Guid operationId, int attempt) =>
@@ -49,12 +52,88 @@ internal static class StoreMigrationJournalGuard
         file.Flush(flushToDisk: true);
     }
 
+    /// <summary>
+    /// Atomically replaces the permanent marker with the next operation of the same
+    /// database. The previous marker bytes must already be archived in the journal's
+    /// linked provenance; this method never removes the file and never rewrites the
+    /// journal.
+    /// </summary>
+    internal static void ReplaceMarker(string databasePath, Guid operationId,
+        Action<MigrationMarkerBoundary>? observer = null)
+    {
+        if (operationId == Guid.Empty) throw new InvalidOperationException("StoreMigrationOperationRequired");
+        var path = MarkerPath(databasePath);
+        ValidatePath(path);
+        var operation = operationId.ToByteArray();
+        var hash = MarkerHash(databasePath, operation);
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".partial";
+        ValidatePath(temporary);
+        using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+            4096, FileOptions.WriteThrough))
+        {
+            file.Write(MarkerMagic);
+            file.Write(operation);
+            observer?.Invoke(MigrationMarkerBoundary.AfterOperationWrite);
+            file.Write(hash);
+            observer?.Invoke(MigrationMarkerBoundary.BeforeFlush);
+            file.Flush(flushToDisk: true);
+            observer?.Invoke(MigrationMarkerBoundary.AfterFlush);
+        }
+        // The durable journal already binds both operation IDs. After any process
+        // interruption the permanent name therefore holds either complete marker.
+        observer?.Invoke(MigrationMarkerBoundary.BeforeReplace);
+        File.Replace(temporary, path, destinationBackupFileName: null);
+        observer?.Invoke(MigrationMarkerBoundary.AfterReplace);
+    }
+
+    /// <summary>Reads the complete marker file bytes after re-proving their binding.</summary>
+    internal static byte[] ReadMarkerBytes(string databasePath)
+    {
+        var path = MarkerPath(databasePath);
+        ValidatePath(path);
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (file.Length != MarkerByteLength) throw new InvalidOperationException("StoreMigrationMarkerInvalid");
+        var bytes = new byte[MarkerByteLength];
+        var read = 0;
+        while (read < bytes.Length)
+        {
+            var count = file.Read(bytes, read, bytes.Length - read);
+            if (count == 0) throw new InvalidOperationException("StoreMigrationMarkerInvalid");
+            read += count;
+        }
+        var operation = bytes.AsSpan(MarkerMagic.Length, 16);
+        if (!bytes.AsSpan(0, MarkerMagic.Length).SequenceEqual(MarkerMagic) ||
+            !CryptographicOperations.FixedTimeEquals(bytes.AsSpan(MarkerMagic.Length + 16),
+                MarkerHash(databasePath, operation)))
+            throw new InvalidOperationException("StoreMigrationMarkerInvalid");
+        return bytes;
+    }
+
+    /// <summary>
+    /// Re-proves that archived marker bytes are the exact, valid marker of one named
+    /// operation of this database. The archived copy is the evidence that the chained
+    /// operation did not silently replace a foreign generation's marker.
+    /// </summary>
+    internal static void RequireArchivedMarker(string base64, string databasePath, Guid operationId)
+    {
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(base64); }
+        catch (FormatException) { throw new InvalidOperationException("StoreMigrationJournalChainLinkInvalid"); }
+        if (bytes.Length != MarkerByteLength ||
+            !bytes.AsSpan(0, MarkerMagic.Length).SequenceEqual(MarkerMagic))
+            throw new InvalidOperationException("StoreMigrationJournalChainLinkInvalid");
+        var archived = new Guid(bytes.AsSpan(MarkerMagic.Length, 16));
+        if (archived != operationId || !CryptographicOperations.FixedTimeEquals(
+                bytes.AsSpan(MarkerMagic.Length + 16), MarkerHash(databasePath, archived.ToByteArray())))
+            throw new InvalidOperationException("StoreMigrationJournalChainLinkInvalid");
+    }
+
     internal static Guid ReadMarker(string databasePath)
     {
         var path = MarkerPath(databasePath);
         ValidatePath(path);
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (file.Length != MarkerMagic.Length + 16 + 32)
+        if (file.Length != MarkerByteLength)
             throw new InvalidOperationException("StoreMigrationMarkerInvalid");
         var bytes = new byte[checked((int)file.Length)];
         var read = 0;
@@ -102,6 +181,9 @@ internal static class StoreMigrationJournalGuard
         if (data.Phase != StoreMigrationPhase.Completed || !data.CommitIntentDurable)
             throw new InvalidOperationException("StoreMigrationStartupMaintenanceRequired");
         if (options.RecipeLifecycle is null || LifecycleHash(options.RecipeLifecycle) != data.LifecycleConfigurationHash)
+            throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
+        if (data.TargetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+            data.ImageEvidenceConfigurationHash != options.ImageEvidence?.BindingHash)
             throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         SqliteNative.ConfigureSqliteLimit(connection.Handle!, options);

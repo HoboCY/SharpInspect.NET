@@ -408,8 +408,11 @@ public sealed partial class ManualInspectionRuntimeTests
             ModbusProductionArmStatusBinding? productionArmStatusBinding = null,
             TestProductionArmMaintenanceProvider? productionArmMaintenance = null,
             ProductionArmMaintenanceState productionArmMaintenanceState = ProductionArmMaintenanceState.ManualArmConfirmed,
-            string? productionArmMaintenanceJournalHead = null, bool enableRecipeLifecycle = false)
+            string? productionArmMaintenanceJournalHead = null, bool enableRecipeLifecycle = false,
+            ProductionImageEvidenceStoreOptions? imageEvidence = null,
+            EvidenceCapturePolicySnapshot? capturePolicy = null, TraceStoragePolicyDefinition? tracePolicy = null)
         {
+            enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
             if (enableRecipeLifecycle)
                 policy = new AuthorizationPolicy("V148.Lifecycle.Authorization", "1",
@@ -441,7 +444,8 @@ public sealed partial class ManualInspectionRuntimeTests
                 RecipeGovernanceMode.SingleApproverRelease);
             var fixture = await RecipeDraftStorageTests.Fixture.CreateAsync(
                 alarmPolicy: alarm, authorizationPolicy: policy,
-                recipeReleases: minimalStore ? null : new RecipeReleaseStoreOptions(releasePolicy),
+                recipeReleases: minimalStore ? null : new RecipeReleaseStoreOptions(releasePolicy)
+                    { EvidenceCapturePolicies = capturePolicy is null ? null : new(new[] { capturePolicy }) },
                 plcResultContracts: minimalStore ? null : new PlcResultContractStoreOptions(),
                 cameraSetup: new CameraSetupStoreOptions(),
                 recipeActivations: minimalStore ? null : new RecipeActivationStoreOptions(),
@@ -455,8 +459,10 @@ public sealed partial class ManualInspectionRuntimeTests
                 recipeSelections: recipeChangeBinding is null ? null : new RecipeSelectionStoreOptions(),
                 traceStoragePolicies: productionPeer is null ? null : new TraceStoragePolicyStoreOptions
                     { DeploymentScope = new("V142.Isolated.Station", "1", Array.Empty<TraceStorageRouteIdentity>()) },
-                productionArming: productionPeer is null ? null : productionArming,
-                recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null);
+                productionArming: productionPeer is null ? null : productionArming ??
+                    (imageEvidence is null ? null : new ProductionArmStoreOptions()),
+                recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
+                imageEvidence: imageEvidence);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
@@ -464,7 +470,7 @@ public sealed partial class ManualInspectionRuntimeTests
             try
             {
                 var factory = new ManualFactory(preparationBarrierStage, failUnpublishedDispose);
-                var content = CreateContent(fixture.Options, activationReadyDraft, productionPartRequirement);
+                var content = CreateContent(fixture.Options, activationReadyDraft, productionPartRequirement, capturePolicy);
                 var saved = await fixture.SaveAsync(Guid.NewGuid(), Guid.NewGuid(), 0, null,
                     Encode(content), "V135 create manual integration draft");
                 Assert.True(saved.Saved, saved.ReasonCode);
@@ -477,7 +483,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 if (productionPeer is not null)
                 {
                     var publication = await TraceStoragePolicyRuntimeTests.Service(fixture).PublishAsync(
-                        await TraceStoragePolicyRuntimeTests.AuthorizedCommand(fixture, 0, TraceStoragePolicyRuntimeTests.Policy()));
+                        await TraceStoragePolicyRuntimeTests.AuthorizedCommand(fixture, 0, tracePolicy ?? TraceStoragePolicyRuntimeTests.Policy()));
                     Assert.True(publication.Succeeded, publication.Outcome.ReasonCode);
                     ProductionPolicyDocument Document(string id, string content) => new(id, "1", content);
                     deployment = startupProductionPolicy is null && postActivationArmPolicy is null
@@ -499,12 +505,16 @@ public sealed partial class ManualInspectionRuntimeTests
                             Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>(),
                             startupProductionPolicy ?? StartupProductionPolicy.Default,
                             postActivationArmPolicy ?? PostActivationArmPolicy.Default);
-                    registrations.AddSingleton(new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
-                        ProductionEvidenceRequirement.None, productionPeer.CreateProductionProfile(
+                    var productionProfile = productionPeer.CreateProductionProfile(
                             productionCommunicationPolicy, partIdentity: partIdentityReadPlan,
-                            recipeChange: recipeChangeBinding, productionArmStatus: productionArmStatusBinding),
+                            recipeChange: recipeChangeBinding, productionArmStatus: productionArmStatusBinding);
+                    registrations.AddSingleton(imageEvidence is null ? new ProductionInspectionOptions(fixture.Options.LocalIdentity!.StationId,
+                        ProductionEvidenceRequirement.None, productionProfile,
                         publication.Snapshot!.Version, publication.Snapshot.ContentHash,
-                        TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
+                        TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment) :
+                        new ProductionInspectionOptions(imageEvidence.Stage, fixture.Options.LocalIdentity!.StationId,
+                            productionProfile, publication.Snapshot!.Version, publication.Snapshot.ContentHash,
+                            TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(5), deployment));
                 }
                 registrations.AddSingleton(fixture.Store);
                 registrations.AddSingleton(fixture.Identity);
@@ -692,7 +702,7 @@ public sealed partial class ManualInspectionRuntimeTests
         }
 
         private static RecipeDraftContent CreateContent(ProductionStoreOptions options, bool activationReadyDraft = false,
-            PartIdentityRequirement? productionPartRequirement = null)
+            PartIdentityRequirement? productionPartRequirement = null, EvidenceCapturePolicySnapshot? capturePolicy = null)
         {
             var schema = new AlgorithmConfigurationSchema("V135.Manual.Config", "1",
                 Array.Empty<AlgorithmFieldDefinition>());
@@ -716,7 +726,9 @@ public sealed partial class ManualInspectionRuntimeTests
                     new RecipePolicyRequirement(RecipePolicyKind.AlgorithmExecution,
                         new RecipeContractReference(execution.Id, execution.Version,
                             execution.ContentHash))
-                }, partIdentityRequirement: activationReadyDraft ? productionPartRequirement ?? PartIdentityRequirement.None : null);
+                }.Concat(capturePolicy is null ? Array.Empty<RecipePolicyRequirement>() : new[]
+                    { new RecipePolicyRequirement(RecipePolicyKind.EvidenceCapture, capturePolicy.Reference) }),
+                partIdentityRequirement: activationReadyDraft ? productionPartRequirement ?? PartIdentityRequirement.None : null);
         }
 
         private static RequestedCameraConfiguration RequestedCamera() =>
@@ -891,6 +903,8 @@ public sealed partial class ManualInspectionRuntimeTests
 
         public AlgorithmDescriptor Descriptor { get; }
         internal int Created => Volatile.Read(ref _created);
+        internal bool RecordInputPixelHashes { get; set; }
+        internal System.Collections.Concurrent.ConcurrentDictionary<Guid, string> InputPixelHashes { get; } = new();
         internal int AlgorithmDisposeFailures => Volatile.Read(ref _algorithmDisposeFailures);
         internal Task PreparationCallbackEntered => _preparationCallbackEntered.Task;
         internal Task PreparationCallbackCompleted => _preparationCallbackCompleted.Task;
@@ -987,6 +1001,9 @@ public sealed partial class ManualInspectionRuntimeTests
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!_warmed || _disposed)
                     throw new InvalidOperationException("V135ManualAlgorithmNotPrepared");
+                if (_factory.RecordInputPixelHashes)
+                    _factory.InputPixelHashes[context.Frame.Metadata.Correlation.Value] =
+                        CanonicalImagePixelContent.ComputeHash(context.Frame, cancellationToken);
                 if (Volatile.Read(ref _factory._holdExecution) != 0)
                 {
                     _factory._executionEntered.TrySetResult(true);

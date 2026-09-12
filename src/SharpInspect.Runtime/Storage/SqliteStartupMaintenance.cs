@@ -7,14 +7,38 @@ using SQLitePCL;
 namespace SharpInspect.Runtime.Storage;
 
 /// <summary>
-/// The bundled, exclusive SQLite 32-to-33 startup migration. All existing
-/// configuration remains pinned; only RecipeLifecycle is added. Required remote
-/// audit anchoring is not supported by this local migration plan. Hosts must
-/// enter maintenance before opening this service and perform normal startup
-/// reconciliation afterwards. This service creates no Runtime or production arm.
+/// The bundled, exclusive SQLite forward startup migrations: schema 32 to 33
+/// (RecipeLifecycle) and schema 33 to 34 (bounded production image evidence).
+/// All existing configuration remains pinned; each operation adds only its own
+/// feature, and an operation that continues an earlier completed migration
+/// appends a linked operation to the same journal instead of replacing the
+/// earlier evidence. Required remote audit anchoring is not supported by these
+/// local migration plans. Hosts must enter maintenance before opening this
+/// service and perform normal startup reconciliation afterwards. This service
+/// creates no Runtime or production arm.
 /// </summary>
 public static class SqliteStartupMaintenance
 {
+    /// <summary>
+    /// One bundled forward generation step. The plan id, the source generation and
+    /// the target generation are written into every journal frame, so a durable
+    /// operation can never be continued under a different plan.
+    /// </summary>
+    private sealed record StoreMigrationPlan(string PlanId, int SourceVersion, int TargetVersion)
+    {
+        internal static readonly StoreMigrationPlan Lifecycle = new(StoreMigrationJournal.LifecyclePlanId, 32,
+            RecipeLifecycleStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ImageEvidence = new(StoreMigrationJournal.ImageEvidencePlanId,
+            RecipeLifecycleStoreOptions.SchemaVersion, ProductionImageEvidenceStoreOptions.SchemaVersion);
+
+        internal static StoreMigrationPlan For(int targetVersion) => targetVersion switch
+        {
+            RecipeLifecycleStoreOptions.SchemaVersion => Lifecycle,
+            ProductionImageEvidenceStoreOptions.SchemaVersion => ImageEvidence,
+            _ => throw new InvalidOperationException("StoreMigrationPathUnsupported")
+        };
+    }
+
     public static ValueTask<StoreStartupMaintenanceOpenResult> OpenAsync(
         ProductionStoreOptions target, StoreStartupMaintenanceOptions maintenance,
         CancellationToken cancellationToken = default)
@@ -58,6 +82,7 @@ public static class SqliteStartupMaintenance
         private SqliteConnection? _connection;
         private SqliteCommandStore.StartupMaintenanceSchema? _source;
         private SqliteCommandStore.StartupMaintenanceSchema? _target;
+        private StoreMigrationPlan? _plan;
         private StoreMigrationJournal? _journal;
         private StoreMigrationJournalData? _data;
         private bool _transaction;
@@ -82,9 +107,17 @@ public static class SqliteStartupMaintenance
                 throw new InvalidOperationException("StoreMigrationTargetLifecycleRequired");
             if (_targetOptions.AuditIntegrityPolicy is { RequireExternalAnchor: true })
                 throw new InvalidOperationException("StoreMigrationExternalAnchorPlanUnsupported");
-            _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions);
-            _source = new SqliteCommandStore.StartupMaintenanceSchema(SqliteCommandStore.MigrationSourceOptions(_targetOptions));
-            if (_source.Version != 32 || _target.Version != 33)
+            // The declared target profile determines the operation: an image evidence
+            // target is the schema-33 to schema-34 plan, otherwise the schema-32 to
+            // schema-33 plan. Both plans keep the identical exclusive protocol.
+            _plan = StoreMigrationPlan.For(_targetOptions.ImageEvidence is null
+                ? RecipeLifecycleStoreOptions.SchemaVersion
+                : ProductionImageEvidenceStoreOptions.SchemaVersion);
+            _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
+            _source = new SqliteCommandStore.StartupMaintenanceSchema(_plan.SourceVersion == 32
+                ? SqliteCommandStore.MigrationSourceOptions(_targetOptions)
+                : SqliteCommandStore.MigrationImageEvidenceSourceOptions(_targetOptions), _plan.TargetVersion);
+            if ((_source.Version, _target.Version) != (_plan.SourceVersion, _plan.TargetVersion))
                 throw new InvalidOperationException("StoreMigrationPathUnsupported");
             var deadline = Deadline();
             StoreMigrationJournalGuard.ValidatePath(_options.SourceRuntimeAssemblyPath);
@@ -107,9 +140,10 @@ public static class SqliteStartupMaintenance
             long version;
             using (var preflight = OpenExisting(_path, readOnly: true))
                 version = AuditChainDatabase.Scalar(preflight.Handle!, "PRAGMA user_version;", deadline);
-            if (version is not (32 or 33) || !hasJournal && version != 32)
-                throw new InvalidOperationException(version > 33
-                    ? "StoreMigrationNewerSchemaUnsupported" : "StoreMigrationPathUnsupported");
+            if (version > _plan.TargetVersion)
+                throw new InvalidOperationException("StoreMigrationNewerSchemaUnsupported");
+            if (version < _plan.SourceVersion || !hasJournal && version != _plan.SourceVersion)
+                throw new InvalidOperationException("StoreMigrationPathUnsupported");
             _connection = OpenExisting(_path, readOnly: false);
             if (!hasJournal)
             {
@@ -119,26 +153,61 @@ public static class SqliteStartupMaintenance
                 StoreMigrationJournalGuard.CreateMarker(_path, operation);
                 _journal = new StoreMigrationJournal(journalPath, _options.MaximumJournalBytes, create: true);
                 _contextBound = true;
-                Record(new StoreMigrationJournalData
-                {
-                    OperationId = operation, Phase = StoreMigrationPhase.Opened, DatabasePath = _path,
-                    SourceApplicationPath = _options.SourceRuntimeAssemblyPath,
-                    SourceApplicationVersion = sourceApplication.Version, SourceApplicationSha256 = sourceApplication.Hash,
-                    TargetApplicationVersion = targetApplication.Version, TargetApplicationSha256 = targetApplication.Hash,
-                    LifecycleConfigurationHash = StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle),
-                    ReasonCode = "StoreMigrationOpened"
-                });
+                Record(OpenedRecord(operation, sourceApplication, targetApplication, previous: null));
+                _source.ConfigureConnection(Database, deadline);
+                return;
+            }
+            var chain = StoreMigrationJournal.ReadChain(journalPath, _options.MaximumJournalBytes);
+            if (chain.Count == 0) throw new InvalidOperationException("StoreMigrationJournalEmpty");
+            RequireChainedOperation(chain);
+            var marker = StoreMigrationJournalGuard.ReadMarker(_path);
+            if (chain[^1].Data.PlanId != _plan!.PlanId)
+            {
+                // The durable journal belongs to the previous migration generation.
+                // Only a fully completed operation of the immediately preceding
+                // generation may be continued, and only by appending a linked
+                // operation to the same append-only file: unfinished work is never
+                // reclassified, downgraded or discarded.
+                var durable = chain[^1].Data;
+                if (durable.PlanId != StoreMigrationJournal.LifecyclePlanId ||
+                    durable.SourceSchemaVersion != 32 || durable.TargetSchemaVersion != _plan.SourceVersion ||
+                    durable.Phase != StoreMigrationPhase.Completed || !durable.CommitIntentDurable ||
+                    !durable.DatabaseCommitObserved || version != _plan.SourceVersion)
+                    throw new InvalidOperationException(durable.Phase == StoreMigrationPhase.Completed
+                        ? "StoreMigrationJournalGenerationUnsupported" : "StoreMigrationPriorOperationIncomplete");
+                if (!string.Equals(durable.DatabasePath, _path, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("StoreMigrationJournalDatabaseBindingMismatch");
+                StoreMigrationJournalGuard.RequireCompletedLineage(durable, marker, _targetOptions, _path);
+                var archivedMarker = StoreMigrationJournalGuard.ReadMarkerBytes(_path);
+                var operation = Guid.NewGuid();
+                _journal = new StoreMigrationJournal(journalPath, _options.MaximumJournalBytes, create: false);
+                _contextBound = true;
+                Record(OpenedRecord(operation, sourceApplication, targetApplication,
+                    (durable.OperationId, chain[^1].ContentHash, Convert.ToBase64String(archivedMarker))));
+                // The linked provenance is durable before the pointer moves.
+                StoreMigrationJournalGuard.ReplaceMarker(_path, operation);
                 _source.ConfigureConnection(Database, deadline);
                 return;
             }
             _journal = new StoreMigrationJournal(journalPath, _options.MaximumJournalBytes, create: false);
             _data = _journal.Last?.Data ?? throw new InvalidOperationException("StoreMigrationJournalEmpty");
-            if (_data.OperationId != StoreMigrationJournalGuard.ReadMarker(_path) ||
-                !string.Equals(_data.DatabasePath, _path, StringComparison.OrdinalIgnoreCase) ||
+            if (_data.OperationId != marker)
+            {
+                // A chained operation whose permanent marker still names the completed
+                // predecessor crashed before the marker switch. The linked provenance
+                // was already re-proved above and no database mutation precedes the
+                // switch, so the switch is completed here and nothing else changes.
+                if (_data.Attempt != 1 || _data.Phase != StoreMigrationPhase.Opened ||
+                    _data.PreviousOperationId != marker || version != _plan.SourceVersion)
+                    throw new InvalidOperationException("StoreMigrationResumeContextMismatch");
+                StoreMigrationJournalGuard.ReplaceMarker(_path, _data.OperationId);
+            }
+            if (!string.Equals(_data.DatabasePath, _path, StringComparison.OrdinalIgnoreCase) ||
                 _data.SourceApplicationPath != _options.SourceRuntimeAssemblyPath ||
                 _data.SourceApplicationVersion != sourceApplication.Version || _data.SourceApplicationSha256 != sourceApplication.Hash ||
                 _data.TargetApplicationVersion != targetApplication.Version || _data.TargetApplicationSha256 != targetApplication.Hash ||
-                _data.LifecycleConfigurationHash != StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle))
+                _data.LifecycleConfigurationHash != StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle) ||
+                _data.ImageEvidenceConfigurationHash != _targetOptions.ImageEvidence?.BindingHash)
                 throw new InvalidOperationException("StoreMigrationResumeContextMismatch");
             _contextBound = true;
             _status = StatusFor(_journal.Last!);
@@ -151,7 +220,7 @@ public static class SqliteStartupMaintenance
                 return;
             }
             if (_data.BackupVerified) VerifyBackup(_data, deadline, token);
-            if (version == 32)
+            if (version == _plan.SourceVersion)
             {
                 if (_data.DatabaseCommitObserved)
                     throw new InvalidOperationException("StoreMigrationCommittedGenerationMissing");
@@ -178,6 +247,59 @@ public static class SqliteStartupMaintenance
             if (_data.Phase != StoreMigrationPhase.DatabaseCommitted)
                 Record(_data with { Phase = StoreMigrationPhase.DatabaseCommitted, DatabaseCommitObserved = true,
                     ReasonCode = "StoreMigrationCommittedGenerationRecovered" });
+        }
+
+        private StoreMigrationJournalData OpenedRecord(Guid operation,
+            (string Version, string Hash) sourceApplication, (string Version, string Hash) targetApplication,
+            (Guid OperationId, string FrameHash, string MarkerBase64)? previous) => new()
+        {
+            OperationId = operation, Phase = StoreMigrationPhase.Opened, DatabasePath = _path,
+            PlanId = _plan!.PlanId, SourceSchemaVersion = _plan.SourceVersion,
+            TargetSchemaVersion = _plan.TargetVersion,
+            SourceApplicationPath = _options.SourceRuntimeAssemblyPath,
+            SourceApplicationVersion = sourceApplication.Version, SourceApplicationSha256 = sourceApplication.Hash,
+            TargetApplicationVersion = targetApplication.Version, TargetApplicationSha256 = targetApplication.Hash,
+            LifecycleConfigurationHash = StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle!),
+            ImageEvidenceConfigurationHash = _targetOptions.ImageEvidence?.BindingHash,
+            PreviousOperationId = previous?.OperationId, PreviousOperationJournalHash = previous?.FrameHash,
+            PreviousMarkerBase64 = previous?.MarkerBase64, ReasonCode = "StoreMigrationOpened"
+        };
+
+        /// <summary>
+        /// Re-proves the linked provenance of a chained operation from the complete
+        /// journal chain: the operation continues the immediately preceding frame, that
+        /// frame completed with a durable commit intent, its target generation is this
+        /// operation's source generation, and the archived marker bytes are the exact
+        /// valid marker of that predecessor.
+        /// </summary>
+        private void RequireChainedOperation(IReadOnlyList<StoreMigrationJournalEntry> chain)
+        {
+            var last = chain[^1].Data;
+            if (last.PreviousOperationId is not { } previousOperation) return;
+            if (last.PreviousMarkerBase64 is null)
+                throw new InvalidOperationException("StoreMigrationJournalChainLinkMismatch");
+            // The frames of the last operation are contiguous, so its own opened frame is
+            // the first frame of this operation and the frame before it must be the
+            // completed predecessor that the provenance names, however far the operation
+            // has already advanced.
+            var opened = -1;
+            for (var index = chain.Count - 1; index >= 0; index--)
+            {
+                if (chain[index].Data.OperationId != last.OperationId) break;
+                if (chain[index].Data.Attempt == 1 && chain[index].Data.Phase == StoreMigrationPhase.Opened)
+                { opened = index; break; }
+            }
+            if (opened < 1) throw new InvalidOperationException("StoreMigrationJournalChainLinkMismatch");
+            var link = chain[opened];
+            var previous = chain[opened - 1];
+            if (previous.Data.OperationId != previousOperation ||
+                previous.ContentHash != link.Data.PreviousOperationJournalHash ||
+                previous.Data.Phase != StoreMigrationPhase.Completed || !previous.Data.CommitIntentDurable ||
+                !previous.Data.DatabaseCommitObserved ||
+                previous.Data.TargetSchemaVersion != link.Data.SourceSchemaVersion)
+                throw new InvalidOperationException("StoreMigrationJournalChainLinkMismatch");
+            StoreMigrationJournalGuard.RequireArchivedMarker(link.Data.PreviousMarkerBase64!, _path,
+                previousOperation);
         }
 
         public ValueTask<StoreMigrationStatus> AdvanceAsync(CancellationToken cancellationToken = default)
@@ -246,7 +368,7 @@ public static class SqliteStartupMaintenance
                     _target!.RebuildConstraintTables(Database, deadline);
                     break;
                 case StoreMigrationPhase.TablesRebuilt:
-                    _target!.AddLifecycle(Database, deadline);
+                    _target!.AddTargetFeature(Database, deadline);
                     break;
                 case StoreMigrationPhase.FeatureInitialized:
                     var proof = VerifyTarget(deadline, token, requireRecordedFingerprint: false);
@@ -412,7 +534,8 @@ public static class SqliteStartupMaintenance
             VerifiedStoreMigrationBackup? backup = data.BackupVerified ? new(data.BackupPath!, data.SourceSchemaVersion,
                 data.SourceApplicationVersion, data.SourceApplicationSha256, data.BackupCreatedAtUtc!.Value,
                 data.BackupByteLength!.Value, data.BackupSha256!, data.SourceFingerprint!) : null;
-            return new(data.OperationId, data.Phase, data.ReasonCode, entry.ContentHash, backup);
+            return new(data.OperationId, data.Phase, data.ReasonCode, entry.ContentHash, backup,
+                data.SourceSchemaVersion, data.TargetSchemaVersion);
         }
 
         internal void Fail(Exception exception)
@@ -437,7 +560,9 @@ public static class SqliteStartupMaintenance
                 { reason = "StoreMigrationFailureJournalUnavailable"; }
             }
             _status = new StoreMigrationStatus(_data?.OperationId ?? Guid.Empty,
-                StoreMigrationPhase.MaintenanceRequired, reason, _journal?.Last?.ContentHash, _status.Backup);
+                StoreMigrationPhase.MaintenanceRequired, reason, _journal?.Last?.ContentHash, _status.Backup,
+                _data?.SourceSchemaVersion ?? _plan?.SourceVersion ?? 32,
+                _data?.TargetSchemaVersion ?? _plan?.TargetVersion ?? RecipeLifecycleStoreOptions.SchemaVersion);
         }
 
         private void Rollback()

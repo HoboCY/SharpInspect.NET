@@ -41,6 +41,7 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(AuditChainDatabase.Scalar(database,
             "SELECT COUNT(*) FROM production_inspection_cores;", deadline) == cores.Count,
             "ProductionInspectionCoreProjectionCountMismatch");
+        ValidateProductionImageProjections(database, cores.Values.Select(value => value.Event.Core!).ToArray(), deadline);
     }
 
     private static void VerifyProductionAdmissionProjection(sqlite3 database,

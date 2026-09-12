@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace SharpInspect.Runtime.Storage;
 
@@ -40,6 +41,22 @@ internal sealed record StoreMigrationJournalData
     public bool CommitIntentDurable { get; init; }
     public bool DatabaseCommitObserved { get; init; }
     public string ReasonCode { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Linked provenance of a chained operation: the completed operation this
+    /// operation continues, its exact last journal frame hash and its archived
+    /// permanent marker bytes. All three stay null for the first operation of a
+    /// journal and are omitted from the canonical payload when null, so every
+    /// journal written before a chained generation stays byte-identical.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Guid? PreviousOperationId { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? PreviousOperationJournalHash { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? PreviousMarkerBase64 { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ImageEvidenceConfigurationHash { get; init; }
 }
 
 internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data, string ContentHash);
@@ -52,6 +69,8 @@ internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data
 /// </summary>
 internal sealed class StoreMigrationJournal : IDisposable
 {
+    internal const string LifecyclePlanId = "SharpInspect.StoreMigration.32-33.v1";
+    internal const string ImageEvidencePlanId = "SharpInspect.StoreMigration.33-34.v1";
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SI-MJ01\n");
     private static readonly byte[] HashDomain = Encoding.ASCII.GetBytes("SharpInspect.StoreMigrationJournal.v1\0");
     private const int MaximumRecordBytes = 128 * 1024;
@@ -76,7 +95,7 @@ internal sealed class StoreMigrationJournal : IDisposable
                 _stream.Flush(flushToDisk: true);
             }
             _stream.Position = 0;
-            Last = ReadCore(_stream, maximumBytes);
+            Last = ReadCore(_stream, maximumBytes, null);
             _verifiedLength = _stream.Length;
             _stream.Position = _verifiedLength;
         }
@@ -89,7 +108,21 @@ internal sealed class StoreMigrationJournal : IDisposable
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
             FileShare.ReadWrite, 4096, FileOptions.SequentialScan);
-        return ReadCore(stream, maximumBytes);
+        return ReadCore(stream, maximumBytes, null);
+    }
+
+    /// <summary>
+    /// Reads the complete framed chain. The caller uses it only to re-prove that a
+    /// chained operation follows a completed operation in the same file; the chain is
+    /// bounded by the journal byte budget and by the frame count limit.
+    /// </summary>
+    internal static IReadOnlyList<StoreMigrationJournalEntry> ReadChain(string path, long maximumBytes)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite, 4096, FileOptions.SequentialScan);
+        var entries = new List<StoreMigrationJournalEntry>();
+        _ = ReadCore(stream, maximumBytes, entries);
+        return entries;
     }
 
     internal StoreMigrationJournalEntry Append(StoreMigrationJournalData value)
@@ -123,7 +156,8 @@ internal sealed class StoreMigrationJournal : IDisposable
 
     public void Dispose() => _stream.Dispose();
 
-    private static StoreMigrationJournalEntry? ReadCore(Stream stream, long maximumBytes)
+    private static StoreMigrationJournalEntry? ReadCore(Stream stream, long maximumBytes,
+        List<StoreMigrationJournalEntry>? chain)
     {
         if (maximumBytes < MaximumRecordBytes || maximumBytes > 16L * 1024 * 1024 ||
             stream.Length < Magic.Length || stream.Length > maximumBytes)
@@ -153,6 +187,7 @@ internal sealed class StoreMigrationJournal : IDisposable
                 throw new InvalidOperationException("StoreMigrationJournalPayloadNoncanonical");
             Validate(data, previous);
             previous = new StoreMigrationJournalEntry(data, Convert.ToHexString(actualHash));
+            chain?.Add(previous);
         }
         return previous;
     }
@@ -163,8 +198,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.Sequence != (previous?.Data.Sequence ?? 0) + 1 || data.Sequence > MaximumRecords ||
             data.PreviousHash != (previous?.ContentHash ?? new string('0', 64)) ||
             !Enum.IsDefined(typeof(StoreMigrationPhase), data.Phase) ||
-            data.SourceSchemaVersion != 32 || data.TargetSchemaVersion != 33 ||
-            data.PlanId != "SharpInspect.StoreMigration.32-33.v1" ||
+            !IsSupportedPlan(data.SourceSchemaVersion, data.TargetSchemaVersion, data.PlanId) ||
             data.SystemPrincipalId != SharpInspect.Abstractions.SystemPrincipalId.Runtime ||
             data.RecordedAtUtc.Offset != TimeSpan.Zero || data.RecordedAtUtc == default ||
             !RequiredText(data.DatabasePath, 32768) || !Path.IsPathFullyQualified(data.DatabasePath) ||
@@ -173,6 +207,19 @@ internal sealed class StoreMigrationJournal : IDisposable
             !RequiredText(data.ReasonCode, 256) || !IsHash(data.SourceApplicationSha256) ||
             !IsHash(data.TargetApplicationSha256) || !IsHash(data.LifecycleConfigurationHash))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
+        if (data.TargetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion
+                ? !IsHash(data.ImageEvidenceConfigurationHash)
+                : data.ImageEvidenceConfigurationHash is not null)
+            throw new InvalidOperationException("StoreMigrationJournalImageConfigurationInvalid");
+        if ((data.PreviousOperationId is null) != (data.PreviousOperationJournalHash is null) ||
+            (data.PreviousOperationId is null) != (data.PreviousMarkerBase64 is null) ||
+            data.PreviousOperationId == Guid.Empty ||
+            data.PreviousOperationId == data.OperationId ||
+            data.Phase == StoreMigrationPhase.Opened && data.Attempt == 1 &&
+                data.PreviousOperationJournalHash is not null &&
+                data.PreviousOperationJournalHash != data.PreviousHash ||
+            data.PreviousMarkerBase64 is not null && !IsMarker(data.PreviousMarkerBase64))
+            throw new InvalidOperationException("StoreMigrationJournalChainLinkInvalid");
         if (data.SourceFingerprint is not null && (!IsHash(data.SourceFingerprint) || data.SourceTables is null ||
             data.SourceTables.Length is < 1 or > 256 || data.SourceAuditSequence is null or < 1 || !IsHash(data.SourceAuditHash)))
             throw new InvalidOperationException("StoreMigrationJournalSourceBindingInvalid");
@@ -211,6 +258,16 @@ internal sealed class StoreMigrationJournal : IDisposable
             return;
         }
         var old = previous.Data;
+        // A chained operation continues one completed operation of the same journal
+        // file: its provenance fields bind the exact predecessor frame and its
+        // archived marker bytes, and it becomes the new operation instead of a
+        // successor phase of the old one.
+        if (data.Attempt == 1 && data.Phase == StoreMigrationPhase.Opened &&
+            old.Phase == StoreMigrationPhase.Completed &&
+            data.SourceSchemaVersion == old.TargetSchemaVersion &&
+            data.OperationId != old.OperationId && data.PreviousOperationId == old.OperationId &&
+            data.PreviousOperationJournalHash == previous.ContentHash && data.PreviousMarkerBase64 is not null)
+            return;
         if (old.SourceFingerprint is not null && (data.SourceAuditSequence != old.SourceAuditSequence ||
             data.SourceAuditHash != old.SourceAuditHash || data.SourceTables is null ||
             !data.SourceTables.SequenceEqual(old.SourceTables!)))
@@ -227,6 +284,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.SourceApplicationVersion != old.SourceApplicationVersion || data.SourceApplicationSha256 != old.SourceApplicationSha256 ||
             data.TargetApplicationVersion != old.TargetApplicationVersion || data.TargetApplicationSha256 != old.TargetApplicationSha256 ||
             data.LifecycleConfigurationHash != old.LifecycleConfigurationHash ||
+            data.ImageEvidenceConfigurationHash != old.ImageEvidenceConfigurationHash ||
             old.SourceFingerprint is not null && data.SourceFingerprint != old.SourceFingerprint ||
             old.TargetFingerprint is not null && data.Attempt == old.Attempt && data.TargetFingerprint != old.TargetFingerprint ||
             old.CommitIntentDurable && data.Attempt == old.Attempt && !data.CommitIntentDurable ||
@@ -245,6 +303,26 @@ internal sealed class StoreMigrationJournal : IDisposable
 
     private static bool RequiredText(string? value, int maximum) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximum && value.IndexOf('\0') < 0;
+
+    private static bool IsSupportedPlan(int sourceSchemaVersion, int targetSchemaVersion, string planId) =>
+        sourceSchemaVersion == 32 && targetSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
+            planId == LifecyclePlanId ||
+        sourceSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+            planId == ImageEvidencePlanId;
+
+    private static bool IsMarker(string? value)
+    {
+        if (value is null || value.Length > 256) return false;
+        try
+        {
+            // Marker format: the 8-byte magic, the 16-byte operation id and the 32-byte
+            // path binding hash. The full binding is re-proved by the journal guard.
+            return value.Length % 4 == 0 && Convert.FromBase64String(value).Length ==
+                StoreMigrationJournalGuard.MarkerByteLength;
+        }
+        catch (FormatException) { return false; }
+    }
 
     private static bool IsHash(string? value) => value is { Length: 64 } &&
         value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F');

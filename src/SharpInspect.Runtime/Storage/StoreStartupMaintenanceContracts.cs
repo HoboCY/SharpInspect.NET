@@ -1,7 +1,8 @@
 namespace SharpInspect.Runtime.Storage;
 
 /// <summary>
-/// Limits for the bundled schema-32 to schema-33 startup migration. The source
+/// Limits for the bundled startup migrations: schema 32 to schema 33 (Recipe
+/// lifecycle) and schema 33 to schema 34 (production image evidence). The source
 /// runtime assembly is inspected as provenance, never loaded or executed.
 /// Deployment authorization and application-slot selection belong to the host's
 /// governed upgrade workflow; these settings grant no production authority.
@@ -86,20 +87,23 @@ public sealed class VerifiedStoreMigrationBackup
 public sealed class StoreMigrationStatus
 {
     internal StoreMigrationStatus(Guid operationId, StoreMigrationPhase phase, string reasonCode,
-        string? journalHeadHash = null, VerifiedStoreMigrationBackup? backup = null)
+        string? journalHeadHash = null, VerifiedStoreMigrationBackup? backup = null,
+        int sourceSchemaVersion = 32, int targetSchemaVersion = RecipeLifecycleStoreOptions.SchemaVersion)
     {
         OperationId = operationId;
         Phase = phase;
         ReasonCode = reasonCode;
         JournalHeadHash = journalHeadHash;
         Backup = backup;
+        SourceSchemaVersion = sourceSchemaVersion;
+        TargetSchemaVersion = targetSchemaVersion;
     }
 
     public Guid OperationId { get; }
     public StoreMigrationPhase Phase { get; }
     public string ReasonCode { get; }
-    public int SourceSchemaVersion => 32;
-    public int TargetSchemaVersion => 33;
+    public int SourceSchemaVersion { get; }
+    public int TargetSchemaVersion { get; }
     public string? JournalHeadHash { get; }
     public VerifiedStoreMigrationBackup? Backup { get; }
     public bool Completed => Phase == StoreMigrationPhase.Completed;

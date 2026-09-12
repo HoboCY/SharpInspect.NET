@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Cycles;
+using SharpInspect.Runtime.Images;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Storage;
 
@@ -18,6 +19,7 @@ public sealed partial class StationRuntime
                 SuccessfulSnapshot: { } baseline } record)
             throw new InvalidOperationException("ProductionInspectionActiveRecipeUnavailable");
         var partIdentity = await LatchProductionPartIdentityAsync(owner, signals, baseline).ConfigureAwait(false);
+        var capturePolicy = ResolveProductionCapturePolicy(baseline.Release.Source.Content);
         var deadline = new StoreDeadline(_audit!.CommitTimeout);
         if (!await _commandGate.WaitAsync(PositiveRemaining(deadline), owner.Cancellation.Token).ConfigureAwait(false))
             throw new InvalidOperationException("ProductionInspectionAdmissionBusy");
@@ -33,7 +35,7 @@ public sealed partial class StationRuntime
                     !PartIdentityAdmissionStillCurrentLocked(owner, partIdentity))
                     throw new OperationCanceledException("ProductionInspectionTriggerPermitRevoked");
                 var inspectionId = Guid.NewGuid();
-                admission = new(inspectionId, inspectionId, owner.RuntimeEpoch, options.StationId, _admissionGeneration,
+                admission = new(capturePolicy, inspectionId, inspectionId, owner.RuntimeEpoch, options.StationId, _admissionGeneration,
                     new(signals.ControllerEpoch, signals.CycleSequence), options.EvidenceRequirement,
                     record.Reference, baseline, options.Profile.EndpointBindingHash, options.Profile.ContentHash,
                     options.Profile.CommunicationBinding.Policy.ContentHash, owner.Health.ConnectionGeneration,
@@ -96,6 +98,9 @@ public sealed partial class StationRuntime
             !(result.Status == ExecutionStatus.Cancelled && result.Metadata is not null && owner.FaultAbortRequested))
             return null;
         await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
+        var staged = await PrepareProductionImageEvidenceAsync(owner, result).ConfigureAwait(false);
+        using var imageClaim = staged.Claim;
+        await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
         var timeout = admission.TracePolicySnapshot.Policy.TraceCommitTimeout;
         if (timeout > _audit!.CommitTimeout) timeout = _audit.CommitTimeout;
         var deadline = new StoreDeadline(timeout);
@@ -103,9 +108,9 @@ public sealed partial class StationRuntime
             throw new InvalidOperationException("ProductionInspectionCoreWriterBusy");
         try
         {
-            var core = CreateProductionInspectionCore(owner, result);
+            var core = CreateProductionInspectionCore(owner, result, staged.Evidence);
             var committed = await WriteProductionWithFenceAsync(() => ((SqliteCommandStore)_audit).CommitProductionInspectionCoreAsync(
-                new(core, () => ProductionCommitFailure(owner, admissionOnly: false)), deadline,
+                new(core, () => ProductionCommitFailure(owner, admissionOnly: false), imageClaim), deadline,
                 CancellationToken.None), deadline).ConfigureAwait(false);
             if (!committed.Committed || committed.Core is not { PlcPayload: { } payload } durable ||
                 durable.Admission.ContentHash != admission.ContentHash || durable.ContentHash != core.ContentHash ||
@@ -114,6 +119,7 @@ public sealed partial class StationRuntime
             // The record remains a fact even when the caller's publication deadline has elapsed.
             // Assign it before checking time so recovery retains that exact immutable Core.
             owner.Core = durable;
+            ProjectCommittedProductionImage(durable);
             if (deadline.Expired) throw new TimeoutException("ProductionInspectionCoreCommitTimeout");
             await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
             return new(new(ExecutionKind.Production, admission.CorrelationId), durable.ContentHash, payload);

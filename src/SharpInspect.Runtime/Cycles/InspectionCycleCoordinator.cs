@@ -62,6 +62,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
                 {
                     if (!claim.Available)
                         throw new OperationCanceledException(claim.Failure ?? "InspectionCycleExecutionRevoked");
+                    pipeline.RetainInputBeforeExecution?.Invoke(frame);
                     // ExecuteAsync consumes the frame token even on refusal.
                     var owned = frame;
                     frame = null;
@@ -190,6 +191,8 @@ internal sealed class InspectionCyclePipeline<TPayload> where TPayload : class
     internal Func<bool>? RuntimeAbortRequested { get; init; }
     internal Func<CancellationToken, ValueTask<ManualCameraAcquisitionResult>> AcquireAsync { get; init; } = null!;
     internal Func<RecipeActivationPhysicalPhaseClaim> ClaimExecution { get; init; } = null!;
+    /// <summary>Production-only read retention before the frame token is consumed by execution.</summary>
+    internal Action<IFrameBufferLease>? RetainInputBeforeExecution { get; init; }
     internal Func<AlgorithmExecutionOutcome, (TPayload? Payload, string ReasonCode)> Encode { get; init; } = null!;
     /// <summary>
     /// Optional production adapter for a no-frame acquisition failure. The returned reason is the

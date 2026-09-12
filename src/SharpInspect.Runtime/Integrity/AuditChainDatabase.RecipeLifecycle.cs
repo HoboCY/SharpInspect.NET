@@ -110,7 +110,8 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, string kind, byte[] payload,
         RecipeLifecycleStoreOptions options, StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) == RecipeLifecycleStoreOptions.SchemaVersion,
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeLifecycleStoreOptions.SchemaVersion
+            or ProductionImageEvidenceStoreOptions.SchemaVersion,
             "RecipeLifecycleSchemaRequired");
         Require(kind is SqliteCommandStore.RecipeLifecycleActivationKind or
             SqliteCommandStore.RecipeLifecycleEventAuditKind, "RecipeLifecycleAuditKindInvalid");

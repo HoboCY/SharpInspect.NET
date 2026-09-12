@@ -103,7 +103,8 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, string kind, byte[] payload,
         RecipeSelectionStoreOptions options, StoreDeadline deadline, long? recipeChangeReserveOverride = null)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
+            or ProductionImageEvidenceStoreOptions.SchemaVersion,
             "RecipeSelectionSchemaRequired");
         Require(kind is "RecipeSelectionStoreActivated" or "RecipeSelectionRevision" or "RecipeChangeEvent",
             "RecipeSelectionAuditKindInvalid");

@@ -110,7 +110,12 @@ internal static class RecipeReleaseProjection
 
     internal static IReadOnlyList<RecipeReleaseValidationCheck> ValidateDependencies(RecipeDraftContent content,
         RecipeReleaseStoreOptions releaseOptions, RecipeDraftStoreOptions draftOptions,
-        IReadOnlyList<CalibrationAcceptancePolicyRevision> calibrationPolicies)
+        IReadOnlyList<CalibrationAcceptancePolicyRevision> calibrationPolicies) =>
+        DependencyChecks(content, releaseOptions, draftOptions, calibrationPolicies, historical: false);
+
+    private static IReadOnlyList<RecipeReleaseValidationCheck> DependencyChecks(RecipeDraftContent content,
+        RecipeReleaseStoreOptions releaseOptions, RecipeDraftStoreOptions draftOptions,
+        IReadOnlyList<CalibrationAcceptancePolicyRevision> calibrationPolicies, bool historical)
     {
         var result = new List<RecipeReleaseValidationCheck>
         {
@@ -119,6 +124,10 @@ internal static class RecipeReleaseProjection
         var execution = content.PolicyRequirements.Where(value => value.Kind == RecipePolicyKind.AlgorithmExecution).ToArray();
         if (execution.Length != 1)
             result.Add(new("PolicyDependency", "AlgorithmExecution", false, "RecipeReleaseExecutionPolicyRequired"));
+        // A declared Evidence Capture requirement is resolved against the deployment catalog's
+        // exact identity only. An absent, renamed, wrong-version or wrong-hash catalog rejects,
+        // while a legacy recipe that declares no capture policy keeps its existing outcome.
+        var evidenceCapturePolicies = releaseOptions.EvidenceCapturePolicies;
         foreach (var policy in content.PolicyRequirements.OrderBy(value => value.Kind))
         {
             var resolved = policy.Kind switch
@@ -126,6 +135,10 @@ internal static class RecipeReleaseProjection
                 RecipePolicyKind.AlgorithmExecution => policy.Contract == new RecipeContractReference(
                     draftOptions.ExecutionPolicy.Id, draftOptions.ExecutionPolicy.Version, draftOptions.ExecutionPolicy.ContentHash),
                 RecipePolicyKind.RecipeGovernance => policy.Contract == releaseOptions.Policy.Reference,
+                // Historical releases prove the exact frozen reference and successful check
+                // through the signed record. A mutable deployment catalog is only an admission gate.
+                RecipePolicyKind.EvidenceCapture => historical || (evidenceCapturePolicies is not null &&
+                    evidenceCapturePolicies.Resolve(policy.Contract) is not null),
                 _ => false
             };
             result.Add(new("PolicyDependency", policy.Kind.ToString(), resolved,
@@ -171,8 +184,9 @@ internal static class RecipeReleaseProjection
         var changes = Contributions(history, source);
         if (!changes.Select(value => value.ContentHash).SequenceEqual(record.Changes.Select(value => value.ContentHash)))
             throw Invalid("RecordAttributionMismatch");
-        var checks = ValidationChecks(source.Content).Concat(ValidateDependencies(source.Content, releaseOptions,
-            draftOptions, calibrationPolicies.Where(value => value.RecordedAtUtc <= record.ReleasedAtUtc).ToArray())).ToArray();
+        var checks = ValidationChecks(source.Content).Concat(DependencyChecks(source.Content, releaseOptions,
+            draftOptions, calibrationPolicies.Where(value => value.RecordedAtUtc <= record.ReleasedAtUtc).ToArray(),
+            historical: true)).ToArray();
         if (checks.Any(value => !value.Passed) ||
             !checks.Select(value => value.ContentHash).SequenceEqual(record.Checks.Select(value => value.ContentHash)))
             throw Invalid("RecordValidationMismatch");

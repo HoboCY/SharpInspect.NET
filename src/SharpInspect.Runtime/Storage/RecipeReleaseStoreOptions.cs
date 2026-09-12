@@ -35,6 +35,14 @@ public sealed class RecipeReleaseStoreOptions
     public int MaximumPayloadBytes { get; init; } = 8 * 1024 * 1024;
     public long MaximumTotalBytes { get; init; } = 512L * 1024 * 1024;
 
+    /// <summary>
+    /// Optional immutable catalog of the Evidence Capture Policy identities this deployment
+    /// currently accepts. It is current resolution input only: it never rewrites a historical
+    /// recipe byte, release record or store binding, and an accepted run freezes its exact
+    /// policy in the audited admission instead of reading this property later.
+    /// </summary>
+    public EvidenceCapturePolicyCatalog? EvidenceCapturePolicies { get; init; }
+
     internal string BindingHash => Convert.ToHexString(SHA256.HashData(EncodeBinding()));
 
     internal void Validate()

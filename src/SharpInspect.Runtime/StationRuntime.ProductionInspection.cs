@@ -2,6 +2,7 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Algorithms;
 using SharpInspect.Runtime.Cameras;
 using SharpInspect.Runtime.Cycles;
+using SharpInspect.Runtime.Images;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Production;
 using SharpInspect.Runtime.Recipes;
@@ -23,6 +24,7 @@ public sealed partial class StationRuntime
     private bool _productionInspectionRecoveryBlocked;
     private long _productionPhysicalSequence;
     private PartIdentityBindingRegistry? _partIdentityRegistry;
+    private ProductionImageStager? _productionImageStager;
 
     // Communication monitoring does not own the camera or block configuration.
     // Only a durably accepted production cycle owns inspection resources.
@@ -40,6 +42,10 @@ public sealed partial class StationRuntime
         ArgumentNullException.ThrowIfNull(clock);
         if (options.EvidenceRequirement != ProductionEvidenceRequirement.None)
             throw new ArgumentException("ProductionInspectionEvidenceRequirementUnavailable");
+        if ((options.ImageStage is null) != (storeOptions.ImageEvidence is null) ||
+            options.ImageStage is { } imageStage && (storeOptions.ImageEvidence!.Stage.ContentHash != imageStage.ContentHash ||
+                storeOptions.RecipeReleases?.EvidenceCapturePolicies is null))
+            throw new ArgumentException("ProductionImageEvidenceConfigurationMismatch");
         if (storeOptions.ProductionInspections is null || storeOptions.ProductionAdmission is null ||
             storeOptions.PlcCommunication is null || storeOptions.TraceStoragePolicies is null ||
             storeOptions.RecipeActivations is null || storeOptions.LocalIdentity is null ||
@@ -71,6 +77,7 @@ public sealed partial class StationRuntime
                 _productionInspectionExecutionOptions = executionOptions;
                 _productionInspectionClock = clock;
                 _partIdentityRegistry = partIdentityRegistry;
+                _productionImageStager = options.ImageStage is null ? null : new ProductionImageStager(options.ImageStage);
                 _productionRecoverySafety = recovery.Registry;
                 _productionRecoveryConfigurationFailure = recovery.Failure;
                 attached = true;
@@ -238,6 +245,7 @@ public sealed partial class StationRuntime
         internal ProductionInspectionAdmission? Current { get; set; }
         internal bool AdmissionCommitted { get; set; }
         internal ProductionInspectionCore? Core { get; set; }
+        internal RetainedProductionFrame? ImageInput { get; set; }
         internal TaskCompletionSource<bool>? CycleRetired { get; set; }
         internal PreparedAlgorithm? Prepared { get; set; }
         internal RecipeActivationCameraLease? Camera { get; set; }

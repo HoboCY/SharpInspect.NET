@@ -250,7 +250,7 @@ internal static class SqliteNative
                 StationQualificationStoreOptions.SqliteValueLimitBytes,
                 RecipeTransferStoreOptions.SqliteValueLimitBytes
             }.Max(),
-            25 or 26 or 27 or 28 or 29 or 30 or 31 or 32 or 33 => new[]
+            25 or 26 or 27 or 28 or 29 or 30 or 31 or 32 or 33 or 34 => new[]
             {
                 CalibrationSessionStoreOptions.SqliteValueLimitBytes,
                 CalibrationGovernanceStoreOptions.SqliteValueLimitBytes,

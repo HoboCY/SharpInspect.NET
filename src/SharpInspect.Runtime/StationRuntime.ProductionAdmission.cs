@@ -677,6 +677,7 @@ public sealed partial class StationRuntime
                 !_productionInspectionRecoveryBlocked && activation is { Snapshot.ProductionAuthority: true,
                     Snapshot: { } snapshot, Algorithm.IsRetired: false } && current.ActiveRecipe == snapshot.Recipe &&
                 ProductionPartIdentityReadyLocked(content?.PartIdentityRequirement) &&
+                Images.ProductionImageEvidenceBinding.IsAvailable(options, storeOptions, content) &&
                 policy is { Policy.RequiredRoutes.Count: 0 } &&
                 storeOptions.TraceStoragePolicies?.DeploymentScope?.RequiredRoutes.Count == 0;
             return exact
@@ -696,7 +697,7 @@ public sealed partial class StationRuntime
         ProductionAdmissionGateResult EvidenceGate(ProductionAdmissionGate gate,
             StationStateSnapshot current)
         {
-            var noPending = current.Evidence.PendingRequiredImages == 0 &&
+            var noPending = ProductionImageBacklogReadyLocked(current) &&
                 current.Evidence.PendingDeliveries == 0;
             var noRoutes = _productionInspectionOptions?.EvidenceRequirement ==
                     ProductionEvidenceRequirement.None &&
@@ -737,13 +738,16 @@ public sealed partial class StationRuntime
         var cameraSetupMaterial = _productionInspectionOptions is not null && state.CameraSetup is { } setup
             ? (setup with { Acquisition = CameraAcquisitionState.Stopped }).ToString()
             : state.CameraSetup?.ToString();
+        var evidenceMaterial = _productionInspectionOptions?.ImageStage is null ? state.Evidence.ToString() :
+            string.Join("|", state.Evidence.State, state.Evidence.PendingDeliveries,
+                ProductionImageBacklogReadyLocked(state) ? "ImageBacklogWithinLimit" : "ImageBacklogBlocked");
         var fields = new List<string?>
         {
             "production-admission-runtime-state-v1", state.RuntimeEpoch.ToString("D"),
             state.Lifecycle.ToString(), state.Mode.ToString(), state.Busy.ToString(),
             state.Handshake.ToString(), state.Recovery.ToString(), state.CurrentExecution?.ToString(),
             state.ActiveRecipe?.ToString(), cameraMaterial, state.Plc.ToString(),
-            state.Store.ToString(), state.Evidence.ToString(), state.Qualification.ToString(),
+            state.Store.ToString(), evidenceMaterial, state.Qualification.ToString(),
             state.Performance.ToString(), state.Alarms.ToString(), cameraSetupMaterial,
             state.CameraRecovery is { } recovery
                 ? string.Join("|", recovery.State, recovery.AttemptCount, recovery.MaximumAttempts,

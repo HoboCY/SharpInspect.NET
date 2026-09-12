@@ -64,11 +64,12 @@ internal static class ProductionConfigurationBuilder
         Add(ProductionConfigurationBinding.AlarmPolicy, store.AlarmPolicy?.ContentHash);
         if (store.ProductionArming is { } arming && values.TryGetValue(ProductionConfigurationBinding.StoreProfile, out var priorStore))
             values[ProductionConfigurationBinding.StoreProfile] = Hash("production-store-profile-v3", priorStore, arming.BindingHash);
+        if (store.ImageEvidence is { } images && values.TryGetValue(ProductionConfigurationBinding.StoreProfile, out var imagePrior))
+            values[ProductionConfigurationBinding.StoreProfile] = Hash("production-store-profile-v4", imagePrior, images.BindingHash);
         Add(ProductionConfigurationBinding.IdentityPolicy, store.LocalIdentity?.PolicyContentHash);
         if (trace is not null)
-            Add(ProductionConfigurationBinding.EvidencePolicy, Hash("production-evidence-policy-v1",
-                options.EvidenceRequirement.ToString(), trace.ContentHash,
-                store.TraceStoragePolicies?.DeploymentScope.ContentHash));
+            Add(ProductionConfigurationBinding.EvidencePolicy,
+                Images.ProductionImageEvidenceBinding.PolicyFingerprint(options, store, trace));
         if (manifest is not null)
         {
             Add(ProductionConfigurationBinding.LoggingPolicy, manifest.Logging.ContentHash);

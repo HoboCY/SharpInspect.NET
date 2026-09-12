@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Cycles;
+using SharpInspect.Runtime.Images;
 using SharpInspect.Runtime.Plc;
 using SharpInspect.Runtime.Production;
 
@@ -26,6 +27,15 @@ public sealed partial class StationRuntime
             DeliveryCancellationToken = owner.Cancellation.Token,
             RuntimeAbortRequested = () => { lock (_sync) return owner.FaultAbortRequested; },
             ClaimExecution = () => ClaimProductionPhysicalPhase(owner),
+            RetainInputBeforeExecution = frame =>
+            {
+                if (admission.EvidenceCapturePolicy is { Mode: not EvidenceCaptureMode.None })
+                {
+                    if (owner.ImageInput is not null)
+                        throw new InvalidOperationException("ProductionImageInputAlreadyRetained");
+                    owner.ImageInput = RetainedProductionFrame.Capture(frame);
+                }
+            },
             AcquireAsync = async token =>
             {
                 // Admission has already committed. The exact active camera is borrowed
@@ -76,9 +86,19 @@ public sealed partial class StationRuntime
                 await publish(receipt, owner.Cancellation.Token).ConfigureAwait(false);
             }
         };
-        var completed = await owner.Coordinator.ExecuteAsync(pipeline, owner.ExecutionCancellation.Token).ConfigureAwait(false);
-        if (owner.Coordinator.Phase == InspectionCyclePhase.FaultTerminated)
-            owner.FailureReason = completed.ReasonCode;
+        try
+        {
+            var completed = await owner.Coordinator.ExecuteAsync(pipeline, owner.ExecutionCancellation.Token).ConfigureAwait(false);
+            if (owner.Coordinator.Phase == InspectionCyclePhase.FaultTerminated)
+                owner.FailureReason = completed.ReasonCode;
+        }
+        finally
+        {
+            // A stage task takes this ownership before starting file I/O. Any input
+            // still here has never been handed to that physical task.
+            owner.ImageInput?.Dispose();
+            owner.ImageInput = null;
+        }
     }
 
     private async Task RetireProductionCameraAsync(ProductionInspectionOwner owner)
@@ -105,19 +125,20 @@ public sealed partial class StationRuntime
             await camera.DisposeAsync().ConfigureAwait(false);
             owner.Camera = null;
         }
-        while (owner.Execution.ActiveExecutionCount != 0)
+        while (owner.Execution.ActiveExecutionCount != 0 || _productionImageStager?.ActiveOperationCount > 0)
         {
             if (Remaining() <= TimeSpan.Zero)
             {
                 lock (_sync) _productionInspectionRecoveryBlocked = true;
-                throw new InvalidOperationException("ProductionInspectionExecutionRetirementIncomplete");
+                throw new InvalidOperationException(_productionImageStager?.ActiveOperationCount > 0 ?
+                    "ProductionImageStageRetirementIncomplete" : "ProductionInspectionExecutionRetirementIncomplete");
             }
             await Task.Delay(10).ConfigureAwait(false);
         }
     }
 
     private static ProductionInspectionCore CreateProductionInspectionCore(ProductionInspectionOwner owner,
-        InspectionCycleExecutionResult<PlcResultPayloadSnapshot> result)
+        InspectionCycleExecutionResult<PlcResultPayloadSnapshot> result, ProductionImageEvidenceSnapshot? imageEvidence = null)
     {
         var admission = owner.Current ?? throw new InvalidOperationException("ProductionInspectionAdmissionMissing");
         var prepared = owner.Prepared ?? throw new InvalidOperationException("ProductionInspectionPreparedAlgorithmMissing");
@@ -130,7 +151,7 @@ public sealed partial class StationRuntime
             overlay = new(admission.InspectionId, document.FrameMetadata, document.ResultSchema,
                 document.Result.OverlaySet, document.PayloadHash);
         }
-        return new(admission, ProductionInspectionState.CoreCommitted, result.Status,
+        return new(imageEvidence, admission, ProductionInspectionState.CoreCommitted, result.Status,
             result.Payload!.Decision, result.Payload.ReasonCode ?? result.ReasonCode,
             result.AcquisitionFailure?.Kind, result.AcquisitionFailure?.ReasonCode,
             result.Metadata, result.Provenance, prepared.InstanceId, prepared.Descriptor.Identity,

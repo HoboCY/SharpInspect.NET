@@ -1,5 +1,6 @@
 param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
-    [string]$Schema32PackageFeed = $env:SHARPINSPECT_SCHEMA32_PACKAGE_FEED)
+    [string]$Schema32PackageFeed = $env:SHARPINSPECT_SCHEMA32_PACKAGE_FEED,
+    [string]$Schema33PackageFeed = $env:SHARPINSPECT_SCHEMA33_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
 if ($Ticket -ge 49) {
     if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
@@ -12,6 +13,16 @@ if ($Ticket -ge 49) {
     }
 }
 $taskRepo = Split-Path -Parent $PSScriptRoot
+if ($Ticket -ge 50) {
+    if ([string]::IsNullOrWhiteSpace($Schema33PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema33PackageFeed)) {
+        throw 'Ticket 50 and later require an absolute preserved schema-33 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema33PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-33 package feed is incomplete.'
+        }
+    }
+}
 $taskArtifactBase = Join-Path $taskRepo 'artifacts'
 if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
     if (-not [IO.Path]::IsPathFullyQualified($ArtifactRoot)) { throw 'ArtifactRoot must be an absolute path.' }
@@ -861,6 +872,9 @@ try {
     if ($Ticket -ge 49) {
         if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed)) { throw 'A preserved schema-32 package feed is required for the actual old writer migration probe.' }
         & (Join-Path $PSScriptRoot 'Test-StoreMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -Schema32PackageFeed $Schema32PackageFeed
+    }
+    if ($Ticket -ge 50) {
+        & (Join-Path $PSScriptRoot 'Test-ImageEvidenceMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -Schema33PackageFeed $Schema33PackageFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

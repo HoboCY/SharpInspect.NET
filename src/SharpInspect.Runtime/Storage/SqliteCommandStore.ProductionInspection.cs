@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Integrity;
+using SharpInspect.Runtime.Images;
 using SQLitePCL;
 
 namespace SharpInspect.Runtime.Storage;
@@ -20,7 +21,8 @@ internal sealed record ProductionInspectionAdmissionWriteRequest(
 
 internal sealed record ProductionInspectionCoreWriteRequest(
     ProductionInspectionCore Core,
-    Func<string?>? FinalGuard = null);
+    Func<string?>? FinalGuard = null,
+    ProductionImageStager.StageCommitClaim? ImageClaim = null);
 
 internal sealed record ProductionInspectionEventWriteRequest(
     Guid InspectionId,
@@ -445,6 +447,7 @@ internal sealed partial class SqliteCommandStore
             RequireConfiguredProductionInspection(database, options, deadline);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database,
                 VerifyForProtocolLedger(database, deadline), deadline, options);
+            EnsureImageEvidenceAdmissionCapacity(database, request.Admission, deadline);
             ValidateProductionInspectionAdmissionUniqueness(database, options,
                 request.Admission, deadline);
             var position = checked(AuditChainDatabase.Scalar(database,
@@ -581,11 +584,13 @@ internal sealed partial class SqliteCommandStore
                 request.Core.CommittedAtUtc.ToString("O", CultureInfo.InvariantCulture),
                 request.Core.CommittedMonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
                 persisted.AuditSequence.ToString(CultureInfo.InvariantCulture), persisted.AuditHash!);
+            InsertProductionImageEvidence(database, request, deadline);
             InsertProductionInspectionEvent(database, persisted, payload, deadline);
             var durable = ReadPersistedProductionInspectionEvent(database, options, position, deadline).Event;
             var guardReason = EvaluateProductionFinalGuard(request.FinalGuard);
             if (guardReason is not null)
                 return ProductionInspectionRejected(work, guardReason);
+            ConsumeProductionImageClaim(request);
             SqliteNative.EnsureDeadline(deadline, default);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;

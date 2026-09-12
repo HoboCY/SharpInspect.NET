@@ -118,7 +118,8 @@ internal static partial class AuditChainDatabase
         ProductionArmStoreOptions options, StoreDeadline deadline, long? productionArmReserveOverride = null)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion,
+            ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
+            or ProductionImageEvidenceStoreOptions.SchemaVersion,
             "ProductionArmSchemaRequired");
         Require(kind is "ProductionArmStoreActivated" or "ProductionArmEvent", "ProductionArmAuditKindInvalid");
         options.Validate();

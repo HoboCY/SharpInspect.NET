@@ -1,5 +1,6 @@
 using System.Globalization;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Images;
 using SharpInspect.Runtime.Plc;
 
 namespace SharpInspect.Runtime.Production;
@@ -55,6 +56,27 @@ public sealed class ProductionInspectionOptions
     }
 
     public string StationId { get; }
+    /// <summary>
+    /// Enables the explicit Recipe evidence-capture contract and binds its local staging deployment.
+    /// The legacy None/Optional/Required option is not interpreted as a capture mode.
+    /// </summary>
+    public ProductionInspectionOptions(ProductionImageStageOptions imageStage, string stationId,
+        ModbusProductionProfile profile, long tracePolicyVersion, string tracePolicySnapshotHash,
+        TimeSpan operationTimeout, TimeSpan retirementTimeout, ProductionDeploymentManifest? deployment = null,
+        ProductionRecoveryBinding? recovery = null)
+        : this(stationId, ProductionEvidenceRequirement.None, profile, tracePolicyVersion,
+            tracePolicySnapshotHash, operationTimeout, retirementTimeout, deployment)
+    {
+        ImageStage = imageStage ?? throw new ArgumentNullException(nameof(imageStage));
+        if (recovery is not null && (recovery.StationId != StationId ||
+            recovery.EndpointBindingHash != profile.EndpointBindingHash))
+            throw new ArgumentException("ProductionRecoveryEndpointBindingMismatch", nameof(recovery));
+        Recovery = recovery;
+        ContentHash = AlgorithmContractValidation.HashParts(new[]
+        { "sharpinspect-production-inspection-options-v3", ContentHash, imageStage.ContentHash, recovery?.ContentHash });
+    }
+
+    public ProductionImageStageOptions? ImageStage { get; }
     public ProductionEvidenceRequirement EvidenceRequirement { get; }
     public ModbusProductionProfile Profile { get; }
     public long TracePolicyVersion { get; }

@@ -39,6 +39,7 @@ internal static class RecipeTransferContentCodec
             RecipePolicyKind.ImageAcquisition => "ImageAcquisitionPolicy",
             RecipePolicyKind.RecipeGovernance => "RecipeGovernancePolicy",
             RecipePolicyKind.CalibrationAcceptance => "CalibrationAcceptancePolicy",
+            RecipePolicyKind.EvidenceCapture => "EvidenceCapturePolicy",
             _ => throw new InvalidOperationException("RecipeTransferDependencyInvalid")
         }, item.Contract)));
         foreach (var requirement in content.CalibrationRequirements)
