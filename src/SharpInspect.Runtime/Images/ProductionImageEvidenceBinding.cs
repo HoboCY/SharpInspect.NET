@@ -37,8 +37,10 @@ internal static class ProductionImageEvidenceBinding
     {
         var legacy = ProductionAdmissionCanonical.Hash("production-evidence-policy-v1",
             options.EvidenceRequirement.ToString(), trace.ContentHash, store.TraceStoragePolicies?.DeploymentScope.ContentHash);
-        return options.ImageStage is null ? legacy : ProductionAdmissionCanonical.Hash("production-evidence-policy-v2",
+        var staged = options.ImageStage is null ? legacy : ProductionAdmissionCanonical.Hash("production-evidence-policy-v2",
             legacy, options.ImageStage.ContentHash, store.ImageEvidence?.BindingHash,
             store.RecipeReleases?.EvidenceCapturePolicies?.ContentHash);
+        return store.ImageFinalization is null ? staged : ProductionAdmissionCanonical.Hash("production-evidence-policy-v3",
+            staged, store.ImageFinalization.BindingHash, ProductionImageFinalizationWorker.ExecutionProfile);
     }
 }

@@ -177,6 +177,9 @@ public sealed partial class ManualInspectionRuntimeTests
             await Task.Delay(25);
         }
         throw new XunitException(reason + ": " + state?.ArmState + "/" + state?.Recovery +
+            "/Ready=" + state?.Ready + "/Busy=" + state?.Busy + "/Handshake=" + state?.Handshake +
+            "/Execution=" + state?.CurrentExecution + "/CanArm=" + state?.ProductionAdmission?.CanArm +
+            "/Audit=" + harness.Fixture.Store.Integrity?.State +
             "/Store=" + harness.Fixture.Store.Integrity?.ReasonCode + "/" +
             string.Join(";", state?.ProductionAdmission?.Gates.Where(gate => gate.Status != ProductionAdmissionGateStatus.Passed)
                 .Select(gate => gate.Gate + ":" + gate.ReasonCode) ?? Array.Empty<string>()));

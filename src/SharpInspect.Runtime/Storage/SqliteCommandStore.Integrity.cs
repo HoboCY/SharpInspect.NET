@@ -28,10 +28,16 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("RecipeLifecycleConfigurationRequired");
         if (_options.RecipeLifecycle is not null && version > 0 && version < RecipeLifecycleStoreOptions.SchemaVersion)
             throw new InvalidOperationException("RecipeLifecycleGovernedMigrationRequired");
-        if (_options.ImageEvidence is null && version == ProductionImageEvidenceStoreOptions.SchemaVersion)
+        if (_options.ImageEvidence is null && version is ProductionImageEvidenceStoreOptions.SchemaVersion or
+                ProductionImageFinalizationStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ImageEvidenceConfigurationRequired");
         if (_options.ImageEvidence is not null && version > 0 && version < ProductionImageEvidenceStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ImageEvidenceGovernedMigrationRequired");
+        if (_options.ImageFinalization is null && version == ProductionImageFinalizationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ImageFinalizationConfigurationRequired");
+        if (_options.ImageFinalization is not null &&
+            version > 0 && version < ProductionImageFinalizationStoreOptions.SchemaVersion)
+            throw new InvalidOperationException("ImageFinalizationGovernedMigrationRequired");
         if (_options.ProductionArming is null && version == ProductionArmStoreOptions.SchemaVersion)
             throw new InvalidOperationException("ProductionArmConfigurationRequired");
         if (_options.ProductionArming is not null && version > 0 && version < ProductionArmStoreOptions.SchemaVersion)

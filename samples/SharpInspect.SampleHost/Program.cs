@@ -293,6 +293,8 @@ internal static class Program
         services.AddSingleton<AuditIntegrityViewModel>();
         services.AddSingleton(p => new AlgorithmResultHistoryViewModel(p.GetService<IAlgorithmResultQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new RecipeDraftEditorViewModel(p.GetService<IRecipeDraftEditor>(),
             p.GetService<IInteractiveSessionService>(), new DispatcherUiDispatcher(app.Dispatcher),
             storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>(),
@@ -363,6 +365,7 @@ internal static class Program
             ? provider.GetRequiredService<ProductionRecoveryViewModel>() : null;
         if (productionRecovery is not null)
             window.AttachProductionRecovery(productionRecovery);
+        window.AttachProductionImageEvidence(provider.GetRequiredService<ProductionImageEvidenceViewModel>());
         var exitCode = 0;
         if (smoke)
         {

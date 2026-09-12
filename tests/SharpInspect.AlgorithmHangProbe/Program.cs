@@ -14,6 +14,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "image-finalize")
+            return await ImageFinalizationProbe.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
         var mode = args.Length == 1 ? args[0] : string.Empty;
         if (mode is "fresh")
             return await RunFreshProcessProbeAsync().ConfigureAwait(false);

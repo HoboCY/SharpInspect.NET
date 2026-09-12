@@ -57,6 +57,8 @@ internal sealed record StoreMigrationJournalData
     public string? PreviousMarkerBase64 { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ImageEvidenceConfigurationHash { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ImageFinalizationConfigurationHash { get; init; }
 }
 
 internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data, string ContentHash);
@@ -71,6 +73,7 @@ internal sealed class StoreMigrationJournal : IDisposable
 {
     internal const string LifecyclePlanId = "SharpInspect.StoreMigration.32-33.v1";
     internal const string ImageEvidencePlanId = "SharpInspect.StoreMigration.33-34.v1";
+    internal const string ImageFinalizationPlanId = "SharpInspect.StoreMigration.34-35.v1";
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SI-MJ01\n");
     private static readonly byte[] HashDomain = Encoding.ASCII.GetBytes("SharpInspect.StoreMigrationJournal.v1\0");
     private const int MaximumRecordBytes = 128 * 1024;
@@ -207,10 +210,16 @@ internal sealed class StoreMigrationJournal : IDisposable
             !RequiredText(data.ReasonCode, 256) || !IsHash(data.SourceApplicationSha256) ||
             !IsHash(data.TargetApplicationSha256) || !IsHash(data.LifecycleConfigurationHash))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
-        if (data.TargetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion
+        if (data.TargetSchemaVersion is ProductionImageEvidenceStoreOptions.SchemaVersion or
+                ProductionImageFinalizationStoreOptions.SchemaVersion
                 ? !IsHash(data.ImageEvidenceConfigurationHash)
                 : data.ImageEvidenceConfigurationHash is not null)
             throw new InvalidOperationException("StoreMigrationJournalImageConfigurationInvalid");
+        if (data.TargetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion
+                ? !IsHash(data.ImageEvidenceConfigurationHash) ||
+                    !IsHash(data.ImageFinalizationConfigurationHash)
+                : data.ImageFinalizationConfigurationHash is not null)
+            throw new InvalidOperationException("StoreMigrationJournalImageFinalizationConfigurationInvalid");
         if ((data.PreviousOperationId is null) != (data.PreviousOperationJournalHash is null) ||
             (data.PreviousOperationId is null) != (data.PreviousMarkerBase64 is null) ||
             data.PreviousOperationId == Guid.Empty ||
@@ -285,6 +294,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.TargetApplicationVersion != old.TargetApplicationVersion || data.TargetApplicationSha256 != old.TargetApplicationSha256 ||
             data.LifecycleConfigurationHash != old.LifecycleConfigurationHash ||
             data.ImageEvidenceConfigurationHash != old.ImageEvidenceConfigurationHash ||
+            data.ImageFinalizationConfigurationHash != old.ImageFinalizationConfigurationHash ||
             old.SourceFingerprint is not null && data.SourceFingerprint != old.SourceFingerprint ||
             old.TargetFingerprint is not null && data.Attempt == old.Attempt && data.TargetFingerprint != old.TargetFingerprint ||
             old.CommitIntentDurable && data.Attempt == old.Attempt && !data.CommitIntentDurable ||
@@ -309,7 +319,10 @@ internal sealed class StoreMigrationJournal : IDisposable
             planId == LifecyclePlanId ||
         sourceSchemaVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
             targetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
-            planId == ImageEvidencePlanId;
+            planId == ImageEvidencePlanId ||
+        sourceSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+            targetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
+            planId == ImageFinalizationPlanId;
 
     private static bool IsMarker(string? value)
     {

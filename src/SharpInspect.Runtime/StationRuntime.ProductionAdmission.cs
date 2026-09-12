@@ -697,6 +697,9 @@ public sealed partial class StationRuntime
         ProductionAdmissionGateResult EvidenceGate(ProductionAdmissionGate gate,
             StationStateSnapshot current)
         {
+            if (_productionInspectionOptions?.ImageStage is not null && ProductionImageBacklogExceededLocked())
+                return RuntimeGate(gate, ProductionAdmissionGateStatus.Failed,
+                    "ProductionImageBacklogLimitExceeded");
             var noPending = ProductionImageBacklogReadyLocked(current) &&
                 current.Evidence.PendingDeliveries == 0;
             var noRoutes = _productionInspectionOptions?.EvidenceRequirement ==

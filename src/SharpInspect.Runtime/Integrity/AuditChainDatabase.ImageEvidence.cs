@@ -97,8 +97,9 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, string kind, byte[] payload,
         ProductionImageEvidenceStoreOptions options, StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionImageEvidenceStoreOptions.SchemaVersion, "ImageEvidenceSchemaRequired");
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
+            "ImageEvidenceSchemaRequired");
         Require(kind == SqliteCommandStore.ImageEvidenceActivationKind, "ImageEvidenceAuditKindInvalid");
         options.Validate();
         Require(payload.Length is > 0 and <= ProductionImageEvidenceStoreOptions.MaximumAuditPayloadBytes,

@@ -180,6 +180,7 @@ public sealed partial class ManualInspectionRuntimeTests
         peer.AutoAcknowledge = stage == "AckLow";
         peer.AutoClearAcknowledge = stage != "AckLow";
         await using var harness = await ManualHarness.CreateAsync(activationReadyDraft: true, productionPeer: peer);
+        await using var observation = new StagedStopObservation(harness.Runtime);
         using var issuer = new ProductionTestIssuer();
         await PrepareProductionAsync(harness, issuer);
         await ArmProductionAsync(harness);
@@ -189,17 +190,20 @@ public sealed partial class ManualInspectionRuntimeTests
         try
         {
             peer.RaiseTrigger(61, 1);
-            if (stage == "Acquisition")
-                await WaitForProductionHistoryAsync(harness,
-                    page => page.Events.Any(value => value.Kind == ProductionInspectionEventKind.Admitted),
-                    "Durably accepted acquisition");
-            else if (stage == "Execution")
+            // Ready is an observation, not a reservation of future admission. Keep the
+            // single trigger and prove its durable acceptance before testing Stop phases.
+            await WaitForProductionHistoryAsync(harness,
+                page => page.Events.Any(value => value.Kind == ProductionInspectionEventKind.Admitted &&
+                    value.Admission.ControllerCycle.ControllerEpoch == 61 &&
+                    value.Admission.ControllerCycle.CycleSequence == 1),
+                "Durably accepted cycle before staged Graceful Stop: " + stage);
+            if (stage == "Execution")
                 await harness.Factory.ExecutionEntered.WaitAsync(TimeSpan.FromSeconds(10));
             else if (stage == "Payload")
                 await peer.WaitForPayloadWriteAsync().WaitAsync(TimeSpan.FromSeconds(10));
             else if (stage == "AckHigh")
                 await WaitProductionAsync(harness, state => state.Handshake == HandshakePhase.AwaitingResultAck, "AwaitAckHigh");
-            else
+            else if (stage == "AckLow")
                 await WaitProductionAsync(harness, state => state.Handshake == HandshakePhase.AwaitingAckReset, "AwaitAckLow");
 
             var stop = await harness.Runtime.SubmitAsync(new GracefulProductionStopCommand(Guid.NewGuid(),
@@ -248,11 +252,71 @@ public sealed partial class ManualInspectionRuntimeTests
             await ArmProductionAsync(harness);
             await WaitProductionAsync(harness, state => state.Ready, "Explicit Manual Arm after completed Stop");
         }
+        catch (Exception error) when (error is Xunit.Sdk.XunitException or TimeoutException)
+        {
+            string history;
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var page = await new SqliteProductionInspectionHistoryQuery(harness.Fixture.Options)
+                    .QueryAsync(new(PageSize: 128), timeout.Token);
+                history = $"available={page.Available}/{page.ReasonCode}:" + string.Join(";", page.Events.Select(value =>
+                    $"{value.Kind}/{value.ReasonCode}/{value.Admission.ControllerCycle}"));
+            }
+            catch (Exception diagnosticError) when (diagnosticError is not OutOfMemoryException)
+            {
+                history = "HistoryDiagnosticFailed:" + diagnosticError.GetType().Name + ":" + diagnosticError.Message;
+            }
+            throw new Xunit.Sdk.XunitException(error +
+                $"\nStage={stage}; database={harness.Fixture.Options.DatabasePath}; history={history}" +
+                $"\nPeer validHigh={peer.ResultValidHighCount},validLow={peer.ResultValidLowCount}," +
+                $"ackHigh={peer.AckHighCount},ackLow={peer.AckLowCount},readyWrites={peer.ProductionReadyWriteCount}," +
+                $"busy={peer.RuntimeBusy},valid={peer.RuntimeResultValid},ack={peer.ControllerResultAck}; " +
+                "writes=" + string.Join(";", peer.StateWrites.TakeLast(16)) + "\n" + observation.Read());
+        }
         finally
         {
             harness.ResumeClock();
             harness.Factory.ReleaseExecution();
             peer.ReleasePayloadWrite();
         }
+    }
+
+    private sealed class StagedStopObservation : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _stop = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _changes = new();
+        private readonly Task _worker;
+
+        internal StagedStopObservation(IStationRuntime runtime)
+        {
+            _worker = Task.Run(async () =>
+            {
+                string? previous = null;
+                try
+                {
+                    await foreach (var state in runtime.WatchSnapshotsAsync(_stop.Token))
+                    {
+                        var value = $"arm={state.ArmState},ready={state.Ready},busy={state.Busy}," +
+                            $"phase={state.Handshake},execution={state.CurrentExecution},recovery={state.Recovery}," +
+                            $"canArm={state.ProductionAdmission?.CanArm},audit={state.AuditIntegrity?.State}/" +
+                            $"{state.AuditIntegrity?.ReasonCode};gates=" + string.Join(";",
+                                state.ProductionAdmission?.Gates.Where(gate => gate.Status is not
+                                    (ProductionAdmissionGateStatus.Passed or ProductionAdmissionGateStatus.NotApplicable))
+                                    .Select(gate => gate.Gate + ":" + gate.ReasonCode) ?? Array.Empty<string>());
+                        if (value != previous)
+                        {
+                            _changes.Enqueue($"{state.ObservedAtUtc:O}/{state.Revision}: {value}");
+                            while (_changes.Count > 128) _changes.TryDequeue(out _);
+                            previous = value;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+            });
+        }
+
+        internal string Read() => string.Join("\n", _changes);
+        public async ValueTask DisposeAsync() { _stop.Cancel(); await _worker; _stop.Dispose(); }
     }
 }

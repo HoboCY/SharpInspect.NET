@@ -1,6 +1,7 @@
 param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
     [string]$Schema32PackageFeed = $env:SHARPINSPECT_SCHEMA32_PACKAGE_FEED,
-    [string]$Schema33PackageFeed = $env:SHARPINSPECT_SCHEMA33_PACKAGE_FEED)
+    [string]$Schema33PackageFeed = $env:SHARPINSPECT_SCHEMA33_PACKAGE_FEED,
+    [string]$Schema34PackageFeed = $env:SHARPINSPECT_SCHEMA34_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
 if ($Ticket -ge 49) {
     if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
@@ -20,6 +21,16 @@ if ($Ticket -ge 50) {
     foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
         if (-not (Test-Path -LiteralPath (Join-Path $Schema33PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
             throw 'The preserved schema-33 package feed is incomplete.'
+        }
+    }
+}
+if ($Ticket -ge 51) {
+    if ([string]::IsNullOrWhiteSpace($Schema34PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema34PackageFeed)) {
+        throw 'Ticket 51 and later require an absolute preserved schema-34 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema34PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-34 package feed is incomplete.'
         }
     }
 }
@@ -875,6 +886,9 @@ try {
     }
     if ($Ticket -ge 50) {
         & (Join-Path $PSScriptRoot 'Test-ImageEvidenceMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -Schema33PackageFeed $Schema33PackageFeed
+    }
+    if ($Ticket -ge 51) {
+        & (Join-Path $PSScriptRoot 'Test-ImageFinalizationMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -Schema34PackageFeed $Schema34PackageFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

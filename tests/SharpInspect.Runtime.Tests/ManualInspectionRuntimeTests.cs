@@ -410,7 +410,8 @@ public sealed partial class ManualInspectionRuntimeTests
             ProductionArmMaintenanceState productionArmMaintenanceState = ProductionArmMaintenanceState.ManualArmConfirmed,
             string? productionArmMaintenanceJournalHead = null, bool enableRecipeLifecycle = false,
             ProductionImageEvidenceStoreOptions? imageEvidence = null,
-            EvidenceCapturePolicySnapshot? capturePolicy = null, TraceStoragePolicyDefinition? tracePolicy = null)
+            EvidenceCapturePolicySnapshot? capturePolicy = null, TraceStoragePolicyDefinition? tracePolicy = null,
+            ProductionImageFinalizationStoreOptions? imageFinalization = null)
         {
             enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
@@ -436,6 +437,16 @@ public sealed partial class ManualInspectionRuntimeTests
                             Permission.ActivateRecipe, Permission.ArmProduction, Permission.ManageProductionPolicy }).Distinct()
                         : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             var alarm = CreateAlarmPolicy();
+            if (imageFinalization is not null)
+                alarm = new AlarmPolicy("V151.Images.Alarm", "1", alarm.Rules.Concat(new[]
+                {
+                    new AlarmPolicyRule("EvidenceIntegrityFault", "Runtime.ImageEvidence", AlarmSeverity.Error,
+                        ProductionImpact.BlockNewTriggers, true, AlarmNotification.None, null,
+                        ResetPrerequisites: AlarmResetPrerequisites.RecoveryComplete |
+                        AlarmResetPrerequisites.NoActiveExecution),
+                    new AlarmPolicyRule("ImageEvidenceBacklog", "Runtime.ImageEvidence", AlarmSeverity.Warning,
+                        ProductionImpact.BlockNewTriggers, false, AlarmNotification.None, null)
+                }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             if (productionTestAlarm is not null)
                 alarm = new AlarmPolicy("V145.Production.Alarm", "1",
                     alarm.Rules.Concat(new[] { productionTestAlarm }), alarm.SourceObservationFreshness,
@@ -462,7 +473,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionArming: productionPeer is null ? null : productionArming ??
                     (imageEvidence is null ? null : new ProductionArmStoreOptions()),
                 recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
-                imageEvidence: imageEvidence);
+                imageEvidence: imageEvidence, imageFinalization: imageFinalization);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;

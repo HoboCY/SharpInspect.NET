@@ -22,15 +22,23 @@ internal sealed partial class SqliteCommandStore
         var reserved = CountImageReservations(rows);
         var used = ReadImageUsage(database, deadline);
         var backlog = admission.TracePolicySnapshot.Policy.ImageBacklog;
-        var pendingImages = rows.Where(value => value.Event.Kind == ProductionInspectionEventKind.CoreCommitted)
-            .Select(value => value.Event.Core?.ImageEvidence?.Manifest).Where(value => value is not null).ToArray();
+        var imageStates = _options.ImageFinalization is { } finalization
+            ? ReadImageFinalizationObligationStates(database, finalization, deadline)
+            : Array.Empty<ProductionImageFinalizationWorkState>();
+        AuditChainDatabase.Require(!imageStates.Any(state => state.IntegrityConflict),
+            "ProductionImageIntegrityConflictRecorded");
+        var succeeded = imageStates.Where(state => state.State == ProductionImageFinalizationState.Succeeded)
+            .Select(state => state.WorkId).ToHashSet();
+        var pendingImages = rows.Where(value => value.Event.Kind == ProductionInspectionEventKind.CoreCommitted &&
+                value.Event.Core?.ImageEvidence?.Work is { } work && !succeeded.Contains(work.WorkId))
+            .Select(value => value.Event.Core!.ImageEvidence!.Manifest!).ToArray();
         var pendingAdmissions = rows.GroupBy(value => value.Event.InspectionId)
             .Where(group => group.Last().Event.Kind == ProductionInspectionEventKind.Admitted &&
                 group.First().Event.Admission.EvidenceCapturePolicy is { Mode: not EvidenceCaptureMode.None })
             .Select(group => group.First().Event.Admission).ToArray();
         var expectedBytes = checked(pendingImages.Sum(value => value!.CanonicalByteLength) +
             pendingAdmissions.Sum(ExpectedCanonicalImageBytes) + ExpectedCanonicalImageBytes(admission));
-        AuditChainDatabase.Require(checked(used.Count + reserved + 1) <= backlog.MaximumItems &&
+        AuditChainDatabase.Require(checked(pendingImages.LongLength + reserved + 1) <= backlog.MaximumItems &&
             expectedBytes <= backlog.MaximumBytes && pendingImages.All(value =>
                 DateTimeOffset.UtcNow - value!.CreatedAtUtc <= backlog.MaximumOldestAge),
             "ProductionImageBacklogLimitExceeded");
@@ -39,6 +47,9 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(checked(used.Bytes + (reserved + 1) * 2 *
             ProductionInspectionStoredPayloadBytes(options.MaximumPayloadBytes)) <= options.MaxTotalBytes,
             "ProductionImageEvidenceTotalCapacityExceeded");
+        // Every obligation this admission will create must still be able to write its future
+        // Succeeded and StageReleased facts, in this ledger and in the shared central audit.
+        EnsureImageFinalizationReserveCapacity(database, checked(reserved + 1), deadline);
     }
 
     private static long CountImageReservations(IReadOnlyList<ProductionInspectionStoredRow> rows) =>
@@ -90,6 +101,7 @@ internal sealed partial class SqliteCommandStore
                 ProductionInspectionStoredPayloadBytes(workPayload.Length) + reserved * 2 *
                 ProductionInspectionStoredPayloadBytes(options.MaximumPayloadBytes)) <= options.MaxTotalBytes,
             "ProductionImageEvidenceCapacityExceeded");
+        EnsureImageFinalizationReserveCapacity(database, checked(reserved + 1), deadline);
         AuditChainDatabase.Execute(database, @"INSERT INTO pending_image_manifests
             (ManifestId,InspectionId,StageId,EvidencePolicyHash,ContentHash,PayloadHash,Payload) VALUES(?,?,?,?,?,?,?);", deadline,
             manifest.ManifestId.ToString("D"), manifest.InspectionId.ToString("D"), manifest.StageId.ToString("D"),

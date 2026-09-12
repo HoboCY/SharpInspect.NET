@@ -316,6 +316,7 @@ public partial class ShellWindow : Window
     private void ShowPrivacyCover()
     {
         IsPrivacyLocked = true;
+        DeactivateProductionImageEvidence();
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
         AdministratorRecoveryPanel.ClearSensitiveInputs();
@@ -451,6 +452,7 @@ public partial class ShellWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        DeactivateProductionImageEvidence();
         _viewModel.PropertyChanged -= Refresh;
         _viewModel.State.PropertyChanged -= Refresh;
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
@@ -515,6 +517,7 @@ public partial class ShellWindow : Window
             _ => "生产 · 当前完整状态"
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
+        RenderProductionImageEvidence(traceSelected);
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
         var alarmSelected = _viewModel.SelectedSection == "Alarms";
         var recipeSelected = _viewModel.SelectedSection == "Recipes";

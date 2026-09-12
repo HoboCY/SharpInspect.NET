@@ -358,6 +358,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IProductionInspectionHistoryQuery>(_ => new SqliteProductionInspectionHistoryQuery(options));
             services.TryAddSingleton<IProductionRecoveryHistoryQuery>(_ => new SqliteProductionRecoveryHistoryQuery(options));
         }
+        if (options.ImageFinalization is not null)
+            services.TryAddSingleton<IProductionImageEvidenceQuery>(_ => new SqliteProductionImageEvidenceQuery(options));
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,

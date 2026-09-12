@@ -30,11 +30,16 @@ public static class SqliteStartupMaintenance
             RecipeLifecycleStoreOptions.SchemaVersion);
         internal static readonly StoreMigrationPlan ImageEvidence = new(StoreMigrationJournal.ImageEvidencePlanId,
             RecipeLifecycleStoreOptions.SchemaVersion, ProductionImageEvidenceStoreOptions.SchemaVersion);
+        internal static readonly StoreMigrationPlan ImageFinalization =
+            new(StoreMigrationJournal.ImageFinalizationPlanId,
+                ProductionImageEvidenceStoreOptions.SchemaVersion,
+                ProductionImageFinalizationStoreOptions.SchemaVersion);
 
         internal static StoreMigrationPlan For(int targetVersion) => targetVersion switch
         {
             RecipeLifecycleStoreOptions.SchemaVersion => Lifecycle,
             ProductionImageEvidenceStoreOptions.SchemaVersion => ImageEvidence,
+            ProductionImageFinalizationStoreOptions.SchemaVersion => ImageFinalization,
             _ => throw new InvalidOperationException("StoreMigrationPathUnsupported")
         };
     }
@@ -107,16 +112,22 @@ public static class SqliteStartupMaintenance
                 throw new InvalidOperationException("StoreMigrationTargetLifecycleRequired");
             if (_targetOptions.AuditIntegrityPolicy is { RequireExternalAnchor: true })
                 throw new InvalidOperationException("StoreMigrationExternalAnchorPlanUnsupported");
-            // The declared target profile determines the operation: an image evidence
-            // target is the schema-33 to schema-34 plan, otherwise the schema-32 to
-            // schema-33 plan. Both plans keep the identical exclusive protocol.
-            _plan = StoreMigrationPlan.For(_targetOptions.ImageEvidence is null
-                ? RecipeLifecycleStoreOptions.SchemaVersion
-                : ProductionImageEvidenceStoreOptions.SchemaVersion);
+            // The declared target profile determines the operation: an image finalization
+            // target is the schema-34 to schema-35 plan, an image evidence target the
+            // schema-33 to schema-34 plan, otherwise the schema-32 to schema-33 plan. Every
+            // plan keeps the identical exclusive protocol.
+            _plan = StoreMigrationPlan.For(_targetOptions.ImageFinalization is not null
+                ? ProductionImageFinalizationStoreOptions.SchemaVersion
+                : _targetOptions.ImageEvidence is null
+                    ? RecipeLifecycleStoreOptions.SchemaVersion
+                    : ProductionImageEvidenceStoreOptions.SchemaVersion);
             _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
-            _source = new SqliteCommandStore.StartupMaintenanceSchema(_plan.SourceVersion == 32
-                ? SqliteCommandStore.MigrationSourceOptions(_targetOptions)
-                : SqliteCommandStore.MigrationImageEvidenceSourceOptions(_targetOptions), _plan.TargetVersion);
+            _source = new SqliteCommandStore.StartupMaintenanceSchema(_plan.SourceVersion switch
+            {
+                32 => SqliteCommandStore.MigrationSourceOptions(_targetOptions),
+                33 => SqliteCommandStore.MigrationImageEvidenceSourceOptions(_targetOptions),
+                _ => SqliteCommandStore.MigrationImageFinalizationSourceOptions(_targetOptions)
+            }, _plan.TargetVersion);
             if ((_source.Version, _target.Version) != (_plan.SourceVersion, _plan.TargetVersion))
                 throw new InvalidOperationException("StoreMigrationPathUnsupported");
             var deadline = Deadline();
@@ -169,8 +180,15 @@ public static class SqliteStartupMaintenance
                 // operation to the same append-only file: unfinished work is never
                 // reclassified, downgraded or discarded.
                 var durable = chain[^1].Data;
-                if (durable.PlanId != StoreMigrationJournal.LifecyclePlanId ||
-                    durable.SourceSchemaVersion != 32 || durable.TargetSchemaVersion != _plan.SourceVersion ||
+                var predecessorPlanId = _plan.SourceVersion switch
+                {
+                    RecipeLifecycleStoreOptions.SchemaVersion => StoreMigrationJournal.LifecyclePlanId,
+                    ProductionImageEvidenceStoreOptions.SchemaVersion =>
+                        StoreMigrationJournal.ImageEvidencePlanId,
+                    _ => null
+                };
+                if (durable.PlanId != predecessorPlanId ||
+                    durable.TargetSchemaVersion != _plan.SourceVersion ||
                     durable.Phase != StoreMigrationPhase.Completed || !durable.CommitIntentDurable ||
                     !durable.DatabaseCommitObserved || version != _plan.SourceVersion)
                     throw new InvalidOperationException(durable.Phase == StoreMigrationPhase.Completed
@@ -207,7 +225,8 @@ public static class SqliteStartupMaintenance
                 _data.SourceApplicationVersion != sourceApplication.Version || _data.SourceApplicationSha256 != sourceApplication.Hash ||
                 _data.TargetApplicationVersion != targetApplication.Version || _data.TargetApplicationSha256 != targetApplication.Hash ||
                 _data.LifecycleConfigurationHash != StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle) ||
-                _data.ImageEvidenceConfigurationHash != _targetOptions.ImageEvidence?.BindingHash)
+                _data.ImageEvidenceConfigurationHash != _targetOptions.ImageEvidence?.BindingHash ||
+                _data.ImageFinalizationConfigurationHash != _targetOptions.ImageFinalization?.BindingHash)
                 throw new InvalidOperationException("StoreMigrationResumeContextMismatch");
             _contextBound = true;
             _status = StatusFor(_journal.Last!);
@@ -261,6 +280,7 @@ public static class SqliteStartupMaintenance
             TargetApplicationVersion = targetApplication.Version, TargetApplicationSha256 = targetApplication.Hash,
             LifecycleConfigurationHash = StoreMigrationJournalGuard.LifecycleHash(_targetOptions.RecipeLifecycle!),
             ImageEvidenceConfigurationHash = _targetOptions.ImageEvidence?.BindingHash,
+            ImageFinalizationConfigurationHash = _targetOptions.ImageFinalization?.BindingHash,
             PreviousOperationId = previous?.OperationId, PreviousOperationJournalHash = previous?.FrameHash,
             PreviousMarkerBase64 = previous?.MarkerBase64, ReasonCode = "StoreMigrationOpened"
         };

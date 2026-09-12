@@ -182,8 +182,11 @@ internal static class StoreMigrationJournalGuard
             throw new InvalidOperationException("StoreMigrationStartupMaintenanceRequired");
         if (options.RecipeLifecycle is null || LifecycleHash(options.RecipeLifecycle) != data.LifecycleConfigurationHash)
             throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
-        if (data.TargetSchemaVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+        if (data.TargetSchemaVersion >= ProductionImageEvidenceStoreOptions.SchemaVersion &&
             data.ImageEvidenceConfigurationHash != options.ImageEvidence?.BindingHash)
+            throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
+        if (data.TargetSchemaVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
+            data.ImageFinalizationConfigurationHash != options.ImageFinalization?.BindingHash)
             throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
         using var connection = SqliteNative.Open(databasePath, readOnly: true);
         SqliteNative.ConfigureSqliteLimit(connection.Handle!, options);

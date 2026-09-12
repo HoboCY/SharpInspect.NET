@@ -119,7 +119,7 @@ public sealed partial class StationRuntime
             // The record remains a fact even when the caller's publication deadline has elapsed.
             // Assign it before checking time so recovery retains that exact immutable Core.
             owner.Core = durable;
-            ProjectCommittedProductionImage(durable);
+            ProjectCommittedProductionImage(durable, committed.Event?.AuditSequence ?? 0);
             if (deadline.Expired) throw new TimeoutException("ProductionInspectionCoreCommitTimeout");
             await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
             return new(new(ExecutionKind.Production, admission.CorrelationId), durable.ContentHash, payload);

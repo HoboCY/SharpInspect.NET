@@ -366,6 +366,8 @@ public sealed partial class StationRuntime
                 expired = _alarmObservations.Where(pair => pair.Key != StartupAlarmCode &&
                     !(pair.Key == FrameBufferAlarmCode && _frameBufferPool is not null &&
                       IsFrameBufferAlarmMappingValid(policy)) &&
+                    !(pair.Key == ImageBacklogAlarmCode && _imageFinalizationWorker is not null &&
+                      IsProductionImageBacklogAlarmMappingValid()) &&
                     !(_cameraRecoveryService is not null &&
                       (pair.Key is CameraDisconnectedAlarmCode or CameraRecoveryFailedAlarmCode) &&
                       IsCameraRecoveryAlarmMappingValid(policy)) && pair.Value.Healthy &&
@@ -374,6 +376,10 @@ public sealed partial class StationRuntime
                         policy.Rules.Single(rule => rule.Code == pair.Key).Source, false, DateTimeOffset.UtcNow)).ToArray();
             }
             if (refreshStartup) await ObserveStartupAlarmAsync(_lifetime.Token).ConfigureAwait(false);
+            AlarmObservation? imageBacklog;
+            lock (_sync) imageBacklog = ImageBacklogObservationLocked(policy);
+            if (imageBacklog is not null)
+                await ObserveAlarmCoreAsync(imageBacklog, _lifetime.Token).ConfigureAwait(false);
             if (refreshFrameBuffer)
             {
                 AlarmObservation? frameObservation = null;

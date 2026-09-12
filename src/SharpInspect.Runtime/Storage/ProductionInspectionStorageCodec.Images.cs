@@ -62,6 +62,21 @@ internal static partial class ProductionInspectionStorageCodec
         return stream.ToArray();
     }
 
+    /// <summary>
+    /// Reconstructs the exact frozen pending manifest from its stored row payload. The caller
+    /// re-proves the decoded content hash against the stored column and the Core projection.
+    /// </summary>
+    internal static PendingImageManifest DecodeImageManifest(byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        using var stream = new MemoryStream(payload, writable: false);
+        using var reader = new BinaryReader(stream, StrictUtf8, leaveOpen: true);
+        if (ReadString(reader, 32) != "SI-PENDING-IMAGE-1") throw Corrupt("ProductionImageEnvelopeInvalid");
+        var value = ReadImageManifest(reader);
+        if (stream.Position != stream.Length) throw Corrupt("ProductionImageEnvelopeTrailingBytes");
+        return value;
+    }
+
     internal static byte[] EncodeImageWork(PendingImageFinalizationWork value)
     {
         using var stream = new MemoryStream();
@@ -75,6 +90,22 @@ internal static partial class ProductionInspectionStorageCodec
             WriteString(writer, value.ContentHash, 64);
         }
         return stream.ToArray();
+    }
+
+    /// <summary>Reconstructs the exact frozen pending work from its stored row payload.</summary>
+    internal static PendingImageFinalizationWork DecodeImageWork(byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        using var stream = new MemoryStream(payload, writable: false);
+        using var reader = new BinaryReader(stream, StrictUtf8, leaveOpen: true);
+        if (ReadString(reader, 32) != "SI-IMAGE-WORK-1") throw Corrupt("ProductionImageEnvelopeInvalid");
+        var id = ReadGuid(reader);
+        if (ReadString(reader, 32) != "FinalizePng" || ReadString(reader, 32) != "Pending")
+            throw Corrupt("ProductionImageWorkKindInvalid");
+        var work = new PendingImageFinalizationWork(id, ReadImageManifest(reader));
+        RequireHash(work.ContentHash, ReadRequiredImageString(reader, 64), "ProductionImageWorkHashMismatch");
+        if (stream.Position != stream.Length) throw Corrupt("ProductionImageEnvelopeTrailingBytes");
+        return work;
     }
 
     private static void WriteImageManifest(BinaryWriter writer, PendingImageManifest value)

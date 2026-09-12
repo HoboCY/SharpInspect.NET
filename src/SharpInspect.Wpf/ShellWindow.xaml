@@ -201,6 +201,7 @@
                         </Grid>
                     </Border>
                     <local:AlgorithmResultPanel x:Name="AlgorithmResultsPanel" Visibility="Collapsed" Margin="0,16,0,0" />
+                    <local:ProductionImageEvidencePanel x:Name="ProductionImageEvidencePanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:RecipeDraftEditorPanel x:Name="RecipeDraftEditorPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:PreviewSessionPanel x:Name="PreviewPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:ManualInspectionSessionPanel x:Name="ManualInspectionPanel" Visibility="Collapsed" Margin="0,16,0,0" />

@@ -15,6 +15,18 @@ public sealed partial class StationRuntime
     private async Task VerifyProductionImageStartupAsync(CancellationToken token)
     {
         if (_productionInspectionStoreOptions?.ImageEvidence is not { } options) return;
+        if (_imageFinalizationWorker is { } worker)
+        {
+            await worker.Startup.WaitAsync(token).ConfigureAwait(false);
+            lock (_sync)
+            {
+                if (_imageFinalizationFaulted) throw new InvalidOperationException("ProductionImageIntegrityFault");
+                if (!IsProductionImageAlarmMappingValid() || !IsProductionImageBacklogAlarmMappingValid())
+                    throw new InvalidOperationException("ProductionImageIntegrityAlarmMappingUnavailable");
+                _productionImageStartupVerified = true;
+            }
+            return;
+        }
         var query = new SqlitePendingImageWorkQuery(_productionInspectionStoreOptions);
         long after = 0;
         long? through = null;
@@ -54,16 +66,29 @@ public sealed partial class StationRuntime
     private bool ProductionImageBacklogReadyLocked(StationStateSnapshot state)
     {
         if (_productionInspectionOptions?.ImageStage is null) return state.Evidence.PendingRequiredImages == 0;
+        if (_imageFinalizationWorker is not null &&
+            (_imageFinalizationFaulted || !IsProductionImageAlarmMappingValid() ||
+             !IsProductionImageBacklogAlarmMappingValid())) return false;
         if (!_productionImageStartupVerified || state.Evidence.PendingRequiredImages != _productionPendingImages ||
             _productionInspectionPolicy is not { } policy) return false;
-        var limit = policy.Policy.ImageBacklog;
-        return _productionPendingImages < limit.MaximumItems && _productionPendingImageBytes < limit.MaximumBytes &&
-            (_productionOldestPendingImage is null || DateTimeOffset.UtcNow - _productionOldestPendingImage <= limit.MaximumOldestAge);
+        return !ProductionImageBacklogExceededLocked();
     }
 
-    private void ProjectCommittedProductionImage(ProductionInspectionCore core)
+    private void ProjectCommittedProductionImage(ProductionInspectionCore core, long auditSequence)
     {
         if (core.ImageEvidence?.Manifest is not { } manifest) return;
+        if (_imageFinalizationWorker is { } worker)
+        {
+            lock (_sync)
+            {
+                if (auditSequence <= 0) throw new InvalidOperationException("ProductionImageCoreWatermarkRequired");
+                if (auditSequence > _imageBacklogSnapshot.ThroughAuditSequence)
+                    _imageBacklogUnobservedCores[core.ImageEvidence.Work!.WorkId] = (auditSequence, manifest);
+                ProjectImageBacklogLocked();
+            }
+            worker.Wake();
+            return;
+        }
         lock (_sync)
         {
             _productionPendingImages = checked(_productionPendingImages + 1);

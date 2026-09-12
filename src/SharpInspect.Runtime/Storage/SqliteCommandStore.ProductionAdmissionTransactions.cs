@@ -91,7 +91,9 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
             SELECT Kind,Hash FROM audit_entries WHERE Sequence IN (
                 SELECT MAX(Sequence) FROM audit_entries
                 WHERE Kind NOT IN ('CommandFact','IdentityEvent','ProductionAdmissionEvent',
-                    'ProductionInspectionEvent','PlcCommunicationEvent','ProductionArmEvent')
+                    'ProductionInspectionEvent','PlcCommunicationEvent','ProductionArmEvent',
+                    'ImageFinalizationAttemptStarted','ImageFinalizationAttemptFailed',
+                    'ImageFinalizationSucceeded','ImageFinalizationStageReleased')
                 GROUP BY Kind) ORDER BY Kind LIMIT 63;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0)!, Hash: SqliteNative.ColumnText(statement, 1)!));
         AuditChainDatabase.Require(selected.Count <= 62, "ProductionAdmissionDurableHeadsCapacityExceeded");
@@ -256,7 +258,7 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

@@ -134,6 +134,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureManualInspectionStartup(productionStoreOptions?.ManualInspections is not null);
         ConfigureStationQualificationStartup(productionStoreOptions?.StationQualifications is not null);
         _storeInitialization = InitializeStoreAsync();
+        ConfigureImageFinalization(productionStoreOptions);
         _heartbeat = PublishHeartbeatAsync(interval);
     }
 
@@ -762,6 +763,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // ACK observer alive for the accepted cycle, under one monotonic deadline.
         try { await ShutdownProductionInspectionAsync().ConfigureAwait(false); }
         finally { _lifetime.Cancel(); }
+        await ShutdownImageFinalizationAsync().ConfigureAwait(false);
         await _heartbeat.ConfigureAwait(false);
         await ShutdownProductionRecoveryAsync().ConfigureAwait(false);
         await ShutdownManualInspectionAsync().ConfigureAwait(false);
