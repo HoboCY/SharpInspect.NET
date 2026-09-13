@@ -25,9 +25,7 @@ public static class OpenCvSharpFrameExtensions
         ArgumentNullException.ThrowIfNull(frame);
         ArgumentNullException.ThrowIfNull(use);
 
-        // OpenCV's CV_16UC1 step must be aligned to its one-element size (2 bytes).
-        // Odd source strides must be normalized by the frame owner before publication;
-        // fail closed here rather than handing an invalid header to native OpenCV.
+        // OpenCV 的 CV_16UC1 步长必须按单元素大小（2 字节）对齐；奇数源步长应在帧所有者发布前规范化，这里遇到未对齐值直接 fail-closed，不能交给 native OpenCV。
         if (frame.PixelFormat == VisionPixelFormat.Mono16 && (frame.StrideBytes & 1) != 0)
             throw new InvalidOperationException("FrameMono16StrideUnaligned");
 

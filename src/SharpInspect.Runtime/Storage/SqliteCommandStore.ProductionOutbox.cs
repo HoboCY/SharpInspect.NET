@@ -54,8 +54,7 @@ internal sealed partial class SqliteCommandStore
                 "ProductionInspectionOutboxConfigurationRequired";
         if (!ProductionOutboxBinding.RoutesMatch(_options, admission.TracePolicySnapshot))
             return "ProductionInspectionOutboxRouteBindingMismatch";
-        // The enclosing admission transaction has fully verified the ledgers. Read its
-        // current backlog here so a delayed Runtime projection cannot admit a new Trigger.
+        // 准入事务已完整校验账本；在同一事务内读取最新积压，避免 Runtime 缓存滞后放行新 Trigger。
         var backlog = ProductionOutboxBinding.CompleteBacklog(options,
             ReadProductionOutboxBacklogSnapshot(database, AuditChainDatabase.Tail(database, deadline).Sequence, deadline));
         return ProductionOutboxBinding.RequiredBacklogFailure(admission.TracePolicySnapshot,
@@ -167,8 +166,7 @@ internal sealed partial class SqliteCommandStore
             if (facts.Stored.Delivery.Payload is null)
                 return ProductionOutboxRejected(work, "ProductionOutboxPreparationFailureTerminal");
             var reserve = ReadProductionOutboxReserveRows(database, deadline).Events;
-            // The reserved terminal fact of this new active attempt is still owed, while the
-            // AttemptStarted fact itself is the write being admitted.
+            // 本次开始记录即将落库，只扣掉它的预留；该尝试将来必须写入的终态仍要占用预算。
             var futureReserve = Math.Max(0, reserve - 1);
             var eventPosition = NextProductionOutboxEventPosition(database, deadline);
             var aggregate = facts.Events[^1].AggregateSequence + 1;
@@ -383,9 +381,8 @@ internal sealed partial class SqliteCommandStore
                 return ProductionOutboxRejected(work, guardReason);
             var backlog = ReadProductionOutboxBacklogSnapshot(database, audit.Sequence, deadline);
             SqliteNative.EnsureDeadline(deadline, default);
-            // The final fence has accepted this attempt. Claim consumption and owner
-            // retirement share one linearization point; an expired/retired owner must
-            // roll back every candidate success row before the durable COMMIT.
+            // 最终校验后，凭据消费与尝试撤销仍需在同一互斥点竞争；
+            // 已超时或被撤销的尝试必须回滚候选成功记录，不能越过 COMMIT。
             if (!claim.TryConsume())
                 return ProductionOutboxRejected(work, "ProductionOutboxAcceptanceClaimRetired");
             SqliteNative.Execute(database, "COMMIT;", deadline);
@@ -473,9 +470,8 @@ internal sealed partial class SqliteCommandStore
                     (long)delivery.MaximumAttempts);
         }
         AuditChainDatabase.Require(seen.Count == options.Routes.Count, "ProductionOutboxBatchIncomplete");
-        // This cycle already owns its Core row inside this transaction, so it is no longer part
-        // of the uncreated pre-Core reserve: the batch rows and its own attempt reserve replace
-        // that reservation exactly. Every other cycle still without a Core stays reserved.
+        // 本周期的 Core 已在当前事务内写入，原先“尚未生成 Outbox”的预留转为实际记录和尝试预算，
+        // 不能重复计费；其他仍未生成 Core 的周期继续保留各自的额度。
         var preCore = ReadProductionOutboxPreCoreReserve(database, options, deadline);
         var existingReserve = ReadProductionOutboxReserveRows(database, deadline).Events;
         var futureReserveAfterBatch = checked(existingReserve + newReserve);
@@ -775,6 +771,7 @@ internal sealed partial class SqliteCommandStore
 
     private void PublishProductionOutboxIntegrity(AuditIntegrityPolicy policy, long sequence)
     {
+        // 先发布新提交水位与待复核状态，再完成调用方任务，防止调用方短暂读到旧的 Verified。
         Interlocked.Exchange(ref _lastCommittedAuditSequence, sequence);
         PublishIntegrity(SqliteAuditIntegrityQuery.Report(policy, AuditIntegrityState.Verifying,
             policy.RequireExternalAnchor ? "AuditAnchorRecheckPending" : "AuditRecheckPending"));

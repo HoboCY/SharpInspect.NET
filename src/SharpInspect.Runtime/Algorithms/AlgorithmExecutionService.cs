@@ -79,7 +79,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
     public AlgorithmExecutionService(AlgorithmExecutionOptions options) : this(options, null) { }
 
-    // Internal deterministic scheduling probe. Public constructors cannot install callbacks.
+    // 仅供内部确定性调度探针使用；公共构造函数不能注入回调。
     internal AlgorithmExecutionService(AlgorithmExecutionOptions options, Action? beforeResultValidationForTesting,
         Action? beforeExecutionStartForTesting = null, bool suppressGraceWatchdogForTesting = false)
     {
@@ -98,15 +98,13 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         FrameBufferLease frameLease, AlgorithmExecutionRequest request, CancellationToken runtimeCancellationToken = default) =>
         ExecuteCoreAsync(prepared, frameLease, request, null, runtimeCancellationToken);
 
-    // Only the internal shared cycle coordinator supplies the accepted production identity.
-    // The public computation seam continues to reject all production frames.
+    // 只有内部共享周期协调器能提供已接受的生产身份；公共计算入口继续拒绝生产帧。
     internal ValueTask<AlgorithmExecutionAttempt> ExecuteProductionOwnedAsync(PreparedAlgorithm prepared,
         FrameBufferLease frameLease, AlgorithmExecutionRequest request, ExecutionCorrelationId correlation,
         CancellationToken runtimeCancellationToken) =>
         ExecuteCoreAsync(prepared, frameLease, request, correlation, runtimeCancellationToken);
 
-    // Runtime fixes the semantic outcome before scheduling consumer cancellation callbacks.
-    // The correlation latch also covers a physical claim whose invocation has not started.
+    // Runtime 先固定语义结果，再调度消费者取消回调；相关性锁存也覆盖尚未开始调用的物理认领。
     internal void RequestProductionCancellation(ExecutionCorrelationId correlation)
     {
         if (correlation.Kind != ExecutionKind.Production || correlation.Value == Guid.Empty)
@@ -243,8 +241,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         {
             lock (_sync) { _closed = true; _diagnosticsSealed = true; }
             _callerRegistration.Dispose();
-            // If registration observed a simultaneous abort, its consumer-free
-            // cancellation task finishes before the token source is disposed.
+            // 如果注册过程同时观察到终止请求，先等无消费者的取消任务结束，再释放 token source。
             if (_cancellationCallbacks is { } callbacks)
                 _ = callbacks.ContinueWith(_ => _algorithmCancellation.Dispose(), TaskScheduler.Default);
             else _algorithmCancellation.Dispose();
@@ -252,8 +249,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
         public AlgorithmDiagnosticEmission TryEmit(AlgorithmDiagnosticEvent diagnosticEvent)
         {
-            // There is no admitted logging policy in this engine slice. Unknown events
-            // and payloads are dropped before formatting, serialization or fan-out.
+            // 这一执行切片没有获准的日志策略；未知事件和载荷在格式化、序列化或分发前直接丢弃。
             lock (_sync)
             {
                 if (_diagnosticsSealed) return AlgorithmDiagnosticEmission.Dropped;
@@ -300,8 +296,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         private AlgorithmExecutionOutcome NewOutcome(ExecutionStatus status, string? reason, AlgorithmResult? result) =>
             new(_prepared, _metadata, status, reason, result, _timing, _started);
 
-        // Both the watchdog and the physical exit path use this monotonic boundary.
-        // A delayed watchdog cannot turn a late exit into an in-grace recovery.
+        // 看门狗与物理退出路径共用这个单调时钟边界；延迟的看门狗不能把逾期退出改判为宽限期内恢复。
         private bool GraceExpiredLocked() => _fixedAt is { } fixedAt &&
             TimeSpan.FromSeconds((Stopwatch.GetTimestamp() - fixedAt) / (double)Stopwatch.Frequency) >=
                 _timing.CancellationGracePeriod;
@@ -347,8 +342,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                 {
                     try
                     {
-                        // Claim dispatch under the same latch used by preparation and
-                        // admission. Consumer code always executes outside its lock.
+                        // 在准备与准入共用的锁存下认领调用；消费者代码始终在该锁外执行。
                         var withinDeadline = false;
                         if (!_service._guard.TryRunIfHealthy(() => withinDeadline = Remaining > TimeSpan.Zero))
                         {
@@ -373,8 +367,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                     }
                     catch (Exception exception) when (exception is not OutOfMemoryException)
                     {
-                        // No raw exception property is read or retained. Protected detail
-                        // capture requires the later separately authorized diagnostic store.
+                        // 不读取或保留原始异常属性；受保护的细节只能由后续单独授权的诊断存储采集。
                         failure = "AlgorithmExecutionError";
                     }
                 }
@@ -407,13 +400,10 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                     {
                         if (_grace is not null) _service._guard.CompleteGrace(_grace);
                         _invocationQuiesced = true;
-                        // This private token has only Task.Delay as a consumer. End
-                        // the monitor promptly instead of retaining a retired attempt
-                        // for a deployment's potentially long grace interval.
+                        // 此私有 token 只有 Task.Delay 一个消费者；立即结束监视，避免按部署的长宽限期保留已退役尝试。
                         _graceWatchdogCancellation?.Cancel();
                     }
-                    // Token callbacks can also be consumer code using the frame. Keep
-                    // its owner and the instance until both call and callbacks exit.
+                    // token 回调也可能是使用帧的消费者代码；调用和回调都退出前必须保留帧所有者与算法实例。
                     _frame.Dispose();
                     _prepared.EndExecution();
                     if (retirement is not null) await retirement.ConfigureAwait(false);
@@ -437,8 +427,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             try { await RunAsync().ConfigureAwait(false); }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                // An infrastructure failure must not leave an unobserved Task. This
-                // fallback publishes only a stable code, without exception formatting.
+                // 基础设施故障不能留下未观察的 Task；此兜底只发布稳定代码，不格式化异常。
                 lock (_sync)
                 {
                     _closed = true; _diagnosticsSealed = true;

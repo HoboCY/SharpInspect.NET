@@ -36,8 +36,7 @@ internal sealed class HikrobotProtocolRing
             if (_nextSequence == long.MaxValue)
                 return;
 
-            // The clock is shared with Runtime.  It is read while holding only
-            // this small adapter lock and never while an SDK call is in flight.
+            // 时钟与 Runtime 共享；读取时只持有这把小的适配器锁，且不会发生在 SDK 调用进行期间。
             var point = observedAt ?? _clock.GetTimePoint();
             observation = new CameraProtocolObservation(_nextSequence++, kind,
                 reasonCode, point, correlation, droppedFrames);

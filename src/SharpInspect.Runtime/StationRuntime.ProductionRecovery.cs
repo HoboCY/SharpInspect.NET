@@ -90,8 +90,7 @@ public sealed partial class StationRuntime
                 }
                 if (forced is null)
                 {
-                    // A retired cycle signal does not prove the observer, socket,
-                    // algorithm, camera, and identity provider have actually retired.
+                    // 周期退休信号不等于观察器、套接字、算法、相机和身份提供方都已真正退休。
                     if (productionTask is null) forced = "ProductionRecoveryProductionOwnerUnavailable";
                     else await productionTask.WaitAsync(_productionInspectionOptions!.Recovery!.RetirementTimeout,
                         timeout.Token).ConfigureAwait(false);
@@ -127,16 +126,14 @@ public sealed partial class StationRuntime
                 return authorization.Outcome;
             }
 
-            // The only public transition into recovery work follows the committed
-            // permission, Step-Up, disposition, and safety authorization facts.
+            // 进入恢复工作的唯一公开转移，必须跟随已提交的权限、二次认证、处置和安全授权事实。
             owner.Authorization = authorization;
             lock (_sync)
                 PublishLocked(_snapshot with { Ready = false, Busy = false,
                     ArmState = ProductionArmState.Disarmed, Recovery = RecoveryState.InProgress,
                     Mode = ExclusiveMode.Maintenance,
                     LastCommand = new(command.CorrelationId, OperationState.Pending, "ProductionRecoveryAuthorized") });
-            // Once admission commits, cancelling the caller's wait cannot revoke
-            // the accepted physical operation. Shutdown and the owned deadline can.
+            // 准入提交后，取消调用方等待不能撤销已接受的物理操作；只有关停和所有者期限可以结束它。
             using var operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             operation.CancelAfter(_productionInspectionOptions!.Recovery!.OperationTimeout);
             await ExecuteProductionRecoveryAsync(owner, store, operation.Token).ConfigureAwait(false);
@@ -193,8 +190,7 @@ public sealed partial class StationRuntime
 
     private string? ProductionRecoveryFinalFailure(ProductionRecoveryOwner owner)
     {
-        // SQLite must not wait on a runtime lock while holding its writer and
-        // identity lease. A contended final fence rolls this attempt back.
+        // 持有 SQLite 写入器和身份租约时不得反向等待 Runtime 锁；最终栅栏竞争时回滚本次尝试。
         if (!Monitor.TryEnter(_sync)) return "ProductionRecoveryCommitFenceBusy";
         try
         {
@@ -207,8 +203,7 @@ public sealed partial class StationRuntime
 
     private string? ProductionRecoveryAuthorityFailure(ProductionRecoveryOwner owner)
     {
-        // Physical work runs outside SQLite and its identity lease. Ordinary
-        // snapshot publication must not be mistaken for authority revocation.
+        // 物理工作在 SQLite 和身份租约之外运行；普通快照发布不能被误判为权威撤销。
         lock (_sync)
             return ProductionRecoveryOwnerFailureLocked(owner) ??
                 (owner.Safety is null ? "ProductionRecoverySafetyCaptureMissing" :

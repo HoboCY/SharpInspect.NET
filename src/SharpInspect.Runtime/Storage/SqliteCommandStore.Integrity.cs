@@ -120,6 +120,7 @@ internal sealed partial class SqliteCommandStore
         lock (_integrityGate)
         {
             if (_integrityFaultLatched) return;
+            // 校验期间可能又有事务提交；旧水位的 Verified 不能覆盖新写入，必须继续等待复核。
             if (report.State == AuditIntegrityState.Verified &&
                 report.ThroughSequence < Interlocked.Read(ref _lastCommittedAuditSequence))
                 report = SqliteAuditIntegrityQuery.Report(_policy, AuditIntegrityState.Verifying, "AuditConcurrentAppendRecheckPending");

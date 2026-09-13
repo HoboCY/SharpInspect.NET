@@ -53,8 +53,7 @@ public sealed partial class StationRuntime
             }
             if (communication is not null)
             {
-                // Graceful exit revokes the next owned request synchronously;
-                // let issued IO drain under its deadlines. Abort still cancels it.
+                // Graceful 退出同步撤销下一次新请求，已发出的 I/O 按期限排空；Abort 仍会取消它。
                 await communication.SynchronizeAsync(channel, owner.Cancellation.Token).ConfigureAwait(false);
             }
             observer = new(communication is null ? channel.ReadAsync : token => communication.ReadAsync(channel, token),
@@ -140,8 +139,7 @@ public sealed partial class StationRuntime
                             "QualificationCycle" + fact, cycle: new(ToQualificationCycleKind(fact),
                                 receipt.Payload.RunId, profile.ContentHash)),
                         profile.AcknowledgementTimeout, profile.PollInterval, token));
-                // The observer continues sampling independently while these
-                // serialized journal writes wait behind the core transaction.
+                // 核心事务后的串行台账写入等待期间，观察器仍独立采样，不能因此丢失控制器状态。
                 while (!execution.IsCompleted)
                 {
                     owner.Cancellation.Token.ThrowIfCancellationRequested();
@@ -167,8 +165,7 @@ public sealed partial class StationRuntime
         catch (OperationCanceledException) when (!owner.ModbusRecoveryRequired && owner.ExitRequested && !owner.Aborted)
         {
             observer?.StopAccepting();
-            // No accepted cycle owns a result. This is an ordinary controlled
-            // exit from the request wait; still revoke the advertised permit.
+            // 没有已接受周期拥有结果，这是请求等待的正常受控退出；仍须撤销已广播的准入许可。
             try
             {
                 if (stateInitialized)
@@ -222,8 +219,7 @@ public sealed partial class StationRuntime
                     timedOut ? "QualificationResultAckTimeout" :
                     traceFailure ? "QualificationCycleTracePersistenceFailed" : "QualificationCycleInterrupted", abort: true);
             }
-            // Preserve ResultValid and the payload. If the channel is uncertain
-            // it is already sealed and this update performs no replay.
+            // 保留 ResultValid 和载荷；通道不确定时现场已经封存，此更新不执行重放。
             try
             {
                 if (stateInitialized)
@@ -237,8 +233,7 @@ public sealed partial class StationRuntime
                 catch (Exception pending) when (pending is not OutOfMemoryException) { }
                 execution = null;
             }
-            // Observer disposal awaits its actual FC03/heartbeat request. New
-            // channels are created only after both readers and cycle writes retire.
+            // 观察器处置会等待实际 FC03/心跳请求；只有读者和周期写入都退休后才创建新通道。
             if (observer is not null) await observer.DisposeAsync().ConfigureAwait(false);
             try
             {
@@ -280,9 +275,7 @@ public sealed partial class StationRuntime
                 {
                     if (!owner.ExitRequested)
                         RequestStationQualificationExitLocked(owner, "QualificationProtocolAlarmBlocksNextCycle", abort: false);
-                    // No accepted run remains to drain. Enter the existing
-                    // restoration phase without inventing a Running identity
-                    // or moving backwards from Ready into isolation.
+                    // 已无已接受 Run 可排空；进入既有恢复阶段，不伪造 Running 身份，也不从 Ready 倒退到隔离阶段。
                     phase = StationQualificationSessionPhase.Restoring;
                 }
                 else phase = owner.ExitRequested ? owner.LastEvent.Phase : StationQualificationSessionPhase.Running;

@@ -69,8 +69,7 @@ internal static class CameraConformancePublicObserver
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // Exception text is deliberately discarded at this public evidence
-            // boundary.  The consumer receives only a stable classification.
+            // 在公共证据边界主动丢弃异常文本；消费者只能收到稳定分类。
             decision = ObservationDecision.Blocked("CameraConformanceUnavailable");
         }
 
@@ -190,8 +189,7 @@ internal static class CameraConformancePublicObserver
                 health.Acquisition != CameraAcquisitionState.Stopped)
                 throw new ProductMismatchException("CameraConfigurationHealthMismatch");
 
-            // The fixture factory is single-owner.  Retire each configuration
-            // before asking it for the next one.
+            // fixture factory 是单所有者；请求下一配置前必须先退役当前配置。
             await session.DisposeAsync().ConfigureAwait(false);
         }
     }
@@ -328,8 +326,7 @@ internal static class CameraConformancePublicObserver
             first.Outcome.FailureKind != CameraAcquisitionFailureKind.Cancelled)
             throw new ProductMismatchException("CameraCancellationNotHonoured");
 
-        // Advance after cancellation so the cancelled request's late signal is
-        // exposed through the public protocol ring.
+        // 取消后推进一次，让已取消请求的迟到信号出现在公共协议环中。
         await DeliverStimulusAsync(session, context,
             new CameraConformanceStimulus(CameraConformanceStimulusKind.AdvanceOrWait,
                 declaration.FrameDelay), cancellationToken).ConfigureAwait(false);
@@ -342,10 +339,7 @@ internal static class CameraConformancePublicObserver
         if (!lateObserved)
             throw new BlockedObservationException("CameraCancellationLateFrameUnavailable");
 
-        // A bounded cancellation result and its late-frame observation do not
-        // retire the provider call or its cancellation callbacks. The public Busy
-        // projection keeps that owner visible as CleanupPending until it exits.
-        // Do not submit the reuse request while it still owns the device.
+        // 有界取消结果及其迟到帧观测不会退役 Provider 调用或取消回调；公共 Busy 投影会以 CleanupPending 保留该所有者直到退出，期间不能提交复用请求。
         var retirementStarted = Stopwatch.GetTimestamp();
         while (session.Acquisition!.Busy is not null)
         {
@@ -730,8 +724,7 @@ internal static class CameraConformancePublicObserver
             .ConfigureAwait(false);
         if (!IsArmedHealthy(afterExhaustion))
         {
-            // A buffer fault may close the device. Reuse must then follow the full
-            // public retirement/open/configuration path, never force it back to Armed.
+        // 缓冲故障可能关闭设备；复用必须重新走完整的公共退役/打开/配置路径，不能强行恢复为 Armed。
             context.Add("poolRecoveryMode", "RetireReopenReconfigure");
             foreach (var held in session.HeldLeases.ToArray())
                 await ReturnLeaseAsync(session, held, context, "pool-retirement-return").ConfigureAwait(false);
@@ -1046,7 +1039,7 @@ internal static class CameraConformancePublicObserver
             elapsed, hardware ? busy?.Correlation : null);
         if (useRecovery)
         {
-            // Wait for the current Runtime owner's public Busy milestone before advancing time.
+        // 推进时间前先等待当前 Runtime 所有者的公共 Busy 里程碑。
             await DriveRecoveryAcquisitionAsync(session, context, task, elapsed,
                 stimulusKind, observationCancellation).ConfigureAwait(false);
         }
@@ -1195,9 +1188,7 @@ internal static class CameraConformancePublicObserver
             if (!IsHealthUnavailable(snapshot))
                 break;
 
-            // A transient null health read is the one recoverable state. Give the
-            // retained physical probe/worker one bounded clock tick before asking
-            // for the next read; the retry remains inside this operation budget.
+        // 短暂的 null 健康读取是唯一可恢复状态；向保留的物理探针/worker 给予一个有界时钟步长，再请求下一次读取，重试仍受当前操作预算约束。
             if (RemainingBudget(limit) <= TimeSpan.Zero)
             {
                 context.Append("recoveryRefreshes", RecoveryFact.From(snapshot));
@@ -1263,9 +1254,7 @@ internal static class CameraConformancePublicObserver
                     continue;
                 }
             }
-            // A scheduled callback queues the recovery worker.  Let that worker
-            // settle without advancing the virtual clock again; otherwise the
-            // number of scheduler polls would become part of frame timestamps.
+        // 调度回调只负责排队恢复 worker；等待 worker 静止时不要再次推进虚拟时钟，否则调度轮询次数会污染帧时间戳。
             await Task.Delay(1, cancellationToken).ConfigureAwait(false);
         }
         return false;

@@ -9,8 +9,7 @@ public sealed partial class IdentityViewModel
     private InteractiveSession _session;
     private Guid? _recoveryOwner;
     public bool HasSessionService => _sessions is not null;
-    // Dispatcher notifications are presentation hints and can lag the authority.
-    // Sensitive actions always read the current Runtime-owned session.
+    // Dispatcher 通知只是可能滞后的展示提示；敏感操作始终读取 Runtime 持有的当前会话。
     public InteractiveSession CurrentSession { get { if (_sessions is not null) return _sessions.Current;
         lock (_sync) return _session; } }
     public string SessionStatus => CurrentSession.State switch
@@ -18,6 +17,7 @@ public sealed partial class IdentityViewModel
 
     public async Task LockSessionAsync(SessionLockReason reason)
     {
+        // 先撤销页面仍在等待的身份请求；锁屏转换本身仍由会话服务执行。
         CancelPendingOperation();
         if (_sessions is not null) await _sessions.LockAsync(_sessions.Current.SessionId, reason).ConfigureAwait(true);
     }

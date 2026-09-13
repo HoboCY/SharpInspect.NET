@@ -44,19 +44,15 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
                      (HikrobotNativePixelFormat.Mono12, 12), (HikrobotNativePixelFormat.Mono16, 16) })
             if (_nativePixels.Contains((uint)candidate.Item1)) bits.Add(candidate.Item2);
         if (bits.Count > 0) formats.Add(VisionPixelFormat.Mono16);
-        // This first native candidate deliberately exposes monochrome camera output only.
-        // RGB/BGR conversion is exercised at the adapter seam; a color camera's manual
-        // white-balance node/unit mapping requires a separately verified model profile.
+        // 当前首个 native 候选只暴露单色输出；RGB/BGR 转换在适配器边界验证，彩色相机的手动白平衡节点/单位映射需另有已验证的型号配置。
         var modes = new List<ProductionAcquisitionMode>();
         if (_triggerSources.ContainsKey("Software")) modes.Add(ProductionAcquisitionMode.SoftwareTrigger);
-        // Until hardware qualification proves the Busy gate against SDK-buffered
-        // pre-Busy pulses, Line0 support alone cannot authorize correlated frames.
+        // 在硬件资格验证证明 Busy 能挡住 SDK 缓存的 Busy 前脉冲前，仅支持 Line0 不能授权相关联帧。
         if (formats.Count == 0 || modes.Count == 0)
             throw new HikrobotSdkException("HikrobotNativeCapabilitiesUnsupported");
         var width = ReadInt("Width"); var height = ReadInt("Height");
         var x = ReadInt("OffsetX"); var y = ReadInt("OffsetY");
-        // Device-reported ranges can depend on the currently configured ROI. Keep the
-        // reported subset, rather than claiming larger ranges the device has not returned.
+        // 设备报告的范围可能依赖当前 ROI；只保留设备实际返回的子集，不宣称设备未报告的更大范围。
         var sensorWidth = checked((int)ReadInt("WidthMax").Current);
         var sensorHeight = checked((int)ReadInt("HeightMax").Current);
         Capabilities = new(modes, formats, bits,
@@ -107,8 +103,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
         SetSymbol("TriggerSource", source);
         SetSymbol("TriggerMode", "On");
 
-        // Read every setting and every automatically controlled prerequisite back. No
-        // requested value is presented as device evidence when a read/write fails.
+        // 对每个设置及其自动控制前置项做回读；任一读写失败时，不能把请求值冒充设备证据。
         CheckSymbol("AcquisitionMode", "Continuous");
         CheckSymbol("TriggerSelector", "FrameStart");
         CheckSymbol("TriggerMode", "On");
@@ -134,8 +129,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
         if (_started || _registered) throw new HikrobotSdkException("HikrobotAlreadyStarted");
         HikrobotNativeApi.Check(_api.SetImageNodeNum(_handle, 2), "HikrobotNativePoolSetupFailed");
         _receiver = callback;
-        // The SDK stores a function pointer, which is not a GC root. Retain this instance
-        // and its delegate until actual unregister/close/destroy has quiesced the callbacks.
+        // SDK 保存的是不会成为 GC 根的函数指针；在实际完成注销/关闭/销毁并静止回调前，必须保留此实例及其委托。
         _callbackRoot = GCHandle.Alloc(this);
         try
         {
@@ -150,7 +144,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
         catch
         {
             Volatile.Write(ref _acceptCallbacks, 0);
-            // Retain callback roots after a partial Start. The caller retires the device.
+            // Start 部分成功后仍保留回调根；由调用者负责退役设备。
             throw;
         }
     }
@@ -164,9 +158,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
 
     public void Stop()
     {
-        // Close is attempted only after stop, callback unregistration and drain.
-        // A later adapter retirement retry must still reach DestroyHandle even
-        // when Close succeeded on the previous attempt, or Dispose already won.
+        // 只有完成 stop、注销回调和排空后才尝试 Close；后续适配器重试仍必须能到达 DestroyHandle，即使上次 Close 成功或 Dispose 已先完成。
         if (_handle == IntPtr.Zero || _closeConfirmed) return;
         RequireOpen();
         Volatile.Write(ref _acceptCallbacks, 0);
@@ -191,9 +183,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
     {
         if (_handle == IntPtr.Zero) return;
         Volatile.Write(ref _acceptCallbacks, 0);
-        // Quiesce callbacks BEFORE destroying the SDK handle and its backing buffers.
-        // A failed stop/unregister retains the handle, module and GC root for the actual
-        // owner; it is never reported as successful cleanup merely because callers left.
+        // 销毁 SDK handle 及其后备缓冲前必须先让回调静止；stop/注销失败时保留 handle、模块和 GC 根交给真实所有者，不能因调用者离开就宣称清理成功。
         if (_startAttempted)
         {
             HikrobotNativeApi.Check(_api.StopGrabbing(_handle), "HikrobotStopFailed");
@@ -257,8 +247,7 @@ internal sealed unsafe class HikrobotNativeDevice : IHikrobotSdkDevice
         }
         catch (Exception)
         {
-            // No managed exception may escape through the unmanaged callback trampoline.
-            // The controlled attempt's deadline is authoritative if its receiver itself fails.
+            // 任何托管异常都不能穿过非托管回调跳板；如果接收器自身失败，以受控尝试的截止时间为准。
         }
         finally { Interlocked.Decrement(ref _callbacksInFlight); }
     }

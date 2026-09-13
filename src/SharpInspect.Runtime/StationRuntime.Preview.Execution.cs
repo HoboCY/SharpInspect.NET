@@ -6,10 +6,8 @@ namespace SharpInspect.Runtime;
 
 public sealed partial class StationRuntime
 {
-    // The command partial owns admission and durable state.  This table owns only
-    // the in-process physical lifetime between admission and the terminal event.
-    // It is deliberately keyed by the private owner so an old reader cannot act
-    // on a later session after the projection has moved on.
+    // 命令分部负责准入和持久状态；此表只负责从准入到终结事件之间的进程内物理生命周期。
+    // 以私有所有者为键，避免投影切换后旧读者作用于新会话。
     private readonly Dictionary<PreviewSessionOwner, PreviewExecutionState>
         _previewExecutionStates = new();
 
@@ -473,9 +471,7 @@ public sealed partial class StationRuntime
                         RequestPreviewReaderFailure(owner, read.ReasonCode);
                         return;
                     }
-                    // These coordinator refusals happen before the provider is
-                    // invoked. A competing observation or accepted tuning stage
-                    // must not turn harmless contention into a session failure.
+                    // 这些协调器拒绝发生在调用供应商之前；观察竞争或已接受的调参阶段不应把可恢复竞争升级为会话失败。
                     if (read.ReasonCode is not ("PreviewRuntimeBusy" or
                         "PreviewOperationSuperseded" or "PreviewPhysicalOperationInProgress") &&
                         !IsTransientPreviewReadFailure(read.ReasonCode))
@@ -486,9 +482,7 @@ public sealed partial class StationRuntime
                 }
                 else if (read.Result is not { Succeeded: true, Frame: { } frame })
                 {
-                    // A joined provider can report cancellation as a result
-                    // instead of throwing. Pause owns this requested read
-                    // cancellation; it must not terminate the whole session.
+                    // 已汇合的供应商可能返回取消结果而不是抛异常；该次读取消由 Pause 所有，不能终止整个会话。
                     if (token.IsCancellationRequested) return;
                     var reason = read.Result?.ReasonCode ?? read.ReasonCode;
                     if (!IsTransientPreviewReadFailure(reason))
@@ -512,9 +506,7 @@ public sealed partial class StationRuntime
         {
             RequestPreviewReaderFailure(owner, SafePreviewExecutionReason(exception));
         }
-        // The reader task's completion is the retirement signal consumed by
-        // PausePreviewReaderAsync.  owner.Retired belongs to the whole session
-        // and is completed only by FinishPreviewSessionAsync after restoration.
+        // reader 任务完成是 PausePreviewReaderAsync 使用的退休信号；owner.Retired 属于整个会话，只有恢复后由 FinishPreviewSessionAsync 完成。
     }
 
     private void OnPreviewReaderRetired(PreviewSessionOwner owner, Task reader,
@@ -534,9 +526,7 @@ public sealed partial class StationRuntime
                 restore = owner.ExitRequested && state.RestoreTask is null;
             }
         }
-        // A normal reader completion owns disposal here.  An exiting reader is
-        // disposed by PausePreviewReaderAsync after it has joined the task; this
-        // avoids racing Dispose with the bounded provider operation.
+        // 正常读者完成时由此处处置；退出中的读者等 Pause 汇合任务后再处置，避免 Dispose 与有界供应商调用竞争。
         if (!restore) DisposeCancellation(cancellation);
         if (restore) _ = RestorePreviewSessionAsync(owner);
     }
@@ -585,9 +575,7 @@ public sealed partial class StationRuntime
                 PublishPreviewLocked(owner, PreviewSessionPhase.Restoring, reason);
             }
             terminalReason = reason;
-            // Restoration must continue even when the intermediate progress
-            // event is rejected because Exit is already authoritative.  The
-            // terminal Finish call below is the durable success/failure event.
+            // 即使 Exit 已成为权威、途中进度事件被拒绝，也必须继续恢复；下面的 Finish 调用才是持久成功/失败事件。
             try
             {
                 _ = await RecordPreviewProgressAsync(owner, PreviewSessionPhase.Restoring,
@@ -595,7 +583,7 @@ public sealed partial class StationRuntime
             }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                // Keep the physical cleanup path independent of audit I/O.
+                // 物理清理路径独立于审计 I/O，不能因中间审计失败而提前释放设备所有权。
             }
             if (!readerRetired)
             {
@@ -696,8 +684,7 @@ public sealed partial class StationRuntime
 
                 lock (_sync)
                 {
-                    // Retain an undisposed lease while recovery is blocked so
-                    // the station still owns any late physical resource.
+                    // 恢复受阻时保留未处置租约，站点仍需拥有可能晚到的物理资源。
                     if (leaseDisposed && IsCurrentPreviewOwnerLocked(owner))
                         owner.Camera = null;
                 }
@@ -719,8 +706,7 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 owner.Restoration = restoration;
-                // The final phase becomes observable only after its durable
-                // terminal is written by FinishPreviewSessionAsync.
+                // 最终阶段只有在 FinishPreviewSessionAsync 写入持久终结事件后才对外可见。
                 PublishPreviewLocked(owner, PreviewSessionPhase.Restoring, terminalReason);
             }
 
@@ -738,9 +724,7 @@ public sealed partial class StationRuntime
                     PublishPreviewLocked(owner, PreviewSessionPhase.RecoveryBlocked,
                         "PreviewTerminalPersistenceFailed");
                 }
-                // FinishPreviewSessionAsync owns the normal terminal signal. If
-                // its durable write itself faults, release shutdown waiters only
-                // after the physical cleanup above has already completed.
+                // FinishPreviewSessionAsync 负责正常终结信号；若其持久写入失败，也要等上面的物理清理完成后再释放关停等待者。
                 owner.Retired.TrySetResult(true);
             }
         }
@@ -839,9 +823,7 @@ public sealed partial class StationRuntime
     {
         if (!IsCurrentPreviewOwnerLocked(owner)) return;
         var state = GetOrCreatePreviewExecutionStateLocked(owner);
-        // An explicit Exit (including authority/session shutdown) already owns
-        // the terminal reason.  Cancellation observed by the stage must not
-        // repaint that clean exit as a reader failure.
+        // 显式 Exit（包括权限/会话关停）已经拥有终结原因；阶段观察到的取消不能把正常退出改画成读者失败。
         if (owner.ExitRequested && !state.FailureRequested) return;
         var firstFailure = !state.FailureRequested;
         state.FailureRequested = true;
@@ -962,9 +944,7 @@ public sealed partial class StationRuntime
         {
             if (!await CheckPreviewAuthorityAsync(owner).ConfigureAwait(false))
             {
-                // CheckPreviewAuthorityAsync records the authoritative access
-                // reason and schedules the single exit worker.  Do not replace
-                // that reason with a reader-local generic failure.
+                // CheckPreviewAuthorityAsync 已记录权威访问原因并安排唯一退出任务；不要用读者本地的通用失败覆盖它。
                 return false;
             }
             return true;

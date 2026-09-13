@@ -362,6 +362,8 @@ public sealed class ProductionInspectionCore
         if (configuration is not null && resultSchema is null)
             throw new ArgumentException("ProductionInspectionConfigurationSchemaRequired",
                 nameof(resultSchema));
+        // Success 只在 CoreCommitted 且帧、算法、结果、PLC 与结构化证据齐全时成立；
+        // 缺帧必须带有类型化采集失败。
         if (executionStatus == ExecutionStatus.Success)
         {
             if (state != ProductionInspectionState.CoreCommitted ||
@@ -449,9 +451,8 @@ public sealed class ProductionInspectionCore
         PlcPayload = plcPayload;
         StructuredResultJson = structuredResultJson;
         StructuredResultHash = structuredResultHash;
-        // The durable Core projection is always derived from the accepted
-        // admission evidence.  The caller-supplied value is only a binding
-        // check above; it must not become a second source of truth.
+        // 持久化 Core 始终从已接受的 Admission 证据派生；调用方传入的值只用于
+        // 上面的绑定校验，不能成为第二个事实源。
         PartIdentity = Admission.PartIdentityEvidence?.Value;
         CommittedAtUtc = committedAtUtc;
         CommittedMonotonicTimestamp = committedMonotonicTimestamp;

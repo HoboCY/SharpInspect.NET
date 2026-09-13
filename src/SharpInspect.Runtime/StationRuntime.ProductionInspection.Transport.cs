@@ -29,8 +29,7 @@ public sealed partial class StationRuntime
             lock (_sync)
                 if (!ProductionStartupDependenciesReconciledLocked())
                     throw new InvalidOperationException("ProductionInspectionStartupDependencyUnavailable");
-            // A cold start reads the authoritative ledger before opening a socket.
-            // An incomplete old cycle is never reconstructed as executable work.
+            // 冷启动先读取权威台账，再打开套接字；旧的未完成周期永远不会被重建成可执行工作。
             var history = new SqliteProductionInspectionHistoryQuery(_productionInspectionStoreOptions!);
             var current = await history.ReadCurrentAsync(_lifetime.Token).ConfigureAwait(false);
             if (!current.Available || current.RecoveryRequired)
@@ -129,8 +128,7 @@ public sealed partial class StationRuntime
             if (initial.QualificationReady || initial.ProductionReady || initial.Busy || initial.ResultValid ||
                 initial.CycleFault || initial.ProtocolViolation)
             {
-                // Residual runtime-owned state is an unresolved session even without an
-                // InspectionId in this process. Preserve the recovery requirement on refusal.
+                // 即使本进程没有 InspectionId，残留的 Runtime 状态仍表示未解决会话；拒绝启动时保留恢复要求。
                 lock (_sync)
                     if (ReferenceEquals(_productionInspectionOwner, owner))
                         _productionInspectionRecoveryBlocked = true;
@@ -142,8 +140,7 @@ public sealed partial class StationRuntime
             catch (Exception exception) when (profile.RecipeChange is not null &&
                 exception is not OutOfMemoryException && !token.IsCancellationRequested)
             {
-                // Dedicated fields can prevent initial synchronization before a handshake or
-                // InspectionId exists. Keep that failed session in recovery without clearing it.
+                // 专用字段可能在握手或 InspectionId 建立前就阻止同步；失败会话进入恢复状态，不能先清空现场。
                 lock (_sync)
                     if (ReferenceEquals(_productionInspectionOwner, owner) && !_disposed &&
                         !_shutdownRequested && !_lifetime.IsCancellationRequested && !token.IsCancellationRequested)
@@ -273,8 +270,7 @@ public sealed partial class StationRuntime
                     CancellationTokenSource retiredCancellation;
                     lock (_sync)
                     {
-                        // Atomically detach this cycle's cancellation source before exposing
-                        // idle state. A concurrent Abort can never cancel the next cycle.
+                        // 对外发布空闲前先原子替换本周期取消源；并发 Abort 因此不会误取消下一周期。
                         cancellation = owner.ExecutionCancellationTask;
                         retiredCancellation = owner.ExecutionCancellation;
                         owner.CycleRetired?.TrySetResult(!owner.FaultAbortRequested && !_shutdownRequested);
@@ -293,8 +289,7 @@ public sealed partial class StationRuntime
                     if (cancellation is not null) await cancellation.ConfigureAwait(false);
                     retiredCancellation.Dispose();
                 }
-                // Drain the bounded observer ring; rejected edges do not allocate InspectionIds.
-                // Their protocol-fault flag prevents them being mistaken for queued work.
+                // 排空有界观察环；被拒绝的边沿不分配 InspectionId，协议故障标记也防止它们被当作排队工作。
                 while (observer.TakeRejected() is { } rejected)
                 {
                     if (rejected.Signals is { } rejectedSignals)
@@ -318,8 +313,7 @@ public sealed partial class StationRuntime
             lock (_sync) AbortProductionInspectionLocked(owner, ProductionFailureReason(exception));
             if (observer is not null)
                 await observer.DisposeAsync().ConfigureAwait(false);
-            // Publish the fault before durable rejection writes can wait on storage.
-            // A post-publication fault preserves the immutable payload and unresolved delivery.
+            // 先发布物理故障，再执行可能等待存储的拒绝记录；发布后的故障保留不可变载荷及未解决交付事实。
             try
             {
                 if (initialized) await output.ChangeAsync(CancellationToken.None, ready: false, busy: false,

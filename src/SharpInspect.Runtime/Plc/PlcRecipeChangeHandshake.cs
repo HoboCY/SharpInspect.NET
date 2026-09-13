@@ -100,8 +100,7 @@ internal sealed class PlcRecipeChangeHandshake : IDisposable
                 await FaultAsync(RecipeChangeReason.ActivationFailed, "RecipeChangeObservationCapacityExceeded").ConfigureAwait(false);
             if (!_seen.Add(_sequence))
                 await FaultAsync(RecipeChangeReason.DuplicateRequest, "RecipeChangeRequestIdentityReused").ConfigureAwait(false);
-            // This callback must take the Runtime reservation or fix RejectedBusy NOW.
-            // Starting a Task which waits for that reservation would queue the request.
+            // 此回调必须立即取得 Runtime 预约或确定 RejectedBusy；启动一个等待预约的 Task 会把请求隐式排队。
             try
             {
                 _operation = _begin(value);
@@ -141,8 +140,7 @@ internal sealed class PlcRecipeChangeHandshake : IDisposable
                 await FaultAsync(RecipeChangeReason.ActivationFailed, "RecipeChangeDecisionInvalid").ConfigureAwait(false);
             if (_decision.Outcome == RecipeChangeOutcome.ProtocolFault)
                 await FaultAsync(_decision.Reason, _decision.ReasonCode).ConfigureAwait(false);
-            // The operation returns only after its immutable outcome is durable. The
-            // physical response is recorded after the device acknowledges the write.
+            // 操作只在不可变结果持久化后返回；物理响应在设备确认写入后才记录。
             await WriteAsync(true, (ushort)_decision.Outcome, (ushort)_decision.Reason,
                 _sequence, _code, token).ConfigureAwait(false);
             await RecordAsync(RecipeChangeEventKind.ResponsePublished).ConfigureAwait(false);
@@ -179,8 +177,7 @@ internal sealed class PlcRecipeChangeHandshake : IDisposable
     private async Task FaultAsync(RecipeChangeReason reason, string code)
     {
         _phase = Phase.Faulted;
-        // Invalidate commit authority synchronously; notification/rollback remains
-        // the activation owner's responsibility and never turns this into success.
+        // 同步使提交权威失效；通知/回滚由激活所有者负责，且不会把故障变成成功。
         RequestCancellation();
         try
         {
@@ -204,7 +201,7 @@ internal sealed class PlcRecipeChangeHandshake : IDisposable
         _cancellationNotification = Task.Run(() =>
         {
             try { _stop.Cancel(); }
-            catch (AggregateException) { /* Notification cannot restore revoked authority. */ }
+            catch (AggregateException) { /* 通知不能恢复已撤销的权威。 */ }
         });
     }
 
@@ -213,8 +210,7 @@ internal sealed class PlcRecipeChangeHandshake : IDisposable
         if (_disposed) return;
         _disposed = true;
         RequestCancellation();
-        // A pending activation can still observe this token while restoring hardware.
-        // Its Completion is retained for the enclosing production owner's bounded join.
+        // 挂起的激活在恢复硬件时仍可能观察此令牌；Completion 保留给外层生产所有者做有界汇合。
         var completion = Task.WhenAll(Completion, _cancellationNotification);
         if (!completion.IsCompleted)
             _ = completion.ContinueWith(task => { _ = task.Exception; _stop.Dispose(); }, CancellationToken.None,

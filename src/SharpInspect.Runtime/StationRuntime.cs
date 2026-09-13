@@ -120,8 +120,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 _sessions.Changed += OnSessionChanged;
                 var observedVersion = _sessionProjectionVersion;
                 var initialSession = _sessions.Current;
-                // A provider can publish while its Current getter is reconciling. Preserve
-                // the handler's newer projection in that re-entrant case.
+                // Current 读取可能重入并触发新的发布；若版本已前进，保留事件处理器写入的较新投影。
                 if (_sessionProjectionVersion == observedVersion)
                     _snapshot = _snapshot with { Session = initialSession };
             }
@@ -159,7 +158,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             var observedVersion = _sessionProjectionVersion;
             var current = _sessions!.Current;
             if (_sessionProjectionVersion != observedVersion) return;
-            // Interactive identity is a separate axis. No arm/Ready/PLC/background work is changed.
+            // 交互身份只更新会话轴，不得借此改变 Arm、Ready、PLC 或后台工作状态。
             PublishLocked(_snapshot with { Session = current });
             ScheduleCalibrationSessionExitLocked(current);
             SchedulePreviewSessionExitLocked(current);
@@ -264,8 +263,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             command.Invocation?.Source == CommandSource.PhysicalConsole;
         if (localStop)
         {
-            // A dedicated bounded slot cannot be consumed by ordinary commands.
-            // The barrier and import cancellation share the physical-admission lock.
+            // 本地物理 Stop 使用独立的有界名额，普通命令不能把它挤掉；屏障和导入取消共用物理准入锁。
             lock (_sync)
             {
                 if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
@@ -300,8 +298,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             {
                 await _storeInitialization.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
                 var preparation = _authorization!.PrepareCommandAsync(command, cancellationToken);
-                // Preparation may finish after the caller deadline, but cannot mutate authority.
-                // It retains its own actual capacity until completion and never blocks local Stop's gate.
+                // 准备任务即使晚于调用方期限结束也不能改变权威状态；在真正结束前仍占用自身容量，且不阻塞本地 Stop 名额。
                 _ = preparation.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 prepared = await preparation.WaitAsync(PositiveRemaining(deadline), cancellationToken).ConfigureAwait(false);
@@ -325,8 +322,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                     continue;
                 }
                 if (!entered || !governedCommand || _audit?.Integrity?.State != AuditIntegrityState.Verifying) break;
-                // A previous command may have committed since preparation observed Verified.
-                // Yield the gate while its verification settles; local Stop never waits behind this poll.
+                // 准备阶段看到 Verified 后，前一命令仍可能已经提交；让出命令闸门等待校验收敛，本地 Stop 不在此轮询后面排队。
                 _commandGate.Release();
                 entered = false;
                 using var recheck = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -342,8 +338,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             bool inspectNetworkBarrier;
             lock (_sync)
             {
-                // Preserve the original structural/duplicate rejection paths before
-                // performing an additional protected store read for a new Arm action.
+                // 先保留结构和重复校验，再为新的 Arm 动作读取受保护的网络屏障；这样早期拒绝路径不会被额外 I/O 改写。
                 inspectNetworkBarrier = command is ArmProductionCommand && command.CorrelationId != Guid.Empty &&
                     _snapshot.LastCommand?.CorrelationId != command.CorrelationId &&
                     command.Invocation is { } armInvocation && Enum.IsDefined(armInvocation.Source) &&
@@ -396,6 +391,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             RuntimeCommandOutcome decision;
             lock (_sync)
             {
+                // 这里是普通命令进入执行前的最后一次状态校验；外部准备、等待和存储读取期间发生的变化必须在此被拒绝。
                 if (_shutdownRequested || _disposed) return Unavailable("RuntimeStopped");
                 decision = cameraNetworkBarrier is null ? DecideLocked(command) :
                     new RuntimeCommandOutcome(command.CorrelationId, CommandDisposition.Rejected, cameraNetworkBarrier);
@@ -417,8 +413,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 if (outcome.Disposition == CommandDisposition.Accepted)
                 {
                     _pendingAudit = fact;
-                    // Preserve the cycle accepted by this Stop even if it retires before
-                    // the heartbeat starts the completion worker.
+                    // 即使该 Stop 接受的周期在心跳启动完成任务前已经退出，也保留它对应的退休任务引用。
                     _pendingProductionStopRetirement = _productionInspectionOwner is { Current: not null } production
                         ? production.CycleRetired?.Task : null;
                     _completion = null;

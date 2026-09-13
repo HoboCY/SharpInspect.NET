@@ -32,8 +32,8 @@ internal sealed class OutboxSendOwner : IDisposable
         if (delivery.Route.ContentHash != binding.Route.ContentHash)
             throw new ArgumentException("OutboxTransportRouteMismatch", nameof(binding));
         _delivery = delivery; _binding = binding; _attempt = attemptId; _epoch = epoch;
-        _authority = new(timeout, stop); // The fixed deadline starts before physical dispatch.
-        // Task.Run also isolates a synchronously blocking or throwing plugin invocation.
+        _authority = new(timeout, stop); // 截止时间从派发前起算，排队时间也消耗同一预算。
+        // 插件可能在返回 Task 前就同步阻塞或抛错，因此连调用入口也放到工作线程。
         _physical = Task.Run(async () =>
         {
             if (!_authority.IsCurrent)
@@ -82,8 +82,8 @@ internal sealed class OutboxSendOwner : IDisposable
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             Retire();
-            // Exceptions cannot prove that the receiver did not process a request. Keep that
-            // uncertainty; only a typed adapter observation can establish a permanent rejection.
+            // 传输异常不能证明接收端未处理请求，必须保留“结果未知”；
+            // 只有适配器明确返回的分类结果，才能据此记录永久拒绝。
             return new(OutboxFailureCategory.UnknownOutcome, "OutboxTransportException");
         }
     }
@@ -94,8 +94,8 @@ internal sealed class OutboxSendOwner : IDisposable
         lock (_retirementSync)
         {
             if (Interlocked.Exchange(ref _retired, 1) != 0) return;
-            // User cancellation callbacks may block synchronously. Their task is owned and
-            // counts toward physical retirement instead of blocking the worker or Runtime lock.
+            // 用户注册的取消回调也可能同步阻塞，需单独持有并等待它退出；
+            // 不能让回调卡住 Runtime 锁，也不能在回调未结束时释放物理槽位。
             _cancellationCompletion = Task.Run(() =>
             {
                 try { _cancellation.Cancel(); }

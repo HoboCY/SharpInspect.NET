@@ -138,7 +138,7 @@ internal static class CanonicalPngCodec
                     SwapPixelOrder(row, descriptor.PixelFormat);
                     CheckMono16(row, descriptor);
                     hash.AppendData(row);
-                    // PNG filters refer to the preceding row in PNG byte order.
+                    // 下一行反滤波依赖 PNG 字节序的上一行；计算规范像素摘要后要换回 PNG 字节序再缓存。
                     SwapPixelOrder(row, descriptor.PixelFormat);
                     (row, previous) = (previous, row);
                 }
@@ -413,8 +413,7 @@ internal static class CanonicalPngCodec
                 _chunks.Next();
                 if (_chunks.Type != "IDAT") _ended = true;
             }
-            // A complete zlib stream stops itself after its validated checksum. Returning
-            // EOF here would let ZLibStream accept some truncated deflate/footer streams.
+            // 完整 zlib 流会在校验和验证后自行停止；这里返回 EOF 可能让截断的压缩数据或尾部被误收。
             throw Invalid("CompressedStreamTruncated");
         }
         internal void Complete()

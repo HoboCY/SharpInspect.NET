@@ -57,9 +57,7 @@ public sealed partial class StationRuntime
                     CancellationToken.None).ConfigureAwait(false);
                 if (result.Committed || result.ReasonCode != "ProductionRecoveryCommitFenceBusy" ||
                     deadline.Remaining <= TimeSpan.Zero) break;
-                // The writer rolled back this transaction before accepting another.
-                // Yield outside SQLite, then retry only persistence with the same
-                // receipt and deadline; physical cleanup is never repeated here.
+                // 写入器在返回前已回滚事务；在 SQLite 外让出后，只用同一收据和期限重试持久化，绝不重复物理清理。
                 var remaining = deadline.Remaining;
                 if (remaining <= TimeSpan.Zero) break;
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(10,
@@ -110,8 +108,7 @@ public sealed partial class StationRuntime
                     clear ? OperationState.Completed : OperationState.Failed, reason) });
             if (clear)
             {
-                // Both the old production task and the manual transport have now
-                // retired. Only the ordinary disarmed startup/monitoring path resumes.
+                // 旧生产任务和手动恢复传输均已退休后，才恢复普通的已撤防启动/监视路径。
                 _productionInspectionOwner = null;
                 _productionInspectionStartupVerified = false;
                 _productionInspectionTask = Task.Run(RunProductionInspectionsAsync);
@@ -127,8 +124,7 @@ public sealed partial class StationRuntime
             profile.ContentHash, profile.CommunicationBinding.Policy.ContentHash, transition.Generation,
             transition.Attempt, Enum.Parse<PlcCommunicationEventKind>(transition.Kind), transition.ReasonCode,
             transition.ControllerEpoch, DateTimeOffset.UtcNow, transition.ObservedAt,
-            // The production recovery session can have several authorized
-            // retries. Communication belongs to this command attempt exactly.
+            // 一次生产恢复会话可包含多个已授权重试，但通信事实始终精确归属于本次命令尝试。
             RecoveryCycleId: owner.Authorization!.CommandFact!.AttemptId,
             RunId: owner.Command.InspectionId,
             CycleSequence: owner.Authorization!.Event!.Admission.ControllerCycle.CycleSequence);

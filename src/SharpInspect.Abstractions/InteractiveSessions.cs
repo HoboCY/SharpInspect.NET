@@ -30,6 +30,7 @@ public sealed class InteractiveSessionChangedEventArgs : EventArgs
     public InteractiveSession Session { get; }
 }
 
+// Changed 是生命周期投影通知；敏感操作应重新读取服务当前会话，不能把事件参数当作授权证明。
 /// <summary>
 /// Runtime-owned interactive authentication state. The service never accepts a caller-supplied
 /// HumanIdentity as proof of authentication; only the configured identity provider can create a
@@ -48,6 +49,7 @@ public interface IInteractiveSessionService : IAsyncDisposable
 
     ValueTask<InteractiveSession> GetSessionAsync(CancellationToken cancellationToken = default);
 
+    // 锁屏和注销只改变交互会话，不直接停止 Runtime 或改写生产状态。
     ValueTask<SessionActionResult> LockAsync(
         Guid? expectedSessionId,
         SessionLockReason reason,

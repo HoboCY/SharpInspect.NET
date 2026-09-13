@@ -39,6 +39,7 @@ public sealed class FramePreviewImage
     public static FramePreviewImage CopyFromFrame(VisionFrame frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
+        // 只在框架借用期内读取源帧；复制完成后，显示位图与采集帧的生命周期完全脱钩。
         if (!frame.IsLoanActive)
             throw new InvalidOperationException("FramePreviewLoanInactive");
 
@@ -73,6 +74,7 @@ public sealed class FramePreviewImage
 
         try
         {
+            // 每行只读取有效像素，行尾 padding 不进入显示缓冲区，也不进入源像素哈希。
             for (var rowIndex = 0; rowIndex < height; rowIndex++)
             {
                 if (!frame.IsLoanActive)
@@ -124,6 +126,7 @@ public sealed class RenderedOverlayPreview
         FramePreviewImage? sourceImage, double zoom, double panX, double panY,
         double dpiScaleX, double dpiScaleY)
     {
+        // 叠加结果是独立的派生位图，保留源图与 Overlay 身份，不能回写原始显示副本。
         BitmapSource = bitmapSource;
         DerivedPreviewId = Guid.NewGuid();
         DerivedPixelHash = ComputeBitmapHash(bitmapSource);

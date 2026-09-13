@@ -42,8 +42,7 @@ public sealed partial class StationRuntime
                         ? new(RecipeChangeOutcome.FailedActivation, RecipeChangeReason.RecipeRetired, reason)
                         : new(RecipeChangeOutcome.RejectedBusy, RecipeChangeReason.RuntimeBusy, reason);
             }
-            // This latch blocks new admissions and map changes through the entire
-            // response/ACK/reset handshake; it never interrupts an existing inspection.
+            // 此锁存器覆盖响应、ACK、复位整个握手，期间阻止新准入和映射变更，但不打断已有检查。
             _recipeChangeInProgress = true;
             owner.RecipeChangeRequest = request;
             owner.RecipeChangeActivation = capability;
@@ -73,13 +72,12 @@ public sealed partial class StationRuntime
                 return new(RecipeChangeOutcome.ProtocolFault, RecipeChangeReason.DuplicateRequest, observed.ReasonCode);
             if (!observed.Committed) throw new InvalidOperationException(observed.ReasonCode);
             RecipeChangeDecision decision;
-            if (rejection is not null) decision = rejection; // Never reconsider a busy observation after waiting for storage.
+            if (rejection is not null) decision = rejection; // 等待存储后不重新考虑已观察到的忙碌请求。
             else if (capability is null || token.IsCancellationRequested)
                 decision = new(RecipeChangeOutcome.FailedActivation, RecipeChangeReason.Cancelled, "RecipeActivationCancelled");
             else
             {
-                // Runtime Ready was cleared atomically at reservation. Wait for its
-                // owner-fenced PLC write before staging any candidate hardware.
+                // Runtime Ready 在预约时已原子清除；必须等待所有者栅栏保护的 PLC 写入完成，才能准备候选硬件。
                 await owner.RecipeChangeReadyCleared!.Task.WaitAsync(token).ConfigureAwait(false);
                 var service = _recipeActivations as RecipeActivationService ??
                     throw new InvalidOperationException("RecipeChangeActivationAuthorityUnavailable");
@@ -131,8 +129,7 @@ public sealed partial class StationRuntime
         if (transition.Kind == RecipeChangeEventKind.ProtocolFault && owner.RecipeChangeFaultRecorded) return;
         if (transition.Kind == RecipeChangeEventKind.ProtocolFault)
         {
-            // A dedicated handshake can fault while no production cycle exists.
-            // Preserve that recovery requirement even if its audit append also fails.
+            // 专用握手即使在没有生产周期时也可能故障；即使审计追加失败，也保留恢复要求。
             lock (_sync)
             {
                 _productionInspectionRecoveryBlocked = true;
@@ -146,8 +143,7 @@ public sealed partial class StationRuntime
         if (transition.Kind == RecipeChangeEventKind.ProtocolFault) owner.RecipeChangeFaultRecorded = true;
         if (transition.Kind == RecipeChangeEventKind.ResetObserved)
         {
-            // Only a durable successful PLC episode can reserve this cause. The
-            // frozen response has already been acknowledged and cleared here.
+            // 只有持久成功的 PLC 事件才能占用这个原因；冻结响应在此之前已完成确认和清除。
             lock (_sync)
             {
                 var completed = owner.RecipeChangeDecision;
@@ -217,7 +213,7 @@ public sealed partial class StationRuntime
         var handshake = owner.RecipeChange;
         if (handshake is null) return;
         var active = handshake.Active;
-        handshake.Dispose(); // Revocation is synchronous; cancellation callbacks run independently.
+        handshake.Dispose(); // 撤销同步生效；取消回调在独立任务中执行。
         var retirementFailed = false;
         try
         {
@@ -229,7 +225,7 @@ public sealed partial class StationRuntime
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         { retirementFailed = true; }
-        // Audit failure cannot skip the bounded join of actual activation/restoration.
+        // 审计失败不能跳过对实际激活/恢复任务的有界汇合。
         try { await handshake.Completion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         { retirementFailed = true; }

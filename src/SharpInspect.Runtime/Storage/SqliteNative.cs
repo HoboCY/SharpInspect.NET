@@ -32,7 +32,7 @@ internal static class SqliteNative
         try
         {
             connection.Open();
-            // Bound individual SQLite values before any path reads schema, facts, or checkpoint JSON.
+            // 读取结构、事实或检查点 JSON 前先限制单值大小，避免损坏数据诱发无界分配。
             SQLitePCL.raw.sqlite3_limit(connection.Handle!, SQLitePCL.raw.SQLITE_LIMIT_LENGTH, 65536);
             return connection;
         }
@@ -171,9 +171,8 @@ internal static class SqliteNative
             limit = Math.Max(limit, ProductionImageFinalizationStoreOptions.SqliteValueLimitBytes);
         if (options.Outbox is not null)
             limit = Math.Max(limit, ProductionOutboxStoreOptions.SqliteValueLimitBytes);
-        // Read-only audit consumers may omit identity configuration. Preserve
-        // the historical schema's payload budget after reading its version,
-        // without reducing a larger limit from another configured ledger.
+        // 只读审计调用方可能没有身份配置；仍按历史 schema 保留所需载荷上限，
+        // 同时不能降低其他已配置账本要求的更大上限。
         var schemaLimit = schemaVersion switch
         {
             7 => AlarmStorageCodec.SqliteValueLimitBytes,

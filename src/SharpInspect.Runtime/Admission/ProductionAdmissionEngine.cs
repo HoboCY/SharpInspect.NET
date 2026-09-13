@@ -5,8 +5,7 @@ using SharpInspect.Abstractions;
 
 namespace SharpInspect.Runtime.Admission;
 
-// Only internal composition can supply observed facts. A fact source has no Evaluate,
-// Allow, SetReady or policy callback: every path uses the same fixed evaluator below.
+// 只有内部组合可以提供观察事实；事实源没有 Evaluate、Allow、SetReady 或策略回调，所有路径都使用下面这个固定评估器。
 internal interface IProductionAdmissionFactsSource
 {
     ValueTask<ProductionAdmissionFacts> CaptureAsync(CancellationToken cancellationToken);
@@ -97,8 +96,7 @@ internal static class ProductionAdmissionEngine
                     QualificationEvidenceStatus.NotApplicable => ProductionAdmissionGateStatus.NotApplicable,
                     _ => ProductionAdmissionGateStatus.Failed
                 };
-                // Provider health requires both contract and exact hardware qualification.
-                // Preserve the real record references rather than inventing a composite record.
+                // Provider 健康同时要求契约资格和精确硬件资格；保留真实记录引用，不伪造组合记录。
                 var additionalHashes = rows.Select(row => row.EvidenceRecordHash).Where(hash => hash is not null &&
                     hash != selected.EvidenceRecordHash).Select(hash => hash!).ToArray();
                 gates.Add(new(gate, status, selected.ReasonCode, selected.ExpectedFingerprint, selected.ObservedFingerprint,
@@ -113,9 +111,7 @@ internal static class ProductionAdmissionEngine
             facts.Configuration.ProfileHash, gates);
     }
 
-    // Unlike report.ContentHash, this excludes observation time/epoch/revision. Runtime
-    // compares it together with facts.ObservationHash to detect only admission changes,
-    // including a record becoming expired while its immutable bytes remain unchanged.
+    // 与 report.ContentHash 不同，这里排除观察时间、epoch、revision；Runtime 配合 ObservationHash 只检测准入变化，包含记录过期但不可变字节未变的情况。
     internal static string EvidenceHash(ProductionAdmissionReport report) => MaterialEvidenceHash(report, null);
 
     internal static bool IsTransientAuditRecheck(ProductionAdmissionGateResult gate) =>

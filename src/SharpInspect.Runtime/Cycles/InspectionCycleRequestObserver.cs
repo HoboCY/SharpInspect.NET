@@ -27,7 +27,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     private ModbusControllerSignals? _latest;
     private ModbusControllerSignals? _accepted;
     private bool _accepting;
-    private bool _wasHigh = true; // A held request at connection is not a fresh trigger.
+    private bool _wasHigh = true; // 建立连接时已经保持为高的请求不算新的触发边沿。
     private PlcControllerCycle? _previousKey;
     private uint? _activeEpoch;
     private string? _failure;
@@ -88,8 +88,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
             _admissionRevoked = true; _accepting = false;
             if (_accepted is { } pending)
             {
-                // This was only an observed candidate, not a durably accepted
-                // Run. Retain a rejection fact if Stop wins the admission race.
+                // 这只是观察到的候选，不是已持久接受的 Run；若 Stop 赢得准入竞争，仍保留拒绝事实。
                 if (_rejections.Count < 256)
                     _rejections.Enqueue(new(new(pending.ControllerEpoch, pending.CycleSequence),
                         "QualificationRequestRevokedBeforeAdmission", pending));
@@ -101,9 +100,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     internal void CompleteCycle() { lock (_sync) _activeEpoch = null; }
     internal async Task EnableAcceptingAsync(Func<Task> advertiseReady, CancellationToken token)
     {
-        // Serialize the physical Ready write with observation, so a controller
-        // that reacts immediately cannot lose its request between the write
-        // acknowledgement and enabling the local admission slot.
+        // 将物理 Ready 写入与观察串行化，避免控制器在写入确认和本地准入槽开启之间立即响应而丢失请求。
         await _sampleGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -149,8 +146,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 sequence = _observationSequence;
             }
             await write().ConfigureAwait(false);
-            // Sampling cannot race this successful physical flag write. An Ack
-            // must subsequently be observed in this particular bounded window.
+            // 采样不会与这次成功的物理标志写入竞争；随后 ACK 必须在该有界窗口内被观察到。
             return (sequence, Stopwatch.GetTimestamp());
         }
         finally { _sampleGate.Release(); }
@@ -161,8 +157,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     }
     internal RejectedCycleRequest? TakeRejected()
     {
-        // Facts already observed remain drainable after observer failure/retirement.
-        // Admission and transport health are checked by their own operations.
+        // 已观察事实即使观察器失败或退休仍可排出；准入和传输健康由各自操作检查。
         lock (_sync) return _rejections.Count > 0 ? _rejections.Dequeue() : null;
     }
     internal void RequireHealthy() { lock (_sync) ThrowIfFailed(); }
@@ -252,9 +247,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     {
         _stop.Cancel();
         if (_operation is not null) await _operation.ConfigureAwait(false);
-        // An in-flight Ready advertisement owns this same gate. Await its actual
-        // completion before retiring; it checks _closing before enabling any
-        // request. Keep the private managed gate alive for already queued callers.
+        // 进行中的 Ready 广播也拥有这把闸门；退休前等待其实际完成，它会在开启请求前检查 _closing，并为已排队调用保留管理闸门。
         await _sampleGate.WaitAsync().ConfigureAwait(false);
         _sampleGate.Release();
         _stop.Dispose();

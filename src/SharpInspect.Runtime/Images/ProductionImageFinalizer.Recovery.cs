@@ -33,8 +33,7 @@ internal sealed partial class ProductionImageFinalizer
         return true;
     }, timeout, token);
 
-    // Called only with a persisted attempt locator. A valid canonical stage protects
-    // the recoverable input while the interrupted encoder's temporary file is removed.
+    // 只清理持久化尝试记录明确指向的临时文件；先确认规范暂存仍有效，保留可重新编码的输入。
     internal Task<bool> DiscardKnownTemporaryAsync(PendingImageFinalizationWork work, Guid attemptId,
         TimeSpan timeout, CancellationToken token) => RunMaintenanceAsync(deadline =>
     {
@@ -51,8 +50,7 @@ internal sealed partial class ProductionImageFinalizer
         return true;
     }, timeout, token);
 
-    // Runtime calls this only after Succeeded is durable. It verifies and protects
-    // that exact final PNG throughout removal of the stage, including restart replay.
+    // 仅在 Succeeded 已持久化后清理暂存；清理期间持续保护并校验对应 PNG，重启重放也遵守此顺序。
     internal Task<bool> ReleaseSucceededStageAsync(PendingImageFinalizationWork work,
         ProductionImageSuccessDescriptor success, TimeSpan timeout, CancellationToken token) =>
         RunMaintenanceAsync(deadline =>
@@ -130,8 +128,7 @@ internal sealed partial class ProductionImageFinalizer
             finally { Volatile.Write(ref _operationSlot, 0); }
         }, CancellationToken.None);
         Volatile.Write(ref _physicalCompletion, worker);
-        // Observe faults even after a semantic timeout. No second operation may enter
-        // until the physical task's finally releases the one shared file slot.
+        // 上层超时后仍观察实际任务的异常；必须等 finally 释放文件槽位，才能开始下一次操作。
         _ = worker.ContinueWith(completed => _ = completed.Exception,
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);

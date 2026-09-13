@@ -713,8 +713,8 @@ public sealed class RecipeActivationRecord
         hashParts.Add(Admission?.ContentHash);
         ContentHash = AlgorithmContractValidation.HashParts(hashParts);
 
-        // An admission event points to itself only after its content hash is complete;
-        // that derived reference is deliberately excluded from the hash above.
+        // Admission 记录只有在完整内容哈希算出后才能生成指向自身的引用；
+        // 该派生引用故意不参与上面的哈希。
         if (Outcome.State == RecipeActivationOutcomeState.Admitted)
         {
             var derivedReference = new RecipeActivationReference(Position, ActivationId, ContentHash);

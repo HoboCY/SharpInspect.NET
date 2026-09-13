@@ -53,7 +53,7 @@ internal sealed class ProductionOutboxWorker
             await initialization.WaitAsync(_stop.Token).ConfigureAwait(false);
             var backlog = await _query.ReadBacklogAsync(_stop.Token).ConfigureAwait(false);
             _publish(backlog);
-            _startup.TrySetResult(true); // Local verification only; no network is awaited here.
+            _startup.TrySetResult(true); // 启动就绪只取决于本地账本校验，不能被外部接收端的响应时间拖住。
             while (true)
             {
                 _stop.Token.ThrowIfCancellationRequested();
@@ -77,7 +77,7 @@ internal sealed class ProductionOutboxWorker
         }
         finally
         {
-            // A timeout never frees a physical slot or fabricates transport retirement.
+            // 超时只撤销本次成功资格；发送代码真正退出前，该路由的物理槽位仍被占用。
             try { await Task.WhenAll(_active.Values).ConfigureAwait(false); }
             catch (Exception error) when (error is not OutOfMemoryException) { }
         }
@@ -114,6 +114,7 @@ internal sealed class ProductionOutboxWorker
         {
             if (item.ActiveAttemptId is { } interrupted)
             {
+                // 已开始的尝试未留下终态，无法判断接收端是否已处理；先记为结果未知，再按原 ID 和字节重试。
                 if (item.ActiveRuntimeEpoch is not { } previousEpoch)
                     throw new InvalidOperationException("OutboxInterruptedAttemptEpochMissing");
                 var recordedAt = DateTimeOffset.UtcNow;
@@ -123,13 +124,14 @@ internal sealed class ProductionOutboxWorker
                     .ConfigureAwait(false);
                 RequireCommit(recovered);
                 Publish(recovered);
-                return; // Re-read the durable retry budget before starting the replacement attempt.
+                return; // 必须重新读取持久化的重试预算，不能沿用恢复前的次数直接再次发送。
             }
             var delivery = item.Delivery;
             var attempt = Guid.NewGuid();
             var binding = _transports.Resolve(delivery.Route);
             var connectionHash = binding?.ConnectionBindingHash ?? OutboxValidation.HashParts(
                 "sharpinspect-outbox-missing-transport-v1", delivery.Route.ContentHash);
+            // 先提交 AttemptStarted，再调用外部传输；中途崩溃也能留下可恢复的尝试身份。
             var started = await _store.BeginOutboxAttemptAsync(new(delivery.DeliveryId, attempt,
                 checked(item.AttemptCount + 1), _epoch, DateTimeOffset.UtcNow, connectionHash), Deadline(), _stop.Token)
                 .ConfigureAwait(false);

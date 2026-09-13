@@ -29,9 +29,8 @@ internal sealed partial class LocalAuthorizationService
 
         try
         {
-            // The writer callback receives a fresh signed identity state.  The caller
-            // token is observed inside that callback, while the queue/transaction token
-            // remains independent so an accepted arm cannot be erased by late UI cancel.
+            // Writer 回调拿到新的已签名身份状态；调用方取消只在回调内观察，队列/事务令牌
+            // 保持独立，避免界面晚到的取消抹掉已接受的 Arm。
             var written = await _store.UpdateIdentityCommandAsync(command.CorrelationId,
                 (state, duplicate) => AuthorizeProductionArm(state, command, runtimeEpoch,
                     attemptId, admissionGeneration, facts, report, forcedRejection, duplicate,
@@ -124,6 +123,8 @@ internal sealed partial class LocalAuthorizationService
             if (!accepted)
                 return new IdentityUpdate(result, new[] { identity }, new[] { fact });
 
+            // Identity/command facts 与 Arm admission 在同一事务写入；事务提交前只保留
+            // Reserved，提交后才消费 Step-Up。实际 Armed 状态仍由 Runtime 另行判断。
             var guard = new AuthorizationCommitGuard(lease!, () =>
             {
                 lock (_grantSync)

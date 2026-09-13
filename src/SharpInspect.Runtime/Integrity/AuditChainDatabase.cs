@@ -3794,8 +3794,8 @@ internal static partial class AuditChainDatabase
             anchored = checkpoint.Sequence;
         }
 
-        // A caller-selected cursor never supplies a trust root. Recheck from a signed
-        // checkpoint at/before it (or genesis) within the policy's hard verification budget.
+        // 调用方指定的游标不能充当信任起点；必须从它之前的签名检查点或创世记录开始复核，
+        // 并始终遵守策略规定的验证预算。
         var fullArchiveVerification = hasArchive && archiveOptions is not null;
         var fullDraftVerification = hasDraft && recipeDraftOptions is not null;
         var fullCameraVerification = hasCamera && cameraSetupOptions is not null;

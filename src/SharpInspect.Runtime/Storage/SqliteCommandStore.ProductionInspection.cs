@@ -70,9 +70,7 @@ internal sealed record ProductionInspectionStoredRow(
 
 internal sealed partial class SqliteCommandStore
 {
-    // The writer owns all mutations. The projection is only an in-process
-    // fast path for the follow-up lifecycle event; cold readers still verify
-    // the immutable rows through SqliteProductionInspectionHistoryQuery.
+    // 所有修改归单写入器所有；此缓存只加速后续生命周期事件，重启后的读取仍须验证不可变账本。
     private readonly object _productionInspectionProjectionSync = new();
     private readonly Dictionary<Guid, (ProductionInspectionAdmission Admission, long Position)> _productionInspectionAdmissions = new();
     private readonly Dictionary<Guid, ProductionInspectionCore> _productionInspectionCores = new();
@@ -503,8 +501,8 @@ internal sealed partial class SqliteCommandStore
             var outboxReason = ProductionOutboxAdmissionFailure(database, request.Admission, deadline);
             if (outboxReason is not null)
                 return ProductionInspectionRejected(work, outboxReason);
-            // T52: the candidate is durable in this transaction but not yet accepted, so its
-            // complete uncreated outbox liability must fit before the final fence may commit.
+            // 当前候选已写入事务但尚未提交；准入前必须为它未来的完整 Outbox 义务预留容量，
+            // 不能先接受工件、等 Core 生成时才发现结果和重试记录无处可存。
             var outboxCapacityReason = ProductionOutboxAdmissionCapacityFailure(database,
                 request.Admission, deadline);
             if (outboxCapacityReason is not null)
@@ -595,6 +593,7 @@ internal sealed partial class SqliteCommandStore
                 request.Core.CommittedAtUtc.ToString("O", CultureInfo.InvariantCulture),
                 request.Core.CommittedMonotonicTimestamp.ToString(CultureInfo.InvariantCulture),
                 persisted.AuditSequence.ToString(CultureInfo.InvariantCulture), persisted.AuditHash!);
+            // Core、图片待办和冻结的外部投递在同一事务提交；任一环节失败都会回滚，避免结果已发布却缺少追溯义务。
             InsertProductionImageEvidence(database, request, deadline);
             InsertProductionOutboxBatch(database, request, deadline);
             InsertProductionInspectionEvent(database, persisted, payload, deadline);

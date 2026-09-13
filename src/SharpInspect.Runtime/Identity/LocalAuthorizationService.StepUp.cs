@@ -93,6 +93,8 @@ internal sealed partial class LocalAuthorizationService
                             return StepUpRejection(state, request, "StepUpCapacityExceeded", actor.PrincipalId);
                         _grants.Add(grant.Id, grant);
                     }
+                    // Grant 在持久化事务提交前仍是 Pending；只有 writer 调用 Commit 后才转为
+                    // Active，回滚则删除。
                     var guard = new AuthorizationCommitGuard(lease, () =>
                     {
                         lock (_grantSync) if (_grants.TryGetValue(grant.Id, out var current)) current.State = GrantState.Active;
@@ -121,7 +123,7 @@ internal sealed partial class LocalAuthorizationService
         }
         finally
         {
-            // A provider that ignores cancellation retains its actual capacity slot until it finishes.
+            // Provider 若忽略取消，必须等实际任务结束才释放容量槽，不能让超时的调用伪装成已退出。
             if (providerTask is { IsCompleted: false })
                 _ = providerTask.ContinueWith(task => { _ = task.Exception; _authenticationSlots.Release(); },
                     CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);

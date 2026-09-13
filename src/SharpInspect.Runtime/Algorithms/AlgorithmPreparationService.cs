@@ -63,6 +63,7 @@ public sealed class PreparedAlgorithm : IAsyncDisposable
             if (_disposal is null)
             {
                 var pending = _execution?.Task ?? Task.CompletedTask;
+                // 先等待实际执行结束，再调用算法释放；逻辑超时不能提前回收仍在使用的实例。
                 _disposal = Task.Run(async () =>
                 {
                     await pending.ConfigureAwait(false);
@@ -131,7 +132,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         {
             if (_registrations.Count == 64) throw new ArgumentException("AlgorithmRegistrationCapacityExceeded", nameof(factories));
             if (factory is null || !references.Add(factory)) throw new ArgumentException("AlgorithmFactoryRegistrationInvalid", nameof(factories));
-            // The descriptor and all nested contracts are immutable defensive copies supplied at registration.
+            // 描述符及其嵌套契约在注册时即作为不可变防御性副本固定下来。
             var descriptor = factory.Descriptor ?? throw new ArgumentException("AlgorithmDescriptorRequired", nameof(factories));
             if (!_registrations.TryAdd((descriptor.Identity.Id, descriptor.Identity.Version), new(factory, descriptor)))
                 throw new ArgumentException("AlgorithmIdentityAlreadyRegistered", nameof(factories));
@@ -165,7 +166,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         CancellationToken cancellationToken = default) =>
         PrepareOwnedAsync(request, cancellationToken, null, null);
 
-    // A logical timeout does not finish a callback or retire an unpublished instance.
+    // 逻辑超时不会结束回调，也不会释放尚未交付的实例。
     internal async ValueTask<AlgorithmPreparationResult> PrepareOwnedAsync(AlgorithmPreparationRequest request,
         CancellationToken cancellationToken, Func<IDisposable>? phaseFactory, Action<Task>? observeRetirement)
     {
@@ -209,7 +210,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         try
         {
             if (_executionGuard.IsHung) return Failure("AlgorithmHung");
-            // One Factory is never called concurrently, even when it returns the same instance.
+            // 同一个 Factory 永不并发调用，即使它错误地返回同一个实例也必须串行化。
             var initialRemaining = attempt.Remaining;
             if (initialRemaining <= TimeSpan.Zero) return Failure("AlgorithmPreparationTimedOut");
             factoryAcquired = await registration.Gate.WaitAsync(initialRemaining, attempt.WaitToken).ConfigureAwait(false);
@@ -310,7 +311,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
                 creationReserved = false;
                 if (_owned.Contains(algorithm))
                 {
-                    // Another attempt owns this object; disposing it would destroy that owner's instance.
+                    // 另一个尝试已经拥有此对象；释放它会破坏那个尝试持有的实例。
                     attempt.Completion.TrySetResult(Failure("AlgorithmInstanceAlreadyOwned"));
                     return;
                 }
@@ -369,7 +370,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // Retain the reservation and let an explicit attempt owner observe failure.
+            // 保留这项占用，让明确的尝试所有者观察到释放失败。
             throw new InvalidOperationException("AlgorithmUnpublishedRetirementFailed");
         }
     }
@@ -397,7 +398,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
             if (_disposed) return;
             _disposed = true;
             foreach (var attempt in _running.Keys) attempt.AbandonUnlessDelivered();
-            // Consumer cancellation callbacks run on separate bounded attempt work, never on this shutdown caller.
+            // 消费者取消回调在独立且有界的尝试任务上运行，不阻塞当前关闭调用者。
             _lifetime.Cancel();
             pending = _running.Values.Concat(_published.Select(item => item.DisposeAsync().AsTask())).ToArray();
         }
@@ -430,7 +431,7 @@ public sealed class AlgorithmPreparationService : IAsyncDisposable
         {
             _timeout = timeout; _cancellation = new CancellationTokenSource();
             Token = _cancellation.Token;
-            // This token is private to Runtime waits, so consumer callbacks cannot delay the caller.
+            // 此 token 只供 Runtime 等待使用，因此消费者回调不能拖延调用者。
             _waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(caller, lifetime);
             WaitToken = _waitCancellation.Token;
             _callerRegistration = caller.Register(static state => ((Attempt)state!).RequestCancellation(), this);

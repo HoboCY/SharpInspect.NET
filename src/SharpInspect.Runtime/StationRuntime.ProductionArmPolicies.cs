@@ -36,8 +36,7 @@ public sealed partial class StationRuntime
         }
     }
 
-    // The same final live fence is used by the ordinary human Arm and the
-    // internally authorized system attempt. Neither can turn a stale report into Ready.
+    // 人工 Arm 和内部授权的系统尝试共用同一条实时最终栅栏；过期报告都不能把状态变成 Ready。
     private bool ProductionArmLiveFenceLocked(AdmissionCapture capture) =>
         !_shutdownRequested && !_disposed && !StationQualificationConfigurationBlockedLocked &&
         _snapshot.ProductionAdmission?.CanArm == true && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
@@ -52,12 +51,8 @@ public sealed partial class StationRuntime
         _startupProductionArmConsidered = true;
         if (_productionInspectionOptions?.Deployment is not { StartupProduction.Mode: StartupProductionMode.AutomaticArm } deployment)
             return;
-        // The once-only start-up cause and the dedicated PLC activation cause are
-        // arbitrated inside this one Runtime lock: whoever owns the Runtime first wins
-        // and the loser is refused, never queued, preempted or replayed. A PLC request
-        // the observer already reserved (or latched on the owner) therefore owns the
-        // whole start-up decision; spending the start-up cause here would collide with
-        // the post-activation attempt that closes that same episode.
+        // 一次性启动原因和 PLC 激活原因在同一把 Runtime 锁内仲裁：先取得所有权者继续，另一方直接拒绝，不排队、不抢占、不重放。
+        // 观察器已预留或所有者已锁存的 PLC 请求因此拥有整个启动决策；此时再消费启动原因会与同一事件的激活后尝试冲突。
         if (_recipeChangeInProgress || owner.RecipeChangeRequest is not null ||
             _activationReservation is { PlcOwned: true } or { Purpose: ActivationReservationPurpose.Retirement } ||
             _automaticProductionArm is { Terminal: false })
@@ -139,8 +134,7 @@ public sealed partial class StationRuntime
 
     private void ObservePhysicalProductionArmReadyLocked(ProductionInspectionOwner owner)
     {
-        // Called while the observer's sample gate still excludes a controller
-        // trigger. The zero-input prerequisite ends at this acknowledged write.
+        // 调用时观察器采样闸门仍排除控制器 Trigger；零输入前提在这次已确认的 Ready 写入后结束。
         if (_automaticProductionArm is { Terminal: false, Authorized: true } automatic && ReferenceEquals(automatic.Owner, owner))
         {
             automatic.ReadyReceipt = new(automatic.AttemptId, owner.RuntimeEpoch,
@@ -161,9 +155,7 @@ public sealed partial class StationRuntime
 
     private bool PreserveProductionArmReadyObservationLocked(StationStateSnapshot next, ProductionAdmissionReport? admission)
     {
-        // Hold an already-observed candidate only while writing the receipt of
-        // this acknowledged Ready. No Run is admitted until the owner finishes
-        // its bounded audit wait. Any material change still revokes the candidate.
+        // 仅在写入已确认 Ready 的收据期间保留已观察候选；所有者完成有界审计等待前不准入 Run，任何物质变化都会撤销候选。
         if (_audit?.Integrity?.State is not (AuditIntegrityState.Verifying or AuditIntegrityState.Verified) ||
             next.ArmState != ProductionArmState.Armed || next.Mode != ExclusiveMode.None || next.Recovery != RecoveryState.None ||
             next.CurrentExecution is not null || next.Busy || _disposed || _shutdownRequested || LocalStopPendingLocked ||

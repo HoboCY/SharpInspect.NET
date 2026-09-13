@@ -79,8 +79,7 @@ internal static class StoreMigrationJournalGuard
             file.Flush(flushToDisk: true);
             observer?.Invoke(MigrationMarkerBoundary.AfterFlush);
         }
-        // The durable journal already binds both operation IDs. After any process
-        // interruption the permanent name therefore holds either complete marker.
+        // 日志已持久绑定新旧操作 ID，再原子替换标记；进程中断后仍可用完整的旧标记或新标记追溯恢复。
         observer?.Invoke(MigrationMarkerBoundary.BeforeReplace);
         File.Replace(temporary, path, destinationBackupFileName: null);
         observer?.Invoke(MigrationMarkerBoundary.AfterReplace);
@@ -212,8 +211,7 @@ internal static class StoreMigrationJournalGuard
             data.TargetAuditSequence!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         if (hashes.Count != 1 || hashes[0] != data.TargetAuditHash)
             throw new InvalidOperationException("StoreMigrationJournalAuditLineageMismatch");
-        // Normal startup still verifies the whole applicable audit chain. Later
-        // legitimate appends do not have to equal the migration-time whole DB hash.
+        // 正常启动仍须验证完整适用审计链；后续合法追加会改变数据库，不能再要求等于迁移时的整库摘要。
     }
 
     internal static string LifecycleHash(RecipeLifecycleStoreOptions options) =>

@@ -356,8 +356,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 ? "TraceStoreDisposed" : "TraceStoreUnavailable");
         }
 
-        // Once admitted to the coordinator, cancellation cannot turn a committed transaction
-        // into a caller-visible failure. The request has its original monotonic deadline.
+        // 入队后必须返回写入器的真实结果，避免调用方取消时把已提交事务报告成失败。
+        // 写入仍受请求最初的单调时钟截止时间约束，不会因等待而续期。
         return await request.Completion.Task.ConfigureAwait(false);
     }
 
@@ -379,13 +379,12 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
                 return new(false, unavailableReason);
             }
 
-            // Await the definitive writer result even if the caller cancels after admission.
-            // Only the pre-BEGIN Verifying branch can request a retry: no callback or mutation ran.
+            // 入队后即使调用方取消，也要等确定的写入结果；只有 BEGIN 前尚未执行任何回调或写入的
+            // Verifying 分支可要求重试，防止重复执行已发生的操作。
             var result = await request.Completion.Task.ConfigureAwait(false);
             if (!result.RetryAfterIntegrityRecheck) return result;
 
-            // Wait outside the writer and without holding a queue slot. In particular,
-            // external anchor receipts must remain able to advance the verifier.
+            // 在写入器外释放队列名额后等待校验，否则锚定回执也会被堵住，校验将无法继续推进。
             while (true)
             {
                 var integrity = Integrity;
@@ -1294,9 +1293,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (_policy is not null && (Integrity?.State == AuditIntegrityState.Faulted ||
             input.Phase == CommandAuditPhase.Outcome && !localStop && Integrity?.State != AuditIntegrityState.Verified))
             return new StoreWriteResult(false, Integrity?.ReasonCode ?? "AuditIntegrityUnavailable");
-        // A local Stop may arrive while the last committed startup/observation event is
-        // awaiting background verification. The transaction below still verifies the actual
-        // signed chain before writing; that advisory poll cannot reject the dedicated Stop lane.
+        // 本地 Stop 可能恰逢后台复核上一次提交；它仍会在事务内验证真实签名链，
+        // 因此不能仅因异步状态暂为 Verifying 就拒绝这条专用停机通道。
         if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
             return new StoreWriteResult(false, "TraceStoreWalLimit");
         var database = connection.Handle!;

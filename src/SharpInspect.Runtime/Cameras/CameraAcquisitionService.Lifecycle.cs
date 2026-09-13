@@ -67,9 +67,7 @@ public sealed partial class CameraAcquisitionService
             _retirementTask = retirement;
         }
 
-        // RequestCancellation takes the service gate itself, so it must be called
-        // after the latch is published and the lock is released. Acquire/health
-        // admission observes _disposed immediately in the meantime.
+        // RequestCancellation 本身会取得服务锁，所以必须在发布锁存并释放锁后调用；期间采集/健康检查准入会立即看到 _disposed。
         attempt?.RequestCancellation();
         return retirement;
     }
@@ -88,9 +86,7 @@ public sealed partial class CameraAcquisitionService
         TaskCompletionSource<bool>? startGate = null;
         lock (_sync)
         {
-            // A caller-facing timeout never adopts the late result as the next
-            // probe's fact. The physical task was retained until completion; once
-            // complete, retire that task before admitting a fresh probe.
+            // 面向调用者的超时不能把迟到结果当作下一次探针事实；物理任务完成前持续保留，完成后才回收，再准入新探针。
             if (_healthReadTask is { IsCompleted: true })
                 _healthReadTask = null;
 
@@ -108,8 +104,7 @@ public sealed partial class CameraAcquisitionService
             healthTask = _healthReadTask!;
         }
 
-        // The physical getter is released only after the admission gate is open,
-        // so a very fast ThreadPool worker cannot enter the SDK while _sync is held.
+        // 只有准入锁打开后才放行物理 getter，避免快速 ThreadPool worker 在持有 _sync 时进入 SDK。
         startGate?.TrySetResult(true);
 
         try
@@ -148,8 +143,7 @@ public sealed partial class CameraAcquisitionService
             catch (Exception exception) when (exception is not OutOfMemoryException) { }
         }
 
-        // Admission, protocol reads and health probes are all physical calls. They
-        // must quiesce before Stop, even when their caller already timed out.
+        // 准入、协议读取和健康探针都是物理调用；即使调用者已超时，也必须在 Stop 前静止。
         await WaitForAdmissionAndProtocolReadAsync().ConfigureAwait(false);
 
         var leasesReleased = await WaitForOutstandingLeasesAsync().ConfigureAwait(false);
@@ -213,9 +207,7 @@ public sealed partial class CameraAcquisitionService
     }
 
     private bool HasPendingProtocolReadLocked()
-        // Do not clear a completed read here: its Refresh caller may still be
-        // waiting to merge the returned facts. The Refresh/retirement owner is
-        // responsible for clearing it after observing completion.
+        // 这里不能清除已完成读取：Refresh 调用者可能仍在等待合并事实；由 Refresh/退役所有者在观察完成后清除。
         => _protocolReadTask is not null;
 
     private async Task<bool> WaitForOutstandingLeasesAsync()
@@ -327,8 +319,7 @@ public sealed partial class CameraAcquisitionService
                 throw;
             }
 
-            // Preserve the synchronous lease contract through the underlying Dispose,
-            // while the returned-state observation remains a separate service barrier.
+            // 通过底层 Dispose 保持同步 lease 契约，同时把“已归还”观测作为独立的服务屏障。
             disposal.GetAwaiter().GetResult();
         }
 

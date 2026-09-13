@@ -62,6 +62,7 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         if (feedCapacity < 1 || feedCapacity > 256)
             throw new ArgumentOutOfRangeException(nameof(feedCapacity), "The presentation feed capacity must be between 1 and 256.");
         _invocationFactory = invocationFactory ?? (() => new CommandInvocation(CommandSource.PhysicalConsole));
+        // 展示订阅使用有界队列；普通快照允许丢弃旧值，代次变化则通过控制标志要求完整刷新。
         _feed = Channel.CreateBounded<FeedItem>(new BoundedChannelOptions(feedCapacity)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -242,8 +243,8 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
 
         lock (_sync)
         {
-            // Runtime Epoch is process-generation identity. A previously observed epoch
-            // arriving after a newer epoch is delayed old feed data, never a new current state.
+            // Runtime Epoch 表示进程代次。新代次出现后再次到达的旧代次数据属于延迟旧流，
+            // 不能把它当成当前状态。
             if (wasPreviouslyApplied) return;
         }
 
@@ -353,7 +354,7 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
                         if (_currentEpoch.HasValue && snapshot.RuntimeEpoch != _currentEpoch &&
                             !_seenEpochs.Contains(snapshot.RuntimeEpoch) && _feedEpochHint != snapshot.RuntimeEpoch)
                         {
-                            // A generation change is control state, not a coalescible notification.
+                            // 代次变化会改变控制边界，不能像普通通知一样被合并丢弃。
                             _generation++;
                             _discontinuityPending = true;
                             _freshness = SnapshotFreshness.Discontinuous;
@@ -445,8 +446,8 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         {
             lock (_sync)
             {
-                // Freshness and the sanitized StateViewModel change in one dispatcher turn.
-                // A newer snapshot may have arrived while this check was queued.
+                // 新鲜度和已清洗的 StateViewModel 必须在同一个 Dispatcher 回合内更新；
+                // 检查排队期间可能已经到达更新的快照。
                 if (_freshness != SnapshotFreshness.Fresh || !_hasArrival ||
                     _clock.ElapsedSince(_arrivalTimestamp) < _freshnessPolicy.MaximumAge)
                     return;
@@ -518,8 +519,8 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
                 accepted = generation == _generation &&
                     (!expectedEpoch.HasValue || snapshot.RuntimeEpoch == expectedEpoch.Value) &&
                     (!hint.HasValue || snapshot.RuntimeEpoch == hint.Value);
-                // The epoch is marked applied only by the dispatcher action below. A newer
-                // epoch observed while this query is pending must remain a valid hint.
+                // 只有下面的 Dispatcher 操作才会把代次标记为已应用；查询等待期间观察到的
+                // 新代次仍须保留为有效提示，不能被这个较早查询覆盖。
             }
 
             if (accepted)

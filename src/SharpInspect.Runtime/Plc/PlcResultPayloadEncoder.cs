@@ -246,7 +246,7 @@ public sealed class PlcResultPayloadEncoder
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // No external diagnostic, partial segment or numeric value escapes a failed encoding attempt.
+            // 编码失败时不泄露外部诊断、部分段或未完成的数值。
             return Fault("PlcResultCompleteEncodingFailed");
         }
     }

@@ -83,9 +83,8 @@ public sealed class AuthorizationPolicy
             .ToArray();
         var allStepUp = MandatoryStepUpPermissions
             .Concat(explicitlyAssignedCalibrationStepUp)
-            // Preserve the explicit policy override contract. A caller that
-            // deliberately requests a new Step-Up permission is creating a
-            // policy whose bytes must record that request.
+            // 保留显式策略覆盖契约：调用方主动新增 Step-Up 权限时，该请求必须进入
+            // 策略字节和 ContentHash。
             .Concat(requestedStepUp)
             .Distinct()
             .OrderBy(permission => permission)
@@ -136,9 +135,8 @@ public sealed class AuthorizationPolicy
     public bool RequiresStepUp(Permission permission)
     {
         ValidatePermission(permission, nameof(permission));
-        // Newly assigned calibration-governance permissions always require
-        // Step-Up, even under an older explicit role policy. Do not rewrite
-        // that policy's bytes merely because the account gains the permission.
+        // 新增的标定治理权限始终要求 Step-Up，即使角色引用旧策略；账号取得权限
+        // 不应改写旧策略的字节。
         return (permission is Permission.RunCalibration or
             Permission.ManageCalibrationAcceptancePolicy or
             Permission.RecordPhysicalCalibrationVerification or Permission.AbandonRecipeDraft) ||
@@ -189,10 +187,8 @@ public sealed class AuthorizationPolicy
             })
             .ToArray();
 
-        // Keep the original Development policy contract stable when new
-        // permissions are added. Draft authoring is an explicit schema-9
-        // policy choice and must not silently change an existing store's
-        // role bundles or content hash.
+        // 新增权限时保持 Development 策略原契约稳定；Draft authoring 是显式的
+        // schema-9 选择，不能悄悄改变已有存储的角色集合或 ContentHash。
         var developmentAdministratorPermissions = AllPermissions
             .Where(permission => permission is not Permission.EditRecipeDraft and not Permission.RunCalibration and
                 not Permission.ManageCalibrationAcceptancePolicy and

@@ -38,8 +38,7 @@ internal static class CalibrationEvidenceSelection
         var points = includedObservations.SelectMany(observation => observation.Result.Features.Select(feature =>
             (X: feature.PixelX / observation.Frame.Metadata.Width,
              Y: feature.PixelY / observation.Frame.Metadata.Height))).ToArray();
-        // Named v1 metric: axis-aligned coverage of all included automatic feature
-        // coordinates, normalized by the full image. No residual-based filtering.
+        // v1 指标是所有纳入的自动特征坐标相对整幅图像的轴对齐覆盖率，不做基于残差的筛选。
         var coverage = points.Length < 2 ? 0 :
             (points.Max(point => point.X) - points.Min(point => point.X)) *
             (points.Max(point => point.Y) - points.Min(point => point.Y));

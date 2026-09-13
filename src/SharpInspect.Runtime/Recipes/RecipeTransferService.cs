@@ -25,8 +25,7 @@ internal sealed class RecipeTransferService : IRecipeTransferService
     {
         _options = options; _authorization = authorization; _store = store; _drafts = drafts;
         _releases = releases; _history = history; _descriptors = descriptors.ToArray();
-        // A read-only lifecycle projection owned by this service keeps the export
-        // provenance honest without a constructor dependency or a new service edge.
+        // 由本服务持有只读生命周期投影，保持导出 provenance 真实，同时不增加构造依赖或新的服务边。
         _lifecycle = options.RecipeLifecycle is null ? null : new SqliteRecipeLifecycleQuery(options);
         if (options.RecipeTransfers is null) throw new ArgumentException("RecipeTransferConfigurationRequired");
     }
@@ -101,7 +100,7 @@ internal sealed class RecipeTransferService : IRecipeTransferService
     {
         if (input.Length is < 1 || input.Length > _options.RecipeTransfers!.MaximumPayloadBytes)
             throw Invalid("PackageTooLarge");
-        // The snapshot is bounded and non-authoritative. No member path reaches the filesystem.
+        // 输入快照有大小上限且不具备权威性；成员路径只作为内存中的包字段校验，绝不触达文件系统。
         var bytes = input.ToArray();
         if (Convert.ToHexString(SHA256.HashData(bytes)) != command.PackageBytesHash) throw Invalid("InputHashMismatch");
         if (!RecipeTransferPackageCodec.TryRead(bytes, out var package, out var reason)) throw new InvalidOperationException(reason);

@@ -83,14 +83,11 @@ public sealed class FrameBufferPool : IDisposable
             return Failure("FrameBufferExhausted");
         var rowBytes = metadata.ValidRowBytes;
         var required = metadata.RequiredBufferLength;
-        // OpenCV requires each row step to be a multiple of the scalar element size.
-        // Keep source layout authoritative for reads; normalize only odd Mono16 rows
-        // into the preallocated destination, never by allocating pixels in the bridge.
+        // OpenCV 要求每行步长是标量元素大小的整数倍；读取仍以源布局为准，只有奇数 Mono16 行写入预分配目标做规范化，桥接层不分配像素内存。
         var destinationStride = metadata.PixelFormat == VisionPixelFormat.Mono16
             ? checked(metadata.StrideBytes + (metadata.StrideBytes & 1)) : metadata.StrideBytes;
         var layoutBytes = checked((long)destinationStride * metadata.Height);
-        // The source may omit final padding, but native Mat datalimit describes every
-        // full physical row. The owned backing must cover that entire declared layout.
+        // 源数据可能省略最后的填充，但 native Mat 的 datalimit 覆盖每个完整物理行；所有者的后备内存必须覆盖声明的整个布局。
         if (layoutBytes > _options.MaximumFrameBytes)
             return metadata.Correlation.Kind == ExecutionKind.Production
                 ? ExhaustionFailure(production: true) : Failure("FrameExceedsPoolCapacity");
@@ -119,8 +116,7 @@ public sealed class FrameBufferPool : IDisposable
             if (cancellationToken.IsCancellationRequested) return Failure("FrameAcquisitionCancelled", cancelled: true);
             if (BudgetExpired(began)) return CallbackBudgetFailure();
             var buffer = claimed.Buffer!;
-            // Clear padding and the last row's available padding too. No prior-frame bytes
-            // remain in the Mat-visible layout, including after an earlier partial copy.
+            // 连同最后一行可用填充一起清零；即使之前只复制过部分内容，Mat 可见布局中也不能残留上一帧字节。
             var visibleBytes = checked((int)layoutBytes);
             buffer.AsSpan(0, visibleBytes).Clear();
             for (var row = 0; row < metadata.Height; row++)
@@ -152,9 +148,7 @@ public sealed class FrameBufferPool : IDisposable
             var lease = new FrameBufferLease(owner);
             var success = new FrameCopyResult(true, "FramePrepared", lease, null, null);
             _beforePublicationForTesting?.Invoke();
-            // Dispose can revoke a copying slot without touching its still-used buffer.
-            // The CAS is the ownership publication point; a winner is an existing owner
-            // for a later Dispose, which must retain its pixels until that owner returns.
+            // Dispose 可以撤销正在复制的槽位，但不能触碰仍在使用的缓冲；CAS 是所有权发布点，已获胜者成为后续 Dispose 必须保留到归还的现有所有者。
             if (Interlocked.CompareExchange(ref claimed.State, 2, 1) != 1 ||
                 Volatile.Read(ref _disposed) != 0) return Failure("FramePoolDisposed");
             if (cancellationToken.IsCancellationRequested) return Failure("FrameAcquisitionCancelled", cancelled: true);
@@ -202,14 +196,14 @@ public sealed class FrameBufferPool : IDisposable
             if (Interlocked.CompareExchange(ref slot.State, 3, 0) == 0) slot.Buffer = null;
             else Interlocked.CompareExchange(ref slot.State, 4, 1);
         }
-        // Active owners/readers retain pinned buffers. The final release drops their roots.
+        // 活跃所有者/读取者继续持有 pinned 缓冲；最后一次释放才去除这些根引用。
     }
 
     internal sealed class Slot
     {
         public Slot(byte[] buffer) => Buffer = buffer;
         public byte[]? Buffer;
-        public int State; // 0 free, 1 copying, 2 owned, 3 permanently closed, 4 copy revoked by Dispose
+        public int State; // 0 空闲，1 复制中，2 已拥有，3 永久关闭，4 被 Dispose 撤销的复制
     }
 
     internal sealed class FrameOwner

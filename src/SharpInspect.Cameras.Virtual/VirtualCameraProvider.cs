@@ -83,9 +83,9 @@ public sealed partial class VirtualCameraProvider : ICameraProvider
             totalBytes = checked(totalBytes + (long)scenario.MaximumFrameBytes * poolCapacity);
             if (scenario.Preview is { } preview)
             {
-                // Preview owns its immutable source images and one latest-frame
-                // copy independently of the production pool. Count both so an
-                // explicitly configured preview cannot bypass the provider cap.
+        // Preview owns its immutable source images and one latest-frame
+        // copy independently of the production pool. Count both so an
+        // explicitly configured preview cannot bypass the provider cap.
                 totalBytes = checked(totalBytes + preview.ImageBytes);
                 totalBytes = checked(totalBytes + preview.MaximumFrameBytes);
             }
@@ -135,9 +135,9 @@ public sealed partial class VirtualCameraProvider : ICameraProvider
             if (!_sessions.TryGetValue(stableDeviceIdentity, out var session))
                 return ValueTask.FromResult(CameraOpenResult.Failure("VirtualCameraDeviceMissing"));
 
-            // Never inspect a device while holding the session gate. Device
-            // operations take the device gate before the session gate, so the
-            // reverse order here would make close/open races deadlock.
+        // Never inspect a device while holding the session gate. Device
+        // operations take the device gate before the session gate, so the
+        // reverse order here would make close/open races deadlock.
             while (true)
             {
                 VirtualCameraDevice? active;
@@ -286,9 +286,9 @@ public sealed partial class VirtualCameraProvider : ICameraProvider
                 if (snapshot.OutstandingLeases != 0)
                     throw new InvalidOperationException("VirtualCameraProductionBufferFaultActive");
 
-                // A production exhaustion latches the old pool. Only an
-                // explicit reopen may replace it, and only after every lease
-                // from that pool has been returned.
+        // A production exhaustion latches the old pool. Only an
+        // explicit reopen may replace it, and only after every lease
+        // from that pool has been returned.
                 Pool.Dispose();
                 Pool = null;
             }
@@ -726,9 +726,9 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice, ICa
             }
 
             ApplyEffectiveLocked(pending.Effective);
-            // Return the complete capability validation result, including any
-            // quantization differences. A delayed application must not erase
-            // that evidence by reconstructing a success from Effective alone.
+        // Return the complete capability validation result, including any
+        // quantization differences. A delayed application must not erase
+        // that evidence by reconstructing a success from Effective alone.
             pending.Completion.TrySetResult(pending.ValidationResult);
         }
     }
@@ -781,17 +781,17 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice, ICa
             {
                 if (closedControl.Start is null)
                 {
-                    // A control closed before Busy represents a normal
-                    // cancellation; there is no physical frame to classify.
+        // A control closed before Busy represents a normal
+        // cancellation; there is no physical frame to classify.
                     handles = CompleteAcquisitionLocked(pending, Failure(
                         CameraAcquisitionFailureKind.Cancelled, "VirtualCameraControlClosed"),
                         false, true);
                 }
                 else
                 {
-                    // A frame from a request whose Busy gate has already
-                    // closed is a late frame. Keep the old request's
-                    // correlation so it cannot be attributed to a newer one.
+        // A frame from a request whose Busy gate has already
+        // closed is a late frame. Keep the old request's
+        // correlation so it cannot be attributed to a newer one.
                     DropSignalsLocked(signals, "VirtualCameraLateFrameDropped",
                         pending.Request.Correlation);
                     handles = CompleteAcquisitionLocked(pending, Failure(
@@ -906,9 +906,9 @@ internal sealed partial class VirtualCameraDevice : IControlledCameraDevice, ICa
         {
             if (!ReferenceEquals(_pendingAcquisition, pending) || pending.Completed)
                 return;
-            // Before Busy there is no physical frame to observe, so retire the
-            // schedule. After Busy, preserve the old script so its late frame
-            // is recorded against the retired request rather than a new one.
+        // Before Busy there is no physical frame to observe, so retire the
+        // schedule. After Busy, preserve the old script so its late frame
+        // is recorded against the retired request rather than a new one.
             var preserveLateSignals = pending.Control?.Start is not null;
             handles = CompleteAcquisitionLocked(pending, Failure(
                 CameraAcquisitionFailureKind.Cancelled, "VirtualCameraAcquisitionCancelled"),

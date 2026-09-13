@@ -112,8 +112,7 @@ public sealed partial class StationRuntime
             lock (_sync) initial = new(_snapshot.RuntimeEpoch, _snapshot.Revision, _admissionGeneration, _admissionStateHash);
             var barrier = await _cameraSetupRuntime.CheckNetworkBarrierAsync(token).AsTask()
                 .WaitAsync(PositiveRemaining(deadline), token).ConfigureAwait(false);
-            // The system path deliberately uses the built-in source. A public
-            // IProductionAdmissionFactsSource cannot assert Runtime gates for it.
+            // 系统路径刻意使用内置事实源；公开事实源不能替 Runtime 断言运行时准入门。
             var factsTask = new CurrentStationFactsSource(this).CaptureAsync(token).AsTask();
             _ = factsTask.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -206,8 +205,7 @@ public sealed partial class StationRuntime
         lock (_sync)
         {
             if (!_disposed) PublishLocked(_snapshot);
-            // The Ready receipt was frozen before opening observation. Later
-            // Stop/qualification changes revoke current Ready, not this history.
+            // Ready 收据在开始观察前已冻结；之后的 Stop/资格变化撤销当前 Ready，不改写这段历史。
             valid = verified;
             if (valid)
             {
@@ -241,9 +239,7 @@ public sealed partial class StationRuntime
 
     private async Task ClearConfirmedProductionArmReadyAsync(InspectionCycleOutputLatch output, bool auditUnavailable)
     {
-        // Rejecting the observer clears its accepting flag. The ordinary loop
-        // cannot infer from that flag that this acknowledged physical bit is
-        // still high, so close it explicitly without rewriting the old receipt.
+        // 拒绝观察器会清除 accepting 标志，主循环无法据此判断已确认的物理位是否仍为高电平；显式关闭它，但不改写旧收据。
         var recoveryRequired = auditUnavailable;
         if (auditUnavailable) MarkAuditFault("ProductionArmReadyStatusAuditUnavailable");
         try
@@ -285,7 +281,7 @@ public sealed partial class StationRuntime
                 reason, reasonCode).ConfigureAwait(false);
             persisted = result.Committed;
         }
-        // An unverified success record cannot be repurposed as durable failure.
+        // 未验证的成功记录不能被重新解释成持久失败。
         try
         {
             using var cleanup = new CancellationTokenSource(_productionInspectionOptions!.Profile.TransportTimeout);
@@ -293,7 +289,7 @@ public sealed partial class StationRuntime
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // An unacknowledged revocation is retained as recovery, never Ready.
+            // 未获确认的撤销只能保留为恢复要求，不能形成 Ready。
             lock (_sync)
             {
                 _productionInspectionRecoveryBlocked = true;

@@ -58,8 +58,7 @@ public sealed partial class StationRuntime
                 var reservation = new ActivationReservation(correlationId, new CancellationTokenSource());
                 _activationReservation = reservation;
                 reservation.ConnectCaller(token, () => { lock (_sync) reservation.RequestStop(); });
-                // Production enable never survives activation admission. Provider I/O happens
-                // after releasing this gate, so the physical local Stop retains its own slot.
+                // 激活一旦准入就清除生产使能；供应商 I/O 在释放闸门后执行，因此本地物理 Stop 仍保有独立名额。
                 PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed,
                     LastCommand = new CommandProgress(correlationId, OperationState.Pending, "RecipeActivationPreparing"),
                     AdmissionBlockers = new AdmissionBlockers(_snapshot.AdmissionBlockers
@@ -80,8 +79,7 @@ public sealed partial class StationRuntime
     private string? RecipeActivationBlockerLocked(ActivationReservation? reservation, bool allowProductionDrain = false)
     {
         if (_recipeSelectionChangeInProgress) return "RecipeSelectionChangeInProgress";
-        // A rejected PLC request blocks new entrants, never the transition which
-        // already owned the reservation when that request was observed.
+        // 被拒绝的 PLC 请求只阻止新进入者，不影响观察到请求时已经拥有预约的转移。
         if (_recipeChangeInProgress && reservation is null) return "RecipeChangeHandshakeInProgress";
         if (ProductionInspectionConfigurationBlockedLocked &&
             !(allowProductionDrain && _productionRecoveryOwner is null &&
@@ -123,9 +121,7 @@ public sealed partial class StationRuntime
 
     private string? ReadRecipeActivationBlocker(ActivationReservation reservation)
     {
-        // The identity writer may hold a session authorization lease. Snapshot
-        // projection can hold the station lock while reading that session, so
-        // writer callbacks must decline contention instead of waiting in reverse order.
+        // 身份写入器可能持有会话授权租约，而快照投影读取会话时可能持有站点锁；写入回调遇到竞争必须放弃，不能反向等待。
         if (!Monitor.TryEnter(_sync)) return "RecipeActivationRuntimeBusy";
         try { return RecipeActivationBlockerLocked(reservation); }
         finally { Monitor.Exit(_sync); }
@@ -134,9 +130,7 @@ public sealed partial class StationRuntime
     private RecipeActivationPhysicalPhaseClaim TryBeginRecipeActivationPhysicalPhase(
         ActivationReservation reservation)
     {
-        // Physical calls must never execute while the station lock is held.  A
-        // non-blocking admission check preserves the lock ordering used by
-        // provider callbacks and makes a contending phase fail promptly.
+        // 物理调用绝不能在站点锁内执行；非阻塞准入检查保持供应商回调的锁顺序，并让竞争阶段快速失败。
         if (!Monitor.TryEnter(_sync))
             return RecipeActivationPhysicalPhaseClaim.Unavailable("RecipeActivationRuntimeBusy");
         try
@@ -196,8 +190,7 @@ public sealed partial class StationRuntime
     private RecipeActivationResourceInstallResult InstallRecipeActivation(ActivationReservation reservation,
         RecipeActivationSnapshot snapshot, PreparedAlgorithm prepared)
     {
-        // Called only after durable success while the commit gate is owned. The owned resource
-        // pointer exchange itself cannot invoke user/provider code or dispose the prior instance.
+        // 仅在持久成功且持有提交闸门后调用；资源指针交换本身不调用用户/供应商代码，也不处置旧实例。
         lock (_sync)
         {
             if (!ReferenceEquals(_activationReservation, reservation) || !reservation.CommitClaimed ||

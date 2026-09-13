@@ -1104,8 +1104,7 @@ public sealed class ManualInspectionSessionViewModel : ObservableObject, IAsyncD
     private async Task<RuntimeCommandOutcome?> SubmitAuthorizedCommandAsync(
         OperationStart start, RuntimeCommand command)
     {
-        // A cancellation token owned by the page must never cancel an accepted
-        // detection while Runtime is acquiring/executing/restoring it.
+        // 页面持有的取消令牌不能取消已被 Runtime 接收的检测；Runtime 仍须完成采集、执行和恢复。
         var outcome = await _runtime!.SubmitAsync(command, CancellationToken.None)
             .ConfigureAwait(true);
         if (outcome.CorrelationId != command.CorrelationId)

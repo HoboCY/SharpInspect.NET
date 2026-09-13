@@ -25,6 +25,7 @@ public sealed record AlarmSummary(int ActiveCount, int LatchedCount, bool Blocks
 public sealed record InteractiveSession(InteractiveSessionState State, string? PrincipalId, Guid? SessionId);
 public sealed record CommandProgress(Guid CorrelationId, OperationState State, string ReasonCode);
 
+// 每个 Revision 都是完整的当前投影；消费者可按 RuntimeEpoch/Revision 丢弃旧值，不能靠通知顺序重建状态。
 /// <summary>A complete immutable projection. Health, arming, and product execution are separate facts.</summary>
 public sealed record StationStateSnapshot(
     Guid RuntimeEpoch,
@@ -55,6 +56,7 @@ public sealed record StationStateSnapshot(
     CameraRecoverySnapshot? CameraRecovery = null,
     CalibrationSessionState? CalibrationSession = null)
 {
+    // 可选字段通过 init 扩展，保留已发布的位置参数构造契约，同时继续保持快照只读。
     /// <summary>Read-only admission evidence attached without changing the legacy constructor ABI.</summary>
     public ProductionAdmissionReport? ProductionAdmission { get; init; }
 

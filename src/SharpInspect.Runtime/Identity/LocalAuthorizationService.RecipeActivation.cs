@@ -66,14 +66,13 @@ internal sealed partial class LocalAuthorizationService
                         return Refuse("RecipeActivationAuthorizationChanged");
                     reason = CheckGrant(command, actor, lease.SessionId, true, out grant);
                     if (reason != "Authorized") return Refuse(reason);
-                    // Read the decision clock after authorization work. Dependency heads
-                    // are the writer's transaction snapshot, including calibration policy
-                    // and physical verification; strict expiry applies at this decision.
+                    // 授权检查完成后再读取决策时钟；依赖头来自 writer 的事务快照，包含标定策略
+                    // 和物理验证，过期约束在此刻严格生效。
                     var time = ActivationTime(identity, state.Records);
                     if (CheckActivationSnapshotHeads(state, admitted, snapshot, time) is { } headFailure)
                         return Refuse(headFailure);
-                    // This is the final bounded Runtime decision inside the SQLite transaction.
-                    // Local Stop and this claim have a defined order; no provider I/O follows.
+                    // 这里是 SQLite 事务内 Runtime 的最终有界决策；Local Stop 与本次 claim 的
+                    // 先后关系已定义，之后不再调用 Provider I/O。
                     if (claimRuntimeCommit() is { } runtimeFailure) return Refuse(runtimeFailure);
                     var record = CreateActivationRecord(state, command, admitted.AttemptId, admitted.EvidenceKind,
                         previous, admitted, RecipeActivationOutcomeState.Succeeded, "RecipeActivated", checks,
@@ -193,8 +192,7 @@ internal sealed partial class LocalAuthorizationService
                     {
                         if (RecipeActivationRuntimeLease.IsRuntimeBusy(preflightFailure))
                         {
-                            // Runtime lock contention is not an activation outcome. Roll back
-                            // this identity transaction so the caller can retry outside it.
+                            // Runtime 锁竞争不是激活结果；回滚这次身份事务，让调用方在事务外重试。
                             var retry = new RecipeActivationAdmissionDecision(
                                 new(command.CorrelationId, CommandDisposition.Rejected,
                                     preflightFailure, AuditPersistence.NotAttempted, attemptId),
@@ -208,9 +206,8 @@ internal sealed partial class LocalAuthorizationService
                         var blocker = runtimeBlocker();
                         if (RecipeActivationRuntimeLease.IsRuntimeBusy(blocker))
                         {
-                            // ReadBlocker is deliberately non-blocking while the writer holds
-                            // a session lease. Never turn that transient observation into a
-                            // durable failed admission.
+                            // Writer 持有会话租约时 ReadBlocker 故意不阻塞；不能把这个瞬时观察
+                            // 变成持久化的失败 Admission。
                             var retry = new RecipeActivationAdmissionDecision(
                                 new(command.CorrelationId, CommandDisposition.Rejected,
                                     blocker!, AuditPersistence.NotAttempted, attemptId),
@@ -224,8 +221,7 @@ internal sealed partial class LocalAuthorizationService
                         reason == "RecipeActivationCancelled" ? RecipeActivationOutcomeState.Cancelled : RecipeActivationOutcomeState.Failed;
                     if (admitted) reason = "RecipeActivationAdmitted";
                     var time = ActivationTime(identity, state.Records);
-                    // A rejected request never acquired a restoration baseline.
-                    // The durable successful head remains selected independently.
+                    // 被拒绝的请求从未取得恢复基线；持久化的成功 head 独立选择。
                     var record = CreateActivationRecord(state, command, attemptId, evidenceKind, admitted ? previous : null, null,
                         phase, reason, observed, new(RecipeActivationRestorationState.NotRequired,
                             "RecipeActivationHardwareUntouched"), null,
@@ -239,8 +235,8 @@ internal sealed partial class LocalAuthorizationService
                     IIdentityTransactionGuard? guard = null;
                     if (admitted)
                     {
-                        // A fresh Step-Up, if required by deployment, is checked again and consumed
-                        // only at final success. Its exact command binding prevents reuse elsewhere.
+                        // 如部署要求 Fresh Step-Up，会在最终成功处再次校验并消费；精确的命令绑定
+                        // 防止它在其他位置复用。
                         guard = new AuthorizationCommitGuard(lease!, () => { }, () => { });
                         transferred = true;
                     }
@@ -350,8 +346,7 @@ internal sealed partial class LocalAuthorizationService
         ArgumentNullException.ThrowIfNull(command);
         if (command.HistoricalSelection is null)
         {
-            // Once an active recipe has a calibration binding, changing that
-            // selection must use the separately audited historical-selection route.
+            // 活跃配方一旦绑定标定配置，改变该选择必须走单独审计的历史选择路径。
             if (previousBindings is not null &&
                 !SelectionsMatchBindings(command.CalibrationSelections, previousBindings))
                 return "HistoricalCalibrationSelectionRequired";
@@ -369,8 +364,8 @@ internal sealed partial class LocalAuthorizationService
             return "HistoricalCalibrationPreviousProfileConflict";
         if (command.CalibrationSelections.Count == 0)
             return "HistoricalCalibrationSelectionRequired";
-        // This intent carries one prior profile. Preserve all other requirement
-        // bindings so it cannot describe a different or additional replacement.
+        // 该意图只携带一个既有 profile；保留其他全部 requirement 绑定，不能借此描述
+        // 不同或额外的替换。
         var changed = command.CalibrationSelections.Where(selection =>
             !previousProfiles.Any(binding => binding.RequirementContentHash == selection.RequirementContentHash &&
                 ProfileEquals(binding.Profile, selection.Profile))).ToArray();
@@ -473,8 +468,7 @@ internal sealed partial class LocalAuthorizationService
                 admissionCommand.Disposition != CommandDisposition.Accepted ||
                 admissionCommand.AuthenticatedHumanPrincipalId != record.ActorPrincipalId?.ToString("D"))
                 throw new InvalidOperationException("RecipeActivationAdmissionCommandMissing");
-            // A restart completes the original admitted attempt, including its
-            // epoch and claimed invocation. It does not invent a new command or grant.
+            // 重启完成原始已接纳的 attempt，包括其 epoch 和已声明调用；不会凭空产生新命令或授权。
             fact = admissionCommand with { EventId = fact.EventId, OccurredAtUtc = record.RecordedAtUtc,
                 Phase = phase, Disposition = null, ReasonCode = record.Outcome.ReasonCode };
         }
@@ -507,8 +501,8 @@ internal sealed partial class LocalAuthorizationService
                 AuthenticationPolicyVersion = _options.AuthenticationPolicy.Version,
                 AuthenticationPolicyHash = _options.AuthenticationPolicy.ContentHash
             };
-            // Validate the closed shape before it can reach the append-only identity writer.
-            // Encode also serves corruption fixtures and deliberately is not an authority gate.
+            // 到达只追加身份 writer 前先校验闭合结构；Encode 也服务于损坏 fixture，刻意不作为
+            // 权限闸门。
             var payload = audit.Encode(1, RecipeSelectionStoreOptions.SchemaVersion);
             IdentityAuditEvent.VerifyPayload(payload, 1, identity.StationId, RecipeSelectionStoreOptions.SchemaVersion);
             if (!IdentityAuditEvent.MatchesRecipeActivationAuthorization(payload, 1, identity.StationId,

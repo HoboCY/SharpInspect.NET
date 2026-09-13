@@ -139,8 +139,7 @@ public sealed class StagedPartIdentityProvider : IPartIdentityProvider
                 return ValueTask.FromResult(InvalidObservation(request.Cycle, token,
                     "PartIdentitySourceGenerationMismatch"));
 
-            // Remove while holding the same lock used to select the value.  A concurrent
-            // caller can therefore observe only one Present result.
+            // 在选值所用的同一把锁内移除；并发调用者最多有一个能观察到 Present。
             _values.Remove(token!.Value);
             _consumedTokens.Add(token.Value);
             return ValueTask.FromResult(new PartIdentityProviderObservation(Binding, staged.Cycle,

@@ -39,8 +39,7 @@ internal sealed class RecipeDraftCustomEditorHost : IDisposable
         _registry = registry;
         _contentHost = contentHost ?? throw new ArgumentNullException(nameof(contentHost));
         _stateChanged = stateChanged ?? throw new ArgumentNullException(nameof(stateChanged));
-        // Keep the extension view outside the panel's ViewModel inheritance
-        // chain. The extension receives only the restricted edit context.
+        // 扩展视图不加入面板的 ViewModel 继承链，只接收受限的编辑上下文。
         _contentHost.DataContext = null;
     }
 
@@ -72,9 +71,8 @@ internal sealed class RecipeDraftCustomEditorHost : IDisposable
         if (_disposed || _deactivating || _initializing || _refreshing) return false;
         if (IsCustomActive) return true;
 
-        // A context can have become stale between the last PropertyChanged and
-        // this explicit request. Revoke the old capability before resolving a
-        // new one so a stale editor can never remain mounted.
+        // 上次 PropertyChanged 后上下文可能已过期；解析新编辑器前先撤销旧能力，
+        // 这样失效编辑器不会继续挂载。
         if (_session is not null || _context is not null)
             DeactivateCore();
         if (!TrySetContent(null))
@@ -140,9 +138,8 @@ internal sealed class RecipeDraftCustomEditorHost : IDisposable
 
             if (session is null)
                 return FailInitialization("CustomEditorInitializationFailed");
-            // Retain the returned session before checking a context which may
-            // have been revoked during Create. Failure cleanup must still
-            // dispose an object whose factory already constructed it.
+            // 先保存工厂返回的 session，再检查 Create 期间可能被撤销的上下文；
+            // 即使初始化失败，也必须释放已经构造出的对象。
             _session = session;
             if (_initializationFailed || !context.IsCurrent)
                 return FailInitialization(_initializationFailed
@@ -189,8 +186,7 @@ internal sealed class RecipeDraftCustomEditorHost : IDisposable
                     ? "CustomEditorReportedFailure" : "CustomEditorRefreshFailed");
             }
 
-            // Refresh is allowed to report a failure synchronously. Do not
-            // mount or activate a context which has already been revoked.
+            // Refresh 可能同步报告失败；已经撤销的上下文不得再挂载或激活。
             if (_initializationFailed || !context.IsCurrent)
                 return FailInitialization(_initializationFailed
                     ? "CustomEditorReportedFailure" : "CustomEditorContextUnavailable");
@@ -258,8 +254,8 @@ internal sealed class RecipeDraftCustomEditorHost : IDisposable
         }
         while (_refreshPending && pass < 4 && IsCustomActive && !_disposed);
 
-        // A faulty editor which changes the buffer on every Refresh must not
-        // monopolize the UI thread. The next VM notification can retry safely.
+        // 有缺陷的编辑器可能每次 Refresh 都改变缓冲区，不能让它独占 UI 线程；
+        // 后续 ViewModel 通知可以安全重试。
         _refreshPending = false;
     }
 

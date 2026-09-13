@@ -16,6 +16,7 @@ public sealed partial class StationRuntime
             if (!await CheckManualInspectionAuthorityAsync(owner).ConfigureAwait(false)) return;
             var content = owner.Plan.Content;
             var binding = content.Algorithm;
+            // 手动会话只准备其自己的算法实例和相机租约；准备阶段也受同一所有者的 Abort 边界保护。
             var preparation = await _manualPreparation!.PrepareOwnedAsync(new(binding.Algorithm, content.Configuration,
                 binding.ResultSchema.Id, binding.ResultSchema.Version, binding.ResultSchema.ContentHash,
                 binding.OverlayContract.Id, binding.OverlayContract.Version, binding.OverlayContract.ContentHash,
@@ -110,8 +111,7 @@ public sealed partial class StationRuntime
             if (!await CheckManualInspectionAuthorityAsync(owner).ConfigureAwait(false))
             { status = ExecutionStatus.Cancelled; reason = "ManualInspectionAuthorityEndedBeforeAlgorithm"; return; }
             var content = owner.Plan.Content;
-            // Draft remains an authoring identity; this temporary timing reference
-            // neither releases nor activates it and is always attached to a Manual correlation.
+            // Draft 只是编写身份；这个临时计时引用既不发布也不激活 Draft，且始终绑定 Manual 关联。
             var recipe = owner.Plan.Selection.Recipe ?? new RecipeReference(content.RecipeKey,
                 "draft", content.ContentHash);
             using var executionPhase = ClaimManualInspectionPhysicalPhase(owner);
@@ -119,7 +119,7 @@ public sealed partial class StationRuntime
             { status = ExecutionStatus.Cancelled; reason = "ManualInspectionAbortedBeforeAlgorithm"; return; }
             var attempt = await owner.Execution.ExecuteAsync(owner.Prepared!, frame,
                 new(recipe, content.AlgorithmExecutionTimeout), owner.AbortCancellation.Token).ConfigureAwait(false);
-            frame = null; // ExecuteAsync consumes the owner on accepted and refused calls.
+            frame = null; // ExecuteAsync 无论接受还是拒绝都会消费所有权，不能再次释放该帧。
             outcome = attempt.Outcome;
             status = outcome?.ExecutionStatus ?? ExecutionStatus.Error;
             reason = outcome?.ReasonCode ?? attempt.ReasonCode;
@@ -131,6 +131,7 @@ public sealed partial class StationRuntime
         finally
         {
             frame?.Dispose();
+            // 运行结果先写入 Manual 台账；持久化失败或非 Success 都结束会话，避免把临时结果继续留在设备上。
             var persisted = await RecordManualInspectionRunTerminalAsync(owner, outcome, status, reason,
                 metadata, provenance, started, Math.Max(0, owner.Execution.DroppedDiagnosticCount - diagnosticBefore))
                 .ConfigureAwait(false);

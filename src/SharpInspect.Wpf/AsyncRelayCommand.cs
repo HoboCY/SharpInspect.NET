@@ -17,6 +17,7 @@ public sealed class AsyncRelayCommand : ICommand
     public event EventHandler? CanExecuteChanged;
     public event EventHandler<Exception>? ExecutionFailed;
 
+    // _isExecuting 只防止同一按钮重复发起操作，不承担 Runtime 的权限或互锁校验。
     public bool CanExecute(object? parameter) => !_isExecuting && (_canExecute?.Invoke() ?? true);
 
     public async void Execute(object? parameter)
@@ -30,9 +31,8 @@ public sealed class AsyncRelayCommand : ICommand
         }
         catch (Exception exception)
         {
-            // Async ICommand is void-returning by design. Never let a Runtime transport
-            // failure escape an input event and crash the WPF dispatcher; the owner marks
-            // presentation unavailable while preserving the physical Stop affordance.
+            // Async ICommand 按设计返回 void。Runtime 传输失败不能从输入事件逸出并击穿
+            // WPF Dispatcher；宿主会将展示标记为不可用，同时保留物理停止入口。
             ExecutionFailed?.Invoke(this, exception);
         }
         finally

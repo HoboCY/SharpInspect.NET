@@ -143,10 +143,7 @@ internal static class HikrobotPixelNormalizer
                     {
                         var value = BinaryPrimitives.ReadUInt16LittleEndian(
                             scratch.Slice(offset, 2));
-                        // PFNC Mono10 and Mono12 are the declared unpacked,
-                        // right-aligned formats. Their high padding bits must be
-                        // zero; guessing alignment from a sample value would
-                        // silently corrupt valid low-intensity right-aligned data.
+                        // PFNC Mono10/Mono12 是声明的非打包右对齐格式，高填充位必须为零；不能根据样本值猜对齐方式，否则会静默破坏合法的低强度数据。
                         if (value > maximum)
                         {
                             reasonCode = "HikrobotMono16HighBitsInvalid";

@@ -63,7 +63,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
                     if (!claim.Available)
                         throw new OperationCanceledException(claim.Failure ?? "InspectionCycleExecutionRevoked");
                     pipeline.RetainInputBeforeExecution?.Invoke(frame);
-                    // ExecuteAsync consumes the frame token even on refusal.
+                    // ExecuteAsync 即使拒绝也会消费帧令牌，调用方不能继续使用该帧。
                     var owned = frame;
                     frame = null;
                     var attempt = pipeline.Correlation.Kind == ExecutionKind.Production
@@ -97,8 +97,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
 
         if (outcome is not null && pipeline.DeliveryGuardAsync is { } deliveryGuard)
         {
-            // Once the execution service fixes an outcome, a later delivery revocation
-            // must not be caught by the execution classifier and rewrite that outcome.
+            // 执行服务确定结果后，后续交付撤销不能再被执行分类器捕获并改写该结果。
             await deliveryGuard().ConfigureAwait(false);
             SetPhase(InspectionCyclePhase.Encoding);
             var encoded = pipeline.Encode(outcome);
@@ -112,15 +111,12 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
             reason = "AlgorithmExecutionCancelled";
         if (cancelledByRuntime && outcome is null && metadata is null && acquisitionFailure is null)
         {
-            // Cancellation of the accepted acquisition phase can precede a device call.
-            // No acquisition timestamp, frame or algorithm result is manufactured.
+            // 已接受的采集阶段可能在设备调用前被取消；此时不伪造采集时间、帧或算法结果。
             acquisitionFailure = new(CameraAcquisitionFailureKind.Cancelled, "CameraAcquisitionCancelled");
             reason = acquisitionFailure.ReasonCode;
         }
 
-        // A production acquisition failure may have no frame and therefore no algorithm
-        // outcome. An optional entry adapter can encode its typed PLC failure using the same
-        // contract, while qualification/manual pipelines retain their historical behavior.
+        // 生产采集失败可能没有帧，也就没有算法结果；可选入口适配器可按同一契约编码类型化 PLC 失败，资格/手动管线保持原行为。
         if (outcome is null && frame is null && (metadata is null || cancelledByRuntime) && payload is null &&
             status is (ExecutionStatus.Error or ExecutionStatus.Timeout or ExecutionStatus.Cancelled) &&
             pipeline.EncodeFailure is { } encodeFailure)
@@ -150,8 +146,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
         var result = new InspectionCycleExecutionResult<TPayload>(outcome, status, reason,
             metadata, provenance, payload, acquisitionFailure) { AcquisitionStart = acquisitionStart };
         SetPhase(InspectionCyclePhase.Committing);
-        // Never retry this transaction. The storage adapter owns its original
-        // monotonic deadline, final authority check and any late completion.
+        // 不重试此事务；存储适配器负责原始单调期限、最终权威检查和任何晚到完成。
         var receipt = await pipeline.CommitAsync(result).ConfigureAwait(false);
         if (receipt is null)
         {

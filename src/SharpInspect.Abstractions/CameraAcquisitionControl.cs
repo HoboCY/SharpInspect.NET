@@ -118,8 +118,7 @@ public sealed class FrameAcquisitionControl
                 return false;
             }
 
-            // Monotonic time is the only ordering authority here.  Adapter and
-            // host UTC observations can legitimately have different offsets.
+            // 这里唯一的排序依据是单调时钟；适配器与宿主的 UTC 观测可能有不同偏移。
             if (installedAt.MonotonicTimestamp > current.MonotonicTimestamp)
                 return false;
 

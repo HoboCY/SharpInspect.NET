@@ -117,6 +117,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         }
     }
 
+    // 需要人类授权的命令先取得当前交互会话的短时租约；调用方身份字段只用于绑定会话，
+    // 权限仍从持久化账号读取并在写事务内复核。
     private bool TryLease(CommandInvocation invocation, out SessionAuthorizationLease? lease,
         out string reason)
     {

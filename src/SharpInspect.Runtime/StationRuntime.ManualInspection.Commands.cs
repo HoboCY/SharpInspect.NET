@@ -109,8 +109,7 @@ public sealed partial class StationRuntime
                     owner.Operation = Task.Run(() => ExecuteManualInspectionRunAsync(owner));
                 }
             }
-            // Cancellation of this caller's wait after durable admission never
-            // becomes a cancellation token for the accepted physical operation.
+            // 持久准入后的调用方等待取消，不能转化为已接受物理操作的取消令牌。
             return admitted.Outcome;
         }
         catch (OperationCanceledException) { return Unavailable("ManualInspectionCommandCancelled"); }

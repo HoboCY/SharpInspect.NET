@@ -38,6 +38,7 @@ internal static class AuditCanonical
         if (fields.Length > 1_000_000)
             throw new ArgumentOutOfRangeException(nameof(fields));
 
+        // 签名依赖规范字节，不能用本地化字符串或普通 JSON 替换；版本、字段顺序及 null/空串区别都属于契约。
         using var stream = new MemoryStream();
         Span<byte> integer = stackalloc byte[4];
         BinaryPrimitives.WriteInt32BigEndian(integer, CanonicalizationVersion);

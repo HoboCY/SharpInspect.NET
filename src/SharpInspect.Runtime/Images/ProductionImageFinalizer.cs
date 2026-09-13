@@ -117,8 +117,7 @@ internal sealed partial class ProductionImageFinalizer
         do
         {
             var remaining = operation.Deadline.Remaining;
-            // System timers may wake before the monotonic deadline after truncation
-            // to milliseconds. Recheck it before making an irreversible timeout decision.
+            // 定时器的毫秒取整可能导致提前唤醒；必须复核单调时钟，才能做不可逆的超时判定。
             var delay = Task.Delay(remaining > TimeSpan.FromMilliseconds(1) ? remaining : TimeSpan.FromMilliseconds(1),
                 delayCancellation.Token);
             completed = await Task.WhenAny(worker, delay).ConfigureAwait(false);
@@ -134,7 +133,7 @@ internal sealed partial class ProductionImageFinalizer
             await worker.ConfigureAwait(false);
             return operation.TakeClaim() ?? throw new TimeoutException("ProductionImageFinalizationDeadlineExceeded");
         }
-        // A claim published within the deadline remains usable for its separate SQL budget.
+        // 文件阶段在截止前发布的凭据仍有效，后续 SQL 提交使用独立的时间预算。
         _faultHook?.Invoke(ImageFinalizationBoundary.BeforeTimeoutDecision);
         if (operation.TakeClaim() is { } claim) return claim;
         operation.Abandon();
@@ -156,7 +155,7 @@ internal sealed partial class ProductionImageFinalizer
             return ProtectVerifiedFinal(operation, finalPath, descriptor);
         }
         Raise(ImageFinalizationBoundary.BeforeStageOpen, operation);
-        // Stage data is the entire canonical envelope and tight rows, never a released frame.
+        // 编码只读取已暂存的规范头和紧凑像素行，不能再访问采集阶段已经归还的帧。
         using (var stage = OpenProtected(Path.Combine(_stage.StageRoot, manifest.StageFileName)))
         {
             if (File.Exists(temporaryPath))
@@ -181,8 +180,7 @@ internal sealed partial class ProductionImageFinalizer
             RequireRoots();
             File.Move(temporaryPath, finalPath, overwrite: false);
             Raise(ImageFinalizationBoundary.AfterRename, operation);
-            // Retain stage until the final handle has been re-opened and verified. The
-            // final handle then protects the same pixels through subsequent SQL commit.
+            // 最终文件重新打开并验证前保留暂存输入；验证后的句柄继续保护像素，直到 SQL 提交结束。
             return ProtectVerifiedFinal(operation, finalPath, descriptor);
         }
     }
@@ -259,8 +257,8 @@ internal sealed partial class ProductionImageFinalizer
 
     private static void RequireHandlePath(FileStream stream, string expectedPath)
     {
-        // Validate the opened object, closing the path-check/open reparse race. The file
-        // handle denies write/delete sharing and stays open through its authority boundary.
+        // 校验实际打开的对象，而非只检查路径字符串，防止检查与打开之间发生重解析替换。
+        // 句柄禁止共享写入和删除，并在凭据有效期间保持打开。
         var name = new StringBuilder(32768);
         var length = GetFinalPathNameByHandle(stream.SafeFileHandle, name, (uint)name.Capacity, 0);
         if (length == 0) throw new IOException("ProductionImageHandlePathUnavailable", new Win32Exception(Marshal.GetLastWin32Error()));

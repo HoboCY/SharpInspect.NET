@@ -10,15 +10,12 @@ public sealed partial class StationRuntime
 {
     private bool _productionAdmissionEnabled;
     private IProductionAdmissionFactsSource? _productionAdmissionFactsSource;
-    // Qualification evidence is an internal Runtime-owned seam.  It can replace
-    // only the signed qualification inputs; the built-in runtime gates below are
-    // always captured from the live StationStateSnapshot.
+    // 资格证据只能通过 Runtime 内部接缝替换；它不能提供或覆盖准入门，运行时门始终从实时快照采集。
     private IProductionInspectionQualificationEvidenceProvider?
         _productionInspectionQualificationEvidenceProvider;
     private long _admissionGeneration;
     private string _admissionStateHash = string.Empty;
-    // Keep the immutable facts so the fixed engine can re-evaluate time-dependent
-    // qualification validity as snapshots advance.
+    // 保留不可变事实，快照推进时固定引擎才能重新判断会随时间变化的资格有效期。
     private ProductionAdmissionFacts? _lastAdmissionFacts;
     private string? _productionAdmissionFactsFailure;
     private ProductionAdmissionGateResult? _lastVerifiedStoreIntegrityGate;
@@ -66,9 +63,7 @@ public sealed partial class StationRuntime
         _admissionGeneration = 1;
         if (_productionAdmissionEnabled)
         {
-            // Publish a conservative initial report synchronously.  It is composed solely
-            // from the built-in unconfigured source; a caller supplied source is evaluated
-            // only through the bounded async refresh/Arm path below.
+            // 同步发布保守的初始报告，只使用内置未配置事实；调用方事实源只能在下面有界的异步刷新或 Arm 路径中参与。
             var facts = CaptureDefaultFactsLocked();
             _lastAdmissionFacts = facts;
             _snapshot = _snapshot with
@@ -87,8 +82,7 @@ public sealed partial class StationRuntime
         lock (_sync)
         {
             if (_disposed || _shutdownRequested) return;
-            // This is the same lock as the final Ready fence. The writer invokes
-            // it before commit; a change after that fence first disarms production.
+            // 这里与 Ready 最终栅栏使用同一把锁。写入器在提交前触发它，栅栏之后的变化先撤销生产准入。
             _admissionGeneration = checked(_admissionGeneration + 1);
             PublishUnavailableProductionAdmissionLocked("ProductionAdmissionDurableHeadsChanged",
                 writerInvalidation: true);
@@ -190,9 +184,7 @@ public sealed partial class StationRuntime
             if (_authorization is null || _audit is not SqliteCommandStore { ProductionAdmissionEnabled: true })
                 return Unavailable("ProductionAdmissionConfigurationRequired", _snapshot.ProductionAdmission);
 
-            // Keep the same bounded preparation and audit-verification admission used by
-            // other governed commands.  Arm does not derive credentials, but preparation
-            // still provides a uniform deadline/cancellation boundary.
+            // Arm 沿用其他受治理命令的有界准备和审计校验边界；它虽不派生凭据，但仍须统一受期限和取消约束。
             var preparationTask = _authorization.PrepareCommandAsync(command, callerCancellation);
             _ = preparationTask.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
@@ -255,15 +247,13 @@ public sealed partial class StationRuntime
             ProductionAdmissionReport report;
             lock (_sync)
             {
-                // Do not let a heartbeat or another admission-affecting projection
-                // replace the source facts while this captured report is stale.
+                // 捕获报告变旧时，心跳或其他准入投影不得用旧事实覆盖当前事实。
                 var changed = _snapshot.RuntimeEpoch != capture.RuntimeEpoch ||
                     _admissionGeneration != capture.Generation ||
                     !string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal);
                 if (changed)
                 {
-                    // A valid human attempt still gets a durable rejection. Do
-                    // not replace current facts with this obsolete observation.
+                    // 有效的人工作业仍记录为持久拒绝；过期观察不得替换当前事实。
                     forced = "ProductionAdmissionChanged";
                     PublishLocked(_snapshot);
                 }
@@ -271,8 +261,7 @@ public sealed partial class StationRuntime
                 {
                     _productionAdmissionFactsFailure = null;
                     _lastAdmissionFacts = facts;
-                    // Linearize newly captured material facts before handing the
-                    // attempt to the writer. Later fences compare this generation.
+                    // 把新捕获的物质事实在线性化后再交给写入器，后续栅栏以这一代次比较。
                     var observedReport = ProductionAdmissionEngine.Evaluate(capture.RuntimeEpoch,
                         checked(_snapshot.Revision + 1), capture.Generation, DateTimeOffset.UtcNow, facts);
                     PublishLocked(_snapshot with { ProductionAdmission = observedReport });
@@ -303,9 +292,7 @@ public sealed partial class StationRuntime
                 return outcome;
             }
 
-            // A committed identity/report transaction can briefly make the audit monitor
-            // Verifying.  Do not publish Ready until that exact commit is observable as
-            // Verified; a caller cancellation after admission cannot erase the commit.
+            // 身份/报告事务提交后，审计监视器可能短暂处于 Verifying；只有观察到同一提交为 Verified 才能发布 Ready，准入后的调用方取消不能抹掉提交。
             var auditVerified = await WaitForProductionAuditVerifiedAsync(deadline).ConfigureAwait(false);
             var durableHeadsVerified = auditVerified &&
                 await VerifyProductionAdmissionHeadsAsync(facts.DurableHeads, deadline).ConfigureAwait(false);
@@ -318,9 +305,7 @@ public sealed partial class StationRuntime
 
             if (stable)
             {
-                // Finalize the authorized report before considering Ready. This
-                // ledger event proves durable authorization, never that the station
-                // was Armed. Only the subsequent live-state fence can publish Armed.
+                // 先完成已授权报告的终结事件，再考虑 Ready。该事件只证明授权已持久化，不能证明已 Armed；只有之后的实时栅栏才能发布 Armed。
                 var completionCommitted = await CompleteProductionAdmissionTerminalAsync(
                     command, outcome, capture, "ProductionAdmissionFinalized", deadline).ConfigureAwait(false);
                 var completionVerified = completionCommitted &&

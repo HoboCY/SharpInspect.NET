@@ -20,7 +20,7 @@ internal static class PartIdentityEvidenceValidator
         long previousSourceSequence = 0)
     {
         ArgumentNullException.ThrowIfNull(requirement);
-        _ = nowUtc; // Freshness is monotonic; wall-clock rollback must not change acceptance.
+        _ = nowUtc; // 新鲜度只看单调时钟；墙上时钟回拨不能改变准入结果。
 
         if (requirement.Mode == PartIdentityRequirementMode.None)
         {
@@ -75,6 +75,7 @@ internal static class PartIdentityEvidenceValidator
         if (ageSeconds > binding.FreshnessLimit.TotalSeconds)
             return Reject("PartIdentityObservationStale");
 
+        // Provider 只提交观测；请求、能力、来源代际和原始证明必须在 Runtime 边界再次对齐。
         var sourceResult = ValidateSourceProof(binding, request, observation);
         if (sourceResult is not null) return Reject(sourceResult);
 

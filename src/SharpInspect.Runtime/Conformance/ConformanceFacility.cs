@@ -95,7 +95,7 @@ public sealed class ConformanceFacility : IDisposable
                 var profile = model.Profile(context.ProfileHash);
                 test = profile.Cases.SingleOrDefault(t => t.TestId == request.TestId)
                     ?? throw new ArgumentException("ConformanceTestNotFrozen");
-                // This foundation cannot be used to produce formal qualification evidence.
+                // 此基础设施不能生成正式资格证据。
                 if (profile.Claim != ConformanceClaim.DevelopmentOnly)
                     throw new InvalidOperationException("FormalConformanceExecutionNotAvailable");
                 var previous = model.Executions.LastOrDefault(e => e.Reservation.TestId == test.TestId);
@@ -127,7 +127,7 @@ public sealed class ConformanceFacility : IDisposable
                         inputArtifacts.Select(a => new FingerprintComponent(a.Reference.Name, a.Reference.Sha256)).ToArray());
                 if (!test.Applicable)
                 {
-                    // An executable manifest proof is required, not a caller-supplied waiver.
+                    // 必须提供可执行的清单证明，不能接受调用者自行提交的豁免。
                     var proof = request.Inputs.SingleOrDefault(e => e.Name == "applicability-proof");
                     var expectedProof = $"excluded:{test.TestId}:unreachable:{request.CandidateHash}";
                     if (proof is not null && ConformanceBindings.Utf8.GetString(proof.GetBytes()) == expectedProof &&
@@ -145,7 +145,7 @@ public sealed class ConformanceFacility : IDisposable
                     reason = "ConformanceScenarioUnavailable";
                 else
                 {
-                    // Reserve has committed and no writer/monitor is held while the scenario runs.
+                    // reservation 已提交；场景运行期间不持有写入器或监视器。
                     var invocation = new ConformanceExecutionContext(reservation.TestExecutionId, request.CandidateHash,
                         request.ContextHash, test.TestId, test.Preconditions, test.Stimulus,
                         Array.AsReadOnly(request.Inputs.ToArray()));
@@ -176,7 +176,7 @@ public sealed class ConformanceFacility : IDisposable
             }
             catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
             {
-                // Generic exceptions do not prove InvalidHarness and may not leak secret exception messages.
+                // 泛化异常不能证明 InvalidHarness，也不能泄漏受保护的异常消息。
                 outcome = ConformanceOutcome.Blocked;
                 reason = "ConformanceExecutionUnavailable";
                 if (exception is ConformanceBindingMismatchException && exception.Message is "ConformanceHarnessChanged" or
@@ -193,7 +193,7 @@ public sealed class ConformanceFacility : IDisposable
                 anomalies = exception.GetType().Name;
             }
             if (BeforeTerminalDecision is { } barrier) await barrier().ConfigureAwait(false);
-            // Cancellation and completion compete once, before persistence begins. Neither can revise the winner.
+            // 取消与完成只在持久化前竞争一次；胜者确定后双方都不能改写结果。
             if (Interlocked.CompareExchange(ref terminalDecision, 2, 0) == 1)
             {
                 outcome = ConformanceOutcome.Blocked;
@@ -221,7 +221,7 @@ public sealed class ConformanceFacility : IDisposable
         }
         finally
         {
-            // An uncooperative scenario retains the real execution slot until it actually finishes.
+            // 不配合的场景要一直占有真实执行槽，直到它实际结束。
             if (observationTask is { IsCompleted: false })
                 _ = observationTask.ContinueWith(t => { _ = t.Exception; _execution.Release(); },
                     CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);

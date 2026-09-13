@@ -26,6 +26,7 @@ public sealed partial class StationRuntime
         var restored = true;
         if (owner.Camera is { } camera)
         {
+            // 先等算法、采集和相机调用真正退休，再恢复进入会话前的相机配置。
             var cameraRetired = await WaitForManualPhysicalRetirementAsync(owner,
                 DrainManualCameraRetirementAsync(camera), "ManualInspectionCameraRetirementPending").ConfigureAwait(false);
             retirementFailed |= !cameraRetired;
@@ -74,8 +75,7 @@ public sealed partial class StationRuntime
                 PublishManualInspectionLocked(owner, ManualInspectionSessionPhase.RecoveryBlocked, pendingReason);
             }
             await LatchManualInspectionRecoveryAlarmAsync().ConfigureAwait(false);
-            // Retain the exclusive owner until the provider's actual work finishes.
-            // Host shutdown has a separate bounded wait and cannot release it early.
+            // 供应商实际工作完成前保留独占所有者；主机关停的有界等待也不能提前释放它。
             try { await actualRetirement.ConfigureAwait(false); }
             catch (Exception exception) when (exception is not OutOfMemoryException) { }
             return false;

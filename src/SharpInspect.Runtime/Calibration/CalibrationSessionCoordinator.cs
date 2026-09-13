@@ -99,7 +99,7 @@ internal sealed class CalibrationSessionCoordinator
             if (!capture.Accepted || outcome is not { Succeeded: true, Lease: { } source })
                 throw new InvalidOperationException(outcome?.ReasonCode ?? capture.ReasonCode);
             frame = await _images.PreserveAsync(Header, frameId, source, _cancellation.Token).ConfigureAwait(false);
-            // The raw camera lease is returned only after the immutable manifest transaction commits.
+            // 原始相机租约只有在不可变 manifest 事务提交后才归还。
             await RecordAsync(command.CorrelationId, CalibrationSessionPhase.Capturing,
                 "CalibrationFrameManifestCommitted", frame: frame).ConfigureAwait(false);
         }
@@ -187,8 +187,8 @@ internal sealed class CalibrationSessionCoordinator
             }
             finally
             {
-                // Physical camera restoration has its own owner. These managed copies and the
-                // durable-session fence must still outlive an uncooperative consumer task.
+                // 物理相机恢复由独立 owner 负责；这些 managed 副本和 durable session fence 必须
+                // 覆盖不合作的 consumer task。
                 try { await actual.ConfigureAwait(false); }
                 catch (Exception failure) when (failure is not OutOfMemoryException) { }
             }
@@ -250,8 +250,7 @@ internal sealed class CalibrationSessionCoordinator
         catch (Exception failure) when (failure is not OutOfMemoryException)
         { restorationAuditFailure = failure; }
         var result = await RestorePhysicalBaselineAsync(afterRestart).ConfigureAwait(false);
-        // A failed journal write must not prevent the physical safety action. Without
-        // durable evidence the session stays exclusive, even if the camera was restored.
+        // journal 写入失败不能阻止物理安全动作；缺少持久证据时，即使相机已恢复，session 仍保持独占。
         if (restorationAuditFailure is not null)
             throw new InvalidOperationException("CalibrationRestorationAuditUnavailable", restorationAuditFailure);
         if (!result.Succeeded)
@@ -296,7 +295,7 @@ internal sealed class CalibrationSessionCoordinator
         var evidence = query is { Available: true, Evidence: { } verified } ? verified :
             throw new InvalidOperationException(query.ReasonCode);
         Volatile.Write(ref _evidence, evidence);
-        // Physical restoration and its signed terminal precede release of the device fence.
+        // 物理恢复及其签名 terminal 必须先完成，再释放设备 fence。
         if (phase != CalibrationSessionPhase.Restored) _publish(evidence);
     }
 }

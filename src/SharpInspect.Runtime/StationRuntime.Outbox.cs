@@ -42,6 +42,7 @@ public sealed partial class StationRuntime
         {
             if (_disposed || backlog.ThroughAuditSequence < _outboxBacklog.ThroughAuditSequence) return;
             _outboxBacklog = backlog;
+            // 以审计水位消除本地补计，确保刚提交的 Core 在后台扫描追上前也计入积压，追上后又不重复计算。
             foreach (var key in _outboxUnobservedCores.Where(value => value.Value.Sequence <= backlog.ThroughAuditSequence)
                          .Select(value => value.Key).ToArray()) _outboxUnobservedCores.Remove(key);
             PublishLocked(_snapshot with { Outbox = CurrentOutboxBacklogLocked() });
@@ -121,7 +122,7 @@ public sealed partial class StationRuntime
             state.Alarms.LatchedCount - excluded.Count(instance => instance.IsLatched), state.Alarms.BlocksProduction);
     }
 
-    // Runs in the existing serialized alarm maintenance loop. Age is observed even with no new ledger event.
+    // 在串行报警维护循环中检查，保证没有新账本事件时也能发现积压超龄。
     private IReadOnlyList<AlarmObservation> OutboxObservationsLocked(AlarmPolicy policy)
     {
         if (_outboxWorker is null || _outboxFaulted || _productionInspectionPolicy is null)

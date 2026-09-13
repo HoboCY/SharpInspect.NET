@@ -267,8 +267,7 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(row.Protected is not null, "IdentityAuthorityMissing");
         IdentityStateProtection.VerifySignature(row.Protected!, row.Signature, options.StationId, row.Revision, row.Sequence, _signingKey!);
         var state = IdentityStateProtection.Unprotect(row.Protected!, options.StationId, _signingKey!.KeyId, row.Revision);
-        // The policy is inside the signed ciphertext as well as the lookup binding;
-        // changing a database binding and deployment settings cannot retarget old credentials.
+        // 策略摘要同时绑定在签名密文内，防止仅替换数据库绑定和部署配置就把旧凭据移作他用。
         AuditChainDatabase.Require(state.PolicyContentHash == options.PolicyContentHash, "IdentityPolicyBindingMismatch");
         var schemaVersion = checked((int)AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline));
         var latest = AuditChainDatabase.Read(database, "SELECT Sequence,IdentityPosition,Payload,Hash FROM audit_entries WHERE IdentityPosition IS NOT NULL ORDER BY IdentityPosition DESC LIMIT 1;",
@@ -783,10 +782,8 @@ internal sealed partial class SqliteCommandStore
                 catch (InvalidOperationException exception) when (
                     IsRecoverableProductionRecoveryRejection(exception.Message))
                 {
-                    // The target may have changed after Runtime preflight. Keep
-                    // this an ordinary durable rejected command/identity fact;
-                    // do not consume the Step-Up lease or append a production
-                    // RecoveryRequired row for a stale authorization.
+                    // Runtime 预检后目标可能已变化；这里只持久记录拒绝，
+                    // 不消费 Step-Up 授权，也不为失效目标追加 RecoveryRequired 生产事实。
                     guard?.Dispose();
                     guard = null;
                     evaluated = RejectProductionRecovery(evaluated, exception.Message);
@@ -801,9 +798,7 @@ internal sealed partial class SqliteCommandStore
                     "StationQualificationPayloadCapacityExceeded" or "StationQualificationTotalCapacityExceeded" or
                     "StationQualificationAuditCapacityExceeded")
             {
-                // No writes or physical admission have happened. Preserve this
-                // rejected command in the ordinary audit while releasing the
-                // unconsumed step-up reservation for the denied admission.
+                // 尚未发生写入或物理准入，拒绝仍需进入普通审计，同时归还未消费的 Step-Up 预留。
                 guard?.Dispose();
                 guard = null;
                 evaluated = RejectStationQualificationCapacity(evaluated, exception.Message);

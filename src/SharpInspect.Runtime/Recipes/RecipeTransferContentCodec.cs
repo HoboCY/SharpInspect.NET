@@ -87,6 +87,7 @@ internal static class RecipeTransferContentCodec
     internal static bool TryDecode(byte[] bytes, IReadOnlyList<AlgorithmDescriptor> localDescriptors,
         RecipeTransferPortablePolicy policy, Guid newDraftId, out RecipeDraftDocument? document, out string reason)
     {
+        // 解码只解析受限的可移植数据，再与本地已注册 descriptor/策略逐项比对；不会从包内容加载或执行算法。
         document = null; reason = "RecipeTransferContentInvalid";
         try
         {
@@ -141,6 +142,7 @@ internal static class RecipeTransferContentCodec
 
     private static void RequirePortable(RecipeDraftContent content, RecipeTransferPortablePolicy policy)
     {
+        // 可移植策略同时约束字段和依赖契约，设备本地扩展、标定资产等不会被伪装成跨站数据。
         if (content.CameraProviderExtension is not null || content.AssetRequirements.Any(item => item.Kind == RecipeAssetKind.Calibration))
             throw new InvalidOperationException("RecipeTransferLocalDependencyForbidden");
         var declared = policy.Contracts.SingleOrDefault(item => item.Algorithm == content.Algorithm.Algorithm &&

@@ -121,6 +121,7 @@ public static class CanonicalImagePixelContent
             : 0u;
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(envelope);
+        // 每行只覆盖有效像素前缀，并在读取前重验借用状态；stride 填充不进入哈希。
         for (var row = 0; row < metadata.Height; row++)
         {
             cancellationToken.ThrowIfCancellationRequested();

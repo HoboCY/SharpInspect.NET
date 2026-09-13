@@ -38,8 +38,7 @@ public sealed partial class StationRuntime
             },
             AcquireAsync = async token =>
             {
-                // Admission has already committed. The exact active camera is borrowed
-                // under its operation gate without reconfiguration or a device restart.
+                // 准入已经提交；这里仅在相机操作闸门内借用精确的活动相机，不重新配置也不重启设备。
                 owner.Camera = await _cameraSetupRuntime.ReserveProductionAcquisitionAsync(
                     baseline.CameraSetup, token).ConfigureAwait(false);
                 if (!owner.Camera.Available) throw new InvalidOperationException(owner.Camera.ReasonCode);
@@ -57,8 +56,7 @@ public sealed partial class StationRuntime
             },
             EncodeFailure = (status, reason) =>
             {
-                // Only an actual acquisition failure or the Runtime's explicit Fault Abort
-                // can produce this failure payload. Other gate refusals terminate the cycle.
+                // 只有真实采集失败或 Runtime 明确发起的 Fault Abort 才能生成失败载荷，其他闸门拒绝直接终止周期。
                 bool runtimeAbort;
                 lock (_sync) runtimeAbort = owner.FaultAbortRequested;
                 if (actualAcquisitionFailure is null && !(runtimeAbort && status == ExecutionStatus.Cancelled))
@@ -80,8 +78,7 @@ public sealed partial class StationRuntime
             CommitAsync = result => CommitProductionCoreAsync(owner, result),
             PublishAsync = async (receipt, token) =>
             {
-                // Delivery of the fixed outcome has its own authority. Outstanding provider
-                // work retains its frame and owner through the later physical-retirement gate.
+                // 固定结果的交付有独立权威；未完成的供应商工作继续由后续物理退休闸门持有其帧和所有者。
                 await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
                 await publish(receipt, owner.Cancellation.Token).ConfigureAwait(false);
             }
@@ -94,8 +91,7 @@ public sealed partial class StationRuntime
         }
         finally
         {
-            // A stage task takes this ownership before starting file I/O. Any input
-            // still here has never been handed to that physical task.
+            // 阶段任务开始文件 I/O 前会接管此所有权；此处仍存在的输入尚未交给物理阶段任务。
             owner.ImageInput?.Dispose();
             owner.ImageInput = null;
         }
@@ -119,7 +115,7 @@ public sealed partial class StationRuntime
             if (!retired.Completed || !retired.SafeToReplace)
             {
                 lock (_sync) _productionInspectionRecoveryBlocked = true;
-                // Keep the camera reservation attached to this owner on a late provider call.
+                // 供应商调用晚到时仍把相机预约挂在当前所有者上，不能提前释放它。
                 throw new InvalidOperationException("ProductionInspectionCameraRetirementIncomplete");
             }
             await camera.DisposeAsync().ConfigureAwait(false);

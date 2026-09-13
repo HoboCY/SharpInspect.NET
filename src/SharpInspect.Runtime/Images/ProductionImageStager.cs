@@ -134,8 +134,7 @@ internal sealed class ProductionImageStager
             return await worker.ConfigureAwait(false) ??
                 throw new InvalidOperationException("ProductionStageClaimUnavailable");
         }
-        // The hard deadline fired. A claim that completed and published inside the deadline
-        // is still permitted; a claim that completes later is abandoned and never usable.
+        // 计时器触发时可能已有凭据在截止前发布；只接纳该凭据，截止后才完成的结果必须作废。
         if (operation.TryTakePublishedClaim() is { } published)
         {
             wait.Cancel();
@@ -160,8 +159,7 @@ internal sealed class ProductionImageStager
         }
         finally
         {
-            // Every failure path ends here: the retained frame is released only after all
-            // actual file work stopped, and physical completion is tracked for retirement.
+            // 只有实际文件操作结束后才能释放借用帧和槽位；上层超时不能提前归还仍在读取的像素。
             operation.Frame.Dispose();
             Interlocked.Exchange(ref _activeOperations, 0);
             Volatile.Write(ref _operationSlot, 0);
@@ -193,7 +191,7 @@ internal sealed class ProductionImageStager
         using (var writer = new FileStream(partialPath, FileMode.CreateNew, FileAccess.Write,
             FileShare.None, FileBufferBytes, FileOptions.WriteThrough))
         {
-            // Exactly the canonical envelope followed by the valid row bytes: padding is excluded.
+            // 暂存内容只包含规范头和每行有效像素，排除步长填充，保证相同图像得到相同摘要。
             writer.Write(envelope);
             for (var row = 0; row < metadata.Height; row++)
                 writer.Write(frame.GetRowSpan(row));
@@ -212,8 +210,7 @@ internal sealed class ProductionImageStager
         var protection = OpenProtection(stagePath);
         try
         {
-            // The rename/open substitution gap is closed by re-verifying the whole file
-            // through the handle that stays open until the claim is consumed or disposed.
+            // 重命名后重新打开的文件可能已被替换；从持有的句柄重验全文，并保护到凭据消费或释放。
             VerifyStageContent(protection, envelope, canonicalHash, metadata, canonicalByteLength);
             if (operation.Deadline.Expired)
                 throw new TimeoutException("ProductionStageDeadlineExceeded");

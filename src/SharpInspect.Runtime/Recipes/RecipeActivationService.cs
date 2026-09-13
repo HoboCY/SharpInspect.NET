@@ -157,8 +157,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                     () => runtime is null ? "RecipeActivationRuntimeUnavailable" : runtime.GetBlocker(),
                     new StoreDeadline(remaining), runtime?.Token ?? cancellationToken, plc).ConfigureAwait(false);
                 if (plc is not null || !IsRetryableRuntimeBusy(admission) || runtime is null) break;
-                // The identity writer rolled back the transient contention. Wait
-                // outside that transaction and reuse the same command/attempt.
+                // Identity writer 已回滚瞬时竞争；在事务外等待，并复用同一 command/attempt。
                 try
                 {
                     var blocker = await runtime.WaitForBlockerAsync(
@@ -210,10 +209,8 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
             }
             if (failure is null && execution.Snapshot is not null)
             {
-                // Re-capture immediately before entering the commit fence. The
-                // callback performs only bounded observation; no I/O is performed
-                // from the commit callback itself. A changed observation fails
-                // closed instead of sealing stale deployment evidence.
+                // 进入提交栅栏前立即重新采集；回调只做有界观察，不在提交回调中执行 I/O。
+                // 观察发生变化时闭合失败，避免封存过期的部署证据。
                 if (_fixture is null && _deploymentEvidence is not null)
                 {
                     var finalEvidence = await _deploymentEvidence(execution.Snapshot, token).ConfigureAwait(false);
@@ -282,8 +279,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                                 var committed = await _authorization.TryCommitRecipeActivationAsync(command, epoch,
                                     admitted, execution.Snapshot, checks.Snapshot(), () =>
                                     {
-                                        // Observe only registry-owned state at the final writer
-                                        // decision. A provider callback must never run here.
+                                        // 最终 writer 决策只观察 registry 自有状态；此处绝不能运行 Provider 回调。
                                         if (_fixture is null && execution.Snapshot.Release.Source.Content
                                                 .PartIdentityRequirement?.Mode != PartIdentityRequirementMode.None &&
                                             (commitPartIdentity is null || _partIdentities is null ||
@@ -318,8 +314,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
                         }
                     }
                     if (plc is not null || !RecipeActivationRuntimeLease.IsRuntimeBusy(failure)) break;
-                    // The candidate is already prepared. A busy final claim is a
-                    // rolled-back transaction, so retry only the durable commit.
+                    // candidate 已准备好；最终 claim 忙碌意味着事务已回滚，因此只重试持久化提交。
                     try
                     {
                         var blocker = await runtime.WaitForBlockerAsync(
@@ -359,7 +354,7 @@ internal sealed partial class RecipeActivationService : IRecipeActivationService
         }
         finally
         {
-            // Camera operation ownership must retire before the station reservation is released.
+            // Camera operation ownership 必须先结束，才能释放 station reservation。
             try { await execution.DisposeAsync().ConfigureAwait(false); }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             { runtime?.PublishTerminal("RecipeActivationResourceCleanupFailed", true); }

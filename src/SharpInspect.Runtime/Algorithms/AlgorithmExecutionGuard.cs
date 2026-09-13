@@ -63,8 +63,7 @@ public sealed class AlgorithmExecutionGuard
         return registration;
     }
 
-    // The physical exit and expiry compete under this one lock. No Attempt or
-    // consumer callback is invoked while the guard owns it.
+    // 物理调用退出与宽限期到期在同一把锁下竞争；持锁期间不调用 Attempt 或消费者回调。
     internal void CompleteGrace(GraceRegistration registration)
     {
         lock (_sync)

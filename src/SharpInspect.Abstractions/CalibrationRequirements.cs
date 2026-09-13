@@ -7,6 +7,7 @@ public enum CalibrationKind { Intrinsic = 0, PlanarHomography = 1 }
 /// Portable Recipe dependency. It names the geometric kind, logical purpose and exact
 /// acceptance policy; it contains no station profile, physical identity or coefficients.
 /// </summary>
+// 这里冻结的是配方依赖的契约引用；设备配置、物理身份和系数由 Runtime 侧另行解析。
 public sealed record CalibrationRequirement
 {
     public CalibrationRequirement(string logicalCameraRole, CalibrationKind kind,

@@ -44,9 +44,8 @@ internal sealed partial class LocalAuthorizationService
                     (state, duplicate) => AuthorizeProductionRecovery(state, command, runtimeEpoch,
                         attemptId, safetyCapture, observation, forcedRejection, finalGuard,
                         duplicate, cancellationToken), CancellationToken.None, deadline).ConfigureAwait(false);
-                // The writer has rolled back and released the unconsumed Step-Up lease.
-                // Retry only this transient fence under the original attempt and deadline;
-                // a committed authorization is never retried or physically executed here.
+                // Writer 已回滚并释放未消费的 Step-Up 租约；只在原 attempt/deadline 内重试
+                // 这个瞬时栅栏，已提交授权绝不在此重复或执行物理清理。
                 if (!written.Committed && written.ReasonCode == "ProductionRecoveryCommitFenceBusy" && !deadline.Expired)
                 {
                     await Task.Delay(1).ConfigureAwait(false);
@@ -97,19 +96,16 @@ internal sealed partial class LocalAuthorizationService
                 reason = "PermissionDenied";
             if (reason == "Authorized" && duplicate)
                 reason = "DuplicateCorrelationId";
-            // Runtime preflight failures are authoritative after the identity
-            // boundary.  Keep their reason stable and do not let a missing
-            // optional capture or observation replace it.
+            // Runtime 预检失败在身份边界之后具有权威性；保持原因稳定，不能让缺少可选
+            // capture 或 observation 覆盖它。
             if (reason == "Authorized" && forcedRejection is not null)
                 reason = forcedRejection;
             if (reason == "Authorized" && runtimeEpoch == Guid.Empty)
                 reason = "ProductionRecoveryRuntimeUnavailable";
             if (reason == "Authorized" && observation is null)
                 reason = "ProductionRecoveryObservationMissing";
-            // The observation is bound to the original admitted inspection
-            // epoch.  A recovery after restart intentionally has a new
-            // runtimeEpoch; the storage writer compares the old observation
-            // epoch with the immutable admission row.
+            // observation 绑定原始已接纳 inspection 的 epoch。重启后的恢复会有新的
+            // runtimeEpoch；Storage writer 将旧 observation epoch 与不可变 Admission 行比较。
             if (reason == "Authorized" && safetyCapture is null)
                 reason = "ProductionRecoverySafetyCaptureUnavailable";
             if (reason == "Authorized" && safetyCapture is not null)
@@ -144,9 +140,8 @@ internal sealed partial class LocalAuthorizationService
                 accepted ? CommandDisposition.Accepted : CommandDisposition.Rejected,
                 effectiveReason, actor?.PrincipalId.ToString("D"));
 
-            // Production recovery failures carry the same bounded, versioned
-            // safety envelope as successful authorizations.  This keeps retries
-            // and rejected attempts auditable without adding identity columns.
+            // Production recovery 失败与成功授权使用同样有界且带版本的安全封套；这样重试
+            // 和拒绝尝试都可审计，无需新增身份列。
             var identityKind = accepted ? IdentityEventKind.ProductionRecoveryAuthorized :
                 safetyEvidence is not null ? IdentityEventKind.ProductionRecoveryFailed :
                 IdentityEventKind.ManagementRejected;

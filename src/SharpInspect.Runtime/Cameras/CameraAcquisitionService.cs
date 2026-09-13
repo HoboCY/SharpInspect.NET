@@ -202,9 +202,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
                 _protocolTimeoutReportedTask = null;
                 if (failure is null && readTask.Status == TaskStatus.RanToCompletion)
                 {
-                    // WaitAsync can lose a completion/timeout race. Read the
-                    // already completed task directly so a valid page at the
-                    // deadline is not silently discarded.
+                    // WaitAsync 可能与完成/超时发生竞争；直接读取已完成任务，避免截止点的有效页被静默丢弃。
                     try { source = readTask.GetAwaiter().GetResult(); }
                     catch (Exception exception) when (exception is not OutOfMemoryException)
                     { failure = exception; }
@@ -245,8 +243,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // A bounded public shutdown never exposes an adapter fault. BeginRetirement
-            // retains the owner and reports the fault to its internal consumer.
+            // 有界的公共关闭不会暴露适配器异常；BeginRetirement 保留所有者，并把故障交给内部消费者。
         }
     }
 
@@ -274,9 +271,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
 
         try
         {
-            // Validate the role before allocating the public correlation. An
-            // accepted attempt creates exactly one ID and uses it for both request
-            // and evidence; rejected calls never reach the device acquisition method.
+            // 先校验逻辑角色再分配公共相关性；接受的尝试只创建一个 ID，同时用于请求和证据，拒绝项不会到达设备采集方法。
             _ = FrameMetadataValidation.Identifier(logicalCameraRole,
                 nameof(logicalCameraRole));
         }
@@ -318,9 +313,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
 
         try
         {
-            // The adapter ring is read before every new physical acquisition. A gap
-            // or a failed read latches the service closed until a higher-level owner
-            // replaces/reinitializes the service.
+            // 每次新的物理采集前都读取适配器环；出现缺口或读取失败后锁存为关闭，直到上层所有者替换或重新初始化服务。
             try
             {
                 await RefreshProtocolObservationsAsync(cancellationToken)
@@ -408,10 +401,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
                 catch (Exception exception) when (exception is not OutOfMemoryException) { }
                 lock (_sync)
                 {
-                    // A cancelled refresh may have no continuation left to clear
-                    // its completed physical read. Disposal is the final owner, so
-                    // it may retire that completed task without advancing the
-                    // adapter cursor or inventing observations.
+                    // 被取消的刷新可能没有剩余 continuation 清理已完成的物理读取；关闭流程是最终所有者，可回收该任务，但不能推进适配器游标或伪造观测。
                     if (ReferenceEquals(_protocolReadTask, protocolRead) &&
                         protocolRead.IsCompleted)
                     {
@@ -511,15 +501,12 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             }
             AppendProtocolLocked(observation.Kind, observation.ReasonCode,
                 observation.ObservedAt, observation.Correlation, observation.DroppedFrames);
-            // This is the only cursor advancement point. ThroughSequence alone is
-            // intentionally insufficient because it may describe unread later pages.
+            // 这里是唯一推进游标的位置；单独的 ThroughSequence 不足以证明已读到后续页面。
             _adapterCursor = observation.Sequence;
             hadNewObservation = true;
         }
 
-        // An empty page with a later through-sequence cannot prove that the
-        // intervening facts were observed. A bounded page containing its next fact
-        // remains valid and can be continued on the next refresh.
+        // ThroughSequence 虽然更大但页面为空，不能证明中间事实已被观测；包含下一事实的有界页面仍有效，可在下一次刷新继续。
         if (source.ThroughSequence > _adapterCursor && !hadNewObservation)
         {
             _protocolFaulted = true;
@@ -554,9 +541,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // Runtime-generated reason codes and timestamps are closed values. If a
-            // faulty clock/adapter violates that boundary, preserve fail-closed state
-            // without allowing a diagnostic exception to replace the attempt outcome.
+            // Runtime 生成的原因码和时间戳必须是封闭值；时钟/适配器越界时保持 fail-closed，不能让诊断异常替换尝试结果。
             return;
         }
 
@@ -889,8 +874,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
                     _service._clock.Frequency);
                 var start = new FrameAcquisitionStart(busyAt, deadline,
                     _service._clock.Frequency);
-                // A completion can race while we are constructing the immutable start;
-                // a second check keeps a pre-Busy frame classified as EarlyFrame.
+                // 构造不可变 start 时完成可能同时到达；再次检查可确保 Busy 前的帧仍归类为 EarlyFrame。
                 if (_acquireTask.IsCompleted)
                 {
                     _innerCompleted = true;
@@ -953,10 +937,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
         private void ProcessCompletedTaskLocked(Task<FrameAcquisitionResult> task,
             bool beforeBusy)
         {
-            // The deadline callback and the task continuation can both observe the
-            // same completed task. Extract and adjudicate its result exactly once;
-            // otherwise a successful lease transferred at the deadline could be
-            // mistaken for a late duplicate and disposed by the continuation.
+            // 截止回调和任务 continuation 可能同时看到同一个已完成任务；结果必须只提取并裁决一次，否则截止点转移的成功 lease 会被误当成迟到重复帧而释放。
             if (_resultConsumed) return;
             _resultConsumed = true;
 
@@ -988,9 +969,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
 
         private void ProcessResultLocked(FrameAcquisitionResult? result, bool beforeBusy)
         {
-            // A faulty adapter can complete its task with a null reference despite
-            // the non-nullable contract. Handle this before the terminal/late path
-            // so the fault never dereferences a malformed result.
+            // 即使契约声明非空，故障适配器仍可能以 null 完成任务；先处理它，再进入终态/迟到路径，避免解引用畸形结果。
             if (result is null)
             {
                 if (!_terminal)
@@ -1235,9 +1214,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             if (ReferenceEquals(_service._attempt, this))
                 _service._attempt = null;
             PhysicalCompletion.TrySetResult(true);
-            // Only pull provider protocol facts after every physical acquire and
-            // any late lease disposal has quiesced. This avoids invoking a device
-            // read concurrently with an adapter callback or a lease owner.
+            // 只有物理采集和迟到 lease 释放都静止后才读取 Provider 协议事实，避免与适配器回调或 lease 所有者并发访问设备。
             _service.QueueProtocolRefreshLocked();
             if (_callerRegistrationSet)
             {
@@ -1253,15 +1230,12 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             if (lease is null) return;
             var owned = new TrackedLease(_service, lease);
             _service.TrackLeaseLocked(owned);
-            // Lease disposal is adapter/owner code. Never invoke it while holding
-            // the service gate; a provider may synchronously re-enter Runtime or
-            // block while returning its pool slot.
+            // Lease 释放属于适配器/所有者代码，不能持有服务锁调用；Provider 可能同步重入 Runtime，或在归还缓冲池槽位时阻塞。
             var disposal = Task.Factory.StartNew(async state =>
             {
                 var trackedLease = (TrackedLease)state!;
                 trackedLease.Dispose();
-                // Outer Dispose may leave native readers alive. Late/invalid
-                // frames need the same actual return proof as transferred frames.
+                // 外层 Dispose 可能留下仍活跃的 native reader；迟到/无效帧与已转移帧一样，都要等到实际归还得到证明。
                 if (!await trackedLease.ReturnCompletion.ConfigureAwait(false))
                     throw new InvalidOperationException("CameraLeaseReleaseFailed");
             }, owned, CancellationToken.None, TaskCreationOptions.DenyChildAttach,
@@ -1272,9 +1246,7 @@ public sealed partial class CameraAcquisitionService : IAsyncDisposable
             var tracked = _leaseDisposalTask;
             _ = tracked.ContinueWith(static (task, state) =>
             {
-                // Observe a disposal fault while retaining the faulted task as a
-                // permanent ownership barrier. A failed or hung lease cleanup must
-                // keep the attempt blocked and must never permit Stop/next acquire.
+                // 观察释放故障，同时保留故障任务作为永久所有权屏障；失败或挂起的 lease 清理必须阻塞尝试，不能放行 Stop 或下一次采集。
                 _ = task.Exception;
                 ((Attempt)state!).OnLeaseDisposalCompleted();
             }, this, CancellationToken.None, TaskContinuationOptions.None,

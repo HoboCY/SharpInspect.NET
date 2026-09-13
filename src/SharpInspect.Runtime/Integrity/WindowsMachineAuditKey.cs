@@ -94,6 +94,7 @@ internal sealed class WindowsMachineAuditKey : IAuditSigningKey
 
         try
         {
+            // 已有密钥只能按原身份打开；创建模式遇到旧文件必须报冲突，不能重生成密钥掩盖历史链失配。
             if (File.Exists(keyPath))
             {
                 if (allowCreation)
@@ -102,6 +103,7 @@ internal sealed class WindowsMachineAuditKey : IAuditSigningKey
                 return OpenExisting(policy, keyPath);
             }
 
+            // 密钥丢失时禁止自动自愈，只有明确允许的初始建库路径可以创建新的签名身份。
             if (!allowCreation || !policy.AllowInitialKeyCreation)
                 throw new InvalidOperationException(MissingReason);
 

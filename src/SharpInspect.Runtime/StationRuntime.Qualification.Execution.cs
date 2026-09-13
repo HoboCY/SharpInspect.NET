@@ -47,8 +47,7 @@ public sealed partial class StationRuntime
                     isolated: true, targetController: false, owner.Cancellation.Token).ConfigureAwait(false);
                 await RecordStationQualificationProgressAsync(owner, StationQualificationSessionPhase.ReadyForStimulus,
                     "StationQualificationReadyForStimulus", observation).ConfigureAwait(false);
-                // Waiting for the next controller stimulus has no cycle deadline.
-                // Exit revokes this wait; retirement remains owned if it ignores cancellation.
+                // 等待下一次控制器刺激没有周期期限；Exit 会撤销等待，若供应商忽略取消，资源仍由所有者持有到退休。
                 QualificationFacilityStimulus stimulus;
                 using (var stimulusClaim = ClaimStationQualificationPhysicalPhase(owner))
                 {
@@ -92,8 +91,7 @@ public sealed partial class StationRuntime
         StationQualificationOwner owner, CancellationToken token)
     {
         var lease = await _stationQualificationFacility!.OpenAsync(owner.Request, token).ConfigureAwait(false);
-        // Capture a late open result even when its caller's bounded wait expired,
-        // so restoration still owns and closes the actual facility lease.
+        // 即使调用方有界等待已到，也要接住晚到的打开结果，让恢复流程持有并关闭真实设施租约。
         owner.Facility = lease;
         return lease;
     }

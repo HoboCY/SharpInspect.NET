@@ -25,6 +25,7 @@ public sealed class FrameCallbackHandoff : IDisposable
     public bool TryPublish(FrameBufferLease lease)
     {
         ArgumentNullException.ThrowIfNull(lease);
+        // 先转移唯一 owner，再尝试入有界通道；入队失败也必须关闭同一个 owner，避免槽位泄漏。
         var owner = lease.Transfer();
         if (owner is null) { Interlocked.Increment(ref _rejected); return false; }
         if (Volatile.Read(ref _disposed) == 0 && _channel.Writer.TryWrite(owner)) return true;
@@ -38,6 +39,7 @@ public sealed class FrameCallbackHandoff : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var owner = await _channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            // 读取到的 owner 仍归通道/Runtime 管理；关闭或取消时立即归还，成功时才交给新的 lease。
             if (Volatile.Read(ref _disposed) != 0 || cancellationToken.IsCancellationRequested)
             {
                 owner.Close();

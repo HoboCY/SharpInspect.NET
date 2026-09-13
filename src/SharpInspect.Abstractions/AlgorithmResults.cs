@@ -26,6 +26,7 @@ public sealed record AlgorithmMeasurement
 }
 
 /// <summary>Complete immutable product result. Runtime owns execution status and publication.</summary>
+// AlgorithmResult 只表达产品判定；执行状态、超时和发布时序由 Runtime 的 Core 提交负责。
 public sealed record AlgorithmResult
 {
     public AlgorithmResult(InspectionDecision decision, string? reasonCode,
@@ -115,8 +116,7 @@ public sealed record AlgorithmResultSchema
             parts.Add(field.Unit);
             parts.Add(field.Required ? "1" : "0");
             AppendConstraints(parts, field.Constraints);
-            // Result measurements must not have authoring defaults; retain an explicit
-            // null marker in the canonical input so this invariant cannot disappear.
+            // 结果测量禁止带 authoring default；规范化输入保留显式 null，避免该约束在哈希中消失。
             parts.Add(null);
         }
 

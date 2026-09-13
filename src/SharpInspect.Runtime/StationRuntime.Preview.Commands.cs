@@ -53,8 +53,7 @@ public sealed partial class StationRuntime
                 (input, rejection) = await PreparePreviewAdmissionAsync(start, store, cancellationToken)
                     .ConfigureAwait(false);
 
-            // Saving uses the existing Draft transaction and its EditRecipeDraft authority.
-            // A separate Preview admission must not consume that operation's correlation or grant.
+            // 保存沿用 Draft 事务及 EditRecipeDraft 权限；Preview 准入不能占用该事务的关联 ID 或授权凭据。
             if (command is SavePreviewToDraftCommand save && rejection is null && owner is not null)
             {
                 Task<RuntimeCommandOutcome>? saving = null;
@@ -184,8 +183,7 @@ public sealed partial class StationRuntime
                 .ConfigureAwait(false);
             if (!saved.Saved || saved.Revision is null) return Result(false, saved.ReasonCode);
             committed = saved.Revision;
-            // The Draft transaction is already durable. Its success remains visible
-            // even if the subsequent session journal cannot accept another event.
+            // Draft 事务此时已经持久化；即使后续会话台账无法追加事件，也要保留保存成功事实。
             lock (_sync)
             {
                 owner.Draft = committed;

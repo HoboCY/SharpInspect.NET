@@ -32,6 +32,7 @@ internal sealed class FrozenOutboxBatch
         CancellationToken cancellationToken, StoreDeadline deadline)
     {
         options.Validate();
+        // ID 和规范化字节在事务外一次冻结；最终校验导致事务重试时，仍复用同一批投递。
         var items = new List<OutboxDelivery>(options.Routes.Count);
         foreach (var route in options.Routes)
         {
@@ -47,6 +48,7 @@ internal sealed class FrozenOutboxBatch
             }
             catch (OutboxPayloadCapacityException)
             {
+                // Required 无法形成可发送内容时阻止 Core 提交；BestEffort 则保留失败义务供追溯。
                 if (route.Criticality == OutboxRouteCriticality.Required)
                     throw new InvalidOperationException("OutboxRequiredPayloadCapacityExceeded");
                 failure = "OutboxPayloadCapacityExceeded";

@@ -7,6 +7,7 @@ public enum CommandDisposition { Accepted, Rejected }
 public sealed record CommandInvocation(CommandSource Source, string? PrincipalId = null,
     Guid? SessionId = null, Guid? StepUpGrantId = null);
 
+// 调用方请求改变工位状态时，应通过强类型命令进入 Runtime；Invocation 仅提供归因上下文，不能代替授权校验。
 public abstract record RuntimeCommand(Guid CorrelationId, CommandInvocation Invocation);
 public sealed record ArmProductionCommand(Guid CorrelationId, CommandInvocation Invocation)
     : RuntimeCommand(CorrelationId, Invocation);
@@ -35,5 +36,6 @@ public interface IStationRuntime
 {
     ValueTask<StationStateSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
     IAsyncEnumerable<StationStateSnapshot> WatchSnapshotsAsync(CancellationToken cancellationToken = default);
+    // Accepted 表示命令在本次准入/执行边界被接受；涉及后台操作时，仍需查询后续快照/进度确定终态。
     ValueTask<RuntimeCommandOutcome> SubmitAsync(RuntimeCommand command, CancellationToken cancellationToken = default);
 }

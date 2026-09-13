@@ -41,8 +41,7 @@ internal sealed partial class SqliteCommandStore
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
-        // The extra cycle is the read-only candidate observation the prospective check adds
-        // before the admission transaction that will make it durable.
+        // 上限额外允许的一个周期是准入预检中的候选，它尚未写入账本，但同样要纳入未来容量估算。
         AuditChainDatabase.Require(cycles is >= 0 and
             <= (long)ProductionInspectionStoreOptions.MaximumEntriesHardLimit + 1,
             "ProductionOutboxReserveCapacityExceeded");

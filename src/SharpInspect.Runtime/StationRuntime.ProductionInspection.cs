@@ -26,8 +26,7 @@ public sealed partial class StationRuntime
     private PartIdentityBindingRegistry? _partIdentityRegistry;
     private ProductionImageStager? _productionImageStager;
 
-    // Communication monitoring does not own the camera or block configuration.
-    // Only a durably accepted production cycle owns inspection resources.
+    // 通信监视器不拥有相机，也不阻塞配置；只有已持久接受的生产周期才拥有检查资源。
     private bool ProductionInspectionConfigurationBlockedLocked =>
         _productionInspectionOwner?.Current is not null || _productionRecoveryOwner is not null;
 
@@ -143,7 +142,7 @@ public sealed partial class StationRuntime
         owner.FailureReason = reason;
         owner.Observer?.StopAccepting();
         _productionInspectionRecoveryBlocked |= owner.Current is not null;
-        // Cancellation callbacks can belong to providers; dispatch outside the runtime lock.
+        // 取消回调可能进入供应商代码，必须在 Runtime 锁外异步派发。
         _ = Task.Run(() => { try { owner.Cancellation.Cancel(); } catch (ObjectDisposedException) { } });
         PublishLocked(_snapshot with { Ready = false, Busy = false, ArmState = ProductionArmState.Disarmed,
             Recovery = _productionInspectionRecoveryBlocked ? RecoveryState.Required : _snapshot.Recovery });
@@ -158,8 +157,7 @@ public sealed partial class StationRuntime
             if (owner.Current is not null && !owner.FaultAbortRequested)
             {
                 owner.FaultAbortRequested = true;
-                // Fault Abort cancels computation, while the accepted cycle retains its
-                // persistence and healthy communication authority for its fixed outcome.
+                // Fault Abort 只取消计算；已接受周期仍保留持久化和健康通信权威，以固定结果完成收尾。
                 owner.Execution.RequestProductionCancellation(new(ExecutionKind.Production,
                     owner.Current.CorrelationId));
                 var cancellation = owner.ExecutionCancellation;
@@ -203,8 +201,7 @@ public sealed partial class StationRuntime
         Task? operation;
         lock (_sync)
         {
-            // Startup has no accepted work to settle and may still be waiting on another
-            // service's lifetime. An existing protocol owner drains under the shared budget.
+            // 启动阶段没有已接受工作可收尾，可能仍在等待其他服务的生命周期；已有协议所有者则使用共享预算排空。
             if (_productionInspectionOwner is null) _lifetime.Cancel();
             operation = _productionInspectionTask;
         }

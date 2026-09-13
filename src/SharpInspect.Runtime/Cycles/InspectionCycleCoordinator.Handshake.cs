@@ -27,8 +27,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
         if (observer.Latest.Signals is not { ResultAck: false })
             throw new InvalidOperationException("QualificationPrematureResultAck");
         await record(InspectionCycleDeliveryFact.PublicationPrepared).ConfigureAwait(false);
-        // Full immutable payload first. ResultValid stays false until the final
-        // state write, which clears Busy and raises ResultValid together.
+        // 先写入完整不可变载荷；最终状态写入同时清除 Busy、升起 ResultValid，在此之前 ResultValid 保持 false。
         await writePayload(receipt.Payload, token).ConfigureAwait(false);
         observer.RequireHealthy();
         if (observer.Latest.Signals is not { ResultAck: false })

@@ -33,8 +33,8 @@ public abstract class VisionFrame
     /// </summary>
     public abstract ReadOnlySpan<byte> GetRowSpan(int row);
 
-    // Only the framework's separate native-view bridge can obtain an owned read hold.
-    // External subclasses cannot provide unproven callback-scoped pointers through this API.
+    // 只有框架独立的 native 视图桥接可以取得受控的读取保持。
+    // 外部子类不能通过此 API 提供未经证明、仅在回调期间有效的指针。
     internal virtual NativeFrameReadLease AcquireNativeRead() =>
         throw new InvalidOperationException("VisionFrameNativeBorrowUnavailable");
 }

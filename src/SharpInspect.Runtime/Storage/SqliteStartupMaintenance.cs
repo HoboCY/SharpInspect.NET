@@ -162,11 +162,8 @@ public static class SqliteStartupMaintenance
                         : ProductionImageEvidenceStoreOptions.SchemaVersion;
             if (_targetOptions.Outbox is not null)
             {
-                // A schema-36 target owns one of the four governed schema-32/33/34/35 to schema-36
-                // plans. The source profile is the exact declared target with only the outbox
-                // removed, and the generation that profile proves names the plan, so the operation
-                // always preserves the optional features the source actually carried and never
-                // temporarily enables an unrelated one.
+                // 升级到 schema 36 时，从目标配置中只移除 Outbox 来还原源配置，再据此选择 32–35 的迁移路径。
+                // 这样保留源库实际启用的可选能力，不会为迁移临时开启无关功能。
                 _source = new SqliteCommandStore.StartupMaintenanceSchema(
                     SqliteCommandStore.MigrationProductionOutboxSourceOptions(_targetOptions),
                     ProductionOutboxStoreOptions.SchemaVersion);
@@ -207,8 +204,7 @@ public static class SqliteStartupMaintenance
             var hasMarker = StoreMigrationJournalGuard.Exists(markerPath);
             if (hasMarker != hasJournal)
                 throw new InvalidOperationException("StoreMigrationJournalOrMarkerMissing");
-            // Unknown versions are observed through a read-only preflight.
-            // ReadWrite (never Create) is opened only for a supported generation.
+            // 先只读识别版本；仅对已支持的源版本打开读写连接，避免误创建或修改未知版本的数据库。
             long version;
             using (var preflight = OpenExisting(_path, readOnly: true))
                 version = AuditChainDatabase.Scalar(preflight.Handle!, "PRAGMA user_version;", deadline);
@@ -220,8 +216,7 @@ public static class SqliteStartupMaintenance
             if (!hasJournal)
             {
                 var operation = Guid.NewGuid();
-                // The permanent marker is flushed first. A crash before a
-                // complete journal is explicit maintenance, never clean startup.
+                // 先刷盘永久维护标记；即使完整日志写出前崩溃，下次启动也会识别为迁移中断而非正常启动。
                 StoreMigrationJournalGuard.CreateMarker(_path, operation);
                 _journal = new StoreMigrationJournal(journalPath, _options.MaximumJournalBytes, create: true);
                 _contextBound = true;
@@ -235,11 +230,8 @@ public static class SqliteStartupMaintenance
             var marker = StoreMigrationJournalGuard.ReadMarker(_path);
             if (chain[^1].Data.PlanId != _plan!.PlanId)
             {
-                // The durable journal belongs to the previous migration generation.
-                // Only a fully completed operation of the immediately preceding
-                // generation may be continued, and only by appending a linked
-                // operation to the same append-only file: unfinished work is never
-                // reclassified, downgraded or discarded.
+                // 前一代迁移必须已完整结束，才能在同一追加式日志中链接下一次迁移；
+                // 未完成记录不能通过改名、降级或丢弃来绕过恢复流程。
                 var durable = chain[^1].Data;
                 var predecessorPlanId = _plan.SourceVersion switch
                 {

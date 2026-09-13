@@ -54,8 +54,8 @@ internal sealed class CalibrationImportRevalidator
                     var loan = new CalibrationBorrowedFrame(image);
                     loans.Add(loan);
                     var frame = image.Frame;
-                    // The source IDs label the external image and extraction inputs. No local
-                    // Session, admission, camera capture, or actor is synthesized from them.
+                    // source ID 只标识外部图像和提取输入；不会由它们伪造本地 Session、Admission、
+                    // 相机采集或操作者。
                     var extracted = await procedure.ExtractAsync(plan.Input, loan, frame.SessionId,
                         frame.FrameId, frame.SourceHash, token).ConfigureAwait(false);
                     var observation = new CalibrationObservationEvidence(Guid.NewGuid(), frame,
@@ -81,8 +81,7 @@ internal sealed class CalibrationImportRevalidator
                     value.Result.Receipt.Format != policy.ExtractionReceiptContract ||
                     value.Result.Features.Count < plan.SelectionPolicy.MinimumFeaturesPerFrame);
                 if (invalidObservation) failures.Add("CalibrationImportLocalExtractionEvidenceInvalid");
-                // A package is not an instruction to silently replace its coefficients.
-                // The exact registered implementation must reproduce their canonical content.
+                // 导入包不是静默替换系数的指令；必须由精确注册实现重新产生与包中一致的规范内容。
                 if (computed.Coefficients.ContentHash != evidence.Candidate?.Result.Coefficients.ContentHash)
                     failures.Add("CalibrationImportCoefficientsNotReproduced");
                 var metrics = new[]
@@ -119,7 +118,7 @@ internal sealed class CalibrationImportRevalidator
                 Interlocked.Exchange(ref _running, 0);
             }
         }, CancellationToken.None);
-        // Caller cancellation cannot release image loans or the actual computation slot early.
+        // 调用方取消只能结束等待，不能提前释放图像 loan 或实际计算槽位。
         _ = actual.ContinueWith(value => { _ = value.Exception; }, CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         return await actual.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);

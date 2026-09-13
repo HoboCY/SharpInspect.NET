@@ -119,8 +119,7 @@ public sealed partial class StationRuntime
                 durable.Admission.ContentHash != admission.ContentHash || durable.ContentHash != core.ContentHash ||
                 payload.ContentHash != result.Payload.ContentHash)
                 throw new InvalidOperationException(committed.ReasonCode);
-            // The record remains a fact even when the caller's publication deadline has elapsed.
-            // Assign it before checking time so recovery retains that exact immutable Core.
+            // 即使调用方的发布期限已到，记录仍是事实；先挂接它再检查期限，恢复才能保留这份精确的不可变 Core。
             owner.Core = durable;
             ProjectCommittedProductionImage(durable, committed.Event?.AuditSequence ?? 0);
             ProjectCommittedOutbox(outbox, durable.Admission.InspectionId, committed.Event?.AuditSequence ?? 0);
@@ -133,7 +132,7 @@ public sealed partial class StationRuntime
 
     private string? ProductionCommitFailure(ProductionInspectionOwner owner, bool admissionOnly)
     {
-        // The writer must not block on the inverse Runtime -> SQLite lock order.
+        // 写入器不得等待反向的 Runtime -> SQLite 锁顺序，否则最终栅栏会形成锁倒置。
         if (!Monitor.TryEnter(_sync)) return "ProductionInspectionCommitFenceBusy";
         try
         {
@@ -156,9 +155,7 @@ public sealed partial class StationRuntime
             var result = await write().ConfigureAwait(false);
             if (result.Committed || result.ReasonCode != "ProductionInspectionCommitFenceBusy" || deadline.Expired)
                 return result;
-            // The writer has rolled this attempt back before returning. Yield the
-            // SQLite connection so a runtime snapshot can retire; never retry a
-            // committed transaction, a storage error, or an expired Core deadline.
+            // 写入器返回前已回滚本次尝试；让出 SQLite 连接等待 Runtime 快照退休，只重试未提交且未超时的持久化。
             await Task.Delay(1).ConfigureAwait(false);
         }
     }

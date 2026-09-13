@@ -122,11 +122,7 @@ internal sealed partial class VirtualCameraDevice
                         CancellationToken = cancellationToken
                     };
 
-                    // Register the complete script while the exact pending request
-                    // is installed.  Runtime may open Busy and advance the clock
-                    // immediately; waiting for the Busy continuation to register
-                    // these callbacks would let a same-timestamp deadline win by
-                    // scheduling the observation too late.
+                    // 安装精确的 pending request 时就注册完整脚本；Runtime 可能立即打开 Busy 并推进时钟，等 Busy continuation 再注册会让同一时间戳的截止判定抢先。
                     try
                     {
                         ScheduleControlledSignalsLocked(pending);
@@ -152,10 +148,7 @@ internal sealed partial class VirtualCameraDevice
                         _pendingAcquisition = pending;
                         _acquisition = CameraAcquisitionState.WaitingForFrame;
 
-                        // The adapter acknowledges only after the exact request is
-                        // installed.  Script callbacks are already registered, but
-                        // each callback below requires the matching Busy state before
-                        // it can publish a frame.
+                        // 适配器只有在精确请求安装后才确认；脚本回调虽已注册，但每个回调仍须先匹配 Busy 状态才能发布帧。
                         if (!control.AcknowledgePending(request, accepted))
                         {
                             var controlClosed = control.IsClosed;
@@ -183,9 +176,7 @@ internal sealed partial class VirtualCameraDevice
             return ValueTask.FromResult(immediateFailure);
         }
 
-        // The registration belongs to the pending operation, rather than to
-        // this method's stack.  It therefore remains active through the Busy
-        // wait and is disposed exactly once after the completion TCS is set.
+        // 注册属于 pending 操作而非当前方法栈，因此贯穿 Busy 等待，并在完成 TCS 设置后只释放一次。
         var registration = cancellationToken.Register(static state =>
         {
             var tuple = ((VirtualCameraDevice Device, PendingAcquisition Pending))state!;
@@ -205,8 +196,7 @@ internal sealed partial class VirtualCameraDevice
 
         _ = AwaitControlledBusyAsync(pending!);
 
-        // Do not wrap the pending task in an async state machine.  It is the
-        // sole frame ownership/completion channel for this acquisition.
+        // 不要再包一层 async 状态机；pending task 是这次采集唯一的帧所有权/完成通道。
         return new ValueTask<FrameAcquisitionResult>(pending!.Completion.Task);
     }
 
@@ -352,11 +342,7 @@ internal sealed partial class VirtualCameraDevice
         {
             if (!ReferenceEquals(_pendingAcquisition, pending) || pending.Completed)
                 return;
-            // Once Busy has been accepted, keep the retired script callbacks so
-            // a frame that arrives after the control closes is recorded as a
-            // late frame tied to this old pending request.  Before Busy there
-            // is no physical frame to observe, so cancellation can retire the
-            // whole schedule without protocol evidence.
+            // Busy 一旦被接受，就保留已退役脚本回调，使控制关闭后到达的帧仍记录为绑定旧请求的迟到帧；Busy 前没有可观测物理帧，取消可直接退役整个调度而无需协议证据。
             var preserveLateSignals = pending.Control?.Start is not null;
             handles = CompleteAcquisitionLocked(pending, Failure(
                 CameraAcquisitionFailureKind.Cancelled, "VirtualCameraControlClosed"),

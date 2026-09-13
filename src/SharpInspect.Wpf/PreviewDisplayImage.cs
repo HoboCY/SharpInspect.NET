@@ -81,6 +81,7 @@ public sealed class PreviewDisplayImage
             : 0;
         var maximumSample = validBits == 0 ? 0u : (uint)((1 << validBits) - 1);
 
+        // 先复制有效像素，再创建可冻结位图；源帧 stride 的 padding 既不显示也不参与哈希。
         for (var rowIndex = 0; rowIndex < frame.Height; rowIndex++)
         {
             var sourceRow = frame.GetRowSpan(rowIndex);
@@ -110,6 +111,7 @@ public sealed class PreviewDisplayImage
         var bitmap = BitmapSource.Create(frame.Width, frame.Height, 96, 96,
             frame.PixelFormat == VisionPixelFormat.Bgr24 ? PixelFormats.Bgr24 : PixelFormats.Gray8,
             null, display, displayStride);
+        // 冻结后该对象可作为只读显示值跨线程传递，后续不再依赖采集帧。
         bitmap.Freeze();
         return new PreviewDisplayImage(bitmap, frame,
             Convert.ToHexString(sourceHash.GetHashAndReset()));

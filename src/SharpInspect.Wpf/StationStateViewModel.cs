@@ -67,6 +67,7 @@ public sealed class StationStateViewModel : ObservableObject
     public HealthState DisplayedEvidenceState => DisplayedEvidence.State;
     public bool DisplayedPerformanceBudgetViolation => IsFresh && Performance.BudgetViolation;
 
+    // RawSnapshot 保留 Runtime 的完整只读投影；IsFresh 只决定显示可信度，不能把过期快照当作实时事实。
     internal void SetSnapshot(StationStateSnapshot snapshot, bool fresh)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -77,6 +78,7 @@ public sealed class StationStateViewModel : ObservableObject
 
     internal void SetUnknown()
     {
+        // 断流或过期时保留原始证据供诊断，但清除显示层的 Ready、健康和准入可信状态。
         _isFresh = false;
         OnPropertyChanged(nameof(IsFresh));
         OnPropertyChanged(nameof(Ready));

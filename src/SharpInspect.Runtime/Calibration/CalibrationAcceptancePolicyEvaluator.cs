@@ -59,6 +59,7 @@ internal sealed class CalibrationAcceptancePolicyEvaluator
     internal static CalibrationMetricGateResult EvaluateMetric(
         CalibrationMetricGate gate, IEnumerable<CalibrationQualityMetric> metrics)
     {
+        // 接受策略按唯一指标键和单位取值；缺失、重复或单位不符都闭合失败，不把近似值当作同一事实。
         ArgumentNullException.ThrowIfNull(gate);
         ArgumentNullException.ThrowIfNull(metrics);
 
@@ -118,6 +119,7 @@ internal sealed class CalibrationAcceptancePolicyEvaluator
     private static IReadOnlyList<CalibrationQualityMetric> SessionMetrics(
         CalibrationSessionEvidence session, ICollection<string> failures)
     {
+        // Selection 会从帧、观察和排除记录重新计算并比对哈希；持久化的 Sufficiency 结果本身不是信任根。
         var selection = session.Selection;
         var coverage = selection.ImageCoverage;
         if (!double.IsFinite(coverage))

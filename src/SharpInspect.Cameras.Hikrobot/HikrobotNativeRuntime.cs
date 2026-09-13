@@ -47,7 +47,7 @@ internal sealed unsafe class HikrobotNativeRuntime : IHikrobotSdkRuntime
                 if (handle == IntPtr.Zero) throw new HikrobotSdkException("HikrobotInvalidNativeHandle");
                 _api.RetainHandle();
                 createdSuccessfully = true;
-                // Exclusive access; this neither changes the camera IP nor configures the host NIC.
+                // 这里只申请独占访问，不修改相机 IP，也不配置宿主网卡。
                 HikrobotNativeApi.Check(_api.OpenDevice(handle, 1, 0), "HikrobotOpenFailed");
                 openedSuccessfully = true;
                 _device = new HikrobotNativeDevice(_api, handle, match.Descriptor);
@@ -59,9 +59,7 @@ internal sealed unsafe class HikrobotNativeRuntime : IHikrobotSdkRuntime
                 if (createdSuccessfully && handle != IntPtr.Zero)
                 {
                     _pendingRetirementHandle = handle;
-                    // Close is valid only after a successful Open. A created but
-                    // unopened handle goes directly to Destroy, with retries still
-                    // retaining ownership if actual destruction fails.
+                    // Close 只有在 Open 成功后才有效；已创建但未打开的 handle 直接 Destroy，实际销毁失败时仍由重试路径保留所有权。
                     _pendingHandleClosed = !openedSuccessfully;
                     RetirePendingHandle();
                 }
@@ -72,7 +70,7 @@ internal sealed unsafe class HikrobotNativeRuntime : IHikrobotSdkRuntime
     private List<Discovery> Enumerate()
     {
         HikrobotDeviceList list = default;
-        // Only physical GigE and USB3 Vision cameras, never virtual devices or frame grabbers.
+        // 这里只枚举物理 GigE 与 USB3 Vision 相机，不包含虚拟设备或采集卡。
         HikrobotNativeApi.Check(_api.EnumDevices(1 | 4, (IntPtr)(&list)), "HikrobotDiscoveryFailed");
         if (list.Count > 64) throw new HikrobotSdkException("HikrobotDiscoveryCapacityExceeded");
         var discovered = new List<Discovery>((int)list.Count);

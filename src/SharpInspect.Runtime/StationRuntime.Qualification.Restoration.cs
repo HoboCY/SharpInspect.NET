@@ -16,9 +16,7 @@ public sealed partial class StationRuntime
                 owner.CycleFaultTerminated = true;
                 owner.Restoration = StationQualificationRestorationState.RecoveryBlocked;
             }
-            // Retire actual owners without restoring the controller or releasing
-            // isolation. An unresolved ResultValid/Ack latch requires a separately
-            // governed recovery; neither Exit nor process restart supplies it.
+            // 退休实际所有者，但不恢复控制器或解除隔离；未解决的 ResultValid/Ack 锁存需要单独治理的恢复，Exit 和进程重启都不能代替它。
             owner.ResourcesRetired = await RetireStationQualificationAfterJournalFailureAsync(owner).ConfigureAwait(false);
             await FinishStationQualificationAsync(owner, false, "QualificationModbusRecoveryRequired").ConfigureAwait(false);
             return;
@@ -35,8 +33,7 @@ public sealed partial class StationRuntime
                 PublishStationQualificationLocked(owner, StationQualificationSessionPhase.Restoring, reason);
             }
             CancelStationQualification(owner, abort: false);
-            // Persist the new recovery identity before changing physical state.
-            // The previous lease must still retire before a new one is opened.
+            // 先持久化新的恢复身份，再改变物理状态；旧租约必须完全退休后才能打开新租约。
             try
             {
                 await RecordStationQualificationProgressAsync(owner, StationQualificationSessionPhase.Restoring,
@@ -45,9 +42,7 @@ public sealed partial class StationRuntime
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 lock (_sync) _stationQualificationRecoveryBlocked = true;
-                // A new physical lease needs the committed recovery identity.
-                // Existing callbacks and devices must still retire if that
-                // journal write fails; disposal preserves output isolation.
+                // 新物理租约需要已提交的恢复身份；台账写入失败时仍要退休已有回调和设备，处置过程维持输出隔离。
                 await RetireStationQualificationAfterJournalFailureAsync(owner).ConfigureAwait(false);
                 throw;
             }
@@ -83,8 +78,7 @@ public sealed partial class StationRuntime
             owner.Facility = await ObserveStationQualificationOperationAsync(owner,
                 CaptureStationQualificationFacilityAsync(owner, CancellationToken.None),
                 "StationQualificationRecoveryFacilityOpen").ConfigureAwait(false);
-            // Recovery also establishes and reads isolation before touching a
-            // persistent target. A disconnected facility is never success evidence.
+            // 恢复在接触持久目标前重新建立并读取隔离状态；断开的设施永远不是成功证据。
             var isolated = await ObserveStationQualificationOperationAsync(owner,
                 owner.Facility.ApplyIsolationAsync(CancellationToken.None).AsTask(), "StationQualificationRecoveryIsolation").ConfigureAwait(false);
             if (!isolated.Succeeded) throw new InvalidOperationException(isolated.ReasonCode);
@@ -145,7 +139,7 @@ public sealed partial class StationRuntime
                 owner.Restoration = StationQualificationRestorationState.RecoveryBlocked;
                 PublishStationQualificationLocked(owner, StationQualificationSessionPhase.RecoveryBlocked, reason + "Pending");
             }
-            // Keep the resource owner until the underlying provider really retires.
+            // 底层供应商真正退休前保留资源所有者。
             await actual.ConfigureAwait(false);
         }
     }
@@ -176,8 +170,7 @@ public sealed partial class StationRuntime
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
                 retired = false;
-                // Failure in one owner cannot suppress attempts to retire the
-                // remaining owners. The station fence remains in place.
+                // 一个所有者失败不能抑制其余所有者的退休尝试；站点栅栏继续保持。
                 lock (_sync) _stationQualificationRecoveryBlocked = true;
             }
         }
@@ -190,8 +183,7 @@ public sealed partial class StationRuntime
             reason, observation).ConfigureAwait(false); }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
-            // Losing the journal blocks subsequent admission, but does not
-            // suppress the best-effort physical restoration of the frozen target.
+            // 台账丢失会阻止后续准入，但不抑制对冻结目标的尽力物理恢复。
             lock (_sync) _stationQualificationRecoveryBlocked = true;
             MarkAuditFault("StationQualificationRestorationAuditUnavailable");
         }

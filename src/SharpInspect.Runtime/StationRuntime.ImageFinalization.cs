@@ -31,6 +31,7 @@ public sealed partial class StationRuntime
         {
             if (_disposed || backlog.ThroughAuditSequence <= _imageBacklogSnapshot.ThroughAuditSequence) return;
             _imageBacklogSnapshot = backlog;
+            // 后台快照追上审计水位后才移除本地补计，避免新 Core 已提交而图片积压暂时被漏算。
             foreach (var id in _imageBacklogUnobservedCores.Where(pair =>
                 pair.Value.Sequence <= backlog.ThroughAuditSequence).Select(pair => pair.Key).ToArray())
                 _imageBacklogUnobservedCores.Remove(id);
@@ -68,8 +69,7 @@ public sealed partial class StationRuntime
          _productionOldestPendingImage is { } oldest &&
             DateTimeOffset.UtcNow - oldest >= policy.Policy.ImageBacklog.MaximumOldestAge);
 
-    // Runs inside the existing single alarm-maintenance task and command gate.
-    // Heartbeats also detect age limits when no lifecycle audit sequence changes.
+    // 复用串行报警维护入口；即使没有新事件，也要靠心跳检查最老待办是否已超龄。
     private AlarmObservation? ImageBacklogObservationLocked(AlarmPolicy policy)
     {
         if (_imageFinalizationWorker is null || _imageFinalizationFaulted ||
@@ -101,8 +101,7 @@ public sealed partial class StationRuntime
             PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed,
                 Evidence = _snapshot.Evidence with { State = HealthState.Faulted },
                 AdmissionBlockers = new AdmissionBlockers(_snapshot.AdmissionBlockers.Append(reason).Distinct(StringComparer.Ordinal)) });
-            // Unknown files require reconciliation; unavailable storage and a pending
-            // physical retirement are different from proven loss of referenced pixels.
+            // 未知文件需要核对；存储暂不可用或物理操作尚未退出，不能直接认定已引用像素丢失。
             if (!integrity) return;
             if (!IsProductionImageAlarmMappingValid())
             {

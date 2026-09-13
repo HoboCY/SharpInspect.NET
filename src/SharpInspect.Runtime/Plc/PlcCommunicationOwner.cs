@@ -64,8 +64,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
 
     internal string? Failure { get { lock (_sync) return _failure; } }
 
-    // Called inside the channel's transport gate. Starting the physical send
-    // and revoking the generation share this one linearization lock.
+    // 在通道传输闸门内调用；开始物理发送和撤销通信代次共享同一个线性化锁。
     internal Task StartCycleWrite(Func<Task> start)
     {
         lock (_sync)
@@ -112,7 +111,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
         throw new InvalidOperationException(reason);
     }
 
-    // Synchronous invalidation precedes audit or any best-effort network write.
+    // 同步失效先于审计或任何尽力而为的网络写入。
     internal void Fail(string reason)
     {
         lock (_sync)
@@ -154,8 +153,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
             {
                 await candidate.ConnectAsync(token).ConfigureAwait(false);
                 await RecordAsync("ConnectionEstablished", "PlcTransportReconnected").ConfigureAwait(false);
-                // Fresh heartbeats must not revive a remotely retained Ready.
-                // Only revoke permits; never clear/reassert Busy or ResultValid.
+                // 新心跳不能复活远端残留的 Ready；这里只撤销准入许可，绝不清除或重新置位 Busy/ResultValid。
                 var retained = await candidate.ReadRuntimeStateAsync(token).ConfigureAwait(false);
                 unresolved |= retained.Busy || retained.ResultValid || retained.CycleFault || retained.ProtocolViolation;
                 if (retained.QualificationReady)
@@ -163,7 +161,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
                 if (retained.ProductionReady)
                     await candidate.WriteSingleRegisterAsync(checked((ushort)(_profile.RuntimeStartAddress + 5)), 0, token).ConfigureAwait(false);
                 await SynchronizeCoreAsync(candidate, unresolved, token).ConfigureAwait(false);
-                // No Ready, payload, or delivery write belongs to this generation.
+                // Ready、载荷和交付写入都不属于这个新通信代次。
                 await RecordAsync("RecoveryCompleted", "PlcCommunicationRecoveredArmRequired").ConfigureAwait(false);
                 return;
             }
@@ -217,9 +215,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
                 {
                     if (auditedEpoch is null)
                     {
-                        // Audit may stall observation. Its pre-write stability
-                        // evidence cannot cover that gap: sample a complete new
-                        // stable window after persistence before allowing work.
+                        // 审计可能暂停观察，写入前的稳定证据不能覆盖这段间隔；持久化后重新采集完整稳定窗口才允许工作。
                         await RecordAsync("SynchronizationWindowObserved", "PlcSynchronizationWindowObserved").ConfigureAwait(false);
                         deadline.Token.ThrowIfCancellationRequested();
                         auditedEpoch = signals.ControllerEpoch;
@@ -265,8 +261,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
                 while (_sentOrder.Count > 10000) _sent.Remove(_sentOrder.Dequeue());
             }
         }
-        // The heartbeat block and handshake block are independent Modbus
-        // reads. Bracket heartbeat evidence with the controller-owned epoch.
+        // 心跳块和握手块是独立的 Modbus 读取；用控制器拥有的 epoch 包住心跳证据，避免跨代混用。
         var epochBefore = await channel.ReadControllerEpochAsync(token).ConfigureAwait(false);
         var communication = await channel.ReadCommunicationAsync(token).ConfigureAwait(false);
         var signals = await channel.ReadAsync(token).ConfigureAwait(false);
@@ -301,8 +296,7 @@ internal sealed class PlcCommunicationOwner : IAsyncDisposable
                     _sent.TryGetValue(communication.RuntimeHeartbeatEcho, out var sentAt) &&
                     (_echo is null || IsAfter(communication.RuntimeHeartbeatEcho, _echo.Value)))
                 {
-                    // A first echo is only a baseline. Later echoes must name a
-                    // heartbeat actually written by this particular generation.
+                    // 第一个回显仅建立基线；后续回显必须指向当前代次实际写出的心跳。
                     if (_echo is not null) _runtimeObservedAt = sentAt;
                     _echo = communication.RuntimeHeartbeatEcho;
                 }

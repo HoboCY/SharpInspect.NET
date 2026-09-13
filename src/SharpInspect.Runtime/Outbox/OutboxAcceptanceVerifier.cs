@@ -21,6 +21,7 @@ internal static class OutboxAcceptanceVerifier
             var receiptId = root.GetProperty("receiptId").GetString()!;
             var acceptedAt = DateTimeOffset.ParseExact(root.GetProperty("acceptedAtUtc").GetString()!, "O",
                 CultureInfo.InvariantCulture, DateTimeStyles.None);
+            // 验签后还要重建并逐字节比对声明，避免把另一条投递或另一份内容的回执认作本次成功。
             if (!statement.AsSpan().SequenceEqual(
                     OutboxReceiverProtocol.CreateAcceptanceStatement(delivery, receiptId, acceptedAt)))
                 throw new InvalidOperationException("OutboxAcceptanceBindingMismatch");
@@ -38,6 +39,7 @@ internal static class OutboxAcceptanceVerifier
         ArgumentNullException.ThrowIfNull(authority);
         var copy = (byte[])rawAcceptance.Clone();
         var receipt = VerifyReceipt(delivery, copy);
+        // 验签本身也消耗时间；生成成功凭据前再次确认该次尝试仍有权提交结果。
         if (!authority.IsCurrent) throw new InvalidOperationException("OutboxAttemptOwnerRetired");
         return VerifiedAcceptanceClaim.Create(ClaimIssuer, delivery, attemptId, runtimeEpoch, copy, receipt, authority);
     }

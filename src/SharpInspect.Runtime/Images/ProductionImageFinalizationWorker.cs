@@ -78,8 +78,7 @@ internal sealed class ProductionImageFinalizationWorker
                 try { await SweepAsync(_stop.Token).ConfigureAwait(false); }
                 catch (Exception exception) when (IsTransient(exception) && !_stop.IsCancellationRequested)
                 {
-                    // A refused transaction is not evidence corruption. Re-read the
-                    // durable ledger on the next bounded sweep; never invent success.
+                    // 事务被拒绝不等于图像证据已损坏；下一轮重新读取账本，不能将未提交操作当成成功。
                     LastTransientFailureReason = Reason(exception);
                 }
                 await _wake.WaitAsync(TimeSpan.FromSeconds(1), _stop.Token).ConfigureAwait(false);
@@ -170,7 +169,7 @@ internal sealed class ProductionImageFinalizationWorker
         if (item.State.IntegrityConflict) throw new InvalidOperationException("ImageFinalizationIntegrityConflictRecorded");
         if (item.State.Success is { } success)
         {
-            // Never write Failed over Succeeded; cleanup is its own replayable operation.
+            // 成功后的暂存清理可独立重放；清理失败不能把已提交的 Succeeded 改写为 Failed。
             try { await ReleaseAsync(item.Work, success, token).ConfigureAwait(false); }
             catch (Exception exception) when (!IsIntegrity(exception) && IsOperational(exception) &&
                 exception is not ImageFinalizationPersistenceException)
@@ -215,8 +214,7 @@ internal sealed class ProductionImageFinalizationWorker
             if (attempt is null) throw new InvalidOperationException("ImageFinalizationAttemptRequired");
             using var claim = await _files.FinalizeAsync(item.Work, attempt.AttemptId, attempt.TemporaryFileName,
                 attempt.FinalFileName, finalExists, FileTimeout, token).ConfigureAwait(false);
-            // Keep the protected final handle alive until the one SQL writer returns
-            // its physical transaction result, including cancellation/deadline failure.
+            // 最终文件句柄必须保护到单写入器实际返回事务结果；收到取消或超时也不能提前释放。
             var committed = await _store.AppendImageFinalizationOutcomeAsync(new ImageFinalizationSuccessRequest(
                 item.Work.WorkId, _epoch, DateTimeOffset.UtcNow, claim, Guard), Deadline(), token).ConfigureAwait(false);
             RequireCommit(committed);
