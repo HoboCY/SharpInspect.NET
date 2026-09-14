@@ -73,6 +73,10 @@ internal sealed record StoreMigrationJournalData
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? ProductionOutboxConfigurationHash { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? ProductionOutboxRecoveryConfigurationHash { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? EvidenceReconciliationConfigurationHash { get; init; }
 }
 
 internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data, string ContentHash);
@@ -83,7 +87,7 @@ internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data
 /// later feature nor omit one it declares.
 /// </summary>
 internal readonly record struct StoreMigrationPlanBinding(bool Lifecycle, bool ImageEvidence,
-    bool ImageFinalization, bool ProductionOutbox, bool FlexibleFeatures = false);
+    bool ImageFinalization, bool ProductionOutbox, bool FlexibleFeatures = false, bool EvidenceReconciliation = false);
 
 /// <summary>
 /// A framed, hash-linked external journal. Only a complete frame followed by a
@@ -110,6 +114,9 @@ internal sealed class StoreMigrationJournal : IDisposable
     /// this plan binds the outbox hard and accepts the independently present legacy hashes.
     /// </summary>
     internal const string ProductionOutboxRecoveryPlanId = "SharpInspect.StoreMigration.36-37.v1";
+    internal const string EvidenceReconciliation35PlanId = "SharpInspect.StoreMigration.35-38.v1";
+    internal const string EvidenceReconciliation36PlanId = "SharpInspect.StoreMigration.36-38.v1";
+    internal const string EvidenceReconciliation37PlanId = "SharpInspect.StoreMigration.37-38.v1";
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SI-MJ01\n");
     private static readonly byte[] HashDomain = Encoding.ASCII.GetBytes("SharpInspect.StoreMigrationJournal.v1\0");
     private const int MaximumRecordBytes = 128 * 1024;
@@ -248,6 +255,13 @@ internal sealed class StoreMigrationJournal : IDisposable
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
         if (!TryResolvePlan(data.SourceSchemaVersion, data.TargetSchemaVersion, data.PlanId, out var plan))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
+        if (plan.EvidenceReconciliation
+                ? !IsHash(data.EvidenceReconciliationConfigurationHash) ||
+                  (data.SourceSchemaVersion == 37 ? !IsHash(data.ProductionOutboxRecoveryConfigurationHash)
+                      : data.ProductionOutboxRecoveryConfigurationHash is not null) ||
+                  (data.ImageEvidenceConfigurationHash is null) != (data.ImageFinalizationConfigurationHash is null)
+                : data.EvidenceReconciliationConfigurationHash is not null || data.ProductionOutboxRecoveryConfigurationHash is not null)
+            throw new InvalidOperationException("StoreMigrationJournalConfigurationInvalid");
         // The optional feature bindings are exact per plan. A feature the operation binds must be
         // one complete hash and a feature it does not bind must stay absent, so no earlier
         // generation can claim a later binding and no later generation can omit one it declares.
@@ -255,7 +269,9 @@ internal sealed class StoreMigrationJournal : IDisposable
         // independently present or absent, because a schema-36 source may carry any combination.
         if (plan.FlexibleFeatures)
         {
-            if (!IsHash(data.ProductionOutboxConfigurationHash) ||
+            if ((plan.ProductionOutbox ? !IsHash(data.ProductionOutboxConfigurationHash) : data.ProductionOutboxConfigurationHash is not null) ||
+                plan.ImageEvidence && !IsHash(data.ImageEvidenceConfigurationHash) ||
+                plan.ImageFinalization && !IsHash(data.ImageFinalizationConfigurationHash) ||
                 data.LifecycleConfigurationHash is not null && !IsHash(data.LifecycleConfigurationHash) ||
                 data.ImageEvidenceConfigurationHash is not null && !IsHash(data.ImageEvidenceConfigurationHash) ||
                 data.ImageFinalizationConfigurationHash is not null && !IsHash(data.ImageFinalizationConfigurationHash))
@@ -345,6 +361,8 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.ImageEvidenceConfigurationHash != old.ImageEvidenceConfigurationHash ||
             data.ImageFinalizationConfigurationHash != old.ImageFinalizationConfigurationHash ||
             data.ProductionOutboxConfigurationHash != old.ProductionOutboxConfigurationHash ||
+            data.ProductionOutboxRecoveryConfigurationHash != old.ProductionOutboxRecoveryConfigurationHash ||
+            data.EvidenceReconciliationConfigurationHash != old.EvidenceReconciliationConfigurationHash ||
             old.SourceFingerprint is not null && data.SourceFingerprint != old.SourceFingerprint ||
             old.TargetFingerprint is not null && data.Attempt == old.Attempt && data.TargetFingerprint != old.TargetFingerprint ||
             old.CommitIntentDurable && data.Attempt == old.Attempt && !data.CommitIntentDurable ||
@@ -410,6 +428,11 @@ internal sealed class StoreMigrationJournal : IDisposable
             targetSchemaVersion == ProductionOutboxRecoveryOptions.SchemaVersion &&
             planId == ProductionOutboxRecoveryPlanId)
             binding = new(false, false, false, true, true);
+        else if (sourceSchemaVersion == 35 && targetSchemaVersion == 38 && planId == EvidenceReconciliation35PlanId)
+            binding = new(false, true, true, false, true, true);
+        else if (sourceSchemaVersion == 36 && targetSchemaVersion == 38 && planId == EvidenceReconciliation36PlanId ||
+                 sourceSchemaVersion == 37 && targetSchemaVersion == 38 && planId == EvidenceReconciliation37PlanId)
+            binding = new(false, false, false, true, true, true);
         else
             return false;
         return true;

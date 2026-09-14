@@ -412,7 +412,9 @@ public sealed partial class ManualInspectionRuntimeTests
             ProductionImageEvidenceStoreOptions? imageEvidence = null,
             EvidenceCapturePolicySnapshot? capturePolicy = null, TraceStoragePolicyDefinition? tracePolicy = null,
             ProductionImageFinalizationStoreOptions? imageFinalization = null,
-            ProductionOutboxStoreOptions? outbox = null, Outbox.ProductionOutboxOptions? outboxTransports = null)
+            ProductionOutboxStoreOptions? outbox = null, Outbox.ProductionOutboxOptions? outboxTransports = null,
+            EvidenceReconciliationStoreOptions? evidenceReconciliation = null,
+            Action<SqliteCommandStore>? beforeRuntime = null)
         {
             enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
@@ -446,7 +448,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     new AlarmPolicyRule("OutboxBestEffortDeliveryFailed", "Runtime.Outbox", AlarmSeverity.Warning,
                         ProductionImpact.None, false, AlarmNotification.None, null)
                 }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
-            if (imageFinalization is not null)
+            if (imageFinalization is not null || evidenceReconciliation is not null)
                 alarm = new AlarmPolicy("V151.Images.Alarm", "1", alarm.Rules.Concat(new[]
                 {
                     new AlarmPolicyRule("EvidenceIntegrityFault", "Runtime.ImageEvidence", AlarmSeverity.Error,
@@ -485,7 +487,8 @@ public sealed partial class ManualInspectionRuntimeTests
                 productionArming: productionPeer is null ? null : productionArming ??
                     (imageEvidence is null ? null : new ProductionArmStoreOptions()),
                 recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
-                imageEvidence: imageEvidence, imageFinalization: imageFinalization, outbox: outbox);
+                imageEvidence: imageEvidence, imageFinalization: imageFinalization, outbox: outbox,
+                evidenceReconciliation: evidenceReconciliation);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;
@@ -573,6 +576,7 @@ public sealed partial class ManualInspectionRuntimeTests
                 if (outboxTransports is not null) registrations.AddSharpInspectOutbox(outboxTransports);
                 configureAdditionalServices?.Invoke(registrations);
                 services = registrations.BuildServiceProvider();
+                beforeRuntime?.Invoke(fixture.Store);
                 var runtime = services.GetRequiredService<IStationRuntime>();
                 if (runtime is not StationRuntime station)
                     throw new XunitException("Manual runtime did not use StationRuntime");

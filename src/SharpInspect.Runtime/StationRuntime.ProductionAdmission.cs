@@ -681,6 +681,9 @@ public sealed partial class StationRuntime
         ProductionAdmissionGateResult EvidenceGate(ProductionAdmissionGate gate,
             StationStateSnapshot current)
         {
+            if (_productionInspectionStoreOptions?.EvidenceReconciliation is { } reconciliation &&
+                _productionInspectionPolicy?.Policy.Scrubber.ContentHash != reconciliation.Scrubber.ContentHash)
+                return RuntimeGate(gate, ProductionAdmissionGateStatus.Failed, "EvidenceScrubberPolicyBudgetMismatch");
             if (_productionInspectionOptions?.ImageStage is not null && ProductionImageBacklogExceededLocked())
                 return RuntimeGate(gate, ProductionAdmissionGateStatus.Failed,
                     "ProductionImageBacklogLimitExceeded");
@@ -690,7 +693,7 @@ public sealed partial class StationRuntime
                     ProductionEvidenceRequirement.None &&
                 Outbox.ProductionOutboxBinding.RoutesMatch(_productionInspectionStoreOptions, _productionInspectionPolicy) &&
                 ProductionOutboxConfiguredLocked();
-            if (_productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked && noPending &&
+            if (EvidenceReconciliationReadyLocked() && _productionInspectionStartupVerified && !_productionInspectionRecoveryBlocked && noPending &&
                 routesReady && current.Evidence.State != HealthState.Faulted)
                 return RuntimeGate(gate, ProductionAdmissionGateStatus.Passed,
                     "ProductionEvidenceLedgerVerified");

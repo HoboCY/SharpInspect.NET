@@ -66,7 +66,8 @@ public sealed partial class StationRuntime
         var outboxBacklog = storeOptions.Outbox is { } outbox ? Outbox.ProductionOutboxBinding.CompleteBacklog(outbox,
             await new SqliteProductionOutboxQuery(storeOptions).ReadBacklogAsync(token).ConfigureAwait(false)) : null;
         var preflight = TraceStoragePreflightEvaluator.Evaluate(policy, storeOptions.TraceStoragePolicies?.DeploymentScope,
-            TraceStoragePreflightEvaluator.Observe(storeOptions), store.VerifiedProfile, DateTimeOffset.UtcNow, outboxBacklog);
+            TraceStoragePreflightEvaluator.Observe(storeOptions), store.VerifiedProfile, DateTimeOffset.UtcNow, outboxBacklog,
+            reconciliationOptions: storeOptions.EvidenceReconciliation);
         var capacityGates = new[] { TraceStoragePreflightGate.Policy, TraceStoragePreflightGate.RouteInventory,
             TraceStoragePreflightGate.StoragePath, TraceStoragePreflightGate.SqliteProfile,
             TraceStoragePreflightGate.StorageReserve, TraceStoragePreflightGate.WalCapacity };

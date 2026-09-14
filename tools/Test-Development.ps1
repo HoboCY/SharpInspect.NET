@@ -3,7 +3,8 @@ param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
     [string]$Schema33PackageFeed = $env:SHARPINSPECT_SCHEMA33_PACKAGE_FEED,
     [string]$Schema34PackageFeed = $env:SHARPINSPECT_SCHEMA34_PACKAGE_FEED,
     [string]$Schema35PackageFeed = $env:SHARPINSPECT_SCHEMA35_PACKAGE_FEED,
-    [string]$Schema36PackageFeed = $env:SHARPINSPECT_SCHEMA36_PACKAGE_FEED)
+    [string]$Schema36PackageFeed = $env:SHARPINSPECT_SCHEMA36_PACKAGE_FEED,
+    [string]$Schema37PackageFeed = $env:SHARPINSPECT_SCHEMA37_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
 if ($Ticket -ge 49) {
     if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
@@ -53,6 +54,16 @@ if ($Ticket -ge 53) {
     foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
         if (-not (Test-Path -LiteralPath (Join-Path $Schema36PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
             throw 'The preserved schema-36 package feed is incomplete.'
+        }
+    }
+}
+if ($Ticket -ge 54) {
+    if ([string]::IsNullOrWhiteSpace($Schema37PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema37PackageFeed)) {
+        throw 'Ticket 54 and later require an absolute preserved schema-37 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema37PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-37 package feed is incomplete.'
         }
     }
 }
@@ -921,6 +932,13 @@ try {
     if ($Ticket -ge 53) {
         & (Join-Path $PSScriptRoot 'Test-OutboxMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
             -SourceSchema 36 -SourcePackageFeed $Schema36PackageFeed
+    }
+    if ($Ticket -ge 54) {
+        $taskReconciliationFeeds = @{ 35=$Schema35PackageFeed; 36=$Schema36PackageFeed; 37=$Schema37PackageFeed }
+        foreach ($taskSourceSchema in 35,36,37) {
+            & (Join-Path $PSScriptRoot 'Test-EvidenceReconciliationMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
+                -SourceSchema $taskSourceSchema -SourcePackageFeed $taskReconciliationFeeds[$taskSourceSchema]
+        }
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

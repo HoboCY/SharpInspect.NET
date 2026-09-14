@@ -154,4 +154,9 @@ public sealed class ProductionStoreOptions
     /// including a schema-35 store; a schema-36 store always configures it. The outbox never
     /// opens a network connection, a file or a formatter from this store.</summary>
     public ProductionOutboxStoreOptions? Outbox { get; init; }
+
+    /// <summary>Explicit schema-38 startup reconciliation and bounded historical scrubber.
+    /// It preserves the configured image-only or Outbox profile; it does not enable a
+    /// missing image finalizer, route or manual recovery capability.</summary>
+    public EvidenceReconciliationStoreOptions? EvidenceReconciliation { get; init; }
 }

@@ -126,13 +126,15 @@ public sealed class SqliteProductionImageEvidenceQuery : IProductionImageEvidenc
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            var expectedSchema = _options.Outbox is null ? ProductionImageFinalizationStoreOptions.SchemaVersion
+            var expectedSchema = _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
+                : _options.Outbox is null ? ProductionImageFinalizationStoreOptions.SchemaVersion
                 : _options.Outbox.RecoveryEnabled ? ProductionOutboxRecoveryOptions.SchemaVersion
                 : ProductionOutboxStoreOptions.SchemaVersion;
             if (schema != expectedSchema)
                 throw new InvalidOperationException(schema > expectedSchema
                     ? "ImageFinalizationSchemaTooNew"
                     : "ImageFinalizationGovernedMigrationRequired");
+            SqliteCommandStore.RequireConfiguredEvidenceReconciliation(database, _options, deadline);
             var verification = AuditChainDatabase.Verify(database, policy, key.KeyId,
                 key.PublicKeyBase64,
                 new AuditVerificationRequest(0, policy.MaximumVerificationEntries), startup: false,

@@ -25,12 +25,13 @@ internal sealed class ProductionOutboxWorker
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly TaskCompletionSource<bool> _startup = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _run;
+    private readonly Task _deliveryGate;
 
     internal ProductionOutboxWorker(SqliteCommandStore store, ProductionStoreOptions options,
         ProductionOutboxOptions transports, Guid epoch, Task initialization,
-        Action<OutboxBacklogSnapshot> publish, Func<string, Task> fault)
+        Action<OutboxBacklogSnapshot> publish, Func<string, Task> fault, Task? deliveryGate = null)
     {
-        _store = store; _storeOptions = options;
+        _store = store; _storeOptions = options; _deliveryGate = deliveryGate ?? Task.CompletedTask;
         _options = options.Outbox ?? throw new ArgumentException("OutboxConfigurationRequired");
         _transports = transports; _query = new(options); _epoch = epoch; _publish = publish; _fault = fault;
         _run = Task.Run(() => RunAsync(initialization));
@@ -56,6 +57,7 @@ internal sealed class ProductionOutboxWorker
             // schema 37 在本地启动完成前写入耐久阻塞，Required 准入与 BestEffort 报警分别由积压派生。
             await RequireHistoricalHandlersAsync(_stop.Token).ConfigureAwait(false);
             _startup.TrySetResult(true); // 启动就绪只取决于本地账本校验，不能被外部接收端的响应时间拖住。
+            await _deliveryGate.WaitAsync(_stop.Token).ConfigureAwait(false);
             while (true)
             {
                 _stop.Token.ThrowIfCancellationRequested();
@@ -127,22 +129,33 @@ internal sealed class ProductionOutboxWorker
             foreach (var item in page.Items)
             {
                 token.ThrowIfCancellationRequested();
-                if (HistoricalHandlerFailure(item, _transports) is not { } failure) continue;
-                if (!_options.RecoveryEnabled)
+                var current = item;
+                if (_storeOptions.EvidenceReconciliation is not null && current.ActiveAttemptId is not null)
+                {
+                    await RecoverInterruptedAttemptAsync(current).ConfigureAwait(false);
+                    var refreshed = await _query.ReadPendingAsync(current.Position - 1, 1, token).ConfigureAwait(false);
+                    if (!refreshed.Available) throw new InvalidOperationException(refreshed.ReasonCode);
+                    current = refreshed.Items.Single(x => x.Delivery.DeliveryId == item.Delivery.DeliveryId);
+                    if (current.ActiveAttemptId is not null)
+                        throw new InvalidOperationException("OutboxInterruptedAttemptRecoveryIncomplete");
+                }
+                if (HistoricalHandlerFailure(current, _transports) is not { } failure) continue;
+                if (!_options.RecoveryEnabled && _storeOptions.EvidenceReconciliation is null)
                 {
                     if (item.Delivery.Route.Criticality == OutboxRouteCriticality.Required)
                         throw new InvalidOperationException(failure);
                     continue;
                 }
-                var current = item;
                 if (current.ActiveAttemptId is not null)
                 {
                     // The prior process may already have reached the receiver; close that
                     // exact attempt as unknown before writing a non-attempt system block.
-                    await ProcessAsync(current).ConfigureAwait(false);
+                    await RecoverInterruptedAttemptAsync(current).ConfigureAwait(false);
                     var refreshed = await _query.ReadPendingAsync(current.Position - 1, 1, token).ConfigureAwait(false);
                     if (!refreshed.Available) throw new InvalidOperationException(refreshed.ReasonCode);
                     current = refreshed.Items.Single(x => x.Delivery.DeliveryId == item.Delivery.DeliveryId);
+                    if (current.ActiveAttemptId is not null)
+                        throw new InvalidOperationException("OutboxInterruptedAttemptRecoveryIncomplete");
                 }
                 await BlockHandlerAsync(current, failure, token).ConfigureAwait(false);
             }
@@ -174,26 +187,33 @@ internal sealed class ProductionOutboxWorker
             ? null : "OutboxHistoricalHandlerContractMismatch";
     }
 
+    private async Task RecoverInterruptedAttemptAsync(OutboxPendingItem item)
+    {
+        if (item.ActiveAttemptId is not { } interrupted || item.ActiveRuntimeEpoch is not { } previousEpoch)
+            throw new InvalidOperationException("OutboxInterruptedAttemptEpochMissing");
+        var recordedAt = DateTimeOffset.UtcNow;
+        var recovered = await _store.AppendOutboxOutcomeAsync(new OutboxFailureRequest(item.Delivery.DeliveryId,
+            interrupted, previousEpoch, recordedAt, "OutboxProcessRestartOutcomeUnknown",
+            OutboxFailureCategory.UnknownOutcome, RetryAfter(recordedAt, item.AttemptCount)), Deadline(), CancellationToken.None)
+            .ConfigureAwait(false);
+        // Startup must observe a durable outcome; its caller may not swallow a busy or
+        // deadline rejection and certify a still-active attempt as safely queued.
+        RequireCommit(recovered);
+        Publish(recovered);
+    }
+
     private async Task ProcessAsync(OutboxPendingItem item)
     {
         try
         {
-            if (item.ActiveAttemptId is { } interrupted)
+            if (item.ActiveAttemptId is not null)
             {
-                // 已开始的尝试未留下终态，无法判断接收端是否已处理；先记为结果未知，再按原 ID 和字节重试。
-                if (item.ActiveRuntimeEpoch is not { } previousEpoch)
-                    throw new InvalidOperationException("OutboxInterruptedAttemptEpochMissing");
-                var recordedAt = DateTimeOffset.UtcNow;
-                var recovered = await _store.AppendOutboxOutcomeAsync(new OutboxFailureRequest(item.Delivery.DeliveryId,
-                    interrupted, previousEpoch, recordedAt, "OutboxProcessRestartOutcomeUnknown",
-                    OutboxFailureCategory.UnknownOutcome, RetryAfter(recordedAt, item.AttemptCount)), Deadline(), CancellationToken.None)
-                    .ConfigureAwait(false);
-                RequireCommit(recovered);
-                Publish(recovered);
+                await RecoverInterruptedAttemptAsync(item).ConfigureAwait(false);
                 return; // 必须重新读取持久化的重试预算，不能沿用恢复前的次数直接再次发送。
             }
             var delivery = item.Delivery;
-            if (_options.RecoveryEnabled && HistoricalHandlerFailure(item, _transports) is { } failure)
+            if ((_options.RecoveryEnabled || _storeOptions.EvidenceReconciliation is not null) &&
+                HistoricalHandlerFailure(item, _transports) is { } failure)
             {
                 await BlockHandlerAsync(item, failure, _stop.Token).ConfigureAwait(false);
                 return;

@@ -106,8 +106,8 @@ internal static partial class AuditChainDatabase
         ProductionImageEvidenceStoreOptions options, StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion
-            or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion,
+            ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion
+            or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion,
             "ImageEvidenceSchemaRequired");
         Require(kind == SqliteCommandStore.ImageEvidenceActivationKind, "ImageEvidenceAuditKindInvalid");
         options.Validate();

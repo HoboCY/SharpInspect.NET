@@ -127,7 +127,8 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            var expected = outbox.RecoveryEnabled
+            var expected = _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
+                : outbox.RecoveryEnabled
                 ? ProductionOutboxRecoveryOptions.SchemaVersion : ProductionOutboxStoreOptions.SchemaVersion;
             if (schema == ProductionOutboxRecoveryOptions.SchemaVersion && !outbox.RecoveryEnabled)
                 throw new InvalidOperationException("ProductionOutboxRecoveryConfigurationRequired");

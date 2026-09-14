@@ -42,7 +42,9 @@ internal static class ProductionImageEvidenceBinding
             store.RecipeReleases?.EvidenceCapturePolicies?.ContentHash);
         var finalized = store.ImageFinalization is null ? staged : ProductionAdmissionCanonical.Hash("production-evidence-policy-v3",
             staged, store.ImageFinalization.BindingHash, ProductionImageFinalizationWorker.ExecutionProfile);
-        return store.Outbox is null ? finalized : ProductionAdmissionCanonical.Hash("production-evidence-policy-v4",
+        var delivered = store.Outbox is null ? finalized : ProductionAdmissionCanonical.Hash("production-evidence-policy-v4",
             finalized, store.Outbox.BindingHash, Outbox.ProductionOutboxWorker.ExecutionProfile);
+        return store.EvidenceReconciliation is null ? delivered : ProductionAdmissionCanonical.Hash("production-evidence-policy-v5",
+            delivered, store.EvidenceReconciliation.BindingHash, Evidence.EvidenceReconciliationWorker.ExecutionProfile);
     }
 }

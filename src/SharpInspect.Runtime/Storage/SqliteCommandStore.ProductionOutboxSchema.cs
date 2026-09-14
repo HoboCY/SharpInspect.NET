@@ -227,7 +227,9 @@ internal sealed partial class SqliteCommandStore
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(deadline);
         options.Validate();
-        SqliteNative.Execute(database, options.RecoveryEnabled ? ProductionOutboxGovernedSchemaSql :
+        SqliteNative.Execute(database, options.RecoveryEnabled ||
+            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) == EvidenceReconciliationStoreOptions.SchemaVersion
+            ? ProductionOutboxGovernedSchemaSql :
             ProductionOutboxSchemaSql, deadline);
         AuditChainDatabase.Execute(database, @"INSERT INTO production_outbox_store_config
             (Id,FormatVersion,RouteSetHash,RouteCount,MaximumAttempts,MaximumRetryDelayMilliseconds,
@@ -311,8 +313,8 @@ internal sealed partial class SqliteCommandStore
         // The schema-37 extension configuration is re-proved on every path that re-proves the
         // schema-36 configuration row, so an edited recovery budget fails closed everywhere.
         if (options.ManualRecovery is { } recovery &&
-            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
-                ProductionOutboxRecoveryOptions.SchemaVersion)
+            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
+                ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion)
             RequireConfiguredProductionOutboxRecovery(database, options, recovery, deadline);
     }
 
@@ -335,13 +337,15 @@ internal sealed partial class SqliteCommandStore
             "AuditPolicyNotConfigured");
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         AuditChainDatabase.Require(schema is ProductionOutboxStoreOptions.SchemaVersion or
-            ProductionOutboxRecoveryOptions.SchemaVersion, "ProductionOutboxGovernedMigrationRequired");
+            ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion,
+            "ProductionOutboxGovernedMigrationRequired");
+        RequireConfiguredEvidenceReconciliation(database, options, deadline);
         // The schema-37 extension is bidirectional: a 37 store must declare it and a
         // recovery-enabled store must already be migrated to 37.
         AuditChainDatabase.Require(schema != ProductionOutboxRecoveryOptions.SchemaVersion || outbox.RecoveryEnabled,
             "ProductionOutboxRecoveryConfigurationRequired");
         AuditChainDatabase.Require(!outbox.RecoveryEnabled ||
-            schema == ProductionOutboxRecoveryOptions.SchemaVersion,
+            schema is ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion,
             "ProductionOutboxRecoveryGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
@@ -719,7 +723,9 @@ internal sealed partial class SqliteCommandStore
                         succeeded.Add(deliveryId);
                         break;
                     case OutboxEventKind.HandlerBlocked:
-                        AuditChainDatabase.Require(options.RecoveryEnabled && created.Contains(deliveryId) &&
+                        AuditChainDatabase.Require((options.RecoveryEnabled ||
+                            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) == EvidenceReconciliationStoreOptions.SchemaVersion) &&
+                            created.Contains(deliveryId) &&
                             !succeeded.Contains(deliveryId) && !activeAttempts.ContainsKey(deliveryId) &&
                             value.AttemptId is null && value.AttemptNumber is null && value.RuntimeEpoch is null &&
                             value.FailureCategory == OutboxFailureCategory.Permanent && value.RetryAfterUtc is null &&

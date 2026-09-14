@@ -293,6 +293,8 @@ internal static class Program
         services.AddSingleton<AuditIntegrityViewModel>();
         services.AddSingleton(p => new AlgorithmResultHistoryViewModel(p.GetService<IAlgorithmResultQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new EvidenceReconciliationViewModel(p.GetService<IEvidenceReconciliationQuery>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionOutboxViewModel(p.GetService<IProductionOutboxQuery>(),
@@ -370,6 +372,7 @@ internal static class Program
         if (productionRecovery is not null)
             window.AttachProductionRecovery(productionRecovery);
         window.AttachProductionImageEvidence(provider.GetRequiredService<ProductionImageEvidenceViewModel>());
+        window.AttachEvidenceReconciliation(provider.GetRequiredService<EvidenceReconciliationViewModel>());
         window.AttachProductionOutbox(provider.GetRequiredService<ProductionOutboxViewModel>());
         var exitCode = 0;
         if (smoke)

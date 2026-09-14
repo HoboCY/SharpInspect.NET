@@ -92,8 +92,10 @@ public sealed class SqliteProductionOutboxGovernanceQuery : IProductionOutboxGov
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema != ProductionOutboxRecoveryOptions.SchemaVersion)
-                throw new InvalidOperationException(schema > ProductionOutboxRecoveryOptions.SchemaVersion
+            var expected = _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
+                : ProductionOutboxRecoveryOptions.SchemaVersion;
+            if (schema != expected)
+                throw new InvalidOperationException(schema > expected
                     ? "ProductionOutboxSchemaTooNew" : "ProductionOutboxRecoveryGovernedMigrationRequired");
             SqliteCommandStore.VerifyProductionOutboxReadGuard(database, _options, deadline);
             SqliteCommandStore.ValidateProductionOutboxHistory(database, outbox, production, deadline);

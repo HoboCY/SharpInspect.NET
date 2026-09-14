@@ -104,6 +104,14 @@ internal sealed class ProductionImageFinalizationWorker
 
     private async Task VerifyStartupAsync(CancellationToken token)
     {
+        if (_storeOptions.EvidenceReconciliation is not null)
+        {
+            // The independent coordinator completed inventory, pending evidence checks and
+            // bound-final adoption before this worker was released. Retained pixels belong
+            // to its paged historical scrubber.
+            _publish(await _query.ReadBacklogAsync(token).ConfigureAwait(false));
+            return;
+        }
         var stageNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var finalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         long after = 0;

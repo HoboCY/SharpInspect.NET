@@ -33,7 +33,8 @@ public sealed partial class StationRuntime
                 route.ContentHash == binding.Route.ContentHash)))
             throw new ArgumentException("OutboxTransportNotInDeploymentRoutes", nameof(transports));
         _outboxWorker = new(store, options, _outboxTransports, _snapshot.RuntimeEpoch, _storeInitialization,
-            ProjectOutboxBacklog, HandleOutboxFaultAsync);
+            ProjectOutboxBacklog, HandleOutboxFaultAsync, _evidenceReconciliationWorker?.Startup);
+        _evidenceOutboxStartup.TrySetResult(_outboxWorker.Startup);
     }
 
     private void ProjectOutboxBacklog(OutboxBacklogSnapshot backlog)

@@ -19,6 +19,8 @@ public sealed partial class StationRuntime
                 .WaitAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedRecipeChangesAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedProductionArmAttemptsAsync(_lifetime.Token).ConfigureAwait(false);
+            if (_evidenceReconciliationWorker is { } evidenceWorker)
+                await evidenceWorker.Startup.WaitAsync(_lifetime.Token).ConfigureAwait(false);
             if (_outboxWorker is { } outboxWorker)
                 await outboxWorker.Startup.WaitAsync(_lifetime.Token).ConfigureAwait(false);
             if (options.ImageStage is not null)
@@ -59,6 +61,8 @@ public sealed partial class StationRuntime
             lock (_sync)
             {
                 if (_disposed || _shutdownRequested) return;
+                if (!EvidenceReconciliationReadyLocked())
+                    throw new InvalidOperationException("EvidenceReconciliationStartupUnavailable");
                 owner = new(_snapshot.RuntimeEpoch, _lifetime.Token, _productionInspectionExecutionOptions!);
                 _productionInspectionOwner = owner;
                 _productionInspectionStartupVerified = true;

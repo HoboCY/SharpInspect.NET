@@ -20,7 +20,9 @@ public sealed partial class StationRuntime
         if (options?.ImageFinalization is null) return;
         if (_audit is not SqliteCommandStore store)
             throw new ArgumentException("ImageFinalizationSqliteStoreRequired");
-        _imageFinalizationWorker = new(store, options, _snapshot.RuntimeEpoch, _storeInitialization,
+        var initialization = _evidenceReconciliationWorker is null ? _storeInitialization :
+            Task.WhenAll(_storeInitialization, _evidenceReconciliationWorker.Startup);
+        _imageFinalizationWorker = new(store, options, _snapshot.RuntimeEpoch, initialization,
             ProjectImageBacklog, reason => HandleImageFinalizationFaultAsync(reason, true),
             classifiedFault: HandleImageFinalizationFaultAsync);
     }

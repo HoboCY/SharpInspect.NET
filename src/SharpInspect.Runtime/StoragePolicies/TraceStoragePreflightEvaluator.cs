@@ -38,7 +38,8 @@ internal static class TraceStoragePreflightEvaluator
     internal static TraceStoragePreflightReport Evaluate(TraceStoragePolicyReadResult current,
         TraceStorageDeploymentScope? scope, TraceStorageVolumeObservation volume,
         SqliteCommandStore.VerifiedSqliteProfile? profile, DateTimeOffset now,
-        OutboxBacklogSnapshot? outboxBacklog = null)
+        OutboxBacklogSnapshot? outboxBacklog = null, EvidenceReconciliationSnapshot? reconciliation = null,
+        EvidenceReconciliationStoreOptions? reconciliationOptions = null)
     {
         var policy = current.Available ? current.Publication?.Policy : null;
         var rows = new List<TraceStoragePreflightRow>();
@@ -84,8 +85,27 @@ internal static class TraceStoragePreflightEvaluator
         }
         else Row(TraceStoragePreflightGate.RequiredRouteBacklog, TraceStoragePreflightStatus.NotImplemented,
             "TraceStorageRouteBacklogUnobserved");
-        Row(TraceStoragePreflightGate.EvidenceReconciliation, TraceStoragePreflightStatus.NotImplemented, "TraceStorageEvidenceReconciliationUnavailable");
-        Row(TraceStoragePreflightGate.Scrubber, TraceStoragePreflightStatus.NotImplemented, "TraceStorageScrubberEnforcementUnavailable");
+        if (reconciliationOptions is null)
+        {
+            Row(TraceStoragePreflightGate.EvidenceReconciliation, TraceStoragePreflightStatus.NotImplemented, "TraceStorageEvidenceReconciliationUnavailable");
+            Row(TraceStoragePreflightGate.Scrubber, TraceStoragePreflightStatus.NotImplemented, "TraceStorageScrubberEnforcementUnavailable");
+        }
+        else
+        {
+            var available = reconciliation?.Available == true;
+            var ready = available && reconciliation!.LatestStartup?.Completed == true &&
+                !reconciliation.IntegrityFaultRecorded && reconciliation.PendingQuarantines == 0;
+            Row(TraceStoragePreflightGate.EvidenceReconciliation, ready ? TraceStoragePreflightStatus.Passed :
+                available && reconciliation!.IntegrityFaultRecorded ? TraceStoragePreflightStatus.Failed : TraceStoragePreflightStatus.Missing,
+                ready ? "EvidenceReconciliationLatestStartupRecorded" : available && reconciliation!.IntegrityFaultRecorded ?
+                    "EvidenceReconciliationIntegrityFaultRecorded" : "EvidenceReconciliationStartupRequired");
+            var budgetMatches = policy?.Scrubber.ContentHash == reconciliationOptions.Scrubber.ContentHash;
+            Row(TraceStoragePreflightGate.Scrubber, !budgetMatches ? TraceStoragePreflightStatus.Mismatch :
+                ready ? TraceStoragePreflightStatus.Passed : TraceStoragePreflightStatus.Missing,
+                !budgetMatches ? "EvidenceScrubberPolicyBudgetMismatch" : ready ?
+                    "EvidenceScrubberBudgetBound" : "EvidenceScrubberStartupRequired",
+                expected: policy?.Scrubber.ContentHash, observed: reconciliationOptions.Scrubber.ContentHash);
+        }
         Row(TraceStoragePreflightGate.OtherDeploymentPolicies, TraceStoragePreflightStatus.NotImplemented, "TraceStorageOtherDeploymentPoliciesUnavailable");
         Row(TraceStoragePreflightGate.ProductionCycle, TraceStoragePreflightStatus.NotImplemented, "TraceStorageProductionCycleUnavailable");
         return new(now, current.Available ? current.Publication?.Version : null,

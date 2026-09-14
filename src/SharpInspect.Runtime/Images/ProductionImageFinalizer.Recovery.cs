@@ -132,7 +132,16 @@ internal sealed partial class ProductionImageFinalizer
         _ = worker.ContinueWith(completed => _ = completed.Exception,
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
-        return await worker.WaitAsync(deadline.Remaining, token).ConfigureAwait(false);
+        try { return await worker.WaitAsync(deadline.Remaining, token).ConfigureAwait(false); }
+        catch
+        {
+            _ = worker.ContinueWith(completed =>
+            {
+                if (completed.Status == TaskStatus.RanToCompletion && completed.Result is IDisposable proof)
+                    proof.Dispose();
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            throw;
+        }
     }
 
     private static FileStream OpenForDeletion(string path)

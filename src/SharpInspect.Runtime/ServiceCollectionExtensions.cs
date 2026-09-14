@@ -369,6 +369,8 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IProductionInspectionHistoryQuery>(_ => new SqliteProductionInspectionHistoryQuery(options));
             services.TryAddSingleton<IProductionRecoveryHistoryQuery>(_ => new SqliteProductionRecoveryHistoryQuery(options));
         }
+        if (options.EvidenceReconciliation is not null)
+            services.TryAddSingleton<IEvidenceReconciliationQuery>(_ => new SqliteEvidenceReconciliationQuery(options));
         if (options.ImageFinalization is not null)
             services.TryAddSingleton<IProductionImageEvidenceQuery>(_ => new SqliteProductionImageEvidenceQuery(options));
         if (options.Outbox is not null)

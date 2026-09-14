@@ -549,7 +549,8 @@ public sealed class RecipeDraftStorageTests
              RecipeLifecycleStoreOptions? recipeLifecycle = null,
              ProductionImageEvidenceStoreOptions? imageEvidence = null,
              ProductionImageFinalizationStoreOptions? imageFinalization = null,
-             ProductionOutboxStoreOptions? outbox = null)
+             ProductionOutboxStoreOptions? outbox = null,
+             EvidenceReconciliationStoreOptions? evidenceReconciliation = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -611,6 +612,7 @@ public sealed class RecipeDraftStorageTests
                 ImageEvidence = imageEvidence,
                 ImageFinalization = imageFinalization,
                 Outbox = outbox,
+                EvidenceReconciliation = evidenceReconciliation,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };

@@ -19,7 +19,8 @@ internal sealed partial class SqliteCommandStore
     {
         var request = work.HandlerBlock!;
         var options = _options.Outbox!;
-        if (options.ManualRecovery is not { } recovery)
+        var recovery = options.ManualRecovery;
+        if (recovery is null && !EvidenceReconciliationEnabled)
             return ProductionOutboxRejected(work, "ProductionOutboxRecoveryGovernedMigrationRequired");
         var transactionStarted = false;
         var committed = false;
@@ -42,8 +43,10 @@ internal sealed partial class SqliteCommandStore
             if (facts.State.State == OutboxDeliveryState.Succeeded || delivery.Payload is null ||
                 facts.State.ActiveAttemptId is not null)
                 return ProductionOutboxRejected(work, "ProductionOutboxHandlerBlockStateInvalid");
-            var recoveries = ReadProductionOutboxRecoveryRows(database, options, recovery, deadline);
-            var corrections = ReadProductionOutboxCorrectionRows(database, options, recovery, deadline);
+            var recoveries = recovery is null ? Array.Empty<ProductionOutboxRecoveryStoredRow>() :
+                ReadProductionOutboxRecoveryRows(database, options, recovery, deadline);
+            var corrections = recovery is null ? Array.Empty<ProductionOutboxCorrectionStoredRow>() :
+                ReadProductionOutboxCorrectionRows(database, options, recovery, deadline);
             if (request.ExpectedStateRevisionHash != ProductionOutboxStateRevision(delivery,
                 facts.State.LastEventContentHash, recoveries, corrections))
                 return ProductionOutboxRejected(work, "ProductionOutboxStateChanged");

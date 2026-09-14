@@ -191,6 +191,10 @@ internal static class StoreMigrationJournalGuard
         if (!StoreMigrationJournal.TryResolvePlan(data.SourceSchemaVersion, data.TargetSchemaVersion,
                 data.PlanId, out var plan))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
+        if (plan.EvidenceReconciliation && (options.EvidenceReconciliation is null ||
+                SqliteCommandStore.ReconciliationConfiguration(options).BindingHash != data.EvidenceReconciliationConfigurationHash ||
+                options.Outbox?.ManualRecovery?.BindingHash != data.ProductionOutboxRecoveryConfigurationHash))
+            throw new InvalidOperationException("StoreMigrationJournalConfigurationMismatch");
         if (plan.Lifecycle && (options.RecipeLifecycle is null ||
                 LifecycleHash(options.RecipeLifecycle) != data.LifecycleConfigurationHash) ||
             plan.ImageEvidence && (options.ImageEvidence is null ||
