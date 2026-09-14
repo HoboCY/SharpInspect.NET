@@ -7,7 +7,7 @@ namespace SharpInspect.Abstractions;
 public enum OutboxRouteCriticality : byte { Required = 1, BestEffort = 2 }
 public enum OutboxDeliveryState : byte { Pending = 1, Failed = 2, Succeeded = 3 }
 public enum OutboxFailureCategory : byte { Transient = 1, UnknownOutcome = 2, Permanent = 3 }
-public enum OutboxEventKind : byte { Created = 1, AttemptStarted = 2, AttemptFailed = 3, Succeeded = 4 }
+public enum OutboxEventKind : byte { Created = 1, AttemptStarted = 2, AttemptFailed = 3, Succeeded = 4, HandlerBlocked = 5 }
 
 /// <summary>A versioned data or receiver contract; its hash identifies the complete contract.</summary>
 public sealed class OutboxContractReference

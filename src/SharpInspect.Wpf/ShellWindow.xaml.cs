@@ -317,6 +317,7 @@ public partial class ShellWindow : Window
     {
         IsPrivacyLocked = true;
         DeactivateProductionImageEvidence();
+        DeactivateProductionOutbox();
         IdentityPanel.ClearSensitiveInputs();
         IdentityAdministrationPanel.ClearSensitiveInputs();
         AdministratorRecoveryPanel.ClearSensitiveInputs();
@@ -453,6 +454,7 @@ public partial class ShellWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         DeactivateProductionImageEvidence();
+        DeactivateProductionOutbox();
         _viewModel.PropertyChanged -= Refresh;
         _viewModel.State.PropertyChanged -= Refresh;
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
@@ -518,6 +520,7 @@ public partial class ShellWindow : Window
         };
         var traceSelected = _viewModel.SelectedSection == "Trace";
         RenderProductionImageEvidence(traceSelected);
+        RenderProductionOutbox(traceSelected);
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
         var alarmSelected = _viewModel.SelectedSection == "Alarms";
         var recipeSelected = _viewModel.SelectedSection == "Recipes";

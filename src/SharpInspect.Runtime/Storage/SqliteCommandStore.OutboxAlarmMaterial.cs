@@ -15,7 +15,8 @@ internal sealed partial class SqliteCommandStore
     {
         if (_options.Outbox is not { } outbox || _options.AlarmPolicy is null ||
             !outbox.Routes.Any(route => route.Criticality == OutboxRouteCriticality.BestEffort)) return null;
-        if (ReadUserVersion(database, deadline) != ProductionOutboxStoreOptions.SchemaVersion) return null;
+        if (ReadUserVersion(database, deadline) is not (ProductionOutboxStoreOptions.SchemaVersion or
+                ProductionOutboxRecoveryOptions.SchemaVersion)) return null;
         RequireConfiguredProductionOutbox(database, outbox, deadline);
         var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
         AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);

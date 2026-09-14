@@ -16,7 +16,7 @@ internal static partial class AuditChainDatabase
     private sealed record ProductionOutboxVerification(ProductionOutboxStoreOptions Options,
         IReadOnlyList<ProductionOutboxStoredEvent> Rows)
     {
-        internal long MetadataCount => Rows.Count + 1L;
+        internal long MetadataCount => Rows.Count + (Options.RecoveryEnabled ? 2L : 1L);
     }
 
     /// <summary>
@@ -43,9 +43,12 @@ internal static partial class AuditChainDatabase
         Require(Scalar(database,
                 "SELECT COUNT(*) FROM audit_entries WHERE Kind='ProductionOutboxStoreActivated';",
                 deadline) == 1, "ProductionOutboxActivationMissing");
+        Require(Scalar(database,
+                "SELECT COUNT(*) FROM audit_entries WHERE Kind='ProductionOutboxRecoveryActivated';",
+                deadline) == (outboxOptions!.RecoveryEnabled ? 1 : 0), "ProductionOutboxRecoveryActivationMissing");
         Require(Scalar(database, @"SELECT COUNT(*) FROM audit_entries WHERE Kind IN
                 ('ProductionOutboxCreated','ProductionOutboxAttemptStarted',
-                 'ProductionOutboxAttemptFailed','ProductionOutboxSucceeded');", deadline) == rows.Count,
+                 'ProductionOutboxAttemptFailed','ProductionOutboxSucceeded','ProductionOutboxHandlerBlocked');", deadline) == rows.Count,
             "ProductionOutboxAuditCountMismatch");
         return new(outboxOptions!, rows);
     }
@@ -56,6 +59,19 @@ internal static partial class AuditChainDatabase
     {
         Require(payload.Length is > 0 and <= ProductionOutboxStoreOptions.MaximumAuditPayloadBytes,
             "ProductionOutboxAuditPayloadCapacityExceeded");
+        if (kind == SqliteCommandStore.ProductionOutboxRecoveryActivationKind)
+        {
+            Require(verification.Options.RecoveryEnabled && payload.AsSpan().SequenceEqual(
+                SqliteCommandStore.ProductionOutboxRecoveryActivationPayload(verification.Options)),
+                "ProductionOutboxRecoveryActivationBindingMismatch");
+            Require(!verification.Rows.Any(x => x.Event.Kind == OutboxEventKind.HandlerBlocked && x.Event.AuditSequence <= sequence) &&
+                Scalar(database, "SELECT COUNT(*) FROM production_outbox_recovery WHERE AuthorizationAuditSequence<=?;",
+                    deadline, sequence.ToString(System.Globalization.CultureInfo.InvariantCulture)) == 0 &&
+                Scalar(database, "SELECT COUNT(*) FROM production_outbox_corrections WHERE AuthorizationAuditSequence<=?;",
+                    deadline, sequence.ToString(System.Globalization.CultureInfo.InvariantCulture)) == 0,
+                "ProductionOutboxRecoveryActivationOrderInvalid");
+            return;
+        }
         if (kind == SqliteCommandStore.ProductionOutboxActivationKind)
         {
             Require(payload.AsSpan().SequenceEqual(verification.Options.EncodeActivationPayload()),
@@ -122,7 +138,7 @@ internal static partial class AuditChainDatabase
         StoreDeadline deadline, long persistedReserve) =>
         ProductionOutboxAuditCapacityFailure(database, policy, deadline, persistedReserve) is null;
 
-    private static string ProductionOutboxAuditSchema()
+    private static string ProductionOutboxAuditSchema(bool withHandlerBlock = false)
     {
         // The schema-35 (schema-33) envelope is reused unchanged: outbox facts are metadata
         // entries with every typed position column NULL. No existing audit position, envelope
@@ -142,11 +158,14 @@ internal static partial class AuditChainDatabase
             "TraceStoragePolicyPosition", "QualificationCyclePosition", "PlcCommunicationPosition",
             "ProductionInspectionPosition", "PartIdentityPosition"
         }.Select(value => value + " IS NULL"));
-        return sql.Insert(close + 1, string.Concat(new[]
+        var kinds = new[]
         {
             SqliteCommandStore.ProductionOutboxActivationKind, "ProductionOutboxCreated",
             "ProductionOutboxAttemptStarted", "ProductionOutboxAttemptFailed", "ProductionOutboxSucceeded"
-        }.Select(kind => $" OR (Kind='{kind}' AND Sequence>1 AND {empty})")));
+        }.AsEnumerable();
+        if (withHandlerBlock) kinds = kinds.Append("ProductionOutboxHandlerBlocked")
+            .Append(SqliteCommandStore.ProductionOutboxRecoveryActivationKind);
+        return sql.Insert(close + 1, string.Concat(kinds.Select(kind => $" OR (Kind='{kind}' AND Sequence>1 AND {empty})")));
     }
 
     /// <summary>
@@ -158,8 +177,9 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, ProductionOutboxStoreOptions options,
         StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionOutboxStoreOptions.SchemaVersion, "ProductionOutboxSchemaRequired");
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion,
+            "ProductionOutboxSchemaRequired");
         options.Validate();
         var payload = options.EncodeActivationPayload();
         Require(payload.Length is > 0 and <= ProductionOutboxStoreOptions.MaximumAuditPayloadBytes,
@@ -177,6 +197,23 @@ internal static partial class AuditChainDatabase
         return (sequence, tail.Hash);
     }
 
+    internal static void AppendProductionOutboxRecoveryActivation(sqlite3 database,
+        AuditIntegrityPolicy policy, IAuditSigningKey key, ProductionOutboxStoreOptions options, StoreDeadline deadline)
+    {
+        Require(Scalar(database, "PRAGMA user_version;", deadline) == 37 && options.RecoveryEnabled,
+            "ProductionOutboxRecoverySchemaRequired");
+        Require(Scalar(database, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ProductionOutboxRecoveryActivated';",
+            deadline) == 0, "ProductionOutboxRecoveryActivationConflict");
+        AppendEntry(database, policy, SqliteCommandStore.ProductionOutboxRecoveryActivationKind, null,
+            SqliteCommandStore.ProductionOutboxRecoveryActivationPayload(options), deadline, productionOutboxData: true);
+        // Preserve the existing signed checkpoint cadence. An off-cadence checkpoint would
+        // reset every writer's distance calculation and leave the next required position unsigned.
+        var tail = Tail(database, deadline);
+        if (tail.Sequence - Scalar(database, "SELECT COALESCE(MAX(Sequence),0) FROM audit_checkpoints;",
+                deadline) >= policy.CheckpointEveryEntries)
+            CreateCheckpoint(database, policy, key, deadline);
+    }
+
     /// <summary>
     /// Appends the one signed metadata entry of one outbox fact. The future reserve is the exact
     /// number of facts this ledger must still be able to append after this entry, so no other
@@ -186,8 +223,9 @@ internal static partial class AuditChainDatabase
         AuditIntegrityPolicy policy, IAuditSigningKey key, OutboxEventKind kind, byte[] payload,
         ProductionOutboxStoreOptions options, long futureReserve, StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionOutboxStoreOptions.SchemaVersion, "ProductionOutboxSchemaRequired");
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion,
+            "ProductionOutboxSchemaRequired");
         options.Validate();
         Require(futureReserve >= 0, "ProductionOutboxAuditReservationInvalid");
         Require(payload is { Length: > 0 } &&

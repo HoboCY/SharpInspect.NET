@@ -79,7 +79,9 @@ internal enum IdentityEventKind
     ProductionRecoveryFailed,
     RecipeSelectionChanged,
     RecipeDraftAbandoned,
-    RecipeRetired
+    RecipeRetired,
+    OutboxDeliveryRecovered,
+    OutboxCorrectiveDeliveryCreated
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -175,6 +177,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
+        // The raw stored generation gates features that reuse the schema-33 envelope; the
+        // envelope generation itself never changes for an extension-only schema bump.
+        var storedSchemaVersion = schemaVersion;
         schemaVersion = AuditChainDatabase.EnvelopeGeneration(schemaVersion);
         if (schemaVersion is < 3 or > RecipeLifecycleStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
@@ -296,6 +301,9 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.ProductionRecoveryFailed), "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.RecipeSelectionChanged, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
+                    legacyKind is not (IdentityEventKind.OutboxDeliveryRecovered or
+                        IdentityEventKind.OutboxCorrectiveDeliveryCreated), "AuditIdentityPayloadInvalid");
             }
             for (var index = 5; index <= 8; index++)
                 AuditChainDatabase.Require(fields[index] is null ||
@@ -386,13 +394,17 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         actionKind != AuditedCommandKind.ManualProductionRecovery) &&
                      (schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
                          actionKind != AuditedCommandKind.ChangeRecipeSelection) &&
+                     (storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
+                         actionKind is not (AuditedCommandKind.RecoverOutboxDelivery or
+                             AuditedCommandKind.CreateCorrectiveOutboxDelivery)) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ? 38 :
+                var maximumPermissions = storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ? 41 :
+                    schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ? 38 :
                     schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ? 36 :
                     schemaVersion >= PreviewSessionStoreOptions.SchemaVersion ? 35 :
                     schemaVersion >= 15 ? 34 : schemaVersion >= 14 ? 32 : schemaVersion >= 7 ? 31 : 28;

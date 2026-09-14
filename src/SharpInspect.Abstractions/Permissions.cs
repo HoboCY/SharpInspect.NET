@@ -55,7 +55,11 @@ public enum Permission : ushort
     ImportRecipe = 37,
     ExportRecipe = 38,
     /// <summary>Irreversibly abandon a Recipe Draft while retaining its complete history.</summary>
-    AbandonRecipeDraft = 39
+    AbandonRecipeDraft = 39,
+    /// <summary>Grant a fresh bounded attempt allowance to one blocked outbox obligation.</summary>
+    RecoverOutboxDelivery = 40,
+    /// <summary>Create a linked corrective outbox delivery with new identity and explicit bytes.</summary>
+    CreateCorrectiveOutboxDelivery = 41
 }
 
 /// <summary>

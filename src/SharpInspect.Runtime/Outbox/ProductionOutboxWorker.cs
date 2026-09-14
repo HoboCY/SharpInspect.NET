@@ -53,6 +53,8 @@ internal sealed class ProductionOutboxWorker
             await initialization.WaitAsync(_stop.Token).ConfigureAwait(false);
             var backlog = await _query.ReadBacklogAsync(_stop.Token).ConfigureAwait(false);
             _publish(backlog);
+            // schema 37 在本地启动完成前写入耐久阻塞，Required 准入与 BestEffort 报警分别由积压派生。
+            await RequireHistoricalHandlersAsync(_stop.Token).ConfigureAwait(false);
             _startup.TrySetResult(true); // 启动就绪只取决于本地账本校验，不能被外部接收端的响应时间拖住。
             while (true)
             {
@@ -108,6 +110,70 @@ internal sealed class ProductionOutboxWorker
         } while (true);
     }
 
+    /// <summary>
+    /// Resolves historical obligations without sending. Schema 37 records a durable block,
+    /// retaining the complete frozen delivery and requiring later authorized recovery.
+    /// Schema 36 retains its earlier fail-closed compatibility profile.
+    /// </summary>
+    private async Task RequireHistoricalHandlersAsync(CancellationToken token)
+    {
+        long after = 0;
+        do
+        {
+            var page = await _query.ReadPendingAsync(after, _options.MaximumPageSize, token)
+                .ConfigureAwait(false);
+            if (!page.Available || page.Backlog is null)
+                throw new InvalidOperationException(page.ReasonCode);
+            foreach (var item in page.Items)
+            {
+                token.ThrowIfCancellationRequested();
+                if (HistoricalHandlerFailure(item, _transports) is not { } failure) continue;
+                if (!_options.RecoveryEnabled)
+                {
+                    if (item.Delivery.Route.Criticality == OutboxRouteCriticality.Required)
+                        throw new InvalidOperationException(failure);
+                    continue;
+                }
+                var current = item;
+                if (current.ActiveAttemptId is not null)
+                {
+                    // The prior process may already have reached the receiver; close that
+                    // exact attempt as unknown before writing a non-attempt system block.
+                    await ProcessAsync(current).ConfigureAwait(false);
+                    var refreshed = await _query.ReadPendingAsync(current.Position - 1, 1, token).ConfigureAwait(false);
+                    if (!refreshed.Available) throw new InvalidOperationException(refreshed.ReasonCode);
+                    current = refreshed.Items.Single(x => x.Delivery.DeliveryId == item.Delivery.DeliveryId);
+                }
+                await BlockHandlerAsync(current, failure, token).ConfigureAwait(false);
+            }
+            if (!page.HasMore) break;
+            if (page.NextPosition <= after) throw new InvalidOperationException("OutboxCursorInvalid");
+            after = page.NextPosition;
+        } while (true);
+    }
+
+    /// <summary>
+    /// The exact handler gate of one pending item, or null when the item may proceed. The handler
+    /// must exist for the exact frozen route content hash (which includes the RouteId, route
+    /// version and payload contract) and must declare the exact frozen adapter contract; a newer
+    /// handler or serializer is never substituted.
+    /// </summary>
+    internal static string? HistoricalHandlerFailure(OutboxPendingItem item, ProductionOutboxOptions transports)
+    {
+        if (item.State == OutboxDeliveryState.Succeeded) return null;
+        return HistoricalHandlerFailure(item.Delivery, transports);
+    }
+    internal static string? HistoricalHandlerFailure(OutboxDelivery delivery, ProductionOutboxOptions transports)
+    {
+        if (delivery.Payload is null) return null;
+        var binding = transports.Resolve(delivery.Route);
+        if (binding is null)
+            return delivery.Route.Criticality == OutboxRouteCriticality.Required
+                ? "OutboxRequiredHistoricalHandlerMissing" : "OutboxHistoricalHandlerUnavailable";
+        return OutboxValidation.SameContract(binding.RegisteredAdapterContract, delivery.Route.AdapterContract)
+            ? null : "OutboxHistoricalHandlerContractMismatch";
+    }
+
     private async Task ProcessAsync(OutboxPendingItem item)
     {
         try
@@ -127,6 +193,11 @@ internal sealed class ProductionOutboxWorker
                 return; // 必须重新读取持久化的重试预算，不能沿用恢复前的次数直接再次发送。
             }
             var delivery = item.Delivery;
+            if (_options.RecoveryEnabled && HistoricalHandlerFailure(item, _transports) is { } failure)
+            {
+                await BlockHandlerAsync(item, failure, _stop.Token).ConfigureAwait(false);
+                return;
+            }
             var attempt = Guid.NewGuid();
             var binding = _transports.Resolve(delivery.Route);
             var connectionHash = binding?.ConnectionBindingHash ?? OutboxValidation.HashParts(
@@ -195,6 +266,13 @@ internal sealed class ProductionOutboxWorker
             .ConfigureAwait(false);
         RequireCommit(failed);
         Publish(failed);
+    }
+    private async Task BlockHandlerAsync(OutboxPendingItem item, string reason, CancellationToken token)
+    {
+        var result = await _store.BlockOutboxHandlerAsync(new(item.Delivery.DeliveryId,
+            item.StateRevisionHash, DateTimeOffset.UtcNow, reason), Deadline(), token).ConfigureAwait(false);
+        RequireCommit(result);
+        Publish(result);
     }
     private DateTimeOffset RetryAfter(DateTimeOffset recordedAt, int attempt) => recordedAt + TimeSpan.FromMilliseconds(
         Math.Min(_options.MaximumRetryDelay.TotalMilliseconds, 1000d * Math.Pow(2, Math.Min(attempt - 1, 10))));

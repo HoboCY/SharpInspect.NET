@@ -21,7 +21,8 @@ public sealed class OutboxTransportBinding
         ConnectionId = OutboxValidation.Identifier(connectionId);
         ConnectionVersion = OutboxValidation.Identifier(connectionVersion);
         ConnectionConfigurationHash = OutboxValidation.Hash(connectionConfigurationHash);
-        if (!OutboxValidation.SameContract(transport.Contract, route.AdapterContract))
+        RegisteredAdapterContract = transport.Contract;
+        if (!OutboxValidation.SameContract(RegisteredAdapterContract, route.AdapterContract))
             throw new ArgumentException("OutboxAdapterContractMismatch", nameof(transport));
         if (!OutboxValidation.SameContract(route.PayloadContract, OutboxReceiverProtocol.CorePayloadContract) ||
             !OutboxValidation.SameContract(route.ReceiverContract, OutboxReceiverProtocol.ReceiverContract) ||
@@ -42,6 +43,9 @@ public sealed class OutboxTransportBinding
     }
     public OutboxRouteDefinition Route { get; }
     public IOutboxRouteTransport Transport { get; }
+    // Immutable registration metadata for startup/admission checks. Transport code is
+    // rechecked by the physical sender outside the authoritative writer transaction.
+    internal OutboxContractReference RegisteredAdapterContract { get; }
     public string ConnectionId { get; }
     public string ConnectionVersion { get; }
     public string ConnectionConfigurationHash { get; }

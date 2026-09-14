@@ -18,6 +18,9 @@ internal sealed record OutboxSuccessRequest(Guid DeliveryId, Guid RuntimeEpoch,
     DateTimeOffset RecordedAtUtc, OutboxAcceptanceVerifier.VerifiedAcceptanceClaim Claim,
     Func<string?>? FinalGuard = null);
 
+internal sealed record OutboxHandlerBlockRequest(Guid DeliveryId, string ExpectedStateRevisionHash,
+    DateTimeOffset RecordedAtUtc, string ReasonCode);
+
 internal sealed record OutboxWriteResult(bool Committed, string ReasonCode,
     ProductionOutboxEvent? Event = null, OutboxBacklogSnapshot? Backlog = null);
 
@@ -29,10 +32,13 @@ internal sealed class ProductionOutboxWork
         Failure = request ?? throw new ArgumentNullException(nameof(request));
     internal ProductionOutboxWork(OutboxSuccessRequest request) =>
         Success = request ?? throw new ArgumentNullException(nameof(request));
+    internal ProductionOutboxWork(OutboxHandlerBlockRequest request) =>
+        HandlerBlock = request ?? throw new ArgumentNullException(nameof(request));
 
     internal OutboxAttemptStartRequest? Start { get; }
     internal OutboxFailureRequest? Failure { get; }
     internal OutboxSuccessRequest? Success { get; }
+    internal OutboxHandlerBlockRequest? HandlerBlock { get; }
     internal TaskCompletionSource<OutboxWriteResult> Completion { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
@@ -62,7 +68,8 @@ internal sealed partial class SqliteCommandStore
     }
 
     private sealed record ProductionOutboxDeliveryFacts(ProductionOutboxStoredDelivery Stored,
-        IReadOnlyList<ProductionOutboxEvent> Events, ProductionOutboxWorkState State);
+        IReadOnlyList<ProductionOutboxEvent> Events, ProductionOutboxWorkState State,
+        IReadOnlyList<ProductionOutboxRecoveryGrant> Grants);
 
     internal ValueTask<OutboxWriteResult> BeginOutboxAttemptAsync(OutboxAttemptStartRequest request,
         StoreDeadline deadline, CancellationToken cancellationToken = default) =>
@@ -113,6 +120,8 @@ internal sealed partial class SqliteCommandStore
             return AppendProductionOutboxFailure(database, work, deadline);
         if (work.Success is not null)
             return AppendProductionOutboxSuccess(database, work, deadline);
+        if (work.HandlerBlock is not null)
+            return AppendProductionOutboxHandlerBlock(database, work, deadline);
         throw new InvalidOperationException("ProductionOutboxWriteInvalid");
     }
 
@@ -161,8 +170,9 @@ internal sealed partial class SqliteCommandStore
                 return ProductionOutboxRejected(work, "ProductionOutboxRetryWindowOpen");
             if (request.AttemptNumber != state.NextAttemptNumber)
                 return ProductionOutboxRejected(work, "ProductionOutboxAttemptNumberInvalid");
-            if (request.AttemptNumber > facts.Stored.Delivery.MaximumAttempts)
-                return ProductionOutboxRejected(work, "ProductionOutboxAttemptBudgetExhausted");
+            // The explicit per-delivery budget check is subsumed by the derived RetryEligible
+            // flag, which includes every later authorized recovery grant: attempt numbers keep
+            // counting cumulatively and a stale caller can never skip the current sequence.
             if (facts.Stored.Delivery.Payload is null)
                 return ProductionOutboxRejected(work, "ProductionOutboxPreparationFailureTerminal");
             var reserve = ReadProductionOutboxReserveRows(database, deadline).Events;
@@ -247,11 +257,12 @@ internal sealed partial class SqliteCommandStore
                 retryAfter is { } boundedRetry && boundedRetry - recordedAt > options.MaximumRetryDelay)
                 return ProductionOutboxRejected(work, "ProductionOutboxRetryDelayInvalid");
             var reserve = ReadProductionOutboxReserveRows(database, deadline).Events;
-            // A permanent outcome ends this delivery's automatic attempt budget.
-            var ownRemaining = Math.Max(0, 2L * facts.Stored.Delivery.MaximumAttempts -
-                facts.Events.Count(entry => entry.Kind != OutboxEventKind.Created));
+            // A permanent outcome ends this delivery's automatic attempt budget, including every
+            // later authorized recovery grant that can no longer be consumed.
+            var ownRemaining = RemainingProductionOutboxReserve(facts.Stored.Delivery, facts.Events, facts.Grants);
             var futureReserve = Math.Max(0, reserve -
-                (request.Category == OutboxFailureCategory.Permanent ? ownRemaining : 1));
+                (request.Category == OutboxFailureCategory.Permanent ? ownRemaining :
+                    facts.State.ActiveAttemptId.HasValue ? 1 : 0));
             var eventPosition = NextProductionOutboxEventPosition(database, deadline);
             var aggregate = facts.Events[^1].AggregateSequence + 1;
             var kind = OutboxEventKind.AttemptFailed;
@@ -356,7 +367,7 @@ internal sealed partial class SqliteCommandStore
             { return ProductionOutboxRejected(work, "ProductionOutboxReceiptVerificationFailed"); }
             var receiptContentHash = ProductionOutboxStorageCodec.Hash(receipt);
             var reserve = ReadProductionOutboxReserveRows(database, deadline).Events;
-            var remaining = RemainingProductionOutboxReserve(delivery, facts.Events);
+            var remaining = RemainingProductionOutboxReserve(delivery, facts.Events, facts.Grants);
             var futureReserve = Math.Max(0, reserve - remaining);
             var eventPosition = NextProductionOutboxEventPosition(database, deadline);
             var aggregate = facts.Events[^1].AggregateSequence + 1;
@@ -604,11 +615,9 @@ internal sealed partial class SqliteCommandStore
     }
 
     private static long RemainingProductionOutboxReserve(OutboxDelivery delivery,
-        IReadOnlyList<ProductionOutboxEvent> events)
+        IReadOnlyList<ProductionOutboxEvent> events, IReadOnlyList<ProductionOutboxRecoveryGrant>? grants = null)
     {
-        var recorded = events.Count(value => value.Kind != OutboxEventKind.Created);
-        return Math.Max(0, ProductionOutboxStoreOptions.ReserveEventsPerAttempt *
-            (long)delivery.MaximumAttempts - recorded);
+        return ReplayOutboxBudget(delivery, events, grants).Remaining;
     }
 
     private ProductionOutboxDeliveryFacts ReadProductionOutboxDeliveryFacts(sqlite3 database,
@@ -624,8 +633,9 @@ internal sealed partial class SqliteCommandStore
             .ToArray();
         if (events.Length == 0 || events[0].Kind != OutboxEventKind.Created)
             throw new InvalidOperationException("ProductionOutboxCreatedEventMissing");
+        var grants = ReadProductionOutboxRecoveryGrantsIfEnabled(database, options, deadline);
         return new ProductionOutboxDeliveryFacts(stored, events,
-            DeriveProductionOutboxState(stored.Delivery, events));
+            DeriveProductionOutboxState(stored.Delivery, events, grants), grants);
     }
 
     private static long NextProductionOutboxDeliveryPosition(sqlite3 database, StoreDeadline deadline) =>
@@ -700,7 +710,19 @@ internal sealed partial class SqliteCommandStore
     private static void UpsertProductionOutboxWork(sqlite3 database, OutboxDelivery delivery,
         IReadOnlyList<ProductionOutboxEvent> events, StoreDeadline deadline)
     {
-        var derived = DeriveProductionOutboxState(delivery, events);
+        // The derived state must observe the schema-37 recovery grants when the extension table
+        // exists; a schema-36 store keeps the exact original derivation.
+        IReadOnlyList<ProductionOutboxRecoveryGrant>? grants = null;
+        if (AuditChainDatabase.Scalar(database, @"SELECT COUNT(*) FROM sqlite_master
+            WHERE type='table' AND name='production_outbox_recovery';", deadline) == 1)
+            grants = AuditChainDatabase.Read(database, @"SELECT RecoveryId,GrantedAttempts,
+                AuthorizationAuditSequence FROM production_outbox_recovery WHERE DeliveryId=? ORDER BY Position;",
+                deadline, statement => new ProductionOutboxRecoveryGrant(delivery.DeliveryId,
+                    ParseProductionOutboxGuid(SqliteNative.ColumnText(statement, 0)),
+                    SqliteNative.ColumnInt64(statement, 2),
+                    checked((int)SqliteNative.ColumnInt64(statement, 1))),
+                delivery.DeliveryId.ToString("D"));
+        var derived = DeriveProductionOutboxState(delivery, events, grants);
         var lastFailure = derived.LastFailureCategory;
         AuditChainDatabase.Execute(database, @"
             INSERT INTO production_outbox_work(

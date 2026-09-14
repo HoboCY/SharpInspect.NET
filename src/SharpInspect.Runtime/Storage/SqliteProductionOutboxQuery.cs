@@ -127,8 +127,12 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            if (schema != ProductionOutboxStoreOptions.SchemaVersion)
-                throw new InvalidOperationException(schema > ProductionOutboxStoreOptions.SchemaVersion
+            var expected = outbox.RecoveryEnabled
+                ? ProductionOutboxRecoveryOptions.SchemaVersion : ProductionOutboxStoreOptions.SchemaVersion;
+            if (schema == ProductionOutboxRecoveryOptions.SchemaVersion && !outbox.RecoveryEnabled)
+                throw new InvalidOperationException("ProductionOutboxRecoveryConfigurationRequired");
+            if (schema != expected)
+                throw new InvalidOperationException(schema > expected
                     ? "ProductionOutboxSchemaTooNew" : "ProductionOutboxGovernedMigrationRequired");
             SqliteCommandStore.VerifyProductionOutboxReadGuard(database, _options, deadline);
             SqliteCommandStore.ValidateProductionOutboxHistory(database, outbox, production, deadline);
@@ -153,6 +157,8 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
         private readonly IReadOnlyList<ProductionOutboxStoredDelivery> _deliveries;
         private readonly IReadOnlyList<ProductionOutboxStoredEvent> _events;
         private readonly IReadOnlyList<ProductionOutboxWorkState> _states;
+        private readonly IReadOnlyList<SqliteCommandStore.ProductionOutboxRecoveryStoredRow> _recoveries;
+        private readonly IReadOnlyList<SqliteCommandStore.ProductionOutboxCorrectionStoredRow> _corrections;
 
         internal PageReader(sqlite3 database, ProductionOutboxStoreOptions options, long auditSequence,
             StoreDeadline deadline)
@@ -163,6 +169,12 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
             _deliveries = SqliteCommandStore.ReadProductionOutboxDeliveries(database, options, deadline);
             _events = SqliteCommandStore.ReadProductionOutboxRows(database, options, deadline);
             _states = SqliteCommandStore.ReadProductionOutboxObligationStates(database, options, deadline);
+            _recoveries = options.ManualRecovery is { } recovery
+                ? SqliteCommandStore.ReadProductionOutboxRecoveryRows(database, options, recovery, deadline)
+                : Array.Empty<SqliteCommandStore.ProductionOutboxRecoveryStoredRow>();
+            _corrections = options.ManualRecovery is { } correction
+                ? SqliteCommandStore.ReadProductionOutboxCorrectionRows(database, options, correction, deadline)
+                : Array.Empty<SqliteCommandStore.ProductionOutboxCorrectionStoredRow>();
         }
 
         internal long AuditSequence { get; }
@@ -229,7 +241,8 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
             return new OutboxPendingItem(state.Delivery, state.State, state.AttemptCount,
                 state.ActiveAttemptId, state.ActiveRuntimeEpoch, state.RetryEligible,
                 state.RetryAfterUtc, state.PermanentBlock, state.LastFailureReasonCode, position,
-                contentHash);
+                contentHash, SqliteCommandStore.ProductionOutboxStateRevision(state.Delivery,
+                    state.LastEventContentHash, _recoveries, _corrections));
         }
 
         private long PositionOf(Guid deliveryId) => _deliveries.Single(row =>

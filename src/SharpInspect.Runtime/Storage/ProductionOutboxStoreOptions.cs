@@ -86,6 +86,17 @@ public sealed class ProductionOutboxStoreOptions
     /// </summary>
     public ProductionImageFinalizationStoreOptions? ImageFinalization { get; }
 
+    /// <summary>
+    /// The optional schema-37 governed-recovery extension, or null. Non-null selects the exact
+    /// schema-37 store profile (new recovery/correction tables and their configuration row) and
+    /// requires an explicit 36-to-37 Startup Maintenance migration; null keeps the exact
+    /// schema-36 behavior byte-for-byte, including the persisted binding hash.
+    /// </summary>
+    public ProductionOutboxRecoveryOptions? ManualRecovery { get; init; }
+
+    /// <summary>True when the store declares the schema-37 recovery extension.</summary>
+    internal bool RecoveryEnabled => ManualRecovery is not null;
+
     /// <summary>Persisted per-delivery attempt budget.</summary>
     public int MaximumAttempts { get; init; } = 5;
 
@@ -159,11 +170,24 @@ public sealed class ProductionOutboxStoreOptions
         if (ImageFinalizationPresenceHash is { } finalization && !IsHash(finalization))
             throw new ArgumentException("ProductionOutboxImageFinalizationBindingInvalid",
                 nameof(ImageFinalization));
+        if (ManualRecovery is { } recovery)
+        {
+            recovery.Validate();
+            if (!IsHash(recovery.BindingHash))
+                throw new ArgumentException("ProductionOutboxRecoveryBindingInvalid", nameof(ManualRecovery));
+            if (recovery.MaximumCorrectionPayloadBytes > MaximumPayloadBytes)
+                throw new ArgumentException("ProductionOutboxRecoveryPayloadCapacityInvalid",
+                    nameof(ManualRecovery));
+        }
     }
 
     internal byte[] EncodeBinding()
     {
         Validate();
+        // The exact schema-36 binding is preserved even when the optional schema-37 recovery
+        // extension is declared: the recovery budget lives in its own immutable schema-37
+        // configuration row that additionally binds this exact outbox binding hash, so the
+        // signed schema-36 activation entry and every persisted hash stay valid.
         return AuditCanonical.Encode("ProductionOutboxStoreOptions", Number(FormatVersion), RouteSetHash,
             Number(RouteCount), Number(MaximumAttempts), Number((long)MaximumRetryDelay.TotalMilliseconds),
             Number((long)AttemptTimeout.TotalMilliseconds), Number(MaximumEvents), Number(MaximumPayloadBytes),

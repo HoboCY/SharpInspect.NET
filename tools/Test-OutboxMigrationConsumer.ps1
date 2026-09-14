@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory)][string]$Run,
     [Parameter(Mandatory)][string]$PackageFeed,
     [Parameter(Mandatory)][string]$SourcePackageFeed,
-    [Parameter(Mandatory)][ValidateSet(32,33,34,35)][int]$SourceSchema,
+    [Parameter(Mandatory)][ValidateSet(32,33,34,35,36)][int]$SourceSchema,
     [int[]]$Phases = @(1..14)
 )
 $ErrorActionPreference = 'Stop'
@@ -24,7 +24,8 @@ foreach ($migrationPhase in $Phases) {
 # Each preserved writer must reject the newer schema through its public writer boundary.
 $migrationOldRefusalReason = 'TraceStoreUnavailable'
 $migrationSourceSchema = $SourceSchema
-$migrationTargetSchema = 36
+$migrationTargetSchema = if ($SourceSchema -eq 36) { 37 } else { 36 }
+$migrationVerificationPrefix = if ($SourceSchema -eq 36) { 'V153' } else { 'V152' }
 $migrationCompletedPhase = 14
 
 function Get-MigrationDatabaseBytes([string]$Database) {
@@ -40,7 +41,8 @@ function Get-MigrationDatabaseBytes([string]$Database) {
 function Build-MigrationConsumer([string]$Name, [string]$Feed, [bool]$Current) {
     $consumer = Join-Path $migrationRoot $Name
     [void][IO.Directory]::CreateDirectory($consumer)
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'outbox-migration-probe/Program.cs') -Destination (Join-Path $consumer 'Program.cs')
+    $probeSource = if ($SourceSchema -eq 36) { 'outbox-operations-migration-probe/Program.cs' } else { 'outbox-migration-probe/Program.cs' }
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $probeSource) -Destination (Join-Path $consumer 'Program.cs')
     $define = 'SOURCE_' + $SourceSchema + $(if ($Current) { ';CURRENT_MIGRATION' } else { '' })
     $xml = @"
 <Project Sdk="Microsoft.NET.Sdk">
@@ -159,7 +161,7 @@ foreach ($migrationPhase in $Phases) {
         $resumed.targetSchemaVersion -ne $migrationTargetSchema -or
         $resumed.OperationId -ne $phaseProof.OperationId -or -not $resumed.Backup -or
         $resumed.auditLedger -notmatch '^[0-9]+\|[0-9]+\|[0-9A-Fa-f]{64}$') {
-        throw 'Cold resume did not prove schema 36, verified backup and signed history.'
+        throw "Cold resume did not prove schema $migrationTargetSchema, verified backup and signed history."
     }
     if ($resumed.Backup.SourceSchemaVersion -ne $migrationSourceSchema -or
         $resumed.Backup.SourceApplicationSha256 -cne $migrationOld.runtimeHash -or
@@ -196,15 +198,22 @@ foreach ($migrationPhase in $Phases) {
         $current.outbox.recipeLifecycle -ne ($SourceSchema -ge 33) -or
         $current.outbox.imageEvidence -ne ($SourceSchema -ge 34) -or
         $current.outbox.imageFinalization -ne ($SourceSchema -ge 35)) {
-        throw ('Schema 36 did not expose the empty Outbox and original optional profile: ' + $current.outbox.reason)
+        throw ("Schema $migrationTargetSchema did not expose the empty Outbox and original optional profile: " + $current.outbox.reason)
     }
-    if ($current.evidenceState -eq 'Faulted' -or ($SourceSchema -eq 35 -and
+    if ($current.evidenceState -eq 'Faulted' -or ($SourceSchema -ge 35 -and
         (-not $current.preservedImages.available -or -not $current.preservedImages.queueAvailable -or
          $current.preservedImages.items -ne 0 -or $current.preservedImages.backlog -ne 0 -or
          $current.preservedImages.throughAuditSequence -le 0))) {
         throw 'The preserved image feature is not usable after Outbox migration.'
     }
-    $migrationCases += [ordered]@{ id='V152_N02'; phase=$migrationPhase; result='Pass'; interruptedBy='Process.Kill(entireProcessTree:true)';
+    if ($SourceSchema -eq 36 -and ($current.operations.verificationId -cne 'V153_N03' -or
+        $current.operations.serviceResolved -cne $true -or $current.operations.queryAvailable -cne $true -or
+        $current.operations.recoverDisposition -cne 'Rejected' -or $current.operations.correctionDisposition -cne 'Rejected' -or
+        $current.operations.rejectionAuditsPersisted -cne $true -or $current.operations.immutablePayload -cne $true -or
+        $current.operations.governanceUnchanged -cne $true)) {
+        throw 'Schema 37 public recovery services, unauthenticated refusals or immutable command bytes failed.'
+    }
+    $migrationCases += [ordered]@{ id=($migrationVerificationPrefix + '_N02'); phase=$migrationPhase; result='Pass'; interruptedBy='Process.Kill(entireProcessTree:true)';
         operation=$resumed.OperationId; backup=$resumed.Backup; sourceSchemaVersion=$resumed.sourceSchemaVersion;
         targetSchemaVersion=$resumed.targetSchemaVersion; oldWriterReason=$denied.reason;
         oldWriterExpectedReason=$migrationOldRefusalReason;
@@ -212,12 +221,13 @@ foreach ($migrationPhase in $Phases) {
         oldDatabaseAndWalUnchanged=$true; databaseBytesBefore=$before; databaseBytesAfter=$after;
         recoveryScope=$(if ($migrationPhase -eq $migrationCompletedPhase) { 'CompletedOperationReopenIdempotency' } else { 'InterruptedOperationResume' });
         outbox=$current.outbox; evidenceState=$current.evidenceState; preservedImages=$current.preservedImages;
+        operations=$current.operations;
         seedPostWriteAuditSequence=$seed.postWriteAuditSequence; seedVerifiedThroughSequence=$seed.auditVerifiedThroughSequence;
         currentPostWriteAuditSequence=$current.postWriteAuditSequence; currentVerifiedThroughSequence=$current.auditVerifiedThroughSequence }
-    Write-Output "V152 schema $SourceSchema phase $migrationPhase crash/resume, old writer refusal and schema 36 Outbox query PASS"
+    Write-Output "$migrationVerificationPrefix schema $SourceSchema phase $migrationPhase crash/resume, old writer refusal and schema $migrationTargetSchema Outbox query PASS"
 }
-$migrationEvidence = [ordered]@{ id='V152_N01'; result='Pass';
-    scope='isolated package consumers, verified SQLite backup, whole-process termination at listed public phases; explicit source schema to 36; preserves optional profile; completed phase checks reopen idempotency; no production station, external send or receiver qualification';
+$migrationEvidence = [ordered]@{ id=($migrationVerificationPrefix + '_N01'); result='Pass';
+    scope="isolated package consumers, verified SQLite backup, whole-process termination at listed public phases; explicit source schema to $migrationTargetSchema; preserves optional profile; completed phase checks reopen idempotency; no production station, external send or receiver qualification";
     requestedPhases=@($Phases); publicPhaseCount=14; fullPhaseCoverage=($Phases.Count -eq 14);
     sourceSchemaVersion=$migrationSourceSchema; targetSchemaVersion=$migrationTargetSchema;
     oldWriterExpectedReason=$migrationOldRefusalReason; old=$migrationOld; current=$migrationNew; cases=$migrationCases;

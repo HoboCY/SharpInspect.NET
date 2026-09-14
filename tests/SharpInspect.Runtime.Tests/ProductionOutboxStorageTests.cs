@@ -138,9 +138,11 @@ public sealed class ProductionOutboxStorageTests
     public void V152_S04_LifecycleDerivationHonorsAttemptsBudgetAndOneSuccess()
     {
         var delivery = Delivery("route.primary", maximumAttempts: 2);
+        // Replay the complete persisted aggregate, including its mandatory creation fact.
+        var created = Event(delivery, 1, OutboxEventKind.Created, null, null, null, null, null);
         var started = Event(delivery, 2, OutboxEventKind.AttemptStarted, Guid.NewGuid(), 1, null,
             null, null);
-        var active = SqliteCommandStore.DeriveProductionOutboxState(delivery, new[] { started });
+        var active = SqliteCommandStore.DeriveProductionOutboxState(delivery, new[] { created, started });
         Assert.Equal(OutboxDeliveryState.Pending, active.State);
         Assert.Equal(1, active.AttemptCount);
         Assert.Equal(2, active.NextAttemptNumber);
@@ -149,7 +151,7 @@ public sealed class ProductionOutboxStorageTests
         Assert.False(active.PermanentBlock);
         var transient = Event(delivery, 3, OutboxEventKind.AttemptFailed, started.AttemptId, 1,
             "V152.Transient", OutboxFailureCategory.Transient, DateTimeOffset.UtcNow.AddSeconds(5));
-        var failed = SqliteCommandStore.DeriveProductionOutboxState(delivery, new[] { started, transient });
+        var failed = SqliteCommandStore.DeriveProductionOutboxState(delivery, new[] { created, started, transient });
         Assert.Equal(OutboxDeliveryState.Failed, failed.State);
         Assert.Null(failed.ActiveAttemptId);
         Assert.True(failed.RetryEligible);
@@ -162,7 +164,7 @@ public sealed class ProductionOutboxStorageTests
         var secondFailure = Event(delivery, 5, OutboxEventKind.AttemptFailed, secondStart.AttemptId, 2,
             "V152.Exhausted", OutboxFailureCategory.UnknownOutcome, null);
         var exhausted = SqliteCommandStore.DeriveProductionOutboxState(delivery,
-            new[] { started, transient, secondStart, secondFailure });
+            new[] { created, started, transient, secondStart, secondFailure });
         Assert.False(exhausted.RetryEligible);
         Assert.False(exhausted.PermanentBlock);
         Assert.Equal(2, exhausted.AttemptCount);
@@ -171,14 +173,14 @@ public sealed class ProductionOutboxStorageTests
         var permanent = Event(delivery, 6, OutboxEventKind.AttemptFailed, secondStart.AttemptId, 2,
             "V152.Permanent", OutboxFailureCategory.Permanent, null);
         var blocked = SqliteCommandStore.DeriveProductionOutboxState(delivery,
-            new[] { started, transient, secondStart, permanent });
+            new[] { created, started, transient, secondStart, permanent });
         Assert.True(blocked.PermanentBlock);
         Assert.False(blocked.RetryEligible);
         Assert.Equal(OutboxFailureCategory.Permanent, blocked.LastFailureCategory);
         var succeeded = Event(delivery, 7, OutboxEventKind.Succeeded, secondStart.AttemptId, 2,
             "ProductionOutboxSucceeded", null, null);
         var completed = SqliteCommandStore.DeriveProductionOutboxState(delivery,
-            new[] { started, transient, secondStart, succeeded });
+            new[] { created, started, transient, secondStart, succeeded });
         Assert.Equal(OutboxDeliveryState.Succeeded, completed.State);
         Assert.False(completed.RetryEligible);
         Assert.Null(completed.ActiveAttemptId);
@@ -223,8 +225,8 @@ public sealed class ProductionOutboxStorageTests
         var succeeded = kind == OutboxEventKind.Succeeded;
         return new ProductionOutboxEvent(position, Guid.NewGuid(), delivery.DeliveryId,
             delivery.InspectionId, delivery.CoreHash, new string('E', 64), delivery.Route.RouteId,
-            delivery.Route.Version, delivery.Route.ContentHash, position - 1, kind, attemptId,
-            attemptNumber, Guid.Parse("11111111-1111-1111-1111-111111111111"), recorded,
+            delivery.Route.Version, delivery.Route.ContentHash, position, kind, attemptId,
+            attemptNumber, kind == OutboxEventKind.Created ? null : Guid.Parse("11111111-1111-1111-1111-111111111111"), recorded,
             reasonCode ?? "ProductionOutboxCreated", category, retryAfter,
             kind == OutboxEventKind.AttemptStarted ? new string('F', 64) : null,
             delivery.MaximumAttempts,

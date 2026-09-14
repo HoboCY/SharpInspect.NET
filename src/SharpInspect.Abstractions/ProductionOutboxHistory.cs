@@ -56,9 +56,9 @@ public sealed class ProductionOutboxEvent
             throw new ArgumentException("ProductionOutboxReceiptBindingInvalid", nameof(receiptId));
         if (kind != OutboxEventKind.Succeeded && receipt.Length != 0)
             throw new ArgumentException("ProductionOutboxReceiptBindingInvalid", nameof(receipt));
-        if ((attemptId is null) != (kind == OutboxEventKind.Created))
+        if ((attemptId is null) != (kind is OutboxEventKind.Created or OutboxEventKind.HandlerBlocked))
             throw new ArgumentException("ProductionOutboxAttemptBindingInvalid", nameof(attemptId));
-        if (kind == OutboxEventKind.Created && attemptNumber is not null)
+        if (kind is OutboxEventKind.Created or OutboxEventKind.HandlerBlocked && attemptNumber is not null)
             throw new ArgumentException("ProductionOutboxAttemptBindingInvalid", nameof(attemptNumber));
         Position = position;
         EventId = eventId;
@@ -101,7 +101,7 @@ public sealed class ProductionOutboxEvent
     public DateTimeOffset? RetryAfterUtc { get; }
     /// <summary>The exact transport connection binding the attempt was started with.</summary>
     public string? ConnectionBindingHash { get; }
-    /// <summary>The persisted attempt budget of the delivery at the time of this fact.</summary>
+    /// <summary>The original frozen delivery budget; later recovery grants are separate immutable records.</summary>
     public int? AttemptBudget { get; }
     /// <summary>The receiver receipt identity recorded by the authenticated acceptance.</summary>
     public string? ReceiptId { get; }
@@ -128,6 +128,12 @@ public sealed class OutboxPendingItem
     internal OutboxPendingItem(OutboxDelivery delivery, OutboxDeliveryState state, int attemptCount,
         Guid? activeAttemptId, Guid? activeRuntimeEpoch, bool retryEligible, DateTimeOffset? retryAfterUtc,
         bool permanentBlock, string? lastFailureReasonCode, long position, string contentHash)
+        : this(delivery, state, attemptCount, activeAttemptId, activeRuntimeEpoch, retryEligible,
+            retryAfterUtc, permanentBlock, lastFailureReasonCode, position, contentHash, contentHash) { }
+
+    internal OutboxPendingItem(OutboxDelivery delivery, OutboxDeliveryState state, int attemptCount,
+        Guid? activeAttemptId, Guid? activeRuntimeEpoch, bool retryEligible, DateTimeOffset? retryAfterUtc,
+        bool permanentBlock, string? lastFailureReasonCode, long position, string contentHash, string stateRevisionHash)
     {
         Delivery = delivery ?? throw new ArgumentNullException(nameof(delivery));
         if (!Enum.IsDefined(state)) throw new ArgumentOutOfRangeException(nameof(state));
@@ -148,9 +154,12 @@ public sealed class OutboxPendingItem
             OutboxValidation.Identifier(lastFailureReasonCode);
         Position = position;
         ContentHash = OutboxValidation.Hash(contentHash);
+        StateRevisionHash = OutboxValidation.Hash(stateRevisionHash);
     }
 
     public OutboxDelivery Delivery { get; }
+    /// <summary>Revision of the observed attempt and governance heads, for transaction-time compare-and-swap.</summary>
+    public string StateRevisionHash { get; }
     public OutboxDeliveryState State { get; }
     public int AttemptCount { get; }
     /// <summary>The one active attempt, if any; it must be resolved before a new attempt.</summary>

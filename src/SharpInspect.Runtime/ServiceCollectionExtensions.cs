@@ -372,7 +372,19 @@ public static class ServiceCollectionExtensions
         if (options.ImageFinalization is not null)
             services.TryAddSingleton<IProductionImageEvidenceQuery>(_ => new SqliteProductionImageEvidenceQuery(options));
         if (options.Outbox is not null)
+        {
             services.TryAddSingleton<IProductionOutboxQuery>(_ => new SqliteProductionOutboxQuery(options));
+            if (options.Outbox.ManualRecovery is not null)
+            {
+                services.TryAddSingleton<IProductionOutboxGovernanceQuery>(_ =>
+                    new SqliteProductionOutboxGovernanceQuery(options));
+                services.TryAddSingleton<IProductionOutboxRecoveryService>(p =>
+                    new Outbox.ProductionOutboxRecoveryService(p.GetRequiredService<SqliteCommandStore>(),
+                        p.GetRequiredService<LocalAuthorizationService>(), options,
+                        () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync(),
+                        p.GetService<Outbox.ProductionOutboxOptions>()));
+            }
+        }
         services.TryAddSingleton<IStationRuntime>(p =>
         {
             var runtime = new StationRuntime(p.GetRequiredService<SqliteCommandStore>(), heartbeatInterval,
@@ -383,6 +395,8 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
             runtime.ConfigureOutbox(options, p.GetService<Outbox.ProductionOutboxOptions>());
+            if (p.GetService<IProductionOutboxRecoveryService>() is { } outboxRecovery)
+                runtime.ConfigureOutboxRecoveryService(outboxRecovery);
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);
             if (p.GetService<IRecipeLifecycleService>() is { } lifecycle) runtime.ConfigureRecipeLifecycleService(lifecycle);
             if (p.GetService<IPlcResultContractService>() is { } contracts) runtime.ConfigurePlcResultContractService(contracts);

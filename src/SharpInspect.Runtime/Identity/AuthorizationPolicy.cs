@@ -37,7 +37,8 @@ public sealed class AuthorizationPolicy
             not Permission.ManageCalibrationAcceptancePolicy and
             not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
             not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
-            not Permission.AbandonRecipeDraft)
+            not Permission.AbandonRecipeDraft and not Permission.RecoverOutboxDelivery and
+            not Permission.CreateCorrectiveOutboxDelivery)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -78,7 +79,8 @@ public sealed class AuthorizationPolicy
             .SelectMany(permissions => permissions)
             .Where(permission => permission is Permission.RunCalibration or
                 Permission.ManageCalibrationAcceptancePolicy or
-                Permission.RecordPhysicalCalibrationVerification)
+                Permission.RecordPhysicalCalibrationVerification or Permission.RecoverOutboxDelivery or
+                Permission.CreateCorrectiveOutboxDelivery)
             .Distinct()
             .ToArray();
         var allStepUp = MandatoryStepUpPermissions
@@ -107,8 +109,8 @@ public sealed class AuthorizationPolicy
     public IReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> RoleBundles => _roleBundles;
 
     /// <summary>
-    /// The complete effective Step-Up set. Mandatory high-risk permissions are
-    /// always present; callers may add ArmProduction or ActivateRecipe.
+    /// The encoded policy Step-Up set. RequiresStepUp also applies mandatory
+    /// rules for optional capabilities without changing older policy hashes.
     /// </summary>
     public IReadOnlyList<Permission> StepUpPermissions => _stepUpPermissions;
 
@@ -139,7 +141,8 @@ public sealed class AuthorizationPolicy
         // 不应改写旧策略的字节。
         return (permission is Permission.RunCalibration or
             Permission.ManageCalibrationAcceptancePolicy or
-            Permission.RecordPhysicalCalibrationVerification or Permission.AbandonRecipeDraft) ||
+            Permission.RecordPhysicalCalibrationVerification or Permission.AbandonRecipeDraft or
+            Permission.RecoverOutboxDelivery or Permission.CreateCorrectiveOutboxDelivery) ||
             _stepUpPermissions.Contains(permission);
     }
 
@@ -194,7 +197,8 @@ public sealed class AuthorizationPolicy
                 not Permission.ManageCalibrationAcceptancePolicy and
                 not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
                 not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
-                not Permission.AbandonRecipeDraft)
+                not Permission.AbandonRecipeDraft and not Permission.RecoverOutboxDelivery and
+                not Permission.CreateCorrectiveOutboxDelivery)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

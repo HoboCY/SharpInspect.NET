@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Identity;
 using SharpInspect.Runtime.Outbox;
 using SharpInspect.Runtime.Storage;
 using Xunit;
@@ -381,6 +382,11 @@ public sealed partial class ManualInspectionRuntimeTests
         internal SqliteCommandStore Store => _harness.Fixture.Store;
         internal ProductionStoreOptions Options => _harness.Fixture.Options;
         internal SqliteProductionOutboxQuery Query => new(Options);
+        internal LocalAuthorizationService Authorization => _harness.Fixture.Authorization;
+        internal InteractiveSessionService Sessions => _harness.Fixture.Sessions;
+        internal string Password => _harness.Fixture.Password;
+        internal CommandInvocation Invocation() => _harness.Invocation();
+        internal Task WaitForVerifiedAsync() => RecipeDraftStorageTests.Fixture.WaitForVerifiedAsync(Store);
         internal StoreDeadline Deadline() => new(TimeSpan.FromSeconds(4));
         internal long Scalar(string sql) => _harness.Fixture.Scalar(sql);
         internal async Task CommitAsync()
@@ -391,7 +397,8 @@ public sealed partial class ManualInspectionRuntimeTests
         internal static async Task<OutboxCoreFixture> CreateAsync(
             Func<OutboxRouteDefinition, ProductionOutboxStoreOptions>? configure = null, long maxItems = 100, bool admit = true,
             long maxBytes = 64 * 1024 * 1024, TimeSpan? maxAge = null,
-            OutboxRouteCriticality criticality = OutboxRouteCriticality.Required, int routeMaximumPayload = 1024 * 1024)
+            OutboxRouteCriticality criticality = OutboxRouteCriticality.Required, int routeMaximumPayload = 1024 * 1024,
+            bool grantOutboxGovernance = false)
         {
             var receiver = new OutboxReceiverFixture(criticality, maximumPayloadBytes: routeMaximumPayload);
             var peer = ModbusQualificationTestServer.Start();
@@ -404,6 +411,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     tracePolicy: OutboxPolicy(options, maxItems, maxBytes, maxAge));
                 using var issuer = new ProductionTestIssuer();
                 await PrepareProductionAsync(harness, issuer);
+                if (grantOutboxGovernance) await GrantOutboxGovernancePermissionsAsync(harness);
                 var admission = await BuildAdmissionAsync(harness);
                 await harness.StopRuntimePreservingFixtureAsync(); // One writer remains; no background sender competes.
                 if (admit)
@@ -424,6 +432,36 @@ public sealed partial class ManualInspectionRuntimeTests
                 await peer.DisposeAsync(); receiver.Dispose(); throw;
             }
         }
+
+        /// <summary>
+        /// The development role bundles deliberately exclude the schema-37 governance
+        /// permissions, so a governed fixture grants them explicitly through the real identity
+        /// management command. The grant preserves every existing permission and the four
+        /// administrator lifecycle permissions, and the policy bytes stay untouched.
+        /// </summary>
+        private static async Task GrantOutboxGovernancePermissionsAsync(ManualHarness harness)
+        {
+            var fixture = harness.Fixture;
+            var principalId = Guid.Parse(fixture.Sessions.Current.PrincipalId!);
+            var state = await fixture.Store.ReadIdentityAsync(CancellationToken.None);
+            var actor = state.EnumerateAccounts().Single(account => account.PrincipalId == principalId);
+            var correlation = Guid.NewGuid();
+            var grant = await fixture.Authorization.ReauthenticateAsync(new StepUpRequest(correlation,
+                harness.Invocation(), new StepUpBinding(Permission.ManagePermissions, correlation,
+                    principalId.ToString("D"), AuditedCommandKind.SetHumanPermissions), fixture.Password));
+            Assert.True(grant.Succeeded, grant.ReasonCode);
+            var permissions = actor.Permissions
+                .Concat(new[]
+                {
+                    Permission.RecoverOutboxDelivery,
+                    Permission.CreateCorrectiveOutboxDelivery
+                })
+                .Distinct().ToArray();
+            var submitted = await harness.Runtime.SubmitAsync(new SetHumanPermissionsCommand(correlation,
+                harness.Invocation() with { StepUpGrantId = grant.GrantId }, principalId, permissions));
+            Assert.True(submitted.Disposition == CommandDisposition.Accepted, submitted.ReasonCode);
+        }
+
         public async ValueTask DisposeAsync()
         { await _harness.DisposeAsync(); await _peer.DisposeAsync(); Receiver.Dispose(); }
     }

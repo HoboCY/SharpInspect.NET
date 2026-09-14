@@ -58,6 +58,15 @@ public static class SqliteStartupMaintenance
             new(StoreMigrationJournal.ProductionOutboxPlanId,
                 ProductionImageFinalizationStoreOptions.SchemaVersion,
                 ProductionOutboxStoreOptions.SchemaVersion);
+        /// <summary>
+        /// The one new governed plan: an exact schema-36 outbox store gains only the optional
+        /// schema-37 recovery extension. Sources 32..35 still migrate through the existing
+        /// outbox plans to 36 and never jump directly to 37.
+        /// </summary>
+        internal static readonly StoreMigrationPlan ProductionOutboxRecovery =
+            new(StoreMigrationJournal.ProductionOutboxRecoveryPlanId,
+                ProductionOutboxStoreOptions.SchemaVersion,
+                ProductionOutboxRecoveryOptions.SchemaVersion);
 
         internal static StoreMigrationPlan For(int targetVersion) => targetVersion switch
         {
@@ -154,13 +163,25 @@ public static class SqliteStartupMaintenance
             if (_targetOptions.AuditIntegrityPolicy is { RequireExternalAnchor: true })
                 throw new InvalidOperationException("StoreMigrationExternalAnchorPlanUnsupported");
             _declaredTargetVersion = _targetOptions.Outbox is not null
-                ? ProductionOutboxStoreOptions.SchemaVersion
+                ? _targetOptions.Outbox.RecoveryEnabled
+                    ? ProductionOutboxRecoveryOptions.SchemaVersion
+                    : ProductionOutboxStoreOptions.SchemaVersion
                 : _targetOptions.ImageFinalization is not null
                     ? ProductionImageFinalizationStoreOptions.SchemaVersion
                     : _targetOptions.ImageEvidence is null
                         ? RecipeLifecycleStoreOptions.SchemaVersion
                         : ProductionImageEvidenceStoreOptions.SchemaVersion;
-            if (_targetOptions.Outbox is not null)
+            if (_targetOptions.Outbox?.ManualRecovery is not null)
+            {
+                // 升级到 schema 37 时，从目标配置中只移除 recovery 扩展来还原 schema-36 源配置；
+                // 其余可选能力保持源库实际组合，且不允许从更旧版本直接跳到 37。
+                _source = new SqliteCommandStore.StartupMaintenanceSchema(
+                    SqliteCommandStore.MigrationProductionOutboxRecoverySourceOptions(_targetOptions),
+                    ProductionOutboxRecoveryOptions.SchemaVersion);
+                _plan = StoreMigrationPlan.ProductionOutboxRecovery;
+                _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, _plan.TargetVersion);
+            }
+            else if (_targetOptions.Outbox is not null)
             {
                 // 升级到 schema 36 时，从目标配置中只移除 Outbox 来还原源配置，再据此选择 32–35 的迁移路径。
                 // 这样保留源库实际启用的可选能力，不会为迁移临时开启无关功能。
@@ -233,16 +254,19 @@ public static class SqliteStartupMaintenance
                 // 前一代迁移必须已完整结束，才能在同一追加式日志中链接下一次迁移；
                 // 未完成记录不能通过改名、降级或丢弃来绕过恢复流程。
                 var durable = chain[^1].Data;
-                var predecessorPlanId = _plan.SourceVersion switch
+                var predecessorMatches = _plan.SourceVersion switch
                 {
-                    RecipeLifecycleStoreOptions.SchemaVersion => StoreMigrationJournal.LifecyclePlanId,
+                    RecipeLifecycleStoreOptions.SchemaVersion => durable.PlanId == StoreMigrationJournal.LifecyclePlanId,
                     ProductionImageEvidenceStoreOptions.SchemaVersion =>
-                        StoreMigrationJournal.ImageEvidencePlanId,
+                        durable.PlanId == StoreMigrationJournal.ImageEvidencePlanId,
                     ProductionImageFinalizationStoreOptions.SchemaVersion =>
-                        StoreMigrationJournal.ImageFinalizationPlanId,
-                    _ => null
+                        durable.PlanId == StoreMigrationJournal.ImageFinalizationPlanId,
+                    ProductionOutboxStoreOptions.SchemaVersion => durable.PlanId is
+                        StoreMigrationJournal.ProductionOutbox32PlanId or StoreMigrationJournal.ProductionOutbox33PlanId or
+                        StoreMigrationJournal.ProductionOutbox34PlanId or StoreMigrationJournal.ProductionOutboxPlanId,
+                    _ => false
                 };
-                if (durable.PlanId != predecessorPlanId ||
+                if (!predecessorMatches ||
                     durable.TargetSchemaVersion != _plan.SourceVersion ||
                     durable.Phase != StoreMigrationPhase.Completed || !durable.CommitIntentDurable ||
                     !durable.DatabaseCommitObserved || version != _plan.SourceVersion)

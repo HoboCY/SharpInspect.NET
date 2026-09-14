@@ -2,7 +2,8 @@ param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
     [string]$Schema32PackageFeed = $env:SHARPINSPECT_SCHEMA32_PACKAGE_FEED,
     [string]$Schema33PackageFeed = $env:SHARPINSPECT_SCHEMA33_PACKAGE_FEED,
     [string]$Schema34PackageFeed = $env:SHARPINSPECT_SCHEMA34_PACKAGE_FEED,
-    [string]$Schema35PackageFeed = $env:SHARPINSPECT_SCHEMA35_PACKAGE_FEED)
+    [string]$Schema35PackageFeed = $env:SHARPINSPECT_SCHEMA35_PACKAGE_FEED,
+    [string]$Schema36PackageFeed = $env:SHARPINSPECT_SCHEMA36_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
 if ($Ticket -ge 49) {
     if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
@@ -42,6 +43,16 @@ if ($Ticket -ge 52) {
     foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
         if (-not (Test-Path -LiteralPath (Join-Path $Schema35PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
             throw 'The preserved schema-35 package feed is incomplete.'
+        }
+    }
+}
+if ($Ticket -ge 53) {
+    if ([string]::IsNullOrWhiteSpace($Schema36PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema36PackageFeed)) {
+        throw 'Ticket 53 and later require an absolute preserved schema-36 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema36PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-36 package feed is incomplete.'
         }
     }
 }
@@ -906,6 +917,10 @@ try {
         foreach ($taskSourceSchema in 32,33,34,35) {
             & (Join-Path $PSScriptRoot 'Test-OutboxMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed -SourceSchema $taskSourceSchema -SourcePackageFeed $taskOutboxFeeds[$taskSourceSchema]
         }
+    }
+    if ($Ticket -ge 53) {
+        & (Join-Path $PSScriptRoot 'Test-OutboxMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
+            -SourceSchema 36 -SourcePackageFeed $Schema36PackageFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

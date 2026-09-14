@@ -127,6 +127,7 @@ public sealed class SqliteProductionImageEvidenceQuery : IProductionImageEvidenc
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
             var expectedSchema = _options.Outbox is null ? ProductionImageFinalizationStoreOptions.SchemaVersion
+                : _options.Outbox.RecoveryEnabled ? ProductionOutboxRecoveryOptions.SchemaVersion
                 : ProductionOutboxStoreOptions.SchemaVersion;
             if (schema != expectedSchema)
                 throw new InvalidOperationException(schema > expectedSchema

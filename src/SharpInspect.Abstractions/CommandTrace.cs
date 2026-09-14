@@ -61,7 +61,9 @@ public enum AuditedCommandKind
     ManualProductionRecovery = 53,
     ChangeRecipeSelection = 54,
     AbandonRecipeDraft = 55,
-    RetireReleasedRecipe = 56
+    RetireReleasedRecipe = 56,
+    RecoverOutboxDelivery = 57,
+    CreateCorrectiveOutboxDelivery = 58
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

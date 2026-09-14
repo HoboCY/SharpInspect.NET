@@ -14,7 +14,9 @@ internal sealed partial class SqliteCommandStore
     /// </summary>
     internal sealed class StartupMaintenanceSchema : IDisposable
     {
-        private static readonly string[] RebuiltTables = { "command_attempts", "command_facts", "audit_entries" };
+        private string[] RebuiltTables => _migrationTargetVersion == 37
+            ? new[] { "command_attempts", "command_facts", "audit_entries", "production_outbox_events" }
+            : new[] { "command_attempts", "command_facts", "audit_entries" };
         private readonly SqliteCommandStore _model;
         private readonly int _migrationTargetVersion;
 
@@ -36,10 +38,21 @@ internal sealed partial class SqliteCommandStore
             // One operation stages the identical schema on both sides, so the model's own
             // generation may never pass the declared target generation; the identity and
             // central-audit stack is the one prerequisite every governed plan shares.
-            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 &&
+            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 or 37 &&
                 _model.SchemaVersion <= migrationTargetVersion && options.LocalIdentity is not null &&
                 _model._policy is not null;
-            if (supported && migrationTargetVersion == ProductionOutboxStoreOptions.SchemaVersion)
+            if (supported && migrationTargetVersion == ProductionOutboxRecoveryOptions.SchemaVersion)
+            {
+                // The schema-36 to schema-37 operation declares either the schema-37 target
+                // itself (the outbox with the recovery extension) or the derived schema-36
+                // source profile of the same declaration with only the extension removed.
+                supported = options.Outbox is not null &&
+                    options.ProductionInspections is not null && options.TraceStoragePolicies is not null &&
+                    (options.Outbox.RecoveryEnabled
+                        ? _model.SchemaVersion == ProductionOutboxRecoveryOptions.SchemaVersion
+                        : _model.SchemaVersion == ProductionOutboxStoreOptions.SchemaVersion);
+            }
+            else if (supported && migrationTargetVersion == ProductionOutboxStoreOptions.SchemaVersion)
             {
                 // A schema-36 operation declares either the schema-36 target itself, which
                 // carries the outbox and, beyond the production Core, the trace policy and the
@@ -129,14 +142,14 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36))
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36 or 37))
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
             var definitions = ReadSchemaDefinitions(canonical.Handle!, deadline);
             // Drop the only foreign-key child before its parent. Foreign keys
             // remain ON throughout the transaction, including row restoration.
-            foreach (var name in new[] { "command_facts", "command_attempts", "audit_entries" })
+            foreach (var name in RebuiltTables.OrderBy(name => name == "command_facts" ? 0 : 1))
                 SqliteNative.Execute(database, $"DROP TABLE {Quote(name)};", deadline);
             foreach (var name in RebuiltTables)
             {
@@ -199,6 +212,13 @@ internal sealed partial class SqliteCommandStore
                     _model._policy!, key);
                 return;
             }
+            if (_migrationTargetVersion == ProductionOutboxRecoveryOptions.SchemaVersion &&
+                Options.Outbox?.ManualRecovery is { } recovery)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=37;", deadline);
+                InitializeProductionOutboxRecoverySchema(database, Options.Outbox, recovery, deadline, _model._policy!, key);
+                return;
+            }
             if (_migrationTargetVersion == ProductionOutboxStoreOptions.SchemaVersion &&
                 Options.Outbox is not null)
             {
@@ -220,6 +240,7 @@ internal sealed partial class SqliteCommandStore
         public void Dispose() => _model.DisposeAsync().GetAwaiter().GetResult();
         private string StageName(string name) => _migrationTargetVersion switch
         {
+            ProductionOutboxRecoveryOptions.SchemaVersion => "__sharpinspect_migration36_37_" + name,
             ProductionOutboxStoreOptions.SchemaVersion => "__sharpinspect_migration35_36_" + name,
             ProductionImageFinalizationStoreOptions.SchemaVersion =>
                 "__sharpinspect_migration34_35_" + name,
@@ -304,6 +325,55 @@ internal sealed partial class SqliteCommandStore
         ProductionArming = target.ProductionArming, RecipeLifecycle = target.RecipeLifecycle,
         ImageEvidence = target.ImageEvidence
     };
+
+    /// <summary>
+    /// The schema-36 source profile of the governed schema-36 to schema-37 migration: the exact
+    /// target configuration with only the optional recovery extension removed. Every route,
+    /// budget and optional legacy feature the source generation carried is retained, so the
+    /// source proof re-verifies exactly the schema-36 profile and the signed schema-36 outbox
+    /// activation entry stays byte-for-byte valid.
+    /// </summary>
+    internal static ProductionStoreOptions MigrationProductionOutboxRecoverySourceOptions(
+        ProductionStoreOptions target)
+    {
+        var outbox = target.Outbox ?? throw new InvalidOperationException(
+            "ProductionOutboxRecoveryConfigurationRequired");
+        var sourceOutbox = new ProductionOutboxStoreOptions(outbox.Routes, outbox.RecipeLifecycle,
+            outbox.ImageEvidence, outbox.ImageFinalization)
+        {
+            MaximumAttempts = outbox.MaximumAttempts,
+            MaximumRetryDelay = outbox.MaximumRetryDelay,
+            AttemptTimeout = outbox.AttemptTimeout,
+            MaximumEvents = outbox.MaximumEvents,
+            MaximumPayloadBytes = outbox.MaximumPayloadBytes,
+            MaximumTotalBytes = outbox.MaximumTotalBytes,
+            MaximumPageSize = outbox.MaximumPageSize
+        };
+        return new ProductionStoreOptions
+        {
+            DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout,
+            QueryTimeout = target.QueryTimeout, QueueCapacity = target.QueueCapacity,
+            AuditIntegrityPolicy = target.AuditIntegrityPolicy, LocalIdentity = target.LocalIdentity,
+            AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,
+            AlgorithmResultArchive = target.AlgorithmResultArchive, RecipeDrafts = target.RecipeDrafts,
+            CameraSetup = target.CameraSetup, CameraRecovery = target.CameraRecovery,
+            CameraNetwork = target.CameraNetwork, ImagingSetup = target.ImagingSetup,
+            CalibrationSessions = target.CalibrationSessions,
+            CalibrationGovernance = target.CalibrationGovernance, RecipeReleases = target.RecipeReleases,
+            PlcResultContracts = target.PlcResultContracts, RecipeActivations = target.RecipeActivations,
+            PreviewSessions = target.PreviewSessions, CalibrationImports = target.CalibrationImports,
+            ManualInspections = target.ManualInspections,
+            ProductionAdmission = target.ProductionAdmission,
+            StationQualifications = target.StationQualifications,
+            RecipeTransfers = target.RecipeTransfers, TraceStoragePolicies = target.TraceStoragePolicies,
+            QualificationCycles = target.QualificationCycles, PlcCommunication = target.PlcCommunication,
+            ProductionInspections = target.ProductionInspections, PartIdentities = target.PartIdentities,
+            ProductionRecovery = target.ProductionRecovery, RecipeSelections = target.RecipeSelections,
+            ProductionArming = target.ProductionArming, RecipeLifecycle = target.RecipeLifecycle,
+            ImageEvidence = target.ImageEvidence, ImageFinalization = target.ImageFinalization,
+            Outbox = sourceOutbox
+        };
+    }
 
     /// <summary>
     /// The source profile of a governed schema-36 migration: the exact target configuration with

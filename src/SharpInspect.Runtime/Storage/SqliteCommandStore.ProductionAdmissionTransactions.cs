@@ -95,7 +95,7 @@ internal sealed partial class SqliteCommandStore : IProductionAdmissionTerminalW
                     'ImageFinalizationAttemptStarted','ImageFinalizationAttemptFailed',
                     'ImageFinalizationSucceeded','ImageFinalizationStageReleased',
                     'ProductionOutboxCreated','ProductionOutboxAttemptStarted',
-                    'ProductionOutboxAttemptFailed','ProductionOutboxSucceeded')
+                    'ProductionOutboxAttemptFailed','ProductionOutboxSucceeded','ProductionOutboxHandlerBlocked')
                 GROUP BY Kind) ORDER BY Kind LIMIT 63;", deadline,
             statement => (Kind: SqliteNative.ColumnText(statement, 0)!, Hash: SqliteNative.ColumnText(statement, 1)!));
         AuditChainDatabase.Require(selected.Count <= 62, "ProductionAdmissionDurableHeadsCapacityExceeded");

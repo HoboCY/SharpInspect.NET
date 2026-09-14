@@ -170,6 +170,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ImportRecipeTransferCommand => Permission.ImportRecipe,
         PublishTraceStoragePolicyCommand => Permission.ManageProductionPolicy,
         ManualProductionRecoveryCommand => Permission.ManualRecovery,
+        RecoverOutboxDeliveryCommand => Permission.RecoverOutboxDelivery,
+        CreateCorrectiveOutboxDeliveryCommand => Permission.CreateCorrectiveOutboxDelivery,
         GovernedAuditChangeCommand change => change.Change switch
         {
             GovernedAuditChangeKind.RotateSigningKey or GovernedAuditChangeKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -204,6 +206,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             RecipeTransferCommand transfer => transfer.AuthorizationTarget,
             PublishTraceStoragePolicyCommand traceStorage => traceStorage.AuthorizationTarget,
             ManualProductionRecoveryCommand recovery => recovery.AuthorizationTarget,
+            RecoverOutboxDeliveryCommand outboxRecovery => outboxRecovery.AuthorizationTarget,
+            CreateCorrectiveOutboxDeliveryCommand outboxCorrection => outboxCorrection.AuthorizationTarget,
             _ => _options.StationId
         },
         CommandKind(command));
@@ -257,6 +261,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ImportRecipeTransfer => Permission.ImportRecipe,
         AuditedCommandKind.PublishTraceStoragePolicy => Permission.ManageProductionPolicy,
         AuditedCommandKind.ManualProductionRecovery => Permission.ManualRecovery,
+        AuditedCommandKind.RecoverOutboxDelivery => Permission.RecoverOutboxDelivery,
+        AuditedCommandKind.CreateCorrectiveOutboxDelivery => Permission.CreateCorrectiveOutboxDelivery,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
         AuditedCommandKind.CorrectHistoricalFact => Permission.CorrectHistoricalFact,
         AuditedCommandKind.DeleteEvidence => Permission.DeleteEvidence,
@@ -299,6 +305,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ImportRecipeTransferCommand => AuditedCommandKind.ImportRecipeTransfer,
         PublishTraceStoragePolicyCommand => AuditedCommandKind.PublishTraceStoragePolicy,
         ManualProductionRecoveryCommand => AuditedCommandKind.ManualProductionRecovery,
+        RecoverOutboxDeliveryCommand => AuditedCommandKind.RecoverOutboxDelivery,
+        CreateCorrectiveOutboxDeliveryCommand => AuditedCommandKind.CreateCorrectiveOutboxDelivery,
         SelectHistoricalCalibrationCommand => AuditedCommandKind.SelectHistoricalCalibration,
         ActivateRecipeCommand => AuditedCommandKind.ActivateRecipe,
         StartPreviewSessionCommand => AuditedCommandKind.StartPreview,

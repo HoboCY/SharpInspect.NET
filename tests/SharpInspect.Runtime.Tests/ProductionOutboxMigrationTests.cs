@@ -15,7 +15,7 @@ namespace SharpInspect.Runtime.Tests;
 /// only the outbox; a source generation without a governed plan (schema 28 to 31 uses an earlier
 /// audit envelope) fails closed without any rewrite.
 /// </summary>
-public sealed class ProductionOutboxMigrationTests
+public sealed partial class ProductionOutboxMigrationTests
 {
     private const long Budget = 64L * 1024 * 1024;
 

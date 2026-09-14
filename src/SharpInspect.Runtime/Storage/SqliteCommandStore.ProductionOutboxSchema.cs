@@ -22,12 +22,23 @@ internal sealed partial class SqliteCommandStore
         OutboxEventKind.AttemptStarted => "ProductionOutboxAttemptStarted",
         OutboxEventKind.AttemptFailed => "ProductionOutboxAttemptFailed",
         OutboxEventKind.Succeeded => "ProductionOutboxSucceeded",
+        OutboxEventKind.HandlerBlocked => "ProductionOutboxHandlerBlocked",
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
     internal static bool IsProductionOutboxAuditKind(string kind) => kind is
         "ProductionOutboxCreated" or "ProductionOutboxAttemptStarted" or
-        "ProductionOutboxAttemptFailed" or "ProductionOutboxSucceeded";
+        "ProductionOutboxAttemptFailed" or "ProductionOutboxSucceeded" or "ProductionOutboxHandlerBlocked";
+
+    // Only the explicitly migrated generation admits a block with no physical attempt.
+    // Original columns, row content and existing event hashes are retained by the migration.
+    internal static string ProductionOutboxGovernedSchemaSql => ProductionOutboxSchemaSql
+        .Replace("'AttemptFailed','Succeeded'))", "'AttemptFailed','Succeeded','HandlerBlocked'))", StringComparison.Ordinal)
+        .Replace("(Kind='Created')=(Attempt", "(Kind IN ('Created','HandlerBlocked'))=(Attempt", StringComparison.Ordinal)
+        .Replace("(Kind='Created')=(RuntimeEpoch", "(Kind IN ('Created','HandlerBlocked'))=(RuntimeEpoch", StringComparison.Ordinal)
+        .Replace("(Kind='AttemptFailed')=(FailureCategory", "(Kind IN ('AttemptFailed','HandlerBlocked'))=(FailureCategory", StringComparison.Ordinal)
+        .Replace("UNIQUE(DeliveryId,AggregateSequence)",
+            "CHECK(Kind<>'HandlerBlocked' OR (FailureCategory='Permanent' AND RetryAfterUtc IS NULL AND ConnectionBindingHash IS NULL)), UNIQUE(DeliveryId,AggregateSequence)", StringComparison.Ordinal);
 
     internal const string ProductionOutboxSchemaSql = @"
         CREATE TABLE production_outbox_store_config(
@@ -216,7 +227,8 @@ internal sealed partial class SqliteCommandStore
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(deadline);
         options.Validate();
-        SqliteNative.Execute(database, ProductionOutboxSchemaSql, deadline);
+        SqliteNative.Execute(database, options.RecoveryEnabled ? ProductionOutboxGovernedSchemaSql :
+            ProductionOutboxSchemaSql, deadline);
         AuditChainDatabase.Execute(database, @"INSERT INTO production_outbox_store_config
             (Id,FormatVersion,RouteSetHash,RouteCount,MaximumAttempts,MaximumRetryDelayMilliseconds,
              AttemptTimeoutMilliseconds,MaximumEvents,MaximumPayloadBytes,MaximumTotalBytes,MaximumPageSize,
@@ -296,6 +308,12 @@ internal sealed partial class SqliteCommandStore
             options.RecipeLifecyclePresenceHash, options.ImageEvidencePresenceHash,
             options.ImageFinalizationPresenceHash, options.BindingHash
         }, StringComparer.Ordinal), "ProductionOutboxConfigurationMismatch");
+        // The schema-37 extension configuration is re-proved on every path that re-proves the
+        // schema-36 configuration row, so an edited recovery budget fails closed everywhere.
+        if (options.ManualRecovery is { } recovery &&
+            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
+                ProductionOutboxRecoveryOptions.SchemaVersion)
+            RequireConfiguredProductionOutboxRecovery(database, options, recovery, deadline);
     }
 
     /// <summary>
@@ -315,8 +333,16 @@ internal sealed partial class SqliteCommandStore
         outbox.Validate();
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException(
             "AuditPolicyNotConfigured");
-        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionOutboxStoreOptions.SchemaVersion, "ProductionOutboxGovernedMigrationRequired");
+        var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
+        AuditChainDatabase.Require(schema is ProductionOutboxStoreOptions.SchemaVersion or
+            ProductionOutboxRecoveryOptions.SchemaVersion, "ProductionOutboxGovernedMigrationRequired");
+        // The schema-37 extension is bidirectional: a 37 store must declare it and a
+        // recovery-enabled store must already be migrated to 37.
+        AuditChainDatabase.Require(schema != ProductionOutboxRecoveryOptions.SchemaVersion || outbox.RecoveryEnabled,
+            "ProductionOutboxRecoveryConfigurationRequired");
+        AuditChainDatabase.Require(!outbox.RecoveryEnabled ||
+            schema == ProductionOutboxRecoveryOptions.SchemaVersion,
+            "ProductionOutboxRecoveryGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
             new AuditVerificationRequest(0, policy.MaximumVerificationEntries), startup: false, deadline,
@@ -390,6 +416,7 @@ internal sealed partial class SqliteCommandStore
     {
         var deliveries = ReadProductionOutboxDeliveries(database, options, deadline);
         var events = ReadProductionOutboxRows(database, options, deadline);
+        var grants = ReadProductionOutboxRecoveryGrantsIfEnabled(database, options, deadline);
         var persisted = AuditChainDatabase.Scalar(database,
             "SELECT COUNT(*) FROM production_outbox_work;", deadline);
         AuditChainDatabase.Require(persisted == deliveries.Count,
@@ -403,9 +430,22 @@ internal sealed partial class SqliteCommandStore
         {
             if (!groups.TryGetValue(delivery.Delivery.DeliveryId, out var list) || list.Count == 0)
                 throw new InvalidOperationException("ProductionOutboxCreatedEventMissing");
-            states.Add(DeriveProductionOutboxState(delivery.Delivery, list));
+            states.Add(DeriveProductionOutboxState(delivery.Delivery, list, grants));
         }
         return states;
+    }
+
+    internal static IReadOnlyList<ProductionOutboxRecoveryGrant> ReadProductionOutboxRecoveryGrantsIfEnabled(
+        sqlite3 database, ProductionOutboxStoreOptions options, StoreDeadline deadline)
+    {
+        if (options.ManualRecovery is not { } recovery)
+        {
+            AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, @"SELECT COUNT(*) FROM sqlite_master
+                WHERE type='table' AND name='production_outbox_recovery';", deadline) == 0,
+                "ProductionOutboxRecoveryConfigurationRequired");
+            return Array.Empty<ProductionOutboxRecoveryGrant>();
+        }
+        return ReadProductionOutboxRecoveryGrants(database, options, recovery, deadline);
     }
 
     private static ProductionOutboxStoredEvent ReadProductionOutboxEvent(sqlite3_stmt statement)
@@ -561,6 +601,7 @@ internal sealed partial class SqliteCommandStore
         RequireConfiguredProductionInspection(database, productionOptions, deadline);
         var deliveries = ReadProductionOutboxDeliveries(database, options, deadline);
         var rows = ReadProductionOutboxRows(database, options, deadline);
+        var grants = ReadProductionOutboxRecoveryGrantsIfEnabled(database, options, deadline);
         var byId = new Dictionary<Guid, ProductionOutboxStoredDelivery>();
         foreach (var delivery in deliveries)
         {
@@ -650,7 +691,7 @@ internal sealed partial class SqliteCommandStore
                             !succeeded.Contains(deliveryId) && !activeAttempts.ContainsKey(deliveryId) &&
                             value.AttemptId is not null && value.RuntimeEpoch is not null &&
                             value.ConnectionBindingHash is not null &&
-                            value.AttemptNumber <= delivery.Delivery.MaximumAttempts,
+                            value.AttemptNumber <= ProductionOutboxStoreOptions.MaximumAttemptsHardLimit,
                             "ProductionOutboxAttemptBindingMismatch");
                         attemptNumbers[deliveryId] = value.AttemptNumber!.Value;
                         activeAttempts[deliveryId] = value.AttemptId!.Value;
@@ -677,10 +718,20 @@ internal sealed partial class SqliteCommandStore
                         activeAttempts.Remove(deliveryId);
                         succeeded.Add(deliveryId);
                         break;
+                    case OutboxEventKind.HandlerBlocked:
+                        AuditChainDatabase.Require(options.RecoveryEnabled && created.Contains(deliveryId) &&
+                            !succeeded.Contains(deliveryId) && !activeAttempts.ContainsKey(deliveryId) &&
+                            value.AttemptId is null && value.AttemptNumber is null && value.RuntimeEpoch is null &&
+                            value.FailureCategory == OutboxFailureCategory.Permanent && value.RetryAfterUtc is null &&
+                            value.ConnectionBindingHash is null && value.AttemptBudget == delivery.Delivery.MaximumAttempts &&
+                            IsProductionOutboxHandlerBlockReason(value.ReasonCode), "ProductionOutboxHandlerBlockInvalid");
+                        break;
                 }
             }
         }
-        ValidateProductionOutboxProjection(database, deliveries, events, deadline);
+        ValidateProductionOutboxProjection(database, deliveries, events, grants, deadline);
+        if (options.ManualRecovery is { } recoveryOptions)
+            ValidateProductionOutboxRecoveryHistory(database, options, recoveryOptions, productionOptions, deadline);
         var reserved = ReadProductionOutboxReserveRows(database, deadline);
         // A durable Admitted cycle without a Core has not created its batch yet, so its complete
         // future liability must already fit alongside every persisted obligation.
@@ -730,66 +781,33 @@ internal sealed partial class SqliteCommandStore
     /// projection row can never masquerade as persisted state.
     /// </summary>
     internal static ProductionOutboxWorkState DeriveProductionOutboxState(
-        OutboxDelivery delivery, IReadOnlyList<ProductionOutboxEvent> events)
+        OutboxDelivery delivery, IReadOnlyList<ProductionOutboxEvent> events,
+        IReadOnlyList<ProductionOutboxRecoveryGrant>? grants = null)
     {
         ArgumentNullException.ThrowIfNull(delivery);
         ArgumentNullException.ThrowIfNull(events);
-        var state = new ProductionOutboxDerivedState();
-        // A preparation failure is an immutable unsendable obligation: it has no payload, can
-        // never start an attempt and is permanently blocked from the moment it is created.
-        if (delivery.Payload is null)
-        {
-            var created = events.Count == 0 ? null : events[0];
-            state.State = OutboxDeliveryState.Failed;
-            state.PermanentBlock = true;
-            state.RetryEligible = false;
-            state.LastFailure = (created?.ReasonCode ?? "ProductionOutboxPreparationFailed",
-                OutboxFailureCategory.Permanent, null);
-        }
-        foreach (var value in events)
-        {
-            switch (value.Kind)
-            {
-                case OutboxEventKind.AttemptStarted:
-                    state.State = OutboxDeliveryState.Pending;
-                    state.AttemptCount = value.AttemptNumber!.Value;
-                    state.NextAttemptNumber = checked(value.AttemptNumber.Value + 1);
-                    state.ActiveAttemptId = value.AttemptId;
-                    state.ActiveRuntimeEpoch = value.RuntimeEpoch;
-                    break;
-                case OutboxEventKind.AttemptFailed:
-                    state.ActiveAttemptId = null;
-                    state.ActiveRuntimeEpoch = null;
-                    state.State = OutboxDeliveryState.Failed;
-                    state.LastFailure = (value.ReasonCode, value.FailureCategory!.Value, value.RetryAfterUtc);
-                    if (value.FailureCategory == OutboxFailureCategory.Permanent)
-                    {
-                        state.PermanentBlock = true;
-                        state.RetryEligible = false;
-                    }
-                    else
-                    {
-                        state.RetryEligible = state.AttemptCount < delivery.MaximumAttempts;
-                    }
-                    break;
-                case OutboxEventKind.Succeeded:
-                    state.ActiveAttemptId = null;
-                    state.ActiveRuntimeEpoch = null;
-                    state.State = OutboxDeliveryState.Succeeded;
-                    state.RetryEligible = false;
-                    break;
-            }
-        }
-        return new ProductionOutboxWorkState(delivery, state.State, state.AttemptCount,
-            state.NextAttemptNumber, state.RetryEligible, state.PermanentBlock, state.ActiveAttemptId,
-            state.ActiveRuntimeEpoch, state.LastFailure?.ReasonCode, state.LastFailure?.Category,
-            state.LastFailure?.RetryAfterUtc, events.Count == 0 ? 0 : events[^1].Position,
-            events.Count == 0 ? null : events[^1].ContentHash);
+        var budget = ReplayOutboxBudget(delivery, events, grants);
+        var failure = events.LastOrDefault(x => x.Kind is OutboxEventKind.AttemptFailed or OutboxEventKind.HandlerBlocked);
+        var last = events.LastOrDefault();
+        var latestGrant = grants?.Where(x => x.DeliveryId == delivery.DeliveryId)
+            .OrderBy(x => x.AuthorizationAuditSequence).LastOrDefault();
+        var state = budget.Succeeded ? OutboxDeliveryState.Succeeded : budget.ActiveAttempt.HasValue
+            ? OutboxDeliveryState.Pending : failure is not null || delivery.Payload is null
+                ? OutboxDeliveryState.Failed : OutboxDeliveryState.Pending;
+        var retryAfter = latestGrant is not null && (failure is null || latestGrant.AuthorizationAuditSequence > failure.AuditSequence)
+            ? null : failure?.RetryAfterUtc;
+        return new ProductionOutboxWorkState(delivery, state, budget.AttemptCount,
+            checked(budget.AttemptCount + 1), budget.RetryEligible, budget.Permanent, budget.ActiveAttempt,
+            budget.ActiveEpoch, failure?.ReasonCode ?? (delivery.Payload is null ?
+                events.FirstOrDefault()?.ReasonCode ?? "ProductionOutboxPreparationFailed" : null),
+            failure?.FailureCategory ?? (delivery.Payload is null ? OutboxFailureCategory.Permanent : null),
+            retryAfter, last?.Position ?? 0, last?.ContentHash);
     }
 
     private static void ValidateProductionOutboxProjection(sqlite3 database,
         IReadOnlyList<ProductionOutboxStoredDelivery> deliveries,
-        IReadOnlyDictionary<Guid, List<ProductionOutboxEvent>> events, StoreDeadline deadline)
+        IReadOnlyDictionary<Guid, List<ProductionOutboxEvent>> events,
+        IReadOnlyList<ProductionOutboxRecoveryGrant> grants, StoreDeadline deadline)
     {
         var stored = AuditChainDatabase.Read(database, @"
             SELECT DeliveryId,State,AttemptCount,NextAttemptNumber,RetryEligible,PermanentBlock,
@@ -821,7 +839,7 @@ internal sealed partial class SqliteCommandStore
                 throw new InvalidOperationException("ProductionOutboxWorkProjectionMismatch");
             if (!events.TryGetValue(deliveryId, out var list) || list!.Count == 0)
                 throw new InvalidOperationException("ProductionOutboxWorkProjectionMismatch");
-            var state = DeriveProductionOutboxState(delivery.Delivery, list!);
+            var state = DeriveProductionOutboxState(delivery.Delivery, list!, grants);
             string? expectedRetryAfter = null;
             if ((state.LastFailureCategory is OutboxFailureCategory.Transient or
                     OutboxFailureCategory.UnknownOutcome) && state.RetryAfterUtc is not null)
@@ -852,12 +870,19 @@ internal sealed partial class SqliteCommandStore
     internal static (long Events, long OpenDeliveries) ReadProductionOutboxReserveRows(sqlite3 database,
         StoreDeadline deadline)
     {
-        var events = AuditChainDatabase.Scalar(database, @"
-            SELECT COALESCE(SUM(MAX(0,2*MaximumAttempts-(SELECT COUNT(*) FROM production_outbox_events e
-                WHERE e.DeliveryId=d.DeliveryId AND e.Kind<>'Created'))),0)
-            FROM production_outbox_deliveries d
-            WHERE d.PayloadBase64 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM production_outbox_events s
-                WHERE s.DeliveryId=d.DeliveryId AND (s.Kind='Succeeded' OR s.FailureCategory='Permanent'));", deadline);
+        // The schema-37 recovery extension is detected by its declared table, so every schema-36
+        // call site keeps the exact original SQL and byte-for-byte reserve behavior.
+        var recovery = AuditChainDatabase.Scalar(database, @"SELECT COUNT(*) FROM sqlite_master
+            WHERE type='table' AND name='production_outbox_recovery';", deadline) == 1;
+        var events = recovery
+            ? ReadRecoveredOutboxReserve(database, deadline)
+            : AuditChainDatabase.Scalar(database, @"
+                SELECT COALESCE(SUM(MAX(0,2*MaximumAttempts-(SELECT COUNT(*) FROM production_outbox_events e
+                    WHERE e.DeliveryId=d.DeliveryId AND e.Kind<>'Created'))),0)
+                FROM production_outbox_deliveries d
+                WHERE d.PayloadBase64 IS NOT NULL AND NOT EXISTS(SELECT 1 FROM production_outbox_events s
+                    WHERE s.DeliveryId=d.DeliveryId AND (s.Kind='Succeeded' OR s.FailureCategory='Permanent'));",
+                deadline);
         var open = AuditChainDatabase.Scalar(database, @"
             SELECT COUNT(*) FROM production_outbox_deliveries d
             WHERE NOT EXISTS(SELECT 1 FROM production_outbox_events s
@@ -963,6 +988,7 @@ internal sealed partial class SqliteCommandStore
         "AttemptStarted" => OutboxEventKind.AttemptStarted,
         "AttemptFailed" => OutboxEventKind.AttemptFailed,
         "Succeeded" => OutboxEventKind.Succeeded,
+        "HandlerBlocked" => OutboxEventKind.HandlerBlocked,
         _ => throw new InvalidOperationException("ProductionOutboxEventInvalid")
     };
 

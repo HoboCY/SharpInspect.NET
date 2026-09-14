@@ -659,7 +659,8 @@ internal sealed partial class SqliteCommandStore
                 work.CalibrationGovernanceUpdate is not null || work.RecipeReleaseUpdate is not null ||
                 work.PlcResultContractUpdate is not null || work.RecipeActivationUpdate is not null ||
                 work.PreviewSessionUpdate is not null || work.CalibrationImportUpdate is not null ||
-                work.ManualInspectionUpdate is not null || work.StationQualificationUpdate is not null) &&
+                work.ManualInspectionUpdate is not null || work.StationQualificationUpdate is not null ||
+                work.OutboxGovernanceUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
@@ -712,6 +713,8 @@ internal sealed partial class SqliteCommandStore
                 ReadRecipeActivationCommandState(database, deadline);
             var lifecycleState = work.RecipeLifecycleCommand is null ? null :
                 ReadRecipeLifecycleCommandState(database, _options, deadline);
+            var outboxGovernanceState = work.OutboxGovernanceCommand is null ? null :
+                ReadOutboxGovernanceCommandState(database, work.OutboxGovernanceCommand, deadline);
             var previewState = work.PreviewSessionCommand is null ? null :
                 ReadPreviewSessionCommandState(database, work.PreviewSessionCommand, deadline);
             var previewInput = work.PreviewSessionCommand is null || previewState?.Draft is null ||
@@ -730,15 +733,27 @@ internal sealed partial class SqliteCommandStore
                     work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                         cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                         releaseState, contractState, activationState, previewState, previewInput, importState,
-                        manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState)
+                        manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState)
                 : work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                     cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                     releaseState, contractState, activationState, previewState, previewInput, importState,
-                    manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState);
+                    manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState);
             if (evaluated.Result is ProductionAdmissionTerminalRequest terminalRequest)
                 evaluated = BuildProductionAdmissionTerminal(database, state, terminalRequest, deadline);
             decision = evaluated;
             guard = evaluated.CommitGuard;
+            OutboxGovernanceCapacity? outboxCapacity = null;
+            if (evaluated.OutboxRecovery is not null || evaluated.OutboxCorrection is not null)
+            {
+                try { outboxCapacity = PrepareOutboxGovernanceCapacity(database, evaluated, outboxGovernanceState!, deadline); }
+                catch (InvalidOperationException error) when (AuditChainDatabase.IsCapacityReason(error.Message))
+                {
+                    guard?.Dispose();
+                    guard = null;
+                    evaluated = RejectOutboxGovernanceCapacity(evaluated, error.Message);
+                    decision = evaluated;
+                }
+            }
             if (evaluated.PartIdentity?.Correction is { } correctionRequest)
             {
                 var conflictReason = TryPreparePartIdentityCorrectionRejection(
@@ -761,6 +776,7 @@ internal sealed partial class SqliteCommandStore
                     evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
                     evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
                     evaluated.ProductionRecoveryFailure is null && evaluated.RecipeSelection is null && evaluated.RecipeLifecycle is null &&
+                    evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null &&
                     guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
@@ -996,6 +1012,9 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.RecipeLifecycle is not null)
                 AppendRecipeLifecycleIdentityMutation(database, evaluated, lifecycleState!,
                     work.RecipeLifecycleCommand!, deadline);
+            if (evaluated.OutboxRecovery is not null || evaluated.OutboxCorrection is not null)
+                AppendOutboxGovernanceIdentityMutation(database, evaluated, outboxGovernanceState!,
+                    work.OutboxGovernanceCommand!, work, deadline);
             if (evaluated.PreviewSession is not null)
             {
                 AppendPreviewSessionIdentityMutation(database, evaluated, previewState!,
@@ -1007,11 +1026,13 @@ internal sealed partial class SqliteCommandStore
                     work.ManualInspectionCommand!, work, deadline);
             }
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
+            if (outboxCapacity is not null) VerifyOutboxGovernanceCapacity(database, outboxCapacity, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline);
             committed = true;
             if (evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
                 evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
                 evaluated.ProductionRecoveryFailure is null &&
+                evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null &&
                 evaluated.Result is not StationQualificationTransactionResult { Accepted: true, Event: not null })
                 work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
                     ? commit with { Revision = imagingRevision } : evaluated.Result;
@@ -1372,6 +1393,14 @@ internal sealed partial class SqliteCommandStore
             RecipeReleaseUpdate = update;
         }
 
+        internal IdentityWork(RuntimeCommand command,
+            Func<IdentityAuthorityState, OutboxGovernanceCommandState, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            OutboxGovernanceCommand = command;
+            OutboxGovernanceUpdate = update;
+        }
+
         internal IdentityWork(ChangePlcResultContractCommand command,
             Func<IdentityAuthorityState, PlcResultContractCommandState, bool, IdentityUpdate> update)
         {
@@ -1486,6 +1515,9 @@ internal sealed partial class SqliteCommandStore
         internal ReleaseRecipeCommand? RecipeReleaseCommand { get; }
         internal Func<IdentityAuthorityState, RecipeReleaseCommandState, bool, IdentityUpdate>?
             RecipeReleaseUpdate { get; }
+        internal RuntimeCommand? OutboxGovernanceCommand { get; }
+        internal Func<IdentityAuthorityState, OutboxGovernanceCommandState, bool, IdentityUpdate>?
+            OutboxGovernanceUpdate { get; }
         internal ChangePlcResultContractCommand? PlcResultContractCommand { get; }
         internal ChangeRecipeSelectionCommand? RecipeSelectionCommand { get; }
         internal Func<IdentityAuthorityState, RecipeSelectionCommandState, bool, IdentityUpdate>? RecipeSelectionUpdate { get; }
@@ -1523,7 +1555,10 @@ internal sealed partial class SqliteCommandStore
             StationQualificationCommandState? stationQualificationState = null,
             StationQualificationAdmissionInput? stationQualificationInput = null,
             RecipeSelectionCommandState? recipeSelectionState = null,
-            RecipeLifecycleCommandState? recipeLifecycleState = null) =>
+            RecipeLifecycleCommandState? recipeLifecycleState = null,
+            OutboxGovernanceCommandState? outboxGovernanceState = null) =>
+            OutboxGovernanceUpdate is not null ? OutboxGovernanceUpdate(state, outboxGovernanceState!,
+                duplicateCorrelation) :
             RecipeLifecycleUpdate is not null ? RecipeLifecycleUpdate(state, recipeLifecycleState!, duplicateCorrelation) :
             RecipeSelectionUpdate is not null ? RecipeSelectionUpdate(state, recipeSelectionState!, duplicateCorrelation) :
             CalibrationImportUpdate is not null ? CalibrationImportUpdate(state, calibrationImportState!, duplicateCorrelation) :
@@ -1572,5 +1607,7 @@ internal sealed record IdentityUpdate(
       ProductionRecoveryCompletionWriteRequest? ProductionRecoveryCompletion = null,
       ProductionRecoveryFailureWriteRequest? ProductionRecoveryFailure = null,
       RecipeSelectionMutation? RecipeSelection = null,
-      RecipeLifecycleMutation? RecipeLifecycle = null);
+      RecipeLifecycleMutation? RecipeLifecycle = null,
+      OutboxRecoveryMutation? OutboxRecovery = null,
+      OutboxCorrectionMutation? OutboxCorrection = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

@@ -225,6 +225,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitPartIdentityCorrectionAsync(partIdentityCorrection, cancellationToken).ConfigureAwait(false);
         if (command is ManualProductionRecoveryCommand productionRecovery)
             return await SubmitProductionRecoveryAsync(productionRecovery, cancellationToken).ConfigureAwait(false);
+        if (command is RecoverOutboxDeliveryCommand or CreateCorrectiveOutboxDeliveryCommand)
+            return await SubmitOutboxGovernanceAsync(command, cancellationToken).ConfigureAwait(false);
         if (command is ManualInspectionCommand manual)
             return await SubmitManualInspectionAsync(manual, cancellationToken).ConfigureAwait(false);
         if (command is PreviewSessionCommand preview)

@@ -295,6 +295,10 @@ internal static class Program
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new ProductionOutboxViewModel(p.GetService<IProductionOutboxQuery>(),
+            p.GetService<IProductionOutboxRecoveryService>(), p.GetService<IProductionOutboxGovernanceQuery>(),
+            p.GetService<IInteractiveSessionService>(), p.GetService<IStepUpAuthentication>(),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new RecipeDraftEditorViewModel(p.GetService<IRecipeDraftEditor>(),
             p.GetService<IInteractiveSessionService>(), new DispatcherUiDispatcher(app.Dispatcher),
             storeOptions.RecipeDrafts?.ExecutionPolicy, p.GetService<IStepUpAuthentication>(),
@@ -366,6 +370,7 @@ internal static class Program
         if (productionRecovery is not null)
             window.AttachProductionRecovery(productionRecovery);
         window.AttachProductionImageEvidence(provider.GetRequiredService<ProductionImageEvidenceViewModel>());
+        window.AttachProductionOutbox(provider.GetRequiredService<ProductionOutboxViewModel>());
         var exitCode = 0;
         if (smoke)
         {
