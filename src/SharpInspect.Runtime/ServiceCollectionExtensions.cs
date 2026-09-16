@@ -18,6 +18,18 @@ namespace SharpInspect.Runtime;
 
 public static class ServiceCollectionExtensions
 {
+    private static void RegisterDiagnostics(IServiceCollection services)
+    {
+        services.TryAddSingleton<IDiagnosticPipelineHealthQuery>(p =>
+            (p.GetRequiredService<IStationRuntime>() as StationRuntime)?.DiagnosticHealthQuery ??
+            throw new InvalidOperationException("DiagnosticRuntimeUnavailable"));
+        services.TryAddSingleton<IDiagnosticHistoryQuery>(p =>
+            (p.GetRequiredService<IStationRuntime>() as StationRuntime)?.DiagnosticHistoryQuery ??
+            throw new InvalidOperationException("DiagnosticRuntimeUnavailable"));
+        services.TryAddSingleton<IManagedFaultBoundary>(p => p.GetRequiredService<IStationRuntime>() as IManagedFaultBoundary ??
+            throw new InvalidOperationException("ManagedFaultBoundaryUnavailable"));
+    }
+
     /// <summary>Register only explicitly configured Outbox transports; never scans destinations or assemblies.</summary>
     public static IServiceCollection AddSharpInspectOutbox(this IServiceCollection services,
         Outbox.ProductionOutboxOptions options)
@@ -196,6 +208,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ICalibrationSessionQuery>(p =>
             p.GetRequiredService<IStationRuntime>() as ICalibrationSessionQuery ??
             throw new InvalidOperationException("CalibrationSessionQueryUnavailable"));
+        RegisterDiagnostics(services);
         RegisterCalibrationGovernance(services);
         return services;
     }
@@ -207,6 +220,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
         services.TryAddSingleton(options);
+        RegisterDiagnostics(services);
         services.TryAddSingleton(p => new PartIdentityBindingRegistry(p.GetServices<IPartIdentityProvider>(),
             p.GetService<ProductionInspectionOptions>()?.Profile.PartIdentity?.ContentHash));
         services.TryAddSingleton<SqliteCommandStore>();

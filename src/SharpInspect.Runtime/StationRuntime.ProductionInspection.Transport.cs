@@ -63,7 +63,7 @@ public sealed partial class StationRuntime
                 if (_disposed || _shutdownRequested) return;
                 if (!EvidenceReconciliationReadyLocked())
                     throw new InvalidOperationException("EvidenceReconciliationStartupUnavailable");
-                owner = new(_snapshot.RuntimeEpoch, _lifetime.Token, _productionInspectionExecutionOptions!);
+                owner = new(_snapshot.RuntimeEpoch, _lifetime.Token, _productionInspectionExecutionOptions!, _diagnostics);
                 _productionInspectionOwner = owner;
                 _productionInspectionStartupVerified = true;
                 PublishLocked(_snapshot with { Recovery = RecoveryState.None,

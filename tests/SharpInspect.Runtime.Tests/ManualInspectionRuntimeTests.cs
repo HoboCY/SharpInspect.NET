@@ -447,6 +447,12 @@ public sealed partial class ManualInspectionRuntimeTests
                             Permission.ActivateRecipe, Permission.ArmProduction, Permission.ManageProductionPolicy }).Distinct()
                         : pair.Value.AsEnumerable()), policy.StepUpPermissions);
             var alarm = CreateAlarmPolicy();
+            if (productionPeer is not null)
+                alarm = new AlarmPolicy("V156.Diagnostics.Alarm", "1", alarm.Rules.Concat(new[]
+                {
+                    new AlarmPolicyRule("DiagnosticPipelineUnhealthy", "Runtime.Diagnostics", AlarmSeverity.Warning,
+                        ProductionImpact.None, false, AlarmNotification.None, null)
+                }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             if (outbox is not null)
                 alarm = new AlarmPolicy("V152.Outbox.Alarm", "1", alarm.Rules.Concat(new[]
                 {
@@ -524,6 +530,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     var publication = await TraceStoragePolicyRuntimeTests.Service(fixture).PublishAsync(
                         await TraceStoragePolicyRuntimeTests.AuthorizedCommand(fixture, 0, tracePolicy ?? TraceStoragePolicyRuntimeTests.Policy()));
                     Assert.True(publication.Succeeded, publication.Outcome.ReasonCode);
+                    fixture.ConfigureDiagnostics(publication.Snapshot!);
                     ProductionPolicyDocument Document(string id, string content) => new(id, "1", content);
                     deployment = startupProductionPolicy is null && postActivationArmPolicy is null
                         ? new ProductionDeploymentManifest("V142.Isolated.Deployment", "1",

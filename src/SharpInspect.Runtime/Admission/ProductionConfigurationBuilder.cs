@@ -72,8 +72,10 @@ internal static class ProductionConfigurationBuilder
                 Images.ProductionImageEvidenceBinding.PolicyFingerprint(options, store, trace));
         if (manifest is not null)
         {
-            Add(ProductionConfigurationBinding.LoggingPolicy, manifest.Logging.ContentHash);
-            Add(ProductionConfigurationBinding.DiagnosticPolicy, manifest.Diagnostics.ContentHash);
+            Add(ProductionConfigurationBinding.LoggingPolicy, store.LoggingDiagnostics is { } logging ?
+                Hash("production-logging-policy-v2", manifest.Logging.ContentHash, logging.BindingHash) : manifest.Logging.ContentHash);
+            Add(ProductionConfigurationBinding.DiagnosticPolicy, store.LoggingDiagnostics is { } diagnostics ?
+                Hash("production-diagnostic-policy-v2", manifest.Diagnostics.ContentHash, diagnostics.BindingHash) : manifest.Diagnostics.ContentHash);
             Add(ProductionConfigurationBinding.BackupPolicy, manifest.Backup.ContentHash);
             Add(ProductionConfigurationBinding.StartupPolicy, manifest.Startup.ContentHash);
             Add(ProductionConfigurationBinding.PerformanceContract, manifest.Performance.ContentHash);

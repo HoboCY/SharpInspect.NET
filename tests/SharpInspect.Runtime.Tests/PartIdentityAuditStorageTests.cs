@@ -26,7 +26,7 @@ public sealed partial class ManualInspectionRuntimeTests
         var before = await ReadPartIdentityAuditCountsAsync(harness.Fixture.Options.DatabasePath);
         Assert.True(before.PartIdentityRows > 0);
         Assert.True(before.PartIdentityAuditSequence > 0);
-        await TamperCentralPartIdentityAuditHashAsync(harness.Fixture.Options.DatabasePath,
+        await TamperCentralPartIdentityAuditPayloadAsync(harness.Fixture.Options.DatabasePath,
             before.PartIdentityAuditSequence);
 
         var station = harness.Fixture.Options.LocalIdentity!.StationId;
@@ -396,7 +396,7 @@ public sealed partial class ManualInspectionRuntimeTests
             reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
     }
 
-    private static async Task TamperCentralPartIdentityAuditHashAsync(
+    private static async Task TamperCentralPartIdentityAuditPayloadAsync(
         string databasePath, long sequence)
     {
         await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -420,10 +420,22 @@ public sealed partial class ManualInspectionRuntimeTests
             }
             Assert.False(string.IsNullOrWhiteSpace(trigger));
             await ExecuteSqlAsync(connection, "DROP TRIGGER audit_entries_immutable_update;");
+            byte[] payload;
+            await using (var original = connection.CreateCommand())
+            {
+                original.CommandText = "SELECT Payload FROM audit_entries WHERE Sequence=$sequence;";
+                original.Parameters.AddWithValue("$sequence", sequence);
+                payload = Convert.FromBase64String((string)(await original.ExecuteScalarAsync())!);
+            }
+            Assert.NotEmpty(payload);
+            payload[0] ^= 1;
             await using (var update = connection.CreateCommand())
             {
-                update.CommandText = "UPDATE audit_entries SET Hash=$hash WHERE Sequence=$sequence;";
-                update.Parameters.AddWithValue("$hash", new string('0', 64));
+                // Preserve the signed hash/checkpoint: this probe targets payload verification.
+                // Altering Hash instead can correctly fail at the earlier checkpoint check,
+                // depending on which event the fixture's final checkpoint signed.
+                update.CommandText = "UPDATE audit_entries SET Payload=$payload WHERE Sequence=$sequence;";
+                update.Parameters.AddWithValue("$payload", Convert.ToBase64String(payload));
                 update.Parameters.AddWithValue("$sequence", sequence);
                 Assert.Equal(1, await update.ExecuteNonQueryAsync());
             }

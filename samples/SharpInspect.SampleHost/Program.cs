@@ -25,6 +25,8 @@ internal static class Program
             var index = Array.IndexOf(args, name);
             return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
         }
+        if (Option("--diagnostics-fatal-probe") is { } diagnosticProbe)
+            return DiagnosticFatalProbe.Run(diagnosticProbe, Option("--diagnostics-fatal-mode") ?? "dispatcher");
         if (Option("--conformance-demo") is { } conformanceDemoDirectory)
             return ConformanceDemo.RunDemo(conformanceDemoDirectory, Option("--conformance-source"));
         if (Option("--conformance-query") is { } conformanceQueryDirectory)
@@ -298,6 +300,11 @@ internal static class Program
         services.AddSingleton(p => new StorageRetentionViewModel(p.GetService<ITraceStorageCapacityQuery>(),
             p.GetService<IEvidenceRetentionService>(), p.GetService<IInteractiveSessionService>(),
             p.GetService<IStepUpAuthentication>(), new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new DiagnosticsViewModel(p.GetRequiredService<IDiagnosticPipelineHealthQuery>(),
+            p.GetRequiredService<IDiagnosticHistoryQuery>(), p.GetService<IInteractiveSessionService>(),
+            Math.Min(50, storeOptions.LoggingDiagnostics?.Policy.MaximumQueryRecords ?? 50),
+            Math.Min(65536, storeOptions.LoggingDiagnostics?.Policy.MaximumQueryBytes ?? 65536),
+            new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionOutboxViewModel(p.GetService<IProductionOutboxQuery>(),
@@ -346,6 +353,7 @@ internal static class Program
         var provider = services.BuildServiceProvider();
         var vm = provider.GetRequiredService<StationShellViewModel>();
         var runtime = provider.GetRequiredService<IStationRuntime>();
+        using var fatalShutdown = new ManagedFaultShutdown(app, provider.GetRequiredService<IManagedFaultBoundary>(), TimeSpan.FromSeconds(10));
         var trace = provider.GetRequiredService<CommandTraceViewModel>();
         var integrity = provider.GetRequiredService<AuditIntegrityViewModel>();
         var identity = provider.GetRequiredService<IdentityViewModel>();
@@ -377,6 +385,7 @@ internal static class Program
         window.AttachProductionImageEvidence(provider.GetRequiredService<ProductionImageEvidenceViewModel>());
         window.AttachEvidenceReconciliation(provider.GetRequiredService<EvidenceReconciliationViewModel>());
         window.AttachStorageRetention(provider.GetRequiredService<StorageRetentionViewModel>());
+        window.AttachDiagnostics(provider.GetRequiredService<DiagnosticsViewModel>());
         window.AttachProductionOutbox(provider.GetRequiredService<ProductionOutboxViewModel>());
         var exitCode = 0;
         if (smoke)
@@ -526,7 +535,7 @@ internal static class Program
                     ? $"V104 SMOKE FAIL {assertion.Message}"
                     : $"V104 SMOKE FAIL {exception.GetType().Name} hresult={exception.HResult:X8}{Environment.NewLine}{exception.StackTrace}");
                 else if (smoke) Console.Error.WriteLine($"SMOKE FAIL {exception.GetType().Name}: {exception.Message}");
-                else window.ShowUnavailable();
+                else fatalShutdown.Begin(exception);
             }
             finally
             {

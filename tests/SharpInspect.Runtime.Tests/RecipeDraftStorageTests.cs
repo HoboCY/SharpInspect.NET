@@ -504,6 +504,7 @@ public sealed class RecipeDraftStorageTests
     internal sealed class Fixture : IAsyncDisposable
     {
         private readonly string _directory;
+        private string? _diagnosticDirectory;
         private readonly AuditIntegrityPolicy _auditPolicy;
         private bool _disposed;
 
@@ -520,6 +521,30 @@ public sealed class RecipeDraftStorageTests
         }
 
         internal ProductionStoreOptions Options { get; private set; }
+
+        internal void ConfigureDiagnostics(TraceStoragePolicySnapshot trace)
+        {
+            if (_diagnosticDirectory is not null) throw new InvalidOperationException("TestDiagnosticsAlreadyConfigured");
+            _diagnosticDirectory = Path.Combine(Path.GetTempPath(), "V156-Diagnostics-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_diagnosticDirectory);
+            var protectedRetention = trace.RetentionRules.Single(rule => rule.EvidenceClass == TraceRetentionClass.ProtectedDiagnosticRecord).MinimumRetention;
+            var safeMinimum = trace.RetentionRules.Single(rule => rule.EvidenceClass == TraceRetentionClass.OperationalLog).MinimumRetention;
+            var safeRetention = safeMinimum > protectedRetention ? safeMinimum : protectedRetention + TimeSpan.FromDays(1);
+            var policy = DiagnosticPipelineTests.Policy(traceHash: trace.ContentHash, traceVersion: trace.Policy.Version,
+                safeRetention: safeRetention, protectedRetention: protectedRetention);
+            Diagnostics.DiagnosticLocalStoreOptions Local(string name, bool protectedChannel, DiagnosticFileBudget budget) =>
+                new(Path.Combine(_diagnosticDirectory, name), protectedChannel, budget.MaximumRecordBytes,
+                    budget.MaximumFileBytes, budget.MaximumFiles, budget.MaximumTotalBytes, budget.RollAfter, budget.Retention);
+            var safe = Local("safe", false, policy.SafeFiles); var protectedStore = Local("protected", true, policy.ProtectedFiles);
+            var logging = new Diagnostics.LoggingDiagnosticsOptions(policy, safe, Diagnostics.DiagnosticDirectoryInstallation.Install(safe),
+                protectedStore, Diagnostics.DiagnosticDirectoryInstallation.Install(protectedStore));
+            // Test-only shallow configuration copy. Existing identity/schema settings are preserved;
+            // only the new non-SQLite diagnostic deployment capability is added before Runtime composition.
+            var copy = new ProductionStoreOptions();
+            foreach (var property in typeof(ProductionStoreOptions).GetProperties())
+                property.SetValue(copy, property.Name == nameof(ProductionStoreOptions.LoggingDiagnostics) ? logging : property.GetValue(Options));
+            Options = copy;
+        }
         internal LocalIdentityOptions IdentityOptions { get; }
         internal SqliteCommandStore Store { get; private set; }
         internal LocalIdentityService Identity { get; private set; }
@@ -756,6 +781,7 @@ public sealed class RecipeDraftStorageTests
             await Sessions.DisposeAsync();
             await Store.DisposeAsync();
             DeleteDirectory(_directory, _auditPolicy);
+            if (_diagnosticDirectory is not null) Directory.Delete(_diagnosticDirectory, recursive: true);
         }
 
         internal static async Task WaitForVerifiedAsync(SqliteCommandStore store,

@@ -67,6 +67,10 @@ public sealed partial class ManualInspectionRuntimeTests
         Assert.Equal(1, harness.Factory.Created);
         Assert.Equal(0, peer.ReadyWriteCount);
         Assert.True(peer.ProductionReadyWriteCount >= 2);
+        var diagnosticHistory = await harness.Service<IDiagnosticHistoryQuery>().ReadAsync(new(false, 50, 65536, harness.Invocation()));
+        Assert.True(diagnosticHistory.Available, diagnosticHistory.ReasonCode);
+        Assert.Equal(2, diagnosticHistory.Records.Count(record => record.Code == "Runtime.AlgorithmOutcome" &&
+            record.Execution?.Kind == ExecutionKind.Production));
     }
 
     [Fact]

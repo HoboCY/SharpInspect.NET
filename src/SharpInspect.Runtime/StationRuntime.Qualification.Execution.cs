@@ -127,7 +127,7 @@ public sealed partial class StationRuntime
             }, retirement => owner.PreparationRetirement = retirement).ConfigureAwait(false);
         if (!preparation.Succeeded || preparation.Prepared is null) throw new InvalidOperationException(preparation.ReasonCode);
         owner.Prepared = preparation.Prepared;
-        owner.Execution = new AlgorithmExecutionService(_stationQualificationExecutionOptions!);
+        owner.Execution = new AlgorithmExecutionService(_stationQualificationExecutionOptions!, null, diagnosticSource: _diagnostics);
         await RequireStationQualificationAuthorityAsync(owner).ConfigureAwait(false);
         owner.Camera = await _cameraSetupRuntime.ReserveQualificationAcquisitionAsync(content.CameraRole, owner.Cancellation.Token).ConfigureAwait(false);
         if (!owner.Camera.Available) throw new InvalidOperationException(owner.Camera.ReasonCode);

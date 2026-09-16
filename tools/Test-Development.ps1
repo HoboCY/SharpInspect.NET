@@ -182,7 +182,9 @@ try {
     }
     $taskEvidence.sourceHashes = @(Get-TaskSourceHashes)
     $taskEvidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $taskRun 'validation.json') -Encoding utf8
-    Invoke-TaskDotnet 'build.log' @('build','SharpInspect.NET.sln','-c','Release','-p:RestoreLockedMode=true','-m:1')
+    # Restored source bytes can carry older mtimes than a development/negative-control DLL.
+    # Source hashing alone cannot prove an incremental build used those bytes.
+    Invoke-TaskDotnet 'build.log' @('build','SharpInspect.NET.sln','-c','Release','--no-incremental','-p:RestoreLockedMode=true','-m:1')
     Invoke-TaskDotnet 'tests.log' @('test','SharpInspect.NET.sln','-c','Release','--no-build','--no-restore','-m:1',
         '--logger','trx','--results-directory',(Join-Path $taskRun 'tests'))
 
@@ -954,6 +956,9 @@ try {
     if ($Ticket -ge 55) {
         & (Join-Path $PSScriptRoot 'Test-RetentionMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
             -SourceSchema 38 -SourcePackageFeed $Schema38PackageFeed
+    }
+    if ($Ticket -ge 56) {
+        & (Join-Path $PSScriptRoot 'Test-DiagnosticsConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

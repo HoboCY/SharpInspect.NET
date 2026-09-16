@@ -343,7 +343,7 @@ public sealed partial class CalibrationGovernanceRuntimeTests
     {
         var start = await fixture.CreateAuthorizedStartCommandAsync();
         var started = await fixture.Runtime.SubmitAsync(start);
-        Assert.Equal(CommandDisposition.Accepted, started.Disposition);
+        Assert.True(started.Disposition == CommandDisposition.Accepted, started.ReasonCode);
         var collecting = await WaitForSnapshotAsync(fixture,
             value => value.CalibrationSession is
                 { Phase: CalibrationSessionPhase.Collecting, OperationInProgress: false });

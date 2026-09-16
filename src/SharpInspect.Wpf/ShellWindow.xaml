@@ -204,6 +204,7 @@
                     <local:ProductionImageEvidencePanel x:Name="ProductionImageEvidencePanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:EvidenceReconciliationPanel x:Name="EvidenceReconciliationPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:StorageRetentionPanel x:Name="StorageRetentionPanel" Visibility="Collapsed" Margin="0,16,0,0" />
+                    <local:DiagnosticsPanel x:Name="DiagnosticsPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:ProductionOutboxPanel x:Name="ProductionOutboxPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:RecipeDraftEditorPanel x:Name="RecipeDraftEditorPanel" Visibility="Collapsed" Margin="0,16,0,0" />
                     <local:PreviewSessionPanel x:Name="PreviewPanel" Visibility="Collapsed" Margin="0,16,0,0" />

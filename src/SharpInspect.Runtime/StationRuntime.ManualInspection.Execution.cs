@@ -34,7 +34,7 @@ public sealed partial class StationRuntime
                 return;
             }
             owner.Prepared = preparation.Prepared;
-            owner.Execution = new AlgorithmExecutionService(_manualExecutionOptions!);
+            owner.Execution = new AlgorithmExecutionService(_manualExecutionOptions!, null, diagnosticSource: _diagnostics);
             owner.Clock = _manualAcquisitionClock;
             if (!await CheckManualInspectionAuthorityAsync(owner).ConfigureAwait(false)) return;
             var camera = await _cameraSetupRuntime.ReserveManualAcquisitionAsync(content.CameraRole,

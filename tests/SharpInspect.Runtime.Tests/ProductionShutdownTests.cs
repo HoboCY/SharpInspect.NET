@@ -32,6 +32,11 @@ public sealed partial class ManualInspectionRuntimeTests
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
                 harness.StopRuntimePreservingFixtureAsync().WaitAsync(TimeSpan.FromSeconds(9)));
             Assert.Equal("ProductionInspectionShutdownIncomplete", error.Message);
+            var diagnostics = ((StationRuntime)harness.Runtime).DiagnosticHealthQuery.ReadHealth();
+            Assert.Equal(DiagnosticSinkState.Stopped, diagnostics.Safe!.State);
+            Assert.Equal(DiagnosticSinkState.Stopped, diagnostics.Protected!.State);
+            Assert.Equal(0, diagnostics.Safe.PhysicalCalls);
+            Assert.Equal(0, diagnostics.Protected.PhysicalCalls);
             Assert.InRange(elapsed.Elapsed.TotalSeconds, 4, 8);
             Assert.True(peer.RuntimeResultValid);
             Assert.Equal(1, peer.ResultValidHighCount);

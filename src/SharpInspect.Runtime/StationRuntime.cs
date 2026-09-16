@@ -133,6 +133,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureManualInspectionStartup(productionStoreOptions?.ManualInspections is not null);
         ConfigureStationQualificationStartup(productionStoreOptions?.StationQualifications is not null);
         _storeInitialization = InitializeStoreAsync();
+        ConfigureDiagnostics(productionStoreOptions);
         ConfigureRetentionWorker(productionStoreOptions);
         ConfigureEvidenceReconciliation(productionStoreOptions);
         ConfigureImageFinalization(productionStoreOptions);
@@ -750,6 +751,17 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     }
 
     private async Task ShutdownAsync()
+    {
+        try { await ShutdownRuntimeOwnersAsync().ConfigureAwait(false); }
+        finally
+        {
+            // A failed authoritative shutdown still closes ordinary diagnostic output.
+            // Each lane retains any unfinished physical IO through its own bounded stop.
+            if (_diagnostics is not null) await _diagnostics.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async Task ShutdownRuntimeOwnersAsync()
     {
         // Stop admitting new work immediately. A terminal transaction that already owns
         // the command gate settles first; shutdown never rewrites an immutable terminal fact.

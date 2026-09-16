@@ -17,7 +17,8 @@ public sealed class ProductionStopCrashTests
         {
             var childOptions = new ProductionStoreOptions(Path.Combine(childRoot, "trace.db"));
             await using var childStore = new SqliteCommandStore(childOptions);
-            Assert.True((await childStore.Initialization).Committed);
+            var childInitialization = await childStore.Initialization;
+            Assert.True(childInitialization.Committed, childInitialization.ReasonCode);
             // Hold completion scheduling while retaining the real accepted command and
             // durable writer. The parent kills this host before Dispose can run.
             await using var runtime = new StationRuntime(childStore, TimeSpan.FromSeconds(30));
@@ -29,6 +30,7 @@ public sealed class ProductionStopCrashTests
                 new CommandInvocation(CommandSource.PhysicalConsole)));
             Assert.Equal(CommandDisposition.Accepted, accepted.Disposition);
             Assert.Equal(AuditPersistence.Persisted, accepted.Audit);
+            await File.WriteAllTextAsync(Path.Combine(childRoot, "owner.pid"), Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
             var marker = Path.Combine(childRoot, "accepted.tmp");
             await File.WriteAllTextAsync(marker, correlation.ToString("D"));
             File.Move(marker, Path.Combine(childRoot, "accepted.txt"));
@@ -57,13 +59,21 @@ public sealed class ProductionStopCrashTests
             var until = DateTime.UtcNow.AddSeconds(20);
             while (!File.Exists(acceptedPath) && !process.HasExited && DateTime.UtcNow < until) await Task.Delay(20);
             Assert.True(File.Exists(acceptedPath), "Child did not durably accept Stop before its kill boundary.");
+            // VSTest is only the launcher. Pin the actual writer process before the kill,
+            // because waiting for the launcher does not wait for all of its descendants.
+            using var owner = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(Path.Combine(root, "owner.pid"))));
+            Assert.NotEqual(Environment.ProcessId, owner.Id);
+            _ = owner.Handle;
             // Only the explicitly created test process tree is terminated.
             process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            await owner.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(owner.HasExited);
             var correlation = Guid.Parse(await File.ReadAllTextAsync(acceptedPath));
             var options = new ProductionStoreOptions(Path.Combine(root, "trace.db"));
             await using var store = new SqliteCommandStore(options);
-            Assert.True((await store.Initialization).Committed);
+            var initialization = await store.Initialization;
+            Assert.True(initialization.Committed, initialization.ReasonCode);
             await using (var restarted = new StationRuntime(store, TimeSpan.FromMilliseconds(20)))
             {
                 await Task.Delay(100);

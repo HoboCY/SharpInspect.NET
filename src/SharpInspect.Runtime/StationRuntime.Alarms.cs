@@ -388,6 +388,10 @@ public sealed partial class StationRuntime
             lock (_sync) storageCapacity = StorageCapacityObservationLocked(policy);
             if (storageCapacity is not null)
                 await ObserveAlarmCoreAsync(storageCapacity, _lifetime.Token).ConfigureAwait(false);
+            AlarmObservation? diagnosticHealth;
+            lock (_sync) diagnosticHealth = DiagnosticObservationLocked(policy);
+            if (diagnosticHealth is not null)
+                await ObserveAlarmCoreAsync(diagnosticHealth, _lifetime.Token).ConfigureAwait(false);
             IReadOnlyList<AlarmObservation> outboxObservations;
             lock (_sync) outboxObservations = OutboxObservationsLocked(policy);
             foreach (var observation in outboxObservations)

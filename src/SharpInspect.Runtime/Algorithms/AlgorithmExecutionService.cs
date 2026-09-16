@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Frames;
+using SharpInspect.Runtime.Diagnostics;
 
 namespace SharpInspect.Runtime.Algorithms;
 
@@ -75,15 +76,21 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
     private ExecutionCorrelationId? _cancelledProduction;
     private string? _blockedReason;
     private bool _disposed;
-    private long _droppedDiagnostics;
+    private readonly DiagnosticDropCounter _diagnosticDrops = new();
+    private readonly DiagnosticPipeline? _diagnostics;
+    private readonly RuntimeDiagnosticService? _diagnosticSource;
+    private DiagnosticPipeline? Diagnostics => _diagnosticSource?.Pipeline ?? _diagnostics;
 
     public AlgorithmExecutionService(AlgorithmExecutionOptions options) : this(options, null) { }
 
     // 仅供内部确定性调度探针使用；公共构造函数不能注入回调。
     internal AlgorithmExecutionService(AlgorithmExecutionOptions options, Action? beforeResultValidationForTesting,
-        Action? beforeExecutionStartForTesting = null, bool suppressGraceWatchdogForTesting = false)
+        Action? beforeExecutionStartForTesting = null, bool suppressGraceWatchdogForTesting = false,
+        DiagnosticPipeline? diagnostics = null, RuntimeDiagnosticService? diagnosticSource = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _diagnostics = diagnostics;
+        _diagnosticSource = diagnosticSource;
         _beforeResultValidationForTesting = beforeResultValidationForTesting;
         _beforeExecutionStartForTesting = beforeExecutionStartForTesting;
         _suppressGraceWatchdogForTesting = suppressGraceWatchdogForTesting;
@@ -91,7 +98,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
     public int ActiveExecutionCount { get { lock (_sync) return _running is null ? 0 : 1; } }
     public string? BlockedReasonCode { get { lock (_sync) return _guard.IsHung ? "AlgorithmHung" : _blockedReason; } }
-    public long DroppedDiagnosticCount => Interlocked.Read(ref _droppedDiagnostics);
+    public long DroppedDiagnosticCount => Interlocked.Read(ref _diagnosticDrops.Value);
 
     /// <summary>Consumes a frame owner for computation; the token is the Runtime's abort signal, not a UI wait token.</summary>
     public ValueTask<AlgorithmExecutionAttempt> ExecuteAsync(PreparedAlgorithm prepared,
@@ -192,7 +199,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
     private static AlgorithmExecutionAttempt Rejected(string reason) => new(false, reason, null);
 
-    private sealed class Attempt : IAlgorithmDiagnosticSink
+    private sealed class Attempt
     {
         private readonly object _sync = new();
         private readonly AlgorithmExecutionService _service;
@@ -211,7 +218,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         private Task? _retirement;
         private bool _closed;
         private bool _cancelRequested;
-        private bool _diagnosticsSealed;
+        private readonly ExecutionDiagnosticScope _diagnosticScope;
         private bool _invocationQuiesced;
         private long? _fixedAt;
         private AlgorithmExecutionGuard.GraceRegistration? _grace;
@@ -223,6 +230,8 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             _service = service; _prepared = prepared; _algorithm = algorithm; _frame = frame;
             _metadata = frame.Frame.Metadata; _timeout = timing.AlgorithmExecutionTimeout; _caller = caller;
             _timing = timing; _frameLeaseId = frame.LeaseId;
+            _diagnosticScope = service.Diagnostics?.OpenScope(_metadata.Correlation, service._diagnosticDrops) ??
+                new ExecutionDiagnosticScope(null, _metadata.Correlation, service._diagnosticDrops);
         }
         public TaskCompletionSource<AlgorithmExecutionOutcome> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -239,23 +248,12 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
         public void CloseUnstarted()
         {
-            lock (_sync) { _closed = true; _diagnosticsSealed = true; }
+            lock (_sync) { _closed = true; _diagnosticScope.Seal(); }
             _callerRegistration.Dispose();
             // 如果注册过程同时观察到终止请求，先等无消费者的取消任务结束，再释放 token source。
             if (_cancellationCallbacks is { } callbacks)
                 _ = callbacks.ContinueWith(_ => _algorithmCancellation.Dispose(), TaskScheduler.Default);
             else _algorithmCancellation.Dispose();
-        }
-
-        public AlgorithmDiagnosticEmission TryEmit(AlgorithmDiagnosticEvent diagnosticEvent)
-        {
-            // 这一执行切片没有获准的日志策略；未知事件和载荷在格式化、序列化或分发前直接丢弃。
-            lock (_sync)
-            {
-                if (_diagnosticsSealed) return AlgorithmDiagnosticEmission.Dropped;
-                Interlocked.Increment(ref _service._droppedDiagnostics);
-            }
-            return AlgorithmDiagnosticEmission.Dropped;
         }
 
         public void FixCancellation()
@@ -274,7 +272,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             lock (_sync)
             {
                 if (_closed || Completion.Task.IsCompleted) return;
-                _diagnosticsSealed = true;
+                _diagnosticScope.Seal();
                 _fixedAt = Stopwatch.GetTimestamp();
                 _grace = _service._guard.RegisterGrace(_metadata.Correlation, _prepared.InstanceId,
                     _frameLeaseId, status, _timing, _fixedAt.Value);
@@ -293,8 +291,12 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
             }
         }
 
-        private AlgorithmExecutionOutcome NewOutcome(ExecutionStatus status, string? reason, AlgorithmResult? result) =>
-            new(_prepared, _metadata, status, reason, result, _timing, _started);
+        private AlgorithmExecutionOutcome NewOutcome(ExecutionStatus status, string? reason, AlgorithmResult? result)
+        {
+            var outcome = new AlgorithmExecutionOutcome(_prepared, _metadata, status, reason, result, _timing, _started);
+            _service.Diagnostics?.ObserveAlgorithmOutcome(_metadata.Correlation, outcome.ExecutionStatus, outcome.Decision);
+            return outcome;
+        }
 
         // 看门狗与物理退出路径共用这个单调时钟边界；延迟的看门狗不能把逾期退出改判为宽限期内恢复。
         private bool GraceExpiredLocked() => _fixedAt is { } fixedAt &&
@@ -355,19 +357,20 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                             return;
                         }
                         result = await _algorithm.ExecuteAsync(new(_metadata.Correlation, _prepared.Configuration,
-                            _frame.Frame, this), _algorithmCancellation.Token).ConfigureAwait(false);
+                            _frame.Frame, _diagnosticScope), _algorithmCancellation.Token).ConfigureAwait(false);
                         _service._beforeResultValidationForTesting?.Invoke();
                         if (AlgorithmResultValidator.Validate(result, _prepared.Descriptor.ResultSchema).Count != 0)
                             failure = "AlgorithmResultContractViolation";
                     }
                     catch (AlgorithmExecutionException exception)
                     {
+                        _service.Diagnostics?.ObserveException(exception, "AlgorithmExecution", _metadata.Correlation);
                         failure = _prepared.Descriptor.ResultSchema.ReasonCodes.Contains(exception.ReasonCode,
                             StringComparer.Ordinal) ? exception.ReasonCode : "AlgorithmExecutionError";
                     }
                     catch (Exception exception) when (exception is not OutOfMemoryException)
                     {
-                        // 不读取或保留原始异常属性；受保护的细节只能由后续单独授权的诊断存储采集。
+                        _service.Diagnostics?.ObserveException(exception, "AlgorithmExecution", _metadata.Correlation);
                         failure = "AlgorithmExecutionError";
                     }
                 }
@@ -379,7 +382,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                         FixCancellation();
                     else if (!Completion.Task.IsCompleted)
                     {
-                        _diagnosticsSealed = true;
+                        _diagnosticScope.Seal();
                         Completion.TrySetResult(NewOutcome(
                             failure is null ? ExecutionStatus.Success : ExecutionStatus.Error,
                             failure ?? result?.ReasonCode, failure is null ? result : null));
@@ -430,7 +433,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                 // 基础设施故障不能留下未观察的 Task；此兜底只发布稳定代码，不格式化异常。
                 lock (_sync)
                 {
-                    _closed = true; _diagnosticsSealed = true;
+                    _closed = true; _diagnosticScope.Seal();
                     Completion.TrySetResult(NewOutcome(ExecutionStatus.Error,
                         "AlgorithmExecutionError", null));
                 }

@@ -224,12 +224,12 @@ public sealed partial class StationRuntime
     private sealed class ProductionInspectionOwner
     {
         internal ProductionInspectionOwner(Guid runtimeEpoch, CancellationToken lifetime,
-            AlgorithmExecutionOptions executionOptions)
+            AlgorithmExecutionOptions executionOptions, Diagnostics.RuntimeDiagnosticService? diagnostics)
         {
             RuntimeEpoch = runtimeEpoch;
             Cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
             ExecutionCancellation = CancellationTokenSource.CreateLinkedTokenSource(Cancellation.Token);
-            Execution = new AlgorithmExecutionService(executionOptions);
+            Execution = new AlgorithmExecutionService(executionOptions, null, diagnosticSource: diagnostics);
         }
         internal Guid RuntimeEpoch { get; }
         internal CancellationTokenSource Cancellation { get; }
