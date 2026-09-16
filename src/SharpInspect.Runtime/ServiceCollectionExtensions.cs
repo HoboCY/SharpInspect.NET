@@ -20,6 +20,9 @@ public static class ServiceCollectionExtensions
 {
     private static void RegisterDiagnostics(IServiceCollection services)
     {
+        services.TryAddSingleton<IPerformanceMonitoringQuery>(p =>
+            (p.GetRequiredService<IStationRuntime>() as StationRuntime)?.PerformanceQuery ??
+            throw new InvalidOperationException("PerformanceRuntimeUnavailable"));
         services.TryAddSingleton<IDiagnosticPipelineHealthQuery>(p =>
             (p.GetRequiredService<IStationRuntime>() as StationRuntime)?.DiagnosticHealthQuery ??
             throw new InvalidOperationException("DiagnosticRuntimeUnavailable"));
@@ -195,7 +198,8 @@ public static class ServiceCollectionExtensions
             calibrationSessionOptions: p.GetService<CalibrationSessionOptions>(),
             calibrationProcedures: p.GetService<CalibrationProcedureRegistry>(),
             productionStoreOptions: p.GetService<ProductionStoreOptions>(),
-            physicalCalibrationVerificationRegistry: p.GetService<PhysicalCalibrationVerificationRegistry>()));
+            physicalCalibrationVerificationRegistry: p.GetService<PhysicalCalibrationVerificationRegistry>(),
+            presentationPerformance: p.GetService<IPresentationPerformanceQuery>()));
         services.TryAddSingleton<ICameraSetupRuntime>(p =>
             p.GetRequiredService<IStationRuntime>() as ICameraSetupRuntime ??
             throw new InvalidOperationException("CameraSetupRuntimeUnavailable"));
@@ -418,7 +422,8 @@ public static class ServiceCollectionExtensions
             p.GetService<AlgorithmExecutionOptions>(), p.GetServices<ICameraProvider>(),
             p.GetService<CameraSetupOptions>(), p.GetService<CameraAcquisitionService>(),
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
-            p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
+            p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>(),
+            presentationPerformance: p.GetService<IPresentationPerformanceQuery>());
             runtime.ConfigureOutbox(options, p.GetService<Outbox.ProductionOutboxOptions>());
             if (p.GetService<IEvidenceRetentionService>() is { } retention)
                 runtime.ConfigureRetentionService(retention);

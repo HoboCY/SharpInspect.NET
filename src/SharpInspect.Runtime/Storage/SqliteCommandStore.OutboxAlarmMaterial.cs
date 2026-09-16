@@ -3,6 +3,7 @@ using SharpInspect.Abstractions;
 using SharpInspect.Runtime.Alarms;
 using SharpInspect.Runtime.Integrity;
 using SharpInspect.Runtime.Outbox;
+using SharpInspect.Runtime.Performance;
 using SQLitePCL;
 
 namespace SharpInspect.Runtime.Storage;
@@ -13,11 +14,16 @@ internal sealed partial class SqliteCommandStore
     // alarm ledger remains complete; only the production permit's material head is selected.
     private string? ReadOutboxAlarmMaterialHead(sqlite3 database, StoreDeadline deadline)
     {
-        if (_options.Outbox is not { } outbox || _options.AlarmPolicy is null ||
-            !outbox.Routes.Any(route => route.Criticality == OutboxRouteCriticality.BestEffort)) return null;
-        if (ReadUserVersion(database, deadline) is not (ProductionOutboxStoreOptions.SchemaVersion or
+        if (_options.AlarmPolicy is null) return null;
+        var outbox = _options.Outbox;
+        var hasBestEffort = outbox?.Routes.Any(route => route.Criticality == OutboxRouteCriticality.BestEffort) == true;
+        var hasPerformanceAdvisory = _options.AlarmPolicy.TryGetRule(PerformanceAlarmMaterial.Code, out var performanceRule) &&
+            performanceRule?.Source == PerformanceAlarmMaterial.Source && performanceRule.ProductionImpact == ProductionImpact.None &&
+            _options.ProductionInspections is not null;
+        if (!hasBestEffort && !hasPerformanceAdvisory) return null;
+        if (!hasPerformanceAdvisory && ReadUserVersion(database, deadline) is not (ProductionOutboxStoreOptions.SchemaVersion or
                 ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion)) return null;
-        RequireConfiguredProductionOutbox(database, outbox, deadline);
+        if (hasBestEffort) RequireConfiguredProductionOutbox(database, outbox!, deadline);
         var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
         AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);
         if (policy is null) return null;
@@ -53,9 +59,9 @@ internal sealed partial class SqliteCommandStore
                     AlarmTransitionKind.BoundaryRejected or AlarmTransitionKind.ProjectionChanged) &&
                     record.Instance is { } candidate && record.Code == candidate.Code && record.Source == candidate.Source &&
                     record.PlcProjection is null && record.InstanceId == candidate.InstanceId &&
-                    OutboxAlarmMaterial.IsNonBlockingInstance(policy, candidate) &&
+                    IsNonBlocking(candidate) &&
                     (!instances.TryGetValue(candidate.InstanceId, out var previousInstance) ||
-                        OutboxAlarmMaterial.IsNonBlockingInstance(policy, previousInstance));
+                        IsNonBlocking(previousInstance));
                 if (record.Instance is { } instance)
                 {
                     if (record.Transition == AlarmTransitionKind.Cleared) instances.Remove(instance.InstanceId);
@@ -76,5 +82,9 @@ internal sealed partial class SqliteCommandStore
             }
         }
         return material;
+
+        bool IsNonBlocking(AlarmInstanceSnapshot instance) =>
+            (hasBestEffort && OutboxAlarmMaterial.IsNonBlockingInstance(policy, instance)) ||
+            (hasPerformanceAdvisory && PerformanceAlarmMaterial.IsNonBlockingInstance(policy, instance));
     }
 }

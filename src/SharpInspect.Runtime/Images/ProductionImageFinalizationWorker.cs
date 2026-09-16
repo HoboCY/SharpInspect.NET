@@ -40,6 +40,7 @@ internal sealed class ProductionImageFinalizationWorker
     }
 
     internal Task Startup => _startup.Task;
+    internal int PerformanceActiveOperations => _files.ActiveOperationCount;
     internal Task Completion => _run;
     internal string? FailureReason { get; private set; }
     internal string? LastTransientFailureReason { get; private set; }

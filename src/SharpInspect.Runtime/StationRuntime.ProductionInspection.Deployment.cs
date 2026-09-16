@@ -82,7 +82,7 @@ public sealed partial class StationRuntime
         var policyExact = options.Deployment is not null && policy.Snapshot is { } snapshot &&
             snapshot.ContentHash == options.TracePolicySnapshotHash && snapshot.Version == options.TracePolicyVersion &&
             options.StationId == identity.StationId && storeOptions.LocalIdentity?.StationId == options.StationId &&
-            storeOptions.AlarmPolicy is not null && _diagnostics?.Matches(policy.Snapshot) == true &&
+            storeOptions.AlarmPolicy is not null && _diagnostics?.Matches(policy.Snapshot) == true && PerformanceConfigurationMatches() &&
             storeOptions.AlarmPolicy.TryGetRule("DiagnosticPipelineUnhealthy", out var diagnosticRule) &&
             diagnosticRule?.Source == "Runtime.Diagnostics";
         return new(configuration, activation?.ContentHash, policyExact,

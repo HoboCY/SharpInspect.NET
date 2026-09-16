@@ -425,7 +425,7 @@ public sealed partial class ManualInspectionRuntimeTests
 
         internal static async Task<ProductionRecoveryScenario> CreateAsync(
             bool retainedAck = false, bool allowRecovery = true,
-            ProductionInspectionEventKind? coldBoundary = null)
+            ProductionInspectionEventKind? coldBoundary = null, bool capturePerformance = false)
         {
             var peer = ModbusQualificationTestServer.Start();
             ManualHarness? harness = null;
@@ -436,7 +436,9 @@ public sealed partial class ManualInspectionRuntimeTests
                 peer.HoldFirstPayloadWrite = true;
                 harness = await ManualHarness.CreateAsync(activationReadyDraft: true,
                     productionPeer: peer, allowProductionRecovery: allowRecovery,
-                    enableProductionRecovery: true);
+                    enableProductionRecovery: true, performanceMonitoring: capturePerformance
+                        ? (store, deployment) => PerformanceTestContracts.Create(store, deployment, baselineScenarioId: "Recovery", cycles: 1)
+                        : null);
                 issuer = new ProductionTestIssuer();
                 await PrepareProductionAsync(harness, issuer);
                 Guid inspectionId;

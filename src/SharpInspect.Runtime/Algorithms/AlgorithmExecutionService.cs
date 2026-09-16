@@ -79,6 +79,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
     private readonly DiagnosticDropCounter _diagnosticDrops = new();
     private readonly DiagnosticPipeline? _diagnostics;
     private readonly RuntimeDiagnosticService? _diagnosticSource;
+    private readonly Performance.RuntimePerformanceMonitor? _performance;
     private DiagnosticPipeline? Diagnostics => _diagnosticSource?.Pipeline ?? _diagnostics;
 
     public AlgorithmExecutionService(AlgorithmExecutionOptions options) : this(options, null) { }
@@ -86,11 +87,13 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
     // 仅供内部确定性调度探针使用；公共构造函数不能注入回调。
     internal AlgorithmExecutionService(AlgorithmExecutionOptions options, Action? beforeResultValidationForTesting,
         Action? beforeExecutionStartForTesting = null, bool suppressGraceWatchdogForTesting = false,
-        DiagnosticPipeline? diagnostics = null, RuntimeDiagnosticService? diagnosticSource = null)
+        DiagnosticPipeline? diagnostics = null, RuntimeDiagnosticService? diagnosticSource = null,
+        Performance.RuntimePerformanceMonitor? performance = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _diagnostics = diagnostics;
         _diagnosticSource = diagnosticSource;
+        _performance = performance;
         _beforeResultValidationForTesting = beforeResultValidationForTesting;
         _beforeExecutionStartForTesting = beforeExecutionStartForTesting;
         _suppressGraceWatchdogForTesting = suppressGraceWatchdogForTesting;
@@ -243,6 +246,7 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
 
         public void Start()
         {
+            _service._performance?.Observe(PerformanceEventKind.AlgorithmQueued, _metadata.Correlation);
             _ = Task.Run(RunObservedAsync);
         }
 
@@ -294,6 +298,11 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
         private AlgorithmExecutionOutcome NewOutcome(ExecutionStatus status, string? reason, AlgorithmResult? result)
         {
             var outcome = new AlgorithmExecutionOutcome(_prepared, _metadata, status, reason, result, _timing, _started);
+            _service._performance?.Observe(PerformanceEventKind.AlgorithmOutcomeFixed, _metadata.Correlation,
+                outcome: status switch { ExecutionStatus.Success => PerformanceObservationOutcome.Observed,
+                    ExecutionStatus.Timeout => PerformanceObservationOutcome.TimedOut,
+                    ExecutionStatus.Cancelled => PerformanceObservationOutcome.Cancelled, _ => PerformanceObservationOutcome.Failed },
+                reason: reason);
             _service.Diagnostics?.ObserveAlgorithmOutcome(_metadata.Correlation, outcome.ExecutionStatus, outcome.Decision);
             return outcome;
         }
@@ -356,11 +365,26 @@ public sealed class AlgorithmExecutionService : IAsyncDisposable
                             FixNonSuccess(ExecutionStatus.Timeout, "AlgorithmExecutionTimeout");
                             return;
                         }
-                        result = await _algorithm.ExecuteAsync(new(_metadata.Correlation, _prepared.Configuration,
-                            _frame.Frame, _diagnosticScope), _algorithmCancellation.Token).ConfigureAwait(false);
+                        _service._performance?.Observe(PerformanceEventKind.AlgorithmStarted, _metadata.Correlation);
+                        try
+                        {
+                            result = await _algorithm.ExecuteAsync(new(_metadata.Correlation, _prepared.Configuration,
+                                _frame.Frame, _diagnosticScope), _algorithmCancellation.Token).ConfigureAwait(false);
+                            _service._performance?.Observe(PerformanceEventKind.AlgorithmReturned, _metadata.Correlation);
+                        }
+                        catch
+                        {
+                            _service._performance?.Observe(PerformanceEventKind.AlgorithmReturned, _metadata.Correlation,
+                                outcome: PerformanceObservationOutcome.Failed, reason: "AlgorithmCallFailed");
+                            throw;
+                        }
+                        _service._performance?.Observe(PerformanceEventKind.ResultValidationStarted, _metadata.Correlation);
                         _service._beforeResultValidationForTesting?.Invoke();
                         if (AlgorithmResultValidator.Validate(result, _prepared.Descriptor.ResultSchema).Count != 0)
                             failure = "AlgorithmResultContractViolation";
+                        _service._performance?.Observe(PerformanceEventKind.ResultValidationCompleted, _metadata.Correlation,
+                            outcome: failure is null ? PerformanceObservationOutcome.Observed : PerformanceObservationOutcome.Failed,
+                            reason: failure);
                     }
                     catch (AlgorithmExecutionException exception)
                     {

@@ -79,6 +79,10 @@ public sealed partial class StationRuntime
             owner.AdmissionCommitted = true;
             if (committed.Admission?.ContentHash != admission.ContentHash)
                 throw new InvalidOperationException(committed.ReasonCode);
+            _performance?.Observe(PerformanceEventKind.TriggerAccepted, new(ExecutionKind.Production, admission.CorrelationId),
+                admission.ControllerCycle);
+            _performance?.BindCycle(new(ExecutionKind.Production, admission.CorrelationId),
+                _productionDeploymentObservation?.Configuration.PerformanceFingerprint);
             lock (_sync)
             {
                 owner.Current = committed.Admission;
@@ -98,12 +102,19 @@ public sealed partial class StationRuntime
             !(result.Status == ExecutionStatus.Cancelled && result.Metadata is not null && owner.FaultAbortRequested))
             return null;
         await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
+        var performanceCorrelation = new ExecutionCorrelationId(ExecutionKind.Production, admission.CorrelationId);
+        var imageApplicable = admission.EvidenceCapturePolicy is { Mode: not EvidenceCaptureMode.None } && result.Metadata is not null;
+        if (imageApplicable) _performance?.Observe(PerformanceEventKind.ImageStageStarted, performanceCorrelation);
         var staged = await PrepareProductionImageEvidenceAsync(owner, result).ConfigureAwait(false);
+        _performance?.Observe(PerformanceEventKind.ImageStageCompleted, performanceCorrelation,
+            outcome: imageApplicable ? PerformanceObservationOutcome.Observed : PerformanceObservationOutcome.NotApplicable,
+            reason: imageApplicable ? null : "PerformanceImageStageNotApplicable");
         using var imageClaim = staged.Claim;
         await RequireProductionContinuationAsync(owner).ConfigureAwait(false);
         var timeout = admission.TracePolicySnapshot.Policy.TraceCommitTimeout;
         if (timeout > _audit!.CommitTimeout) timeout = _audit.CommitTimeout;
         var deadline = new StoreDeadline(timeout);
+        _performance?.Observe(PerformanceEventKind.CoreCommitStarted, performanceCorrelation);
         var core = CreateProductionInspectionCore(owner, result, staged.Evidence);
         var outbox = _productionInspectionStoreOptions?.Outbox is { } routes
             ? Outbox.FrozenOutboxBatch.Prepare(core, routes, owner.Cancellation.Token, deadline) : null;
@@ -121,6 +132,7 @@ public sealed partial class StationRuntime
                 throw new InvalidOperationException(committed.ReasonCode);
             // 即使调用方的发布期限已到，记录仍是事实；先挂接它再检查期限，恢复才能保留这份精确的不可变 Core。
             owner.Core = durable;
+            _performance?.Observe(PerformanceEventKind.CoreCommitCompleted, performanceCorrelation);
             ProjectCommittedProductionImage(durable, committed.Event?.AuditSequence ?? 0);
             ProjectCommittedOutbox(outbox, durable.Admission.InspectionId, committed.Event?.AuditSequence ?? 0);
             if (deadline.Expired) throw new TimeoutException("ProductionInspectionCoreCommitTimeout");
@@ -137,7 +149,7 @@ public sealed partial class StationRuntime
         try
         {
             if (ProductionContinuationFailureLocked(owner) is { } failure) return failure;
-            if (admissionOnly && (LocalStopPendingLocked ||
+            if (admissionOnly && (LocalStopPendingLocked || PerformanceBlocksNewTriggersLocked() ||
                     _snapshot.ArmState != ProductionArmState.Armed ||
                     owner.Current!.AdmissionGeneration != _admissionGeneration ||
                     !PartIdentityAdmissionStillCurrentLocked(owner, owner.PartIdentityAttempt)))
@@ -185,6 +197,8 @@ public sealed partial class StationRuntime
     private async Task RecordProductionFaultAsync(ProductionInspectionOwner owner, string reason)
     {
         if (owner.Current is null || !owner.AdmissionCommitted) return;
+        _performance?.Observe(PerformanceEventKind.CycleFaulted, new(ExecutionKind.Production, owner.Current.CorrelationId),
+            owner.Current.ControllerCycle, PerformanceObservationOutcome.Failed, reason);
         var committed = await ((SqliteCommandStore)_audit!).AppendProductionInspectionEventAsync(
             new(owner.Current.InspectionId, ProductionInspectionEventKind.FaultTerminated, reason,
                 DateTimeOffset.UtcNow, Stopwatch.GetTimestamp()),

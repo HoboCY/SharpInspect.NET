@@ -64,7 +64,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         CalibrationProcedureRegistry? calibrationProcedures = null,
         ProductionStoreOptions? productionStoreOptions = null,
         PhysicalCalibrationVerificationRegistry? physicalCalibrationVerificationRegistry = null,
-        IProductionAdmissionFactsSource? productionAdmissionFactsSource = null)
+        IProductionAdmissionFactsSource? productionAdmissionFactsSource = null,
+        IPresentationPerformanceQuery? presentationPerformance = null)
     {
         _audit = audit;
         _sessions = sessions;
@@ -138,6 +139,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureEvidenceReconciliation(productionStoreOptions);
         ConfigureImageFinalization(productionStoreOptions);
         ConfigureStorageCapacity(productionStoreOptions);
+        ConfigurePerformance(productionStoreOptions, presentationPerformance);
         _heartbeat = PublishHeartbeatAsync(interval);
         if (productionStoreOptions?.StorageRetention is not null && _audit is SqliteCommandStore retentionStore)
             retentionStore.RegisterStorageRuntimeOwner(RetireStorageOwnerAsync);
@@ -422,6 +424,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             {
                 if (outcome.Disposition == CommandDisposition.Accepted)
                 {
+                    _performance?.Observe(PerformanceEventKind.StopRequested, reason: "GracefulProductionStopAccepted");
                     _pendingAudit = fact;
                     // 即使该 Stop 接受的周期在心跳启动完成任务前已经退出，也保留它对应的退休任务引用。
                     _pendingProductionStopRetirement = _productionInspectionOwner is { Current: not null } production
@@ -660,6 +663,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 Disposition = null, ReasonCode = productionStoppedNormally ? "LocallyDisarmed" : "ProductionStopInterrupted" };
             var result = await _audit!.AppendAsync(terminal, new StoreDeadline(_audit.CommitTimeout)).ConfigureAwait(false);
             if (!result.Committed) MarkAuditFault(result.ReasonCode);
+            if (result.Committed && productionStoppedNormally)
+                _performance?.Observe(PerformanceEventKind.StopCompleted, reason: "GracefulProductionStopCompleted");
             lock (_sync)
             {
                 _pendingAudit = null;
@@ -674,6 +679,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
 
     private void PublishLocked(StationStateSnapshot next, bool completingProductionArm = false)
     {
+        next = ProjectPerformanceLocked(next);
         next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
         next = ApplyCameraAcquisitionStateLocked(next);
@@ -736,8 +742,12 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         var published = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow,
             AlarmState = alarms, ProductionAdmission = admission };
         _snapshot = published;
-        if (_productionInspectionOwner is { Current: null, Observer: { } productionObserver } &&
+        if (_productionInspectionOwner is { Current: null, Observer: { } productionObserver } productionOwner &&
             (!published.Ready || published.ArmState != ProductionArmState.Armed || admission?.CanArm != true) &&
+            // While the physical Ready write owns the observer sample gate, Ready=false
+            // is expected. Repeated publication may preserve only a still-valid full
+            // trigger permit; explicit revocations retain their observer version fence.
+            !(productionObserver.ReadyPublicationInProgress && CanAcceptProductionTriggerLocked(productionOwner)) &&
             !PreserveProductionArmReadyObservationLocked(published, admission))
             productionObserver.RejectPendingAdmission("ProductionTriggerPermitRevoked");
         if (_productionAdmissionEnabled)
@@ -757,7 +767,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         {
             // A failed authoritative shutdown still closes ordinary diagnostic output.
             // Each lane retains any unfinished physical IO through its own bounded stop.
-            if (_diagnostics is not null) await _diagnostics.DisposeAsync().ConfigureAwait(false);
+            try { if (_diagnostics is not null) await _diagnostics.DisposeAsync().ConfigureAwait(false); }
+            finally { if (_performance is not null) await _performance.DisposeAsync().ConfigureAwait(false); }
         }
     }
 

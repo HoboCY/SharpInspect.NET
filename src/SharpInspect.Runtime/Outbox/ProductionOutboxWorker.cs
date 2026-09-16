@@ -21,6 +21,8 @@ internal sealed class ProductionOutboxWorker
     private readonly Action<OutboxBacklogSnapshot> _publish;
     private readonly Func<string, Task> _fault;
     private readonly Dictionary<string, Task> _active = new(StringComparer.OrdinalIgnoreCase);
+    private int _performanceActiveOperations;
+    internal int PerformanceActiveOperations => Volatile.Read(ref _performanceActiveOperations);
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly TaskCompletionSource<bool> _startup = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -65,6 +67,7 @@ internal sealed class ProductionOutboxWorker
                 {
                     await completed.Value.ConfigureAwait(false);
                     _active.Remove(completed.Key);
+                    Volatile.Write(ref _performanceActiveOperations, _active.Count);
                 }
                 try { await SweepAsync(_stop.Token).ConfigureAwait(false); }
                 catch (Exception error) when (IsTransientStore(error) && !_stop.IsCancellationRequested) { }
@@ -84,6 +87,7 @@ internal sealed class ProductionOutboxWorker
             // 超时只撤销本次成功资格；发送代码真正退出前，该路由的物理槽位仍被占用。
             try { await Task.WhenAll(_active.Values).ConfigureAwait(false); }
             catch (Exception error) when (error is not OutOfMemoryException) { }
+            Volatile.Write(ref _performanceActiveOperations, 0);
         }
     }
 
@@ -105,6 +109,7 @@ internal sealed class ProductionOutboxWorker
                 if (_active.Count >= ProductionOutboxStoreOptions.MaximumRoutesHardLimit)
                     throw new InvalidOperationException("OutboxPhysicalRouteCapacityExceeded");
                 _active.Add(routeId, ProcessAsync(item));
+                Volatile.Write(ref _performanceActiveOperations, _active.Count);
             }
             if (!page.HasMore) break;
             if (page.NextPosition <= after) throw new InvalidOperationException("OutboxCursorInvalid");

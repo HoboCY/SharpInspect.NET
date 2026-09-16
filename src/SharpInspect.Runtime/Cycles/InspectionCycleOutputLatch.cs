@@ -1,4 +1,6 @@
 using SharpInspect.Runtime.Plc;
+using SharpInspect.Abstractions;
+using SharpInspect.Runtime.Performance;
 
 namespace SharpInspect.Runtime.Cycles;
 
@@ -14,9 +16,12 @@ internal sealed class InspectionCycleOutputLatch
     private readonly Func<bool, bool, bool, bool, bool, CancellationToken, Task>? _ownedWrite;
     private bool _ready, _busy, _valid, _fault, _violation;
     private bool _unavailable;
+    private readonly RuntimePerformanceMonitor? _performance;
+    internal ExecutionCorrelationId? PerformanceCorrelation { get; set; }
     internal InspectionCycleOutputLatch(Func<bool, bool, bool, bool, bool, CancellationToken, Task> write,
-        Func<bool, bool, bool, bool, bool, CancellationToken, Task>? ownedWrite = null)
-    { _write = write; _ownedWrite = ownedWrite; }
+        Func<bool, bool, bool, bool, bool, CancellationToken, Task>? ownedWrite = null,
+        RuntimePerformanceMonitor? performance = null)
+    { _write = write; _ownedWrite = ownedWrite; _performance = performance; }
     internal bool? ConfirmedResultValid => Volatile.Read(ref _unavailable) ? null : Volatile.Read(ref _valid);
 
     internal async Task ChangeAsync(CancellationToken token, bool? ready = null, bool? busy = null,
@@ -47,6 +52,10 @@ internal sealed class InspectionCycleOutputLatch
                 _unavailable = true;
                 throw;
             }
+            if (!_ready && nextReady) _performance?.Observe(PerformanceEventKind.ReadyAsserted, PerformanceCorrelation);
+            if (!_busy && nextBusy) _performance?.Observe(PerformanceEventKind.BusyAsserted, PerformanceCorrelation);
+            if (!_valid && nextValid) _performance?.Observe(PerformanceEventKind.ResultValidAsserted, PerformanceCorrelation);
+            if (_valid && !nextValid) _performance?.Observe(PerformanceEventKind.ResultValidCleared, PerformanceCorrelation);
             _ready = nextReady; _busy = nextBusy; _valid = nextValid;
             _fault = nextFault; _violation = nextViolation;
         }

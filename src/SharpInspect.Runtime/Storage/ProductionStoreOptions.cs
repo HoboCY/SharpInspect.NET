@@ -166,4 +166,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit logging policy and installation activation; independent of the SQLite schema.</summary>
     public Diagnostics.LoggingDiagnosticsOptions? LoggingDiagnostics { get; init; }
+
+    /// <summary>Explicit immutable performance budgets and finite observation limits; no qualification authority.</summary>
+    public Performance.PerformanceMonitoringOptions? PerformanceMonitoring { get; init; }
 }

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>SharpInspect.Performance.Consumer</AssemblyName>
+    <RootNamespace>SharpInspect.Performance.Consumer</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>10.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' != 'true'">
+    <ProjectReference Include="../../src/SharpInspect.Abstractions/SharpInspect.Abstractions.csproj" />
+    <ProjectReference Include="../../src/SharpInspect.Runtime/SharpInspect.Runtime.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalPackages)' == 'true'">
+    <PackageReference Include="SharpInspect.NET.Abstractions" Version="0.1.0-dev.1" />
+    <PackageReference Include="SharpInspect.NET.Runtime" Version="0.1.0-dev.1" />
+  </ItemGroup>
+</Project>

@@ -78,7 +78,9 @@ internal static class ProductionConfigurationBuilder
                 Hash("production-diagnostic-policy-v2", manifest.Diagnostics.ContentHash, diagnostics.BindingHash) : manifest.Diagnostics.ContentHash);
             Add(ProductionConfigurationBinding.BackupPolicy, manifest.Backup.ContentHash);
             Add(ProductionConfigurationBinding.StartupPolicy, manifest.Startup.ContentHash);
-            Add(ProductionConfigurationBinding.PerformanceContract, manifest.Performance.ContentHash);
+            Add(ProductionConfigurationBinding.PerformanceContract, store.PerformanceMonitoring is { } performance ?
+                Hash("production-performance-contract-v2", manifest.Performance.ContentHash, performance.BindingHash) :
+                manifest.Performance.ContentHash);
             Add(ProductionConfigurationBinding.ConformanceProfile, manifest.Conformance.ContentHash);
             Add(ProductionConfigurationBinding.UiWorkload, manifest.UiWorkload.ContentHash);
             Add(ProductionConfigurationBinding.DeploymentPolicy, manifest.ContentHash);
@@ -136,7 +138,7 @@ internal static class ProductionConfigurationBuilder
         return Convert.ToHexString(hash.ComputeHash(input));
     }
 
-    private static string? ReadPowerPlanHash()
+    internal static string? ReadPowerPlanHash()
     {
         if (!OperatingSystem.IsWindows()) return null;
         IntPtr pointer = IntPtr.Zero;

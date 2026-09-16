@@ -168,7 +168,9 @@ function Get-TaskSourceHashes {
 }
 
 Push-Location -LiteralPath $taskRepo
+$taskPreviousPerformanceEvidence = $env:SHARPINSPECT_V157_EVIDENCE_ROOT
 try {
+    if ($Ticket -ge 57) { $env:SHARPINSPECT_V157_EVIDENCE_ROOT = Join-Path $taskRun 'performance-runtime-evidence' }
     $taskOs = Get-CimInstance Win32_OperatingSystem
     $taskEvidence = [ordered]@{
         kind = ('V1-{0:D2}-development-validation' -f $Ticket)
@@ -960,6 +962,10 @@ try {
     if ($Ticket -ge 56) {
         & (Join-Path $PSScriptRoot 'Test-DiagnosticsConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
     }
+    if ($Ticket -ge 57) {
+        & (Join-Path $PSScriptRoot 'Test-PerformanceConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
+            -RuntimeEvidenceDocument (Join-Path $env:SHARPINSPECT_V157_EVIDENCE_ROOT 'fixed-virtual-runtime.performance.json')
+    }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne
         ($taskEvidence.sourceHashes | ConvertTo-Json -Depth 4 -Compress)) {
@@ -978,6 +984,7 @@ catch {
     throw
 }
 finally {
+    $env:SHARPINSPECT_V157_EVIDENCE_ROOT = $taskPreviousPerformanceEvidence
     if ($taskOverlayDirectory) {
         $taskOverlayKeyHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
             [Text.Encoding]::UTF8.GetBytes('SharpInspect.SampleOverlay')))

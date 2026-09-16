@@ -100,18 +100,15 @@ public partial class IdentityPanel : UserControl
         await RetryClipboardSmokeAsync(() => previousClipboard = Clipboard.GetDataObject());
         try
         {
-            await RetryClipboardSmokeAsync(() => Clipboard.SetText(password));
+            await SetClipboardSmokeAsync(new DataObject(DataFormats.UnicodeText, password));
             await RetryClipboardSmokeAsync(() =>
                 System.Windows.Input.ApplicationCommands.Paste.Execute(null, LoginPasswordBox));
             if (LoginPasswordBox.Password != password) throw new InvalidOperationException("IdentityPasteInputChanged");
         }
         finally
         {
-            await RetryClipboardSmokeAsync(() =>
-            {
-                if (previousClipboard is null) Clipboard.Clear();
-                else Clipboard.SetDataObject(previousClipboard, true);
-            });
+            if (previousClipboard is null) await RetryClipboardSmokeAsync(Clipboard.Clear);
+            else await SetClipboardSmokeAsync(previousClipboard);
         }
         await AuthenticateFromInputsAsync();
         if (LoginPasswordBox.Password.Length != 0) throw new InvalidOperationException("IdentityPasswordInputNotCleared");
@@ -127,6 +124,15 @@ public partial class IdentityPanel : UserControl
             catch (COMException exception) when (exception.HResult == unchecked((int)0x800401D0) && attempt < 19)
             { await Task.Delay(50); }
         }
+    }
+
+    private static async Task SetClipboardSmokeAsync(IDataObject value)
+    {
+        // Publish once, then retry persistence separately. Clipboard listeners can
+        // briefly own the clipboard after a change; repeating SetDataObject during
+        // a failed Flush would announce another change and restart that contention.
+        await RetryClipboardSmokeAsync(() => Clipboard.SetDataObject(value, false));
+        await RetryClipboardSmokeAsync(Clipboard.Flush);
     }
 
     private void RevealRecoveryKitClick(object sender, RoutedEventArgs e)

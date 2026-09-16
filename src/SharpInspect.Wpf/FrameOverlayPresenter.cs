@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
@@ -38,6 +39,12 @@ public sealed class FrameOverlayPresenter : FrameworkElement, INotifyPropertyCha
             new PropertyMetadata(0d, InputChanged));
 
     private OverlayProjection _projection = OverlayProjection.Unavailable("OverlaySnapshotUnavailable");
+
+    /// <summary>
+    /// Counters for actual drawing work. Internal so tests can attribute work to an
+    /// isolated instance; the counters never influence rendering decisions.
+    /// </summary>
+    internal WpfPerformanceCounters PerformanceCounters { get; set; } = WpfPerformanceCounters.Shared;
 
     public FrameOverlaySnapshot? Snapshot
     {
@@ -84,6 +91,19 @@ public sealed class FrameOverlayPresenter : FrameworkElement, INotifyPropertyCha
     /// <summary>Renders a derived bitmap with source and overlay identities retained separately.</summary>
     public RenderedOverlayPreview RenderPreview()
     {
+        var started = Stopwatch.GetTimestamp();
+        var succeeded = false;
+        try { var result = RenderPreviewCore(); succeeded = true; return result; }
+        finally
+        {
+            var ticks = Stopwatch.GetTimestamp() - started;
+            if (succeeded) PerformanceCounters.RecordRendered(ticks);
+            else PerformanceCounters.RecordRenderFailed(ticks);
+        }
+    }
+
+    private RenderedOverlayPreview RenderPreviewCore()
+    {
         var projection = CurrentProjection();
         if (!projection.Available || Snapshot is null)
             throw new InvalidOperationException(projection.ReasonCode);
@@ -126,8 +146,9 @@ public sealed class FrameOverlayPresenter : FrameworkElement, INotifyPropertyCha
                 96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Pbgra32);
             bitmap.Render(visual);
             bitmap.Freeze();
-            return new RenderedOverlayPreview(bitmap, Snapshot, ValidSourceImage(), Zoom, PanX, PanY,
+            var rendered = new RenderedOverlayPreview(bitmap, Snapshot, ValidSourceImage(), Zoom, PanX, PanY,
                 dpi.DpiScaleX, dpi.DpiScaleY);
+            return rendered;
         }
         catch (ArgumentException)
         {
@@ -153,9 +174,22 @@ public sealed class FrameOverlayPresenter : FrameworkElement, INotifyPropertyCha
 
     protected override void OnRender(DrawingContext drawingContext)
     {
+        var started = Stopwatch.GetTimestamp();
+        var succeeded = false;
+        try { succeeded = RenderCore(drawingContext); }
+        finally
+        {
+            var ticks = Stopwatch.GetTimestamp() - started;
+            if (succeeded) PerformanceCounters.RecordRendered(ticks);
+            else PerformanceCounters.RecordRenderFailed(ticks);
+        }
+    }
+
+    private bool RenderCore(DrawingContext drawingContext)
+    {
         base.OnRender(drawingContext);
         var projection = CurrentProjection();
-        if (!projection.Available) return;
+        if (!projection.Available) return false;
         drawingContext.PushClip(new RectangleGeometry(new Rect(RenderSize)));
         PushFrameClip(drawingContext, out var popFrameClip);
         var drawingFailed = false;
@@ -188,6 +222,7 @@ public sealed class FrameOverlayPresenter : FrameworkElement, INotifyPropertyCha
         }
         if (drawingFailed)
             MarkDrawingUnavailable();
+        return !drawingFailed;
     }
 
     private OverlayProjection CurrentProjection() => _projection;

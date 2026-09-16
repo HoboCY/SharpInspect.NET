@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -36,9 +37,26 @@ public sealed class FramePreviewImage
     /// Copies only valid row pixels while the framework loan is active. Mono16 is
     /// explicitly scaled from its declared valid-bit range to Gray8 for display.
     /// </summary>
-    public static FramePreviewImage CopyFromFrame(VisionFrame frame)
+    public static FramePreviewImage CopyFromFrame(VisionFrame frame) =>
+        CopyFromFrame(frame, WpfPerformanceCounters.Shared);
+
+    internal static FramePreviewImage CopyFromFrame(VisionFrame frame, WpfPerformanceCounters counters)
     {
         ArgumentNullException.ThrowIfNull(frame);
+        var started = Stopwatch.GetTimestamp();
+        FramePreviewImage? result = null;
+        try { return result = CopyCore(frame); }
+        finally
+        {
+            var ticks = Stopwatch.GetTimestamp() - started;
+            if (result is null) counters.RecordImageCopyFailed(ticks);
+            else counters.RecordImageCopied(checked((long)result.BitmapSource.PixelWidth * result.BitmapSource.PixelHeight *
+                ((result.BitmapSource.Format.BitsPerPixel + 7) / 8)), ticks);
+        }
+    }
+
+    private static FramePreviewImage CopyCore(VisionFrame frame)
+    {
         // 只在框架借用期内读取源帧；复制完成后，显示位图与采集帧的生命周期完全脱钩。
         if (!frame.IsLoanActive)
             throw new InvalidOperationException("FramePreviewLoanInactive");
@@ -109,8 +127,9 @@ public sealed class FramePreviewImage
                     _ => PixelFormats.Gray8
                 }, null, display, displayStride);
             bitmap.Freeze();
-            return new FramePreviewImage(bitmap, metadata, Guid.NewGuid(),
+            var preview = new FramePreviewImage(bitmap, metadata, Guid.NewGuid(),
                 Convert.ToHexString(sourceHash.GetHashAndReset()));
+            return preview;
         }
         finally
         {

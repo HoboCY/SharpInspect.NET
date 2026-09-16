@@ -740,7 +740,7 @@ public sealed partial class StationRuntime
             state.Handshake.ToString(), state.Recovery.ToString(), state.CurrentExecution?.ToString(),
             state.ActiveRecipe?.ToString(), cameraMaterial, state.Plc.ToString(),
             state.Store.ToString(), evidenceMaterial, state.Qualification.ToString(),
-            state.Performance.ToString(), OutboxAdmissionAlarmSummaryLocked(state).ToString(), cameraSetupMaterial,
+            PerformanceAdmissionMaterialLocked(state), PerformanceAdmissionAlarmSummaryLocked(state).ToString(), cameraSetupMaterial,
             state.CameraRecovery is { } recovery
                 ? string.Join("|", recovery.State, recovery.AttemptCount, recovery.MaximumAttempts,
                     recovery.SourceHealthy, recovery.ReasonCode, recovery.Health?.ToString()) : null,

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -52,9 +53,27 @@ public sealed class PreviewDisplayImage
     /// are scaled using their declared 10/12/16-bit range; Mono8 and Bgr24 keep
     /// their canonical row bytes.  Row padding is never displayed or hashed.
     /// </summary>
-    public static PreviewDisplayImage CopyFromFrame(CameraPreviewFrame frame)
+    public static PreviewDisplayImage CopyFromFrame(CameraPreviewFrame frame) =>
+        CopyFromFrame(frame, WpfPerformanceCounters.Shared);
+
+    internal static PreviewDisplayImage CopyFromFrame(CameraPreviewFrame frame,
+        WpfPerformanceCounters counters)
     {
         ArgumentNullException.ThrowIfNull(frame);
+        var started = Stopwatch.GetTimestamp();
+        PreviewDisplayImage? result = null;
+        try { return result = CopyCore(frame); }
+        finally
+        {
+            var ticks = Stopwatch.GetTimestamp() - started;
+            if (result is null) counters.RecordImageCopyFailed(ticks);
+            else counters.RecordImageCopied(checked((long)result.BitmapSource.PixelWidth * result.BitmapSource.PixelHeight *
+                ((result.BitmapSource.Format.BitsPerPixel + 7) / 8)), ticks);
+        }
+    }
+
+    private static PreviewDisplayImage CopyCore(CameraPreviewFrame frame)
+    {
 
         var sourceBytesPerPixel = frame.PixelFormat switch
         {
@@ -113,8 +132,9 @@ public sealed class PreviewDisplayImage
             null, display, displayStride);
         // 冻结后该对象可作为只读显示值跨线程传递，后续不再依赖采集帧。
         bitmap.Freeze();
-        return new PreviewDisplayImage(bitmap, frame,
+        var image = new PreviewDisplayImage(bitmap, frame,
             Convert.ToHexString(sourceHash.GetHashAndReset()));
+        return image;
     }
 
     public static PreviewDisplayImage CopyFromPreviewFrame(CameraPreviewFrame frame) =>

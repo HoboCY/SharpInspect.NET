@@ -27,6 +27,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     private ModbusControllerSignals? _latest;
     private ModbusControllerSignals? _accepted;
     private bool _accepting;
+    private bool _readyPublicationInProgress;
     private bool _wasHigh = true; // 建立连接时已经保持为高的请求不算新的触发边沿。
     private PlcControllerCycle? _previousKey;
     private uint? _activeEpoch;
@@ -37,6 +38,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     private long _observationSequence;
     private long _ackObservationSequence;
     private long _ackObservedAt;
+    private long _acceptedObservedAt;
 
     internal InspectionCycleRequestObserver(Func<CancellationToken, Task<ModbusControllerSignals>> read,
         TimeSpan interval, IEnumerable<PlcControllerCycle> knownKeys, Action onAccepted,
@@ -57,6 +59,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
     }
     internal void StopAccepting() { lock (_sync) _accepting = false; }
     internal bool IsAccepting { get { lock (_sync) return _accepting; } }
+    internal bool ReadyPublicationInProgress { get { lock (_sync) return _readyPublicationInProgress; } }
     internal bool HasPendingAdmission { get { lock (_sync) return _accepted is not null; } }
     internal void RejectPendingAdmission(string reason)
     {
@@ -111,6 +114,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 if (_closing || _admissionRevoked) throw new OperationCanceledException("InspectionCycleObserverStopped");
                 if (_latest is not { ResultAck: false })
                     throw new InvalidOperationException("QualificationInitialResultAckNotClear");
+                _readyPublicationInProgress = true;
                 admissionVersion = _admissionVersion;
             }
             await advertiseReady().ConfigureAwait(false);
@@ -124,7 +128,11 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                 _accepting = true;
             }
         }
-        finally { _sampleGate.Release(); }
+        finally
+        {
+            lock (_sync) _readyPublicationInProgress = false;
+            _sampleGate.Release();
+        }
     }
     internal (ModbusControllerSignals? Signals, long Sequence, long AckSequence, long AckObservedAt) Latest
     { get { lock (_sync) return (_latest, _observationSequence, _ackObservationSequence, _ackObservedAt); } }
@@ -152,8 +160,11 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
         finally { _sampleGate.Release(); }
     }
     internal bool TryTakeAccepted(out ModbusControllerSignals? signals)
+        => TryTakeAccepted(out signals, out _);
+
+    internal bool TryTakeAccepted(out ModbusControllerSignals? signals, out long observedAt)
     {
-        lock (_sync) { ThrowIfFailed(); signals = _accepted; _accepted = null; return signals is not null; }
+        lock (_sync) { ThrowIfFailed(); signals = _accepted; observedAt = _acceptedObservedAt; _accepted = null; return signals is not null; }
     }
     internal RejectedCycleRequest? TakeRejected()
     {
@@ -179,6 +190,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                     lock (_sync)
                         if (_closing) throw new OperationCanceledException("InspectionCycleObserverStopped");
                     var signals = await _read(_stop.Token).ConfigureAwait(false);
+                    var observedAt = Stopwatch.GetTimestamp();
                     lock (_sync)
                     {
                         if (_closing || _stop.IsCancellationRequested)
@@ -188,7 +200,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                             _latest.ControllerEpoch != signals.ControllerEpoch || _latest.CycleSequence != signals.CycleSequence)
                         {
                             _ackObservationSequence = _observationSequence;
-                            _ackObservedAt = Stopwatch.GetTimestamp();
+                            _ackObservedAt = observedAt;
                         }
                         _latest = signals;
                         if (_activeEpoch is { } activeEpoch && signals.ControllerEpoch != activeEpoch)
@@ -204,6 +216,7 @@ internal sealed class InspectionCycleRequestObserver : IAsyncDisposable
                             {
                                 _accepting = false;
                                 _accepted = signals;
+                                _acceptedObservedAt = observedAt;
                                 _activeEpoch = signals.ControllerEpoch;
                                 _onAccepted();
                             }

@@ -392,6 +392,10 @@ public sealed partial class StationRuntime
             lock (_sync) diagnosticHealth = DiagnosticObservationLocked(policy);
             if (diagnosticHealth is not null)
                 await ObserveAlarmCoreAsync(diagnosticHealth, _lifetime.Token).ConfigureAwait(false);
+            AlarmObservation? performanceHealth;
+            lock (_sync) performanceHealth = PerformanceObservationLocked(policy);
+            if (performanceHealth is not null)
+                await ObserveAlarmCoreAsync(performanceHealth, _lifetime.Token).ConfigureAwait(false);
             IReadOnlyList<AlarmObservation> outboxObservations;
             lock (_sync) outboxObservations = OutboxObservationsLocked(policy);
             foreach (var observation in outboxObservations)

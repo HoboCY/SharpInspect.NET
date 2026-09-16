@@ -63,7 +63,7 @@ public sealed partial class StationRuntime
                 if (_disposed || _shutdownRequested) return;
                 if (!EvidenceReconciliationReadyLocked())
                     throw new InvalidOperationException("EvidenceReconciliationStartupUnavailable");
-                owner = new(_snapshot.RuntimeEpoch, _lifetime.Token, _productionInspectionExecutionOptions!, _diagnostics);
+                owner = new(_snapshot.RuntimeEpoch, _lifetime.Token, _productionInspectionExecutionOptions!, _diagnostics, _performance);
                 _productionInspectionOwner = owner;
                 _productionInspectionStartupVerified = true;
                 PublishLocked(_snapshot with { Recovery = RecoveryState.None,
@@ -122,7 +122,7 @@ public sealed partial class StationRuntime
         await using var channel = new ModbusQualificationChannel(profile,
             start => StartProductionCycleWrite(owner, start),
             start => StartProductionModbusRequest(owner, start), ShouldReadProductionPartIdentity);
-        var output = new InspectionCycleOutputLatch(channel.WriteStateAsync, channel.WriteRecipeChangeOwnedStateAsync);
+        var output = new InspectionCycleOutputLatch(channel.WriteStateAsync, channel.WriteRecipeChangeOwnedStateAsync, _performance);
         var initialized = false;
         InspectionCycleRequestObserver? observer = null;
         try
@@ -231,7 +231,7 @@ public sealed partial class StationRuntime
                     await ConfirmManualMaintenanceReadyAsync(owner, output).ConfigureAwait(false);
                     accepting = observer.IsAccepting;
                 }
-                if (observer.TryTakeAccepted(out var signals) && signals is not null)
+                if (observer.TryTakeAccepted(out var signals, out var triggerObservedAt) && signals is not null)
                 {
                     observer.StopAccepting();
                     accepting = false;
@@ -260,15 +260,20 @@ public sealed partial class StationRuntime
                         continue;
                     }
                     channel.ValidatePayloadBinding(owner.Current!.ActivationSnapshot.PlcResultContract);
+                    output.PerformanceCorrelation = new(ExecutionKind.Production, owner.Current.CorrelationId);
+                    _performance?.Observe(PerformanceEventKind.TriggerObserved, output.PerformanceCorrelation,
+                        owner.Current.ControllerCycle, observedAt: triggerObservedAt);
                     await output.ChangeAsync(token, ready: false, busy: true, valid: false).ConfigureAwait(false);
                     await ExecuteProductionInspectionAsync(owner, (receipt, ct) =>
                         owner.Coordinator.PublishAndAcknowledgeAsync(receipt, owner.Current!.ControllerCycle,
                             observer, output, channel.WritePayloadAsync,
                             fact => RecordProductionDeliveryAsync(owner, fact),
-                            profile.AcknowledgementTimeout, profile.PollInterval, ct)).ConfigureAwait(false);
+                            profile.AcknowledgementTimeout, profile.PollInterval, ct, _performance)).ConfigureAwait(false);
                     if (owner.Coordinator.Phase == InspectionCyclePhase.FaultTerminated)
                         throw new InvalidOperationException("ProductionInspectionCoreNotCommitted");
                     await RetireProductionCameraAsync(owner).ConfigureAwait(false);
+                    _performance?.Observe(PerformanceEventKind.CycleCompleted, output.PerformanceCorrelation,
+                        owner.Current!.ControllerCycle, reason: owner.Core?.ReasonCode ?? "ProductionCycleCompleted");
                     observer.CompleteCycle();
                     Task? cancellation;
                     CancellationTokenSource retiredCancellation;
@@ -361,7 +366,7 @@ public sealed partial class StationRuntime
     }
 
     private bool CanAcceptProductionTriggerLocked(ProductionInspectionOwner owner) =>
-        !LocalStopPendingLocked &&
+        !LocalStopPendingLocked && !PerformanceBlocksNewTriggersLocked() &&
         ProductionOutboxBacklogFailureLocked() is null &&
         AutomaticProductionArmReadyPermitLocked(owner) &&
         ManualMaintenanceReadyPermitLocked(owner) &&

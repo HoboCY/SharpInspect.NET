@@ -19,7 +19,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
         PlcControllerCycle key, InspectionCycleRequestObserver observer, InspectionCycleOutputLatch output,
         Func<TPayload, CancellationToken, Task> writePayload,
         Func<InspectionCycleDeliveryFact, Task> record, TimeSpan acknowledgementTimeout,
-        TimeSpan pollInterval, CancellationToken token)
+        TimeSpan pollInterval, CancellationToken token, Performance.RuntimePerformanceMonitor? performance = null)
     {
         if (Phase != InspectionCyclePhase.WritingPayload)
             throw new InvalidOperationException("InspectionCyclePublicationNotPrepared");
@@ -36,16 +36,18 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
             () => output.ChangeAsync(token, ready: false, busy: false, valid: true), token).ConfigureAwait(false);
         SetPhase(InspectionCyclePhase.AwaitAckHigh);
         await record(InspectionCycleDeliveryFact.ResultValidPublished).ConfigureAwait(false);
-        await WaitForAckAsync(true, highWindow).ConfigureAwait(false);
+        var ackAt = await WaitForAckAsync(true, highWindow).ConfigureAwait(false);
+        performance?.Observe(PerformanceEventKind.ResultAckObserved, receipt.Correlation, key, observedAt: ackAt);
         await record(InspectionCycleDeliveryFact.ResultAckObserved).ConfigureAwait(false);
         var lowWindow = await observer.WriteAcknowledgementStateAsync(true,
             () => output.ChangeAsync(token, valid: false), token).ConfigureAwait(false);
         SetPhase(InspectionCyclePhase.AwaitAckLow);
         await record(InspectionCycleDeliveryFact.ResultValidCleared).ConfigureAwait(false);
-        await WaitForAckAsync(false, lowWindow).ConfigureAwait(false);
+        var resetAt = await WaitForAckAsync(false, lowWindow).ConfigureAwait(false);
+        performance?.Observe(PerformanceEventKind.AcknowledgementReset, receipt.Correlation, key, observedAt: resetAt);
         await record(InspectionCycleDeliveryFact.AckReset).ConfigureAwait(false);
 
-        async Task WaitForAckAsync(bool high, (long Sequence, long StartedAt) window)
+        async Task<long> WaitForAckAsync(bool high, (long Sequence, long StartedAt) window)
         {
             while (true)
             {
@@ -57,7 +59,7 @@ internal sealed partial class InspectionCycleCoordinator<TPayload> where TPayloa
                     signals.ControllerEpoch == key.ControllerEpoch && signals.CycleSequence == key.CycleSequence &&
                     observation.AckSequence > window.Sequence &&
                     Elapsed(observation.AckObservedAt, window.StartedAt) <= acknowledgementTimeout)
-                    return;
+                    return observation.AckObservedAt;
                 if (Elapsed(Stopwatch.GetTimestamp(), window.StartedAt) >= acknowledgementTimeout)
                     throw new InspectionCycleAckTimeoutException();
                 await Task.Delay(pollInterval, token).ConfigureAwait(false);

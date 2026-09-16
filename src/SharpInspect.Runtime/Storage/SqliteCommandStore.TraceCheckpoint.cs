@@ -43,6 +43,7 @@ internal sealed partial class SqliteCommandStore
         var deadline = new StoreDeadline(budget.MaximumRunTime);
         var timer = Stopwatch.StartNew();
         PersistCheckpoint(db, start, deadline);
+        Interlocked.Increment(ref _performanceCheckpointAttempts);
         _checkpointHooks?.Phase?.Invoke("Started");
         var status = TraceCheckpointStatus.Failed;
         var reason = "TraceCheckpointFailed";

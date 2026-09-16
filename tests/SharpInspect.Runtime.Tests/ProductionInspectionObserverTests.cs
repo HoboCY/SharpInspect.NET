@@ -87,6 +87,33 @@ public sealed class ProductionInspectionObserverTests
         }
     }
 
+    [Fact]
+    public async Task V157_M07_PermanentRevocationDuringReadyPublicationCannotReopenAdmission()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var observer = new InspectionCycleRequestObserver(
+            _ => Task.FromResult(new ModbusControllerSignals(false, false, 61, 1)),
+            TimeSpan.FromMilliseconds(1), Array.Empty<PlcControllerCycle>(),
+            () => throw new InvalidOperationException("Unexpected admission"), _ => { }, CancellationToken.None);
+        observer.Start();
+        await WaitAsync(() => observer.Latest.Sequence > 0);
+        var enabling = observer.EnableAcceptingAsync(async () =>
+        {
+            entered.SetResult();
+            await release.Task.ConfigureAwait(false);
+        }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        observer.RevokeAdmission();
+        release.SetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => enabling);
+        Assert.False(observer.IsAccepting);
+        Assert.False(observer.TryTakeAccepted(out _));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            observer.EnableAcceptingAsync(() => Task.CompletedTask, CancellationToken.None));
+        Assert.False(observer.IsAccepting);
+    }
+
     private static async Task WaitAsync(Func<bool> predicate)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));

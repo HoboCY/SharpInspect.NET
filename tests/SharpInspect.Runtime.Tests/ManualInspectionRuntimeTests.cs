@@ -416,7 +416,9 @@ public sealed partial class ManualInspectionRuntimeTests
             EvidenceReconciliationStoreOptions? evidenceReconciliation = null,
             Action<SqliteCommandStore>? beforeRuntime = null,
             TraceStorageRetentionOptions? storageRetention = null,
-            Func<string, long>? readWalLength = null)
+            Func<string, long>? readWalLength = null,
+            Func<ProductionStoreOptions, ProductionDeploymentManifest, Performance.PerformanceMonitoringOptions>? performanceMonitoring = null,
+            ProductionImpact performanceImpact = ProductionImpact.None)
         {
             enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
@@ -451,7 +453,9 @@ public sealed partial class ManualInspectionRuntimeTests
                 alarm = new AlarmPolicy("V156.Diagnostics.Alarm", "1", alarm.Rules.Concat(new[]
                 {
                     new AlarmPolicyRule("DiagnosticPipelineUnhealthy", "Runtime.Diagnostics", AlarmSeverity.Warning,
-                        ProductionImpact.None, false, AlarmNotification.None, null)
+                        ProductionImpact.None, false, AlarmNotification.None, null),
+                    new AlarmPolicyRule("PerformanceBudgetViolation", "Runtime.Performance", AlarmSeverity.Warning,
+                        performanceImpact, false, AlarmNotification.None, null)
                 }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             if (outbox is not null)
                 alarm = new AlarmPolicy("V152.Outbox.Alarm", "1", alarm.Rules.Concat(new[]
@@ -551,6 +555,7 @@ public sealed partial class ManualInspectionRuntimeTests
                             Document("UiWorkload", "Explicit headless test host, 20 ms snapshot observation."), Array.Empty<string>(),
                             startupProductionPolicy ?? StartupProductionPolicy.Default,
                             postActivationArmPolicy ?? PostActivationArmPolicy.Default);
+                    fixture.ConfigurePerformance((performanceMonitoring ?? PerformanceTestContracts.CreateDefault)(fixture.Options, deployment));
                     var productionProfile = productionPeer.CreateProductionProfile(
                             productionCommunicationPolicy, partIdentity: partIdentityReadPlan,
                             recipeChange: recipeChangeBinding, productionArmStatus: productionArmStatusBinding);

@@ -65,6 +65,7 @@ public sealed partial class StationRuntime
             }
             if (!result.Committed) throw new InvalidOperationException(result.ReasonCode);
             completed = true;
+            _performance?.Observe(PerformanceEventKind.RecoveryCompleted, reason: "ProductionRecoveryCompletedArmRequired");
             reason = "ProductionRecoveryCompletedArmRequired";
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)

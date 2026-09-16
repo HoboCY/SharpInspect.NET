@@ -11,7 +11,52 @@ namespace SharpInspect.Runtime.Tests;
 public sealed partial class ManualInspectionRuntimeTests
 {
     [Fact]
-    public async Task V147_R13_ImmediateTriggerWaitsForReadyReceiptAndSurvivesItsAuditRecheck()
+    public async Task V157_P06_StopDuringReadyPublicationKeepsLateAcknowledgementDisarmed()
+    {
+        await using var peer = ModbusQualificationTestServer.Start();
+        peer.HoldFirstPayloadWrite = false;
+        await using var harness = await ManualHarness.CreateAsync(activationReadyDraft: true, productionPeer: peer,
+            recipeChangeBinding: new(500, 600, TimeSpan.FromSeconds(20)),
+            productionArming: new ProductionArmStoreOptions(), productionArmStatusBinding: V147ArmStatusBinding,
+            postActivationArmPolicy: V147AutomaticRearm(),
+            productionArmMaintenance: new TestProductionArmMaintenanceProvider());
+        using var issuer = new ProductionTestIssuer();
+        await PrepareProductionAsync(harness, issuer);
+        await EnableRecipeChangeAsync(harness, (await harness.Activations.ReadCurrentAsync()).Record!);
+        await ArmProductionAsync(harness);
+        await RequestRecipeChangeWithFreshBusyAttemptsAsync(harness, peer, 192);
+        await WaitRecipeResponseAsync(harness, peer);
+        Assert.Equal((ushort)RecipeChangeOutcome.Succeeded, peer.RecipeChangeResponse.Outcome);
+        peer.HoldNextProductionReadyWrite();
+        await CompleteRecipeChangeAsync(harness, peer, new SqliteRecipeSelectionQuery(harness.Fixture.Options));
+        await peer.WaitForProductionReadyWriteHeldAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        var correlation = Guid.NewGuid();
+        try
+        {
+            Assert.False((await harness.Runtime.GetSnapshotAsync()).Ready);
+            var stopped = await harness.Runtime.SubmitAsync(new GracefulProductionStopCommand(correlation,
+                new CommandInvocation(CommandSource.PhysicalConsole))).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(CommandDisposition.Accepted, stopped.Disposition);
+            peer.RaiseTrigger(61, 403);
+        }
+        finally { peer.ReleaseProductionReadyWrite(); }
+        await WaitProductionAsync(harness, state => state.LastCommand is { State: OperationState.Completed } command &&
+            command.CorrelationId == correlation, "Stop did not finish after the held Ready ACK retired");
+        await WaitConditionAsync(() => !peer.PhysicalProductionReady, "Late Ready ACK survived Stop");
+        var final = await harness.Runtime.GetSnapshotAsync();
+        Assert.False(final.Ready);
+        Assert.Equal(ProductionArmState.Disarmed, final.ArmState);
+        Assert.Null(final.CurrentExecution);
+        Assert.Equal(0, peer.ResultValidHighCount);
+        var history = await new SqliteProductionInspectionHistoryQuery(harness.Fixture.Options).QueryAsync(new());
+        Assert.True(history.Available, history.ReasonCode);
+        Assert.Empty(history.Events);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task V147_R13_ImmediateTriggerWaitsForReadyReceiptAndSurvivesItsAuditRecheck(bool repeatPublicationBeforeReady)
     {
         await using var peer = ModbusQualificationTestServer.Start();
         peer.HoldFirstPayloadWrite = false;
@@ -46,6 +91,22 @@ public sealed partial class ManualInspectionRuntimeTests
         await hold.ExecuteNonQueryAsync();
         try
         {
+            if (repeatPublicationBeforeReady)
+            {
+                // The server holds the physical Ready ACK. Force one unchanged
+                // publication in that exact window, as a heartbeat would do.
+                // Outcomes below still use the real controller and durable ledger.
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                var sync = typeof(StationRuntime).GetField("_sync", flags)!.GetValue(harness.Runtime)!;
+                lock (sync)
+                {
+                    var snapshot = (StationStateSnapshot)typeof(StationRuntime).GetField("_snapshot", flags)!.GetValue(harness.Runtime)!;
+                    Assert.False(snapshot.Ready);
+                    Assert.Equal(ProductionArmState.Armed, snapshot.ArmState);
+                    Assert.True(snapshot.ProductionAdmission!.CanArm);
+                    typeof(StationRuntime).GetMethod("PublishLocked", flags)!.Invoke(harness.Runtime, new object[] { snapshot, false });
+                }
+            }
             peer.RaiseTrigger(61, 401);
             peer.ReleaseProductionReadyWrite();
             await peer.WaitForControllerSampleAsync(61, 401).WaitAsync(TimeSpan.FromSeconds(2));

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Threading.Channels;
 using System.Windows.Input;
 using SharpInspect.Abstractions;
@@ -22,6 +23,7 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
     private readonly IUiDispatcher _dispatcher;
     private readonly IMonotonicClock _clock;
     private readonly SnapshotFreshnessPolicy _freshnessPolicy;
+    private readonly WpfPerformanceCounters _counters;
     private readonly Func<CommandInvocation> _invocationFactory;
     private readonly Channel<FeedItem> _feed;
     private readonly object _sync = new();
@@ -54,8 +56,27 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         SnapshotFreshnessPolicy? freshnessPolicy = null,
         int feedCapacity = 32,
         Func<CommandInvocation>? invocationFactory = null)
+        : this(runtime, dispatcher, clock, freshnessPolicy, feedCapacity, invocationFactory,
+            WpfPerformanceCounters.Shared)
+    {
+    }
+
+    /// <summary>
+    /// Attribution seam: hosts and tests may bind isolated counters. The counters are
+    /// write-only observers; the public constructor keeps the original signature and
+    /// always binds <see cref="WpfPerformanceCounters.Shared"/>.
+    /// </summary>
+    internal StationShellViewModel(
+        IStationRuntime runtime,
+        IUiDispatcher? dispatcher,
+        IMonotonicClock? clock,
+        SnapshotFreshnessPolicy? freshnessPolicy,
+        int feedCapacity,
+        Func<CommandInvocation>? invocationFactory,
+        WpfPerformanceCounters counters)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        _counters = counters ?? throw new ArgumentNullException(nameof(counters));
         _dispatcher = dispatcher ?? new DispatcherUiDispatcher();
         _clock = clock ?? new StopwatchMonotonicClock();
         _freshnessPolicy = freshnessPolicy ?? SnapshotFreshnessPolicy.Default;
@@ -69,7 +90,7 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
             SingleReader = true,
             SingleWriter = true,
             AllowSynchronousContinuations = false
-        });
+        }, item => { if (item.Snapshot is not null) _counters.RecordSnapshotCoalesced(); });
 
         ArmCommand = new AsyncRelayCommand(() => ArmProductionAsync().AsTask(), () => CanArmProduction);
         StopCommand = new AsyncRelayCommand(() => GracefulStopAsync().AsTask(), () => CanStopProduction);
@@ -180,10 +201,14 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
 
     /// <summary>Feeds one watch item through the same epoch and revision guards used by the live loop.</summary>
     internal async Task ObserveFeedSnapshotAsync(StationStateSnapshot snapshot,
-        CancellationToken cancellationToken = default, long? arrivalTimestampOverride = null)
+        CancellationToken cancellationToken = default, long? arrivalTimestampOverride = null,
+        bool fromFeedQueue = false)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         cancellationToken.ThrowIfCancellationRequested();
+        // 队列路径在写入时已经计数；受控消费者/测试的直接注入在这里计数。
+        // 计数是纯累加：不参与代次、修订、freshness 或排队判断，不改变任何既有边界。
+        if (!fromFeedQueue) _counters.RecordSnapshotReceived();
         Guid? currentEpoch;
         bool awaitingFull;
         long currentRevision;
@@ -234,7 +259,12 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
                 await MarkDiscontinuousAndRefreshAsync(cancellationToken).ConfigureAwait(false);
                 return;
             }
-            if (snapshot.Revision <= currentRevision) return;
+            if (snapshot.Revision <= currentRevision)
+            {
+                // 同一代次内重复或更旧的修订被明确合并丢弃，且不刷新到达时间。
+                _counters.RecordSnapshotCoalesced();
+                return;
+            }
             await ApplyOnDispatcherAsync(snapshot, fresh: true, forceFull: false, generation: CurrentGeneration(),
                 arrivalTimestamp,
                 cancellationToken).ConfigureAwait(false);
@@ -245,7 +275,12 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         {
             // Runtime Epoch 表示进程代次。新代次出现后再次到达的旧代次数据属于延迟旧流，
             // 不能把它当成当前状态。
-            if (wasPreviouslyApplied) return;
+            if (wasPreviouslyApplied)
+            {
+                // 已被新代次取代的迟到旧代次快照按合并丢弃计数，而不是 received-applied 差值。
+                _counters.RecordSnapshotCoalesced();
+                return;
+            }
         }
 
         try
@@ -361,7 +396,10 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
                         }
                         UpdateFeedHintLocked(snapshot.RuntimeEpoch);
                     }
-                    _feed.Writer.TryWrite(FeedItem.FromSnapshot(snapshot, arrivalTimestamp));
+                    // 收到即计数：该快照仍可能停留在队列里（pending）或被 DropOldest 丢弃，
+                    // 原生 DropOldest 回调只把被淘汰的快照计入 coalesced。
+                    _counters.RecordSnapshotReceived();
+                    TryWriteFeedItem(FeedItem.FromSnapshot(snapshot, arrivalTimestamp));
                 }
                 if (!cancellationToken.IsCancellationRequested)
                     QueueDiscontinuity();
@@ -393,28 +431,29 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         {
             await foreach (var item in _feed.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (ConsumeDiscontinuity() || item.Disconnected)
-                {
-                    await MarkDiscontinuousAndRefreshAsync(cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
+                    if (ConsumeDiscontinuity() || item.Disconnected)
+                    {
+                        await MarkDiscontinuousAndRefreshAsync(cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
 
-                if (item.Snapshot is not null)
-                {
-                    try
+                    if (item.Snapshot is not null)
                     {
-                        await ObserveFeedSnapshotAsync(item.Snapshot, cancellationToken, item.ArrivalTimestamp)
-                            .ConfigureAwait(false);
+                        try
+                        {
+                            await ObserveFeedSnapshotAsync(item.Snapshot, cancellationToken,
+                                    item.ArrivalTimestamp, fromFeedQueue: true)
+                                .ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch
+                        {
+                            await MarkUnavailableAsync(requireFullSnapshot: true).ConfigureAwait(false);
+                        }
                     }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        await MarkUnavailableAsync(requireFullSnapshot: true).ConfigureAwait(false);
-                    }
-                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -511,6 +550,8 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         for (var attempt = 0; attempt < 8 && !cancellationToken.IsCancellationRequested; attempt++)
         {
             var snapshot = await _runtime.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            // 权威全量查询结果同样是一次“收到”的快照；它可能因代次/修订判断而不被应用。
+            _counters.RecordSnapshotReceived();
             var arrivalTimestamp = _clock.GetTimestamp();
             bool accepted;
             lock (_sync)
@@ -545,14 +586,28 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
         var applied = false;
         await _dispatcher.InvokeAsync(() =>
         {
+            var applyStartTicks = Stopwatch.GetTimestamp();
+            var failed = false;
+            try
+            {
             lock (_sync)
             {
                 if (generation != _generation) return;
                 if (forceFull && _feedEpochHint.HasValue && _feedEpochHint.Value != snapshot.RuntimeEpoch) return;
                 if (_currentEpoch.HasValue && _currentEpoch.Value == snapshot.RuntimeEpoch &&
-                    snapshot.Revision < _lastRevision) return;
+                    snapshot.Revision < _lastRevision)
+                {
+                    // 到达后已有更高修订被应用：本次内容被合并丢弃。
+                    _counters.RecordSnapshotCoalesced();
+                    return;
+                }
                 if (_currentEpoch.HasValue && _currentEpoch.Value == snapshot.RuntimeEpoch &&
-                    snapshot.Revision == _lastRevision && !forceFull) return;
+                    snapshot.Revision == _lastRevision && !forceFull)
+                {
+                    // 完全相同的修订（非强制全量刷新）被合并丢弃。
+                    _counters.RecordSnapshotCoalesced();
+                    return;
+                }
                 var sameRevision = _currentEpoch.HasValue && _currentEpoch.Value == snapshot.RuntimeEpoch &&
                     snapshot.Revision == _lastRevision;
                 var effectiveArrival = sameRevision && _hasArrival
@@ -584,6 +639,15 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
             OnPropertyChanged(nameof(CanArmProduction));
             OnPropertyChanged(nameof(LastCommandProgress));
             ArmCommand.RaiseCanExecuteChanged();
+            }
+            catch { failed = true; throw; }
+            finally
+            {
+                var ticks = Stopwatch.GetTimestamp() - applyStartTicks;
+                if (failed) _counters.RecordSnapshotApplyFailed(ticks);
+                else if (applied) _counters.RecordSnapshotApplied(ticks);
+                else _counters.RecordSnapshotGuardElapsed(ticks);
+            }
         }).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         return applied;
@@ -613,7 +677,7 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
             _discontinuityPending = true;
             _freshness = SnapshotFreshness.Discontinuous;
         }
-        _feed.Writer.TryWrite(FeedItem.DisconnectedItem);
+        TryWriteFeedItem(FeedItem.DisconnectedItem);
     }
 
     private bool ConsumeDiscontinuity()
@@ -625,6 +689,8 @@ public sealed class StationShellViewModel : ObservableObject, IAsyncDisposable
             return true;
         }
     }
+
+    private void TryWriteFeedItem(FeedItem item) => _feed.Writer.TryWrite(item);
 
     private async Task MarkUnavailableAsync(bool requireFullSnapshot = false)
     {

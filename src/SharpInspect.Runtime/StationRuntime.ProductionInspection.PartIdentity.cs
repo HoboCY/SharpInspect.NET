@@ -146,6 +146,9 @@ public sealed partial class StationRuntime
         ModbusControllerSignals signals, string reason, PartIdentityLatchAttempt? attempt = null)
     {
         if (attempt?.RejectionRecorded == true) return;
+        _performance?.Observe(PerformanceEventKind.TriggerRejected, null,
+            new PlcControllerCycle(signals.ControllerEpoch, signals.CycleSequence),
+            outcome: PerformanceObservationOutcome.Failed, reason: reason);
         if (_audit is not SqliteCommandStore { PartIdentityEnabled: true } store)
         {
             // Preserve the pre-T43 None deployment. A non-None recipe cannot arm

@@ -46,12 +46,17 @@ public sealed partial class StationRuntime
                     _productionInspectionClock!, token, () => ClaimProductionPhysicalPhase(owner)).ConfigureAwait(false);
                 actualAcquisitionFailure = acquired.FailureKind is { } kind
                     ? new CameraAcquisitionFailure(kind, acquired.ReasonCode) : null;
+                if (acquired.Succeeded) _performance?.Observe(PerformanceEventKind.FrameReady, correlation);
+                if (acquired.Frame is { } frame) _performance?.ObserveFrame(frame);
                 return acquired;
             },
             Encode = outcome =>
             {
+                _performance?.Observe(PerformanceEventKind.PlcEncodingStarted, correlation);
                 var encoded = new PlcResultPayloadEncoder().Encode(baseline.PlcResultContract,
                     admission.ControllerCycle, outcome);
+                _performance?.Observe(PerformanceEventKind.PlcEncodingCompleted, correlation,
+                    outcome: encoded.Snapshot is null ? PerformanceObservationOutcome.Failed : PerformanceObservationOutcome.Observed);
                 return (encoded.Snapshot, encoded.Snapshot?.ReasonCode ?? outcome.ReasonCode ?? encoded.ReasonCode);
             },
             EncodeFailure = (status, reason) =>
@@ -69,8 +74,11 @@ public sealed partial class StationRuntime
                     ExecutionStatus.Cancelled => "CameraAcquisitionCancelled",
                     _ => "CameraAcquisitionError"
                 };
+                _performance?.Observe(PerformanceEventKind.PlcEncodingStarted, correlation);
                 var encoded = new PlcResultPayloadEncoder().EncodeFailure(baseline.PlcResultContract,
                     admission.InspectionId, admission.ControllerCycle, status, effectiveReason);
+                _performance?.Observe(PerformanceEventKind.PlcEncodingCompleted, correlation,
+                    outcome: encoded.Snapshot is null ? PerformanceObservationOutcome.Failed : PerformanceObservationOutcome.Observed);
                 return (encoded.Snapshot, encoded.Snapshot?.ReasonCode ?? encoded.ReasonCode);
             },
             CancellationReasonCode = "ProductionInspectionCancelled",

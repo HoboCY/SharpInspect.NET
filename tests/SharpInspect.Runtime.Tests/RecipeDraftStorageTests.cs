@@ -522,6 +522,15 @@ public sealed class RecipeDraftStorageTests
 
         internal ProductionStoreOptions Options { get; private set; }
 
+        internal void ConfigurePerformance(Performance.PerformanceMonitoringOptions performance)
+        {
+            // Non-SQLite fixture configuration only; preserve every original store/schema binding.
+            var copy = new ProductionStoreOptions();
+            foreach (var property in typeof(ProductionStoreOptions).GetProperties())
+                property.SetValue(copy, property.Name == nameof(ProductionStoreOptions.PerformanceMonitoring) ? performance : property.GetValue(Options));
+            Options = copy;
+        }
+
         internal void ConfigureDiagnostics(TraceStoragePolicySnapshot trace)
         {
             if (_diagnosticDirectory is not null) throw new InvalidOperationException("TestDiagnosticsAlreadyConfigured");

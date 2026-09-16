@@ -71,6 +71,9 @@ public sealed record StationStateSnapshot(
 
     /// <summary>External durable delivery backlog; independent from PLC result recovery.</summary>
     public OutboxBacklogSnapshot? Outbox { get; init; }
+
+    /// <summary>Observation health and finite baseline progress, independent from qualification match.</summary>
+    public PerformanceMonitorSnapshot? PerformanceMonitoring { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>
