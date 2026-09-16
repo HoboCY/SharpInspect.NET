@@ -30,7 +30,8 @@ internal static partial class AuditChainDatabase
     {
         var tables = Scalar(database, @"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND
             name IN('evidence_retention_config','evidence_retention_events');", deadline);
-        if (version != TraceStorageRetentionOptions.SchemaVersion)
+        if (version is not (TraceStorageRetentionOptions.SchemaVersion or
+            DiagnosticSupportStoreOptions.SchemaVersion))
         {
             Require(tables == 0, "RetentionGovernedMigrationRequired");
             return null;

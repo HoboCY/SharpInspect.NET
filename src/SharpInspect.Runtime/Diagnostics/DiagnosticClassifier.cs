@@ -10,6 +10,9 @@ internal sealed class DiagnosticClassifier
     internal DiagnosticClassifier(LoggingDiagnosticsPolicy policy)
     { _policy = policy; _catalog = policy.Contracts.ToDictionary(value => (value.Code, value.SchemaVersion)); }
 
+    internal DiagnosticEventContract? Contract(DiagnosticEmissionRequest request) =>
+        _catalog.TryGetValue((request.Code, request.SchemaVersion), out var contract) ? contract : null;
+
     // Defense against accidentally approving well-known forbidden semantic fields. This is
     // not a secret detector: arbitrary text is forbidden even under an innocuous approved key.
     internal static bool ForbiddenName(string name)
@@ -27,11 +30,12 @@ internal sealed class DiagnosticClassifier
         .Any(term => name.Contains(term, StringComparison.OrdinalIgnoreCase));
 
     internal bool TryClassify(DiagnosticEmissionRequest request, bool algorithm,
-        out DiagnosticEventContract? contract, out DiagnosticProperty[] safe, out DiagnosticProperty[] protectedValues)
+        out DiagnosticEventContract? contract, out DiagnosticProperty[] safe, out DiagnosticProperty[] protectedValues,
+        DiagnosticLevel? captureMinimum = null)
     {
         contract = null; safe = protectedValues = Array.Empty<DiagnosticProperty>();
         if (!_catalog.TryGetValue((request.Code, request.SchemaVersion), out var schema) ||
-            algorithm && !schema.AlgorithmAllowed || schema.Level < _policy.Baseline ||
+            algorithm && !schema.AlgorithmAllowed || schema.Level < (captureMinimum ?? _policy.Baseline) ||
             request.Properties.Count > _policy.Producers.MaximumProperties) return false;
         if (!TryClassifyProjection(request, schema, out var values)) return false;
         contract = schema;

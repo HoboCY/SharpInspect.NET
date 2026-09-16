@@ -116,7 +116,7 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
             return "StationQualificationFaultAbortActive";
         if (_snapshot.Ready || _snapshot.ArmState != ProductionArmState.Disarmed)
             return "StationQualificationRequiresDisarmedStation";
-        if (RecipeActivationConfigurationBlockedLocked || PreviewConfigurationBlockedLocked ||
+        if (DiagnosticSupportBusyLocked || RecipeActivationConfigurationBlockedLocked || PreviewConfigurationBlockedLocked ||
             ManualInspectionConfigurationBlockedLocked || _importPhysicalReservation is not null)
             return "StationQualificationOwnerConflict";
         if (_snapshot.Busy || _snapshot.CurrentExecution is not null || _executionGuard.IsHung)

@@ -29,7 +29,7 @@ internal static partial class AuditChainDatabase
     {
         var tables = Scalar(database, @"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND
             name IN ('evidence_reconciliation_config','evidence_reconciliation_events');", deadline);
-        if (version is not (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion))
+        if (version is not (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion))
         {
             Require(tables == 0, "EvidenceReconciliationGovernedMigrationRequired");
             return null;

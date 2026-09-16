@@ -38,7 +38,7 @@ public sealed partial class StationRuntime
 
     // 人工 Arm 和内部授权的系统尝试共用同一条实时最终栅栏；过期报告都不能把状态变成 Ready。
     private bool ProductionArmLiveFenceLocked(AdmissionCapture capture) =>
-        !_shutdownRequested && !_disposed && !StationQualificationConfigurationBlockedLocked &&
+        !_shutdownRequested && !_disposed && !StationQualificationConfigurationBlockedLocked && !DiagnosticSupportBusyLocked &&
         _snapshot.ProductionAdmission?.CanArm == true && _snapshot.RuntimeEpoch == capture.RuntimeEpoch &&
         _admissionGeneration == capture.Generation &&
         string.Equals(_admissionStateHash, capture.StateHash, StringComparison.Ordinal) &&
@@ -115,7 +115,7 @@ public sealed partial class StationRuntime
             !ReferenceEquals(_productionArmMaintenanceEvidence, attempt.MaintenanceProvider) ||
             !ReferenceEquals(_productionArmMaintenanceEvidence?.Current, attempt.Maintenance))
             return ProductionArmReason.AuthorityChanged;
-        if (_snapshot.Mode != ExclusiveMode.None || _snapshot.Busy || owner.Current is not null ||
+        if (DiagnosticSupportBusyLocked || _snapshot.Mode != ExclusiveMode.None || _snapshot.Busy || owner.Current is not null ||
             _activationReservation is not null || _recipeSelectionChangeInProgress ||
             _recipeChangeInProgress || _snapshot.Recovery != RecoveryState.None)
             return ProductionArmReason.RuntimeBusy;

@@ -186,7 +186,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
             if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
                 PartIdentityStoreOptions.SchemaVersion or
                 ProductionRecoveryStoreOptions.SchemaVersion or
-                RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion))
+                RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");

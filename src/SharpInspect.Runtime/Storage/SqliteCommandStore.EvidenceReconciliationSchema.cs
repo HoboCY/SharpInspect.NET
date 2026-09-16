@@ -146,11 +146,11 @@ internal sealed partial class SqliteCommandStore
         var version = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         if (store.EvidenceReconciliation is null)
         {
-            AuditChainDatabase.Require(version is not (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion),
+            AuditChainDatabase.Require(version is not (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion),
                 "EvidenceReconciliationConfigurationRequired");
             return;
         }
-        AuditChainDatabase.Require(version is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
+        AuditChainDatabase.Require(version is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion,
             "EvidenceReconciliationGovernedMigrationRequired");
         AuditChainDatabase.Require(ReadEvidenceReconciliationConfiguration(database, deadline) ==
             ReconciliationConfiguration(store), "EvidenceReconciliationConfigurationMismatch");

@@ -5,7 +5,8 @@ param([ValidateRange(1,76)][int]$Ticket = 1, [string]$ArtifactRoot,
     [string]$Schema35PackageFeed = $env:SHARPINSPECT_SCHEMA35_PACKAGE_FEED,
     [string]$Schema36PackageFeed = $env:SHARPINSPECT_SCHEMA36_PACKAGE_FEED,
     [string]$Schema37PackageFeed = $env:SHARPINSPECT_SCHEMA37_PACKAGE_FEED,
-    [string]$Schema38PackageFeed = $env:SHARPINSPECT_SCHEMA38_PACKAGE_FEED)
+    [string]$Schema38PackageFeed = $env:SHARPINSPECT_SCHEMA38_PACKAGE_FEED,
+    [string]$Schema39PackageFeed = $env:SHARPINSPECT_SCHEMA39_PACKAGE_FEED)
 $ErrorActionPreference = 'Stop'
 if ($Ticket -ge 49) {
     if ([string]::IsNullOrWhiteSpace($Schema32PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema32PackageFeed)) {
@@ -75,6 +76,16 @@ if ($Ticket -ge 55) {
     foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
         if (-not (Test-Path -LiteralPath (Join-Path $Schema38PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
             throw 'The preserved schema-38 package feed is incomplete.'
+        }
+    }
+}
+if ($Ticket -ge 58) {
+    if ([string]::IsNullOrWhiteSpace($Schema39PackageFeed) -or -not [IO.Path]::IsPathFullyQualified($Schema39PackageFeed)) {
+        throw 'Ticket 58 and later require an absolute preserved schema-39 package feed.'
+    }
+    foreach ($taskMigrationPackage in 'Runtime','Abstractions') {
+        if (-not (Test-Path -LiteralPath (Join-Path $Schema39PackageFeed ('SharpInspect.NET.' + $taskMigrationPackage + '.0.1.0-dev.1.nupkg')) -PathType Leaf)) {
+            throw 'The preserved schema-39 package feed is incomplete.'
         }
     }
 }
@@ -965,6 +976,11 @@ try {
     if ($Ticket -ge 57) {
         & (Join-Path $PSScriptRoot 'Test-PerformanceConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
             -RuntimeEvidenceDocument (Join-Path $env:SHARPINSPECT_V157_EVIDENCE_ROOT 'fixed-virtual-runtime.performance.json')
+    }
+    if ($Ticket -ge 58) {
+        & (Join-Path $PSScriptRoot 'Test-DiagnosticSupportConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed
+        & (Join-Path $PSScriptRoot 'Test-DiagnosticSupportMigrationConsumer.ps1') -Run $taskRun -PackageFeed $taskFeed `
+            -SourceSchema 39 -SourcePackageFeed $Schema39PackageFeed
     }
     $taskFinalHashes = @(Get-TaskSourceHashes)
     if (($taskFinalHashes | ConvertTo-Json -Depth 4 -Compress) -cne

@@ -526,7 +526,7 @@ public sealed partial class StationRuntime
                     _ => RuntimeGate(gate, ProductionAdmissionGateStatus.NotConfigured,
                         "StartupRecoveryNotVerified")
                 },
-                ProductionAdmissionGate.ExclusiveWork => state.Mode == ExclusiveMode.None && !state.Busy
+                ProductionAdmissionGate.ExclusiveWork => state.Mode == ExclusiveMode.None && !state.Busy && !DiagnosticSupportBusyLocked
                     ? RuntimeGate(gate, ProductionAdmissionGateStatus.Passed, "ExclusiveWorkClear")
                     : RuntimeGate(gate, ProductionAdmissionGateStatus.Blocked,
                         "ExclusiveWorkInProgress"),

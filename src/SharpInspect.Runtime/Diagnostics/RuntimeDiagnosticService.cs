@@ -152,6 +152,19 @@ internal sealed class RuntimeDiagnosticService : IDiagnosticPipelineHealthQuery,
         { return Unavailable("DiagnosticQueryDeadlineExceeded"); }
     }
 
+    // Called only by the independently authorized support owner. It awaits actual IO retirement;
+    // the owner may report a deadline earlier, but must retain its production-blocking slot.
+    internal async ValueTask<IReadOnlyList<string>> ReadSupportLinesAsync(int maximumRecords, int maximumBytes,
+        CancellationToken token)
+    {
+        if (_stopping || _safe is null || _options is null || maximumRecords < 1 ||
+            maximumRecords > _options.Policy.MaximumQueryRecords || maximumBytes < 1 ||
+            maximumBytes > _options.Policy.MaximumQueryBytes || Interlocked.CompareExchange(ref _queryActive, 1, 0) != 0)
+            throw new InvalidOperationException("SupportBundleSourceUnavailable");
+        try { return await _safe.ReadLinesAsync(maximumRecords, maximumBytes, token).ConfigureAwait(false); }
+        finally { Interlocked.Exchange(ref _queryActive, 0); }
+    }
+
     internal static DiagnosticHistoryPage Unavailable(string reason) => new(false, reason, Array.Empty<DiagnosticRecord>(), 0);
 
     public async ValueTask DisposeAsync()

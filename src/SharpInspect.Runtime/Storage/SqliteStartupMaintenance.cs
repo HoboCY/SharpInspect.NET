@@ -68,6 +68,7 @@ public static class SqliteStartupMaintenance
                 ProductionOutboxStoreOptions.SchemaVersion,
                 ProductionOutboxRecoveryOptions.SchemaVersion);
         internal static readonly StoreMigrationPlan StorageRetention = new(StoreMigrationJournal.StorageRetentionPlanId, 38, 39);
+        internal static readonly StoreMigrationPlan DiagnosticSupport = new(StoreMigrationJournal.DiagnosticSupportPlanId, 39, 40);
 
         internal static StoreMigrationPlan ForReconciliationSource(int source) => source switch
         {
@@ -171,7 +172,8 @@ public static class SqliteStartupMaintenance
                 throw new InvalidOperationException(reason);
             if (_targetOptions.AuditIntegrityPolicy is { RequireExternalAnchor: true })
                 throw new InvalidOperationException("StoreMigrationExternalAnchorPlanUnsupported");
-            _declaredTargetVersion = _targetOptions.StorageRetention is not null ? TraceStorageRetentionOptions.SchemaVersion
+            _declaredTargetVersion = _targetOptions.DiagnosticSupport is not null ? DiagnosticSupportStoreOptions.SchemaVersion
+                : _targetOptions.StorageRetention is not null ? TraceStorageRetentionOptions.SchemaVersion
                 : _targetOptions.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
                 : _targetOptions.Outbox is not null
                 ? _targetOptions.Outbox.RecoveryEnabled
@@ -182,7 +184,14 @@ public static class SqliteStartupMaintenance
                     : _targetOptions.ImageEvidence is null
                         ? RecipeLifecycleStoreOptions.SchemaVersion
                         : ProductionImageEvidenceStoreOptions.SchemaVersion;
-            if (_targetOptions.StorageRetention is not null)
+            if (_targetOptions.DiagnosticSupport is not null)
+            {
+                _source = new SqliteCommandStore.StartupMaintenanceSchema(
+                    SqliteCommandStore.MigrationDiagnosticSupportSourceOptions(_targetOptions), 40);
+                _plan = StoreMigrationPlan.DiagnosticSupport;
+                _target = new SqliteCommandStore.StartupMaintenanceSchema(_targetOptions, 40);
+            }
+            else if (_targetOptions.StorageRetention is not null)
             {
                 _source = new SqliteCommandStore.StartupMaintenanceSchema(
                     SqliteCommandStore.MigrationRetentionSourceOptions(_targetOptions), 39);
@@ -292,6 +301,8 @@ public static class SqliteStartupMaintenance
                     EvidenceReconciliationStoreOptions.SchemaVersion => durable.PlanId is
                         StoreMigrationJournal.EvidenceReconciliation35PlanId or StoreMigrationJournal.EvidenceReconciliation36PlanId or
                         StoreMigrationJournal.EvidenceReconciliation37PlanId,
+                    TraceStorageRetentionOptions.SchemaVersion => durable.PlanId ==
+                        StoreMigrationJournal.StorageRetentionPlanId,
                     _ => false
                 };
                 if (!predecessorMatches ||
@@ -340,7 +351,9 @@ public static class SqliteStartupMaintenance
                     SqliteCommandStore.ReconciliationConfiguration(_targetOptions).BindingHash) ||
                 _data.StorageRetentionConfigurationHash != (_targetOptions.StorageRetention is null ? null :
                     SqliteCommandStore.RetentionConfigurationFor(_targetOptions).BindingHash) ||
-                _data.ProductionOutboxRecoveryConfigurationHash != (_declaredTargetVersion is 38 or 39
+                _data.DiagnosticSupportConfigurationHash != (_targetOptions.DiagnosticSupport is null ? null :
+                    SqliteCommandStore.DiagnosticSupportConfigurationFor(_targetOptions).BindingHash) ||
+                _data.ProductionOutboxRecoveryConfigurationHash != (_declaredTargetVersion is 38 or 39 or 40
                     ? _targetOptions.Outbox?.ManualRecovery?.BindingHash : null))
                 throw new InvalidOperationException("StoreMigrationResumeContextMismatch");
             _contextBound = true;
@@ -402,7 +415,9 @@ public static class SqliteStartupMaintenance
                 SqliteCommandStore.ReconciliationConfiguration(_targetOptions).BindingHash,
             StorageRetentionConfigurationHash = _targetOptions.StorageRetention is null ? null :
                 SqliteCommandStore.RetentionConfigurationFor(_targetOptions).BindingHash,
-            ProductionOutboxRecoveryConfigurationHash = _declaredTargetVersion is 38 or 39
+            DiagnosticSupportConfigurationHash = _targetOptions.DiagnosticSupport is null ? null :
+                SqliteCommandStore.DiagnosticSupportConfigurationFor(_targetOptions).BindingHash,
+            ProductionOutboxRecoveryConfigurationHash = _declaredTargetVersion is 38 or 39 or 40
                 ? _targetOptions.Outbox?.ManualRecovery?.BindingHash : null,
             PreviousOperationId = previous?.OperationId, PreviousOperationJournalHash = previous?.FrameHash,
             PreviousMarkerBase64 = previous?.MarkerBase64, ReasonCode = "StoreMigrationOpened"

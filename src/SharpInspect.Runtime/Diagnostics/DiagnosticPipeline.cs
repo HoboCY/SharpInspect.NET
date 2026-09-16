@@ -53,6 +53,28 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
     private long _healthStart = Stopwatch.GetTimestamp(), _priorDrops;
     private bool _dropUnhealthy;
     private int _activeScopes, _stopping;
+    private DiagnosticCaptureLease? _capture;
+    private int _sinkFailed;
+    private void CaptureSinkFailed()
+    { Interlocked.Exchange(ref _sinkFailed, 1); EndCapture(DiagnosticCaptureEnd.Fault); }
+
+    internal bool BeginCapture(DiagnosticCaptureLease capture)
+    {
+        lock (_sync)
+        {
+            if (_stopping != 0 || Volatile.Read(ref _sinkFailed) != 0 || _capture is { Drained: false } || !capture.Authority.Valid ||
+                capture.Profile.LoggingPolicyHash != _policy.ContentHash ||
+                capture.Profile.Duration > _policy.MaximumCaptureDuration ||
+                capture.Profile.MaximumEvents > _policy.MaximumCaptureEvents ||
+                capture.Profile.Components.Any(component => !_policy.Contracts.Any(value => value.Component == component)))
+                return false;
+            Volatile.Write(ref _capture, capture);
+            if (Volatile.Read(ref _sinkFailed) != 0) { capture.Revoke(DiagnosticCaptureEnd.Fault); return false; }
+            return true;
+        }
+    }
+
+    internal void EndCapture(DiagnosticCaptureEnd reason) => Volatile.Read(ref _capture)?.Revoke(reason);
 
     internal DiagnosticPipeline(LoggingDiagnosticsPolicy policy, Guid epoch,
         Func<DiagnosticEnvelope, ValueTask> safe, Func<DiagnosticEnvelope, ValueTask> protectedOutput,
@@ -60,8 +82,10 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
     {
         if (epoch == Guid.Empty) throw new ArgumentException("DiagnosticRuntimeEpochRequired", nameof(epoch));
         _policy = policy; _classifier = new(policy); _epoch = epoch;
-        _safe = new(policy.SafeQueue, safe, closeSafe); _protected = new(policy.ProtectedQueue, protectedOutput, closeProtected);
-        if (forwarded is not null) _forwarded = new(policy.ForwardedQueue, item => forwarded.WriteAsync(item.Record, CancellationToken.None));
+        _safe = new(policy.SafeQueue, safe, closeSafe, CaptureSinkFailed);
+        _protected = new(policy.ProtectedQueue, protectedOutput, closeProtected, CaptureSinkFailed);
+        if (forwarded is not null) _forwarded = new(policy.ForwardedQueue, item => forwarded.WriteAsync(item.Record, CancellationToken.None),
+            fault: CaptureSinkFailed);
     }
 
     internal ExecutionDiagnosticScope OpenScope(ExecutionCorrelationId correlation, DiagnosticDropCounter counter)
@@ -86,7 +110,16 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
     {
         // No raw object, exception or input-controlled correlation crosses this adapter.
         if (value is null) { Interlocked.Increment(ref _rejected); return DiagnosticEmission.Dropped; }
-        if (Volatile.Read(ref scope.Closed) != 0) { Interlocked.Increment(ref _lateDropped); return DiagnosticEmission.Dropped; }
+        if (Volatile.Read(ref scope.Closed) != 0)
+        {
+            // A classified late producer still consumes the capture attempt budget;
+            // the sealed execution capability never regains permission to enqueue.
+            var capture = Volatile.Read(ref _capture);
+            var contract = _classifier.Contract(new(value.Code, 1));
+            if (capture is not null && contract is not null && capture.Matches(contract) && capture.TryEnter())
+                capture.ReleaseReference();
+            Interlocked.Increment(ref _lateDropped); return DiagnosticEmission.Dropped;
+        }
         var properties = new DiagnosticPropertyRequest[value.Fields.Count];
         for (var index = 0; index < properties.Length; index++)
         {
@@ -109,7 +142,14 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
         Guid? commandCorrelation = null, ExecutionCorrelationId? trustedExecution = null)
     {
         Interlocked.Increment(ref _submitted);
-        if (!Monitor.TryEnter(_sync)) { Interlocked.Increment(ref _saturationDropped); return DiagnosticEmission.Dropped; }
+        var capture = Volatile.Read(ref _capture);
+        var candidate = _classifier.Contract(request);
+        var elevated = capture is not null && candidate is not null && capture.Matches(candidate) && capture.TryEnter();
+        if (!Monitor.TryEnter(_sync))
+        {
+            if (elevated) capture!.ReleaseReference();
+            Interlocked.Increment(ref _saturationDropped); return DiagnosticEmission.Dropped;
+        }
         try
         {
             if (_stopping != 0 || scope is not null && Volatile.Read(ref scope.Closed) != 0)
@@ -120,17 +160,25 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
             if (++_windowEvents > _policy.Producers.MaximumEventsPerWindow ||
                 (scope is null ? ++_runtimeEvents : ++scope.Events) > _policy.Producers.MaximumEvents)
             { Interlocked.Increment(ref _quotaDropped); return DiagnosticEmission.Dropped; }
-            if (!_classifier.TryClassify(request, scope is not null, out var contract, out var safe, out var protectedValues))
+            if (!_classifier.TryClassify(request, scope is not null, out var contract, out var safe, out var protectedValues,
+                elevated ? capture!.Profile.MinimumLevel : null))
             { Interlocked.Increment(ref _rejected); return DiagnosticEmission.Dropped; }
             var eventId = Guid.NewGuid(); var observed = DateTimeOffset.UtcNow;
             DiagnosticRecord Record(DiagnosticProperty[] values) => new(eventId, contract!.Code, contract.SchemaVersion,
                 contract.Level, contract.Component, _epoch, observed, scope?.Correlation ?? trustedExecution, commandCorrelation,
-                _policy.ContentHash, Array.AsReadOnly(values));
+                _policy.ContentHash, Array.AsReadOnly(values))
+                { CaptureSessionId = elevated ? capture!.Id : null,
+                    CaptureProfileHash = elevated ? capture!.Profile.ContentHash : null };
             var safeEnvelope = DiagnosticJson.Encode(Record(safe), _policy.SafeFiles.MaximumRecordBytes);
             var protectedEnvelope = protectedValues.Length == 0 ? null :
                 DiagnosticJson.Encode(Record(protectedValues), _policy.ProtectedFiles.MaximumRecordBytes);
             if (safeEnvelope is null || protectedValues.Length != 0 && protectedEnvelope is null)
             { Interlocked.Increment(ref _quotaDropped); return DiagnosticEmission.Dropped; }
+            if (elevated)
+            {
+                safeEnvelope = safeEnvelope with { Capture = capture };
+                if (protectedEnvelope is not null) protectedEnvelope = protectedEnvelope with { Capture = capture };
+            }
             var bytes = safeEnvelope.Line.Length + (protectedEnvelope?.Line.Length ?? 0L);
             var consumed = scope?.Bytes ?? _runtimeBytes;
             if (bytes > _policy.Producers.MaximumBytes - consumed)
@@ -142,11 +190,12 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
             if (accepted) { Interlocked.Increment(ref _accepted); return DiagnosticEmission.Accepted; }
             Interlocked.Increment(ref _saturationDropped); return DiagnosticEmission.Dropped;
         }
-        finally { Monitor.Exit(_sync); }
+        finally { Monitor.Exit(_sync); if (elevated) capture!.ReleaseReference(); }
     }
 
     internal void ObserveException(Exception exception, string owner, ExecutionCorrelationId? execution = null)
     {
+        EndCapture(DiagnosticCaptureEnd.Fault);
         // One owner-boundary observation per exception instance. The weak key never retains
         // an exception graph. Neither Message, Data, StackTrace nor virtual formatting is read.
         lock (_observedExceptions)
@@ -211,6 +260,7 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _stopping, 1) != 0) return;
+        EndCapture(DiagnosticCaptureEnd.Stopped);
         var retired = Task.WhenAll(_safe.Stop(), _protected.Stop(), _forwarded?.Stop() ?? Task.CompletedTask);
         await Task.WhenAny(retired, Task.Delay(_policy.FlushTimeout)).ConfigureAwait(false);
         // Timed-out physical callbacks retain their lane, payload and local writer ownership.

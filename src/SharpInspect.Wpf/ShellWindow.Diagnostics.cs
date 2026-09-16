@@ -17,6 +17,7 @@ public partial class ShellWindow
         var visible = maintenanceSelected && !IsPrivacyLocked && _diagnosticsViewModel is not null;
         DiagnosticsPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (!visible) DeactivateDiagnostics();
+        RenderDiagnosticSupport(maintenanceSelected);
     }
     private void DeactivateDiagnostics() => _diagnosticsViewModel?.Deactivate();
 }

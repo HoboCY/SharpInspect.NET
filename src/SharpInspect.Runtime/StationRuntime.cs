@@ -229,6 +229,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         if (command is StationQualificationCommand qualification)
             return await SubmitStationQualificationAsync(qualification, cancellationToken).ConfigureAwait(false);
         ArgumentNullException.ThrowIfNull(command);
+        if (command is DiagnosticSupportCommand diagnosticSupport)
+            return await SubmitDiagnosticSupportAsync(diagnosticSupport, cancellationToken).ConfigureAwait(false);
         if (command is CorrectProductionPartIdentityCommand partIdentityCorrection)
             return await SubmitPartIdentityCorrectionAsync(partIdentityCorrection, cancellationToken).ConfigureAwait(false);
         if (command is ManualProductionRecoveryCommand productionRecovery)
@@ -281,6 +283,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
                 if (Interlocked.CompareExchange(ref _pendingLocalStops, 1, 0) != 0)
                     return Unavailable("LocalStopAlreadyPending");
                 _productionArmStopGeneration = checked(_productionArmStopGeneration + 1);
+                RevokeDiagnosticSupportLocked();
                 _importPhysicalReservation?.Cancel();
             }
             CancelRecipeActivation();
@@ -547,6 +550,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         {
             if (_disposed) return;
             _auditFault = true;
+            RevokeDiagnosticSupportLocked();
             var alarmState = _snapshot.AlarmState;
             var blockers = _snapshot.AdmissionBlockers.Concat(new[] { "TraceAuditUnavailable" });
             if (alarmAuthorityUnavailable && ConfiguredAlarmPolicy is { } policy)
@@ -679,6 +683,12 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
 
     private void PublishLocked(StationStateSnapshot next, bool completingProductionArm = false)
     {
+        if (next.AlarmState?.Instances.Any(value => value.ProductionImpact == ProductionImpact.FaultAbort) == true &&
+            _snapshot.AlarmState?.Instances.Any(value => value.ProductionImpact == ProductionImpact.FaultAbort) != true)
+            RevokeDiagnosticSupportLocked();
+        if (next.AuditIntegrity?.State == AuditIntegrityState.Faulted || next.Store.State == HealthState.Faulted)
+            RevokeDiagnosticSupportLocked();
+        next = ProjectDiagnosticSupportLocked(next);
         next = ProjectPerformanceLocked(next);
         next = ApplyAlgorithmExecutionStateLocked(next);
         next = ApplyFrameBufferPoolStateLocked(next);
@@ -778,11 +788,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // the command gate settles first; shutdown never rewrites an immutable terminal fact.
         // Pending work without an in-flight terminal is resolved as RuntimeStopped below.
         _shutdownRequested = true;
+        RevokeDiagnosticSupportLocked();
         if (_productionInspectionOptions is not null)
             _productionShutdownDeadline = new StoreDeadline(_productionInspectionOptions.RetirementTimeout);
         RequestProductionInspectionAbort("ProductionInspectionRuntimeShutdown");
         PublishLocked(_snapshot with { Ready = false, ArmState = ProductionArmState.Disarmed });
         RequestStationQualificationStop("StationQualificationRuntimeShutdown", abort: true);
+        await ShutdownDiagnosticSupportAsync().ConfigureAwait(false);
         if (_productionAdmissionEnabled && _audit is SqliteCommandStore admissionStore)
             admissionStore.ProductionAdmissionMaterialChanging -= OnProductionAdmissionMaterialChanging;
         if (_sessions is not null) _sessions.Changed -= OnSessionChanged;

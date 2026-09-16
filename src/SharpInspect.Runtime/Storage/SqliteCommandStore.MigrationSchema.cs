@@ -39,10 +39,17 @@ internal sealed partial class SqliteCommandStore
             // One operation stages the identical schema on both sides, so the model's own
             // generation may never pass the declared target generation; the identity and
             // central-audit stack is the one prerequisite every governed plan shares.
-            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 or 37 or 38 or 39 &&
+            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 or 37 or 38 or 39 or 40 &&
                 _model.SchemaVersion <= migrationTargetVersion && options.LocalIdentity is not null &&
                 _model._policy is not null;
-            if (supported && migrationTargetVersion == TraceStorageRetentionOptions.SchemaVersion)
+            if (supported && migrationTargetVersion == DiagnosticSupportStoreOptions.SchemaVersion)
+            {
+                supported = _model.SchemaVersion is 39 or 40 && options.StorageRetention is not null &&
+                    options.TraceStoragePolicies is not null &&
+                    (_model.SchemaVersion != DiagnosticSupportStoreOptions.SchemaVersion ||
+                        options.DiagnosticSupport is not null);
+            }
+            else if (supported && migrationTargetVersion == TraceStorageRetentionOptions.SchemaVersion)
             {
                 supported = _model.SchemaVersion is 38 or 39 && options.EvidenceReconciliation is not null &&
                     options.TraceStoragePolicies is not null && (_model.SchemaVersion != 39 || options.StorageRetention is not null);
@@ -133,7 +140,7 @@ internal sealed partial class SqliteCommandStore
                 partIdentityOptions: options.PartIdentities, recipeSelectionOptions: options.RecipeSelections,
                 productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle,
                 imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization,
-                productionOutboxOptions: options.Outbox);
+                productionOutboxOptions: options.Outbox, diagnosticSupportOptions: options);
             var tail = AuditChainDatabase.Tail(database, deadline);
             if (report.State != AuditIntegrityState.Verified || report.VerifiedFromSequence != 1 ||
                 report.VerifiedThroughSequence != tail.Sequence)
@@ -155,7 +162,7 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36 or 37 or 38 or 39))
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36 or 37 or 38 or 39 or 40))
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
@@ -203,6 +210,14 @@ internal sealed partial class SqliteCommandStore
             using var key = WindowsMachineAuditKey.Open(_model._policy!, allowCreation: false, out _);
             if (Version != _migrationTargetVersion)
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
+            if (_migrationTargetVersion == DiagnosticSupportStoreOptions.SchemaVersion &&
+                Options.DiagnosticSupport is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=40;", deadline);
+                InitializeDiagnosticSupportTables(database, Options, deadline);
+                AuditChainDatabase.AppendDiagnosticSupportActivation(database, Options, _model._policy!, key, deadline);
+                return;
+            }
             if (_migrationTargetVersion == TraceStorageRetentionOptions.SchemaVersion && Options.StorageRetention is not null)
             {
                 SqliteNative.Execute(database, "PRAGMA user_version=39;", deadline);
@@ -299,6 +314,29 @@ internal sealed partial class SqliteCommandStore
         RecipeSelections = target.RecipeSelections, ProductionArming = target.ProductionArming,
         RecipeLifecycle = target.RecipeLifecycle, ImageEvidence = target.ImageEvidence,
         ImageFinalization = target.ImageFinalization, Outbox = target.Outbox, EvidenceReconciliation = target.EvidenceReconciliation
+    };
+
+    /// <summary>Preserve the exact schema-39 source profile and remove only the diagnostic ledger.</summary>
+    internal static ProductionStoreOptions MigrationDiagnosticSupportSourceOptions(ProductionStoreOptions target) => new()
+    {
+        DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout, QueryTimeout = target.QueryTimeout,
+        QueueCapacity = target.QueueCapacity, AuditIntegrityPolicy = target.AuditIntegrityPolicy,
+        LocalIdentity = target.LocalIdentity, AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,
+        AlgorithmResultArchive = target.AlgorithmResultArchive, RecipeDrafts = target.RecipeDrafts,
+        CameraSetup = target.CameraSetup, CameraRecovery = target.CameraRecovery, CameraNetwork = target.CameraNetwork,
+        ImagingSetup = target.ImagingSetup, CalibrationSessions = target.CalibrationSessions,
+        CalibrationGovernance = target.CalibrationGovernance, RecipeReleases = target.RecipeReleases,
+        PlcResultContracts = target.PlcResultContracts, RecipeActivations = target.RecipeActivations,
+        PreviewSessions = target.PreviewSessions, CalibrationImports = target.CalibrationImports,
+        ManualInspections = target.ManualInspections, ProductionAdmission = target.ProductionAdmission,
+        StationQualifications = target.StationQualifications, RecipeTransfers = target.RecipeTransfers,
+        TraceStoragePolicies = target.TraceStoragePolicies, QualificationCycles = target.QualificationCycles,
+        PlcCommunication = target.PlcCommunication, ProductionInspections = target.ProductionInspections,
+        PartIdentities = target.PartIdentities, ProductionRecovery = target.ProductionRecovery,
+        RecipeSelections = target.RecipeSelections, ProductionArming = target.ProductionArming,
+        RecipeLifecycle = target.RecipeLifecycle, ImageEvidence = target.ImageEvidence,
+        ImageFinalization = target.ImageFinalization, Outbox = target.Outbox,
+        EvidenceReconciliation = target.EvidenceReconciliation, StorageRetention = target.StorageRetention
     };
 
     internal static ProductionStoreOptions MigrationEvidenceReconciliationSourceOptions(ProductionStoreOptions target) => new()

@@ -3,7 +3,10 @@ using SharpInspect.Abstractions;
 
 namespace SharpInspect.Runtime.Diagnostics;
 
-internal sealed record DiagnosticEnvelope(DiagnosticRecord Record, byte[] Line);
+internal sealed record DiagnosticEnvelope(DiagnosticRecord Record, byte[] Line)
+{
+    internal DiagnosticCaptureLease? Capture { get; init; }
+}
 
 internal static class DiagnosticJson
 {
@@ -21,6 +24,8 @@ internal static class DiagnosticJson
             if (record.Execution is { } execution)
             { writer.WriteNumber("executionKind", (int)execution.Kind); writer.WriteString("executionId", execution.Value); }
             if (record.CommandCorrelationId is { } command) writer.WriteString("commandId", command);
+            if (record.CaptureSessionId is { } capture)
+            { writer.WriteString("captureId", capture); writer.WriteString("captureProfileHash", record.CaptureProfileHash); }
             writer.WriteStartObject("properties");
             foreach (var property in record.Properties)
             {
@@ -50,10 +55,10 @@ internal static class DiagnosticJson
             foreach (var item in root.EnumerateObject())
                 if (!names.Add(item.Name) || item.Name is not ("eventId" or "code" or "schemaVersion" or "level" or
                     "component" or "runtimeEpoch" or "observedAtUtc" or "policyHash" or "executionKind" or
-                    "executionId" or "commandId" or "properties")) return null;
+                    "executionId" or "commandId" or "properties" or "captureId" or "captureProfileHash")) return null;
             var code = root.GetProperty("code").GetString(); var version = root.GetProperty("schemaVersion").GetInt32();
             var schema = policy.Contracts.FirstOrDefault(value => value.Code == code && value.SchemaVersion == version);
-            if (schema is null || schema.Level < policy.Baseline || root.GetProperty("policyHash").GetString() != policy.ContentHash ||
+            if (schema is null || root.GetProperty("policyHash").GetString() != policy.ContentHash ||
                 root.GetProperty("level").GetInt32() != (int)schema.Level ||
                 root.GetProperty("component").GetString() != schema.Component) return null;
             var requests = new List<DiagnosticPropertyRequest>(32);
@@ -91,10 +96,24 @@ internal static class DiagnosticJson
             }
             var eventId = root.GetProperty("eventId").GetGuid(); var epoch = root.GetProperty("runtimeEpoch").GetGuid();
             if (eventId == Guid.Empty || epoch == Guid.Empty) return null;
+            if (names.Contains("captureId") != names.Contains("captureProfileHash")) return null;
+            Guid? captureId = null; string? captureHash = null;
+            if (names.Contains("captureId"))
+            {
+                captureId = root.GetProperty("captureId").GetGuid();
+                captureHash = root.GetProperty("captureProfileHash").GetString();
+                if (captureId == Guid.Empty || captureHash is not { Length: 64 } ||
+                    captureHash.Any(value => value is not (>= '0' and <= '9' or >= 'A' and <= 'F'))) return null;
+            }
+            // Historical level is independent from current producer admission. A low-level
+            // record must still carry valid capture attribution and obey every field rule.
+            if (schema.Level < policy.Baseline && captureId is null) return null;
+            var observed = root.GetProperty("observedAtUtc").GetDateTimeOffset();
+            if (observed.Offset != TimeSpan.Zero) return null;
             return new(eventId, schema.Code, version, schema.Level, schema.Component, epoch,
-                root.GetProperty("observedAtUtc").GetDateTimeOffset(), execution,
+                observed, execution,
                 names.Contains("commandId") ? root.GetProperty("commandId").GetGuid() : null, policy.ContentHash,
-                Array.AsReadOnly(values));
+                Array.AsReadOnly(values)) { CaptureSessionId = captureId, CaptureProfileHash = captureHash };
         }
         catch (Exception exception) when (exception is JsonException or InvalidOperationException or FormatException or
             KeyNotFoundException or ArgumentException or OverflowException) { return null; }

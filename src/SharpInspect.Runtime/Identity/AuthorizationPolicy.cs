@@ -38,7 +38,8 @@ public sealed class AuthorizationPolicy
             not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
             not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
             not Permission.AbandonRecipeDraft and not Permission.RecoverOutboxDelivery and
-            not Permission.CreateCorrectiveOutboxDelivery)
+            not Permission.CreateCorrectiveOutboxDelivery and not Permission.StartDiagnosticCapture and
+            not Permission.ExportSupportBundle)
         .ToArray();
 
     private readonly ReadOnlyDictionary<HumanRoleBundle, IReadOnlyList<Permission>> _roleBundles;
@@ -80,7 +81,8 @@ public sealed class AuthorizationPolicy
             .Where(permission => permission is Permission.RunCalibration or
                 Permission.ManageCalibrationAcceptancePolicy or
                 Permission.RecordPhysicalCalibrationVerification or Permission.RecoverOutboxDelivery or
-                Permission.CreateCorrectiveOutboxDelivery)
+                Permission.CreateCorrectiveOutboxDelivery or Permission.StartDiagnosticCapture or
+                Permission.ExportSupportBundle)
             .Distinct()
             .ToArray();
         var allStepUp = MandatoryStepUpPermissions
@@ -142,7 +144,8 @@ public sealed class AuthorizationPolicy
         return (permission is Permission.RunCalibration or
             Permission.ManageCalibrationAcceptancePolicy or
             Permission.RecordPhysicalCalibrationVerification or Permission.AbandonRecipeDraft or
-            Permission.RecoverOutboxDelivery or Permission.CreateCorrectiveOutboxDelivery) ||
+            Permission.RecoverOutboxDelivery or Permission.CreateCorrectiveOutboxDelivery or
+            Permission.StartDiagnosticCapture or Permission.ExportSupportBundle) ||
             _stepUpPermissions.Contains(permission);
     }
 
@@ -198,7 +201,8 @@ public sealed class AuthorizationPolicy
                 not Permission.RecordPhysicalCalibrationVerification and not Permission.RunPreview and
                 not Permission.RunManualInspection and not Permission.ImportRecipe and not Permission.ExportRecipe and
                 not Permission.AbandonRecipeDraft and not Permission.RecoverOutboxDelivery and
-                not Permission.CreateCorrectiveOutboxDelivery)
+                not Permission.CreateCorrectiveOutboxDelivery and not Permission.StartDiagnosticCapture and
+                not Permission.ExportSupportBundle)
             .ToArray();
 
         var roleBundles = new Dictionary<HumanRoleBundle, IEnumerable<Permission>>

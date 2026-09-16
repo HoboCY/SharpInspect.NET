@@ -106,7 +106,7 @@ internal sealed partial class SqliteCommandStore
             fact.HumanPrincipalId!.Value, fact.SessionId!.Value, fact.StepUpGrantId!.Value,
             authority.AuthorizationPolicyId, authority.AuthorizationPolicyVersion, authority.AuthorizationPolicyHash,
             fact.OperationId, authority.CommandEventId, authority.CommandAuditSequence, authority.CommandAuditHash,
-            fact.AuthorizationTarget!, RetentionOperationBinding(fact), deadline, TraceStorageRetentionOptions.SchemaVersion);
+            fact.AuthorizationTarget!, RetentionOperationBinding(fact), deadline, DiagnosticSupportStoreOptions.SchemaVersion);
         var fields = DecodeContractIdentityFields(Convert.FromBase64String(AuditChainDatabase.Text(database,
             "SELECT Payload FROM audit_entries WHERE Sequence=?;", deadline, RetentionNumber(authority.AuthorizationAuditSequence))!));
         EvidenceRetentionCodec.Require(fields[3] == fact.RecordedAtUtc.ToString("O", CultureInfo.InvariantCulture) &&

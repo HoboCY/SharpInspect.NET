@@ -29,7 +29,7 @@ public sealed class LoggingDiagnosticsOptions
                 DiagnosticClassifier.ForbiddenName(field.Name) && field.Classification != DiagnosticDataClass.Prohibited ||
                 DiagnosticClassifier.ProtectedName(field.Name) && field.Classification == DiagnosticDataClass.Safe))
             throw new ArgumentException("DiagnosticProhibitedFieldCannotBeApproved");
-        BindingHash = ProductionAdmissionCanonical.Hash("logging-diagnostics-installation-v1", policy.ContentHash,
+        _baseBindingHash = ProductionAdmissionCanonical.Hash("logging-diagnostics-installation-v1", policy.ContentHash,
             safe.BindingHash, SafeInstallationBinding, protectedStore.BindingHash, ProtectedInstallationBinding);
     }
     public LoggingDiagnosticsPolicy Policy { get; }
@@ -37,12 +37,17 @@ public sealed class LoggingDiagnosticsOptions
     public string SafeInstallationBinding { get; }
     public DiagnosticLocalStoreOptions Protected { get; }
     public string ProtectedInstallationBinding { get; }
-    public string BindingHash { get; }
+    private readonly string _baseBindingHash;
+    /// <summary>Optional independently installed support root. Enabling it also requires schema-40 governance.</summary>
+    public SupportBundleOptions? SupportBundles { get; init; }
+    public string BindingHash => SupportBundles is null ? _baseBindingHash :
+        ProductionAdmissionCanonical.Hash("logging-diagnostics-support-installation-v1", _baseBindingHash, SupportBundles.BindingHash);
 
     internal bool Matches(TraceStoragePolicySnapshot? trace) => trace is not null &&
         Policy.TracePolicyVersion == trace.Policy.Version && Policy.TracePolicySnapshotHash == trace.ContentHash &&
         RetentionMatches(trace, TraceRetentionClass.OperationalLog, Policy.SafeFiles.Retention) &&
-        RetentionMatches(trace, TraceRetentionClass.ProtectedDiagnosticRecord, Policy.ProtectedFiles.Retention);
+        RetentionMatches(trace, TraceRetentionClass.ProtectedDiagnosticRecord, Policy.ProtectedFiles.Retention) &&
+        (SupportBundles is null || SupportBundles.Policy.LoggingPolicyHash == Policy.ContentHash && SupportBundles.Matches(trace));
 
     private static bool RetentionMatches(TraceStoragePolicySnapshot trace, TraceRetentionClass kind, TimeSpan retention) =>
         trace.RetentionRules.SingleOrDefault(rule => rule.EvidenceClass == kind) is { } rule &&
@@ -53,6 +58,12 @@ public sealed class LoggingDiagnosticsOptions
         try
         {
             var authority = Path.GetDirectoryName(Path.GetFullPath(databasePath))!;
+            if (SupportBundles is { } support &&
+                (support.Policy.LoggingPolicyHash != Policy.ContentHash || Overlap(authority, support.Files.Directory) ||
+                Overlap(Safe.Directory, support.Files.Directory) || Overlap(Protected.Directory, support.Files.Directory) ||
+                evidenceRoots.Any(root => !string.IsNullOrWhiteSpace(root) && Overlap(root, support.Files.Directory)) ||
+                !string.Equals(Path.GetPathRoot(databasePath), Path.GetPathRoot(support.Files.Directory), StringComparison.OrdinalIgnoreCase) ||
+                !DiagnosticDirectoryInstallation.Verify(support.Files, support.InstallationBinding))) return false;
             if (Overlap(authority, Safe.Directory) || Overlap(authority, Protected.Directory)) return false;
             if (evidenceRoots.Any(root => !string.IsNullOrWhiteSpace(root) &&
                     (Overlap(root, Safe.Directory) || Overlap(root, Protected.Directory)))) return false;

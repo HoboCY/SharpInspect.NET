@@ -60,7 +60,7 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("OutboxGovernanceConfigurationRequired");
         recovery.Validate();
         if (AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is not
-            (ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion))
+            (ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion))
             throw new InvalidOperationException("OutboxGovernanceGovernedMigrationRequired");
         RequireConfiguredEvidenceReconciliation(database, _options, deadline);
         RequireConfiguredProductionOutbox(database, options, deadline);

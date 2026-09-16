@@ -22,7 +22,7 @@ internal sealed partial class SqliteCommandStore
             _options.ProductionInspections is not null;
         if (!hasBestEffort && !hasPerformanceAdvisory) return null;
         if (!hasPerformanceAdvisory && ReadUserVersion(database, deadline) is not (ProductionOutboxStoreOptions.SchemaVersion or
-                ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion)) return null;
+                ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion)) return null;
         if (hasBestEffort) RequireConfiguredProductionOutbox(database, outbox!, deadline);
         var policy = AlarmStorageCodec.ReadPersistedPolicy(database, deadline);
         AlarmStorageCodec.RequireConfiguredPolicy(policy, _options.AlarmPolicy);

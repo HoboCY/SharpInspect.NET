@@ -118,11 +118,12 @@ internal sealed partial class SqliteCommandStore
         var version = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         if (store.StorageRetention is null)
         {
-            EvidenceRetentionCodec.Require(version != TraceStorageRetentionOptions.SchemaVersion,
-                "ConfigurationRequired");
+            EvidenceRetentionCodec.Require(version is not (TraceStorageRetentionOptions.SchemaVersion or
+                DiagnosticSupportStoreOptions.SchemaVersion), "ConfigurationRequired");
             return;
         }
-        EvidenceRetentionCodec.Require(version == TraceStorageRetentionOptions.SchemaVersion, "GovernedMigrationRequired");
+        EvidenceRetentionCodec.Require(version is TraceStorageRetentionOptions.SchemaVersion or
+            DiagnosticSupportStoreOptions.SchemaVersion, "GovernedMigrationRequired");
         EvidenceRetentionCodec.Require(ReadRetentionConfiguration(database, deadline).BindingHash ==
             RetentionConfigurationFor(store).BindingHash, "ConfigurationMismatch");
     }

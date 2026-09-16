@@ -74,6 +74,8 @@ public sealed record StationStateSnapshot(
 
     /// <summary>Observation health and finite baseline progress, independent from qualification match.</summary>
     public PerformanceMonitorSnapshot? PerformanceMonitoring { get; init; }
+    public DiagnosticCaptureSnapshot? DiagnosticCapture { get; init; }
+    public SupportBundleSnapshot? SupportBundle { get; init; }
 }
 
 /// <summary>Defensively copies all values; callers cannot mutate a published blocker list.</summary>

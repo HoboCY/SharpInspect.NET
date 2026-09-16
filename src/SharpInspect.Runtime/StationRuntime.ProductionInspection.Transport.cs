@@ -366,7 +366,7 @@ public sealed partial class StationRuntime
     }
 
     private bool CanAcceptProductionTriggerLocked(ProductionInspectionOwner owner) =>
-        !LocalStopPendingLocked && !PerformanceBlocksNewTriggersLocked() &&
+        !LocalStopPendingLocked && !PerformanceBlocksNewTriggersLocked() && !DiagnosticSupportBusyLocked &&
         ProductionOutboxBacklogFailureLocked() is null &&
         AutomaticProductionArmReadyPermitLocked(owner) &&
         ManualMaintenanceReadyPermitLocked(owner) &&

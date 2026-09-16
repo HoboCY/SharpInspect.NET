@@ -153,6 +153,8 @@ internal sealed partial class LocalAuthorizationService
                 return CommandDecision(state, command, epoch, attempt, actor, lease.SessionId, reason, accepted: false);
             var guard = new AuthorizationCommitGuard(lease, () =>
             {
+                if (command is IdentityManagementCommand identityChange)
+                    RevokeDiagnosticAuthority(identityChange.TargetPrincipalId);
                 lock (_grantSync) if (reserved is not null) reserved.State = GrantState.Consumed;
             }, () =>
             {

@@ -228,7 +228,7 @@ internal sealed partial class SqliteCommandStore
         ArgumentNullException.ThrowIfNull(deadline);
         options.Validate();
         SqliteNative.Execute(database, options.RecoveryEnabled ||
-            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion
+            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion
             ? ProductionOutboxGovernedSchemaSql :
             ProductionOutboxSchemaSql, deadline);
         AuditChainDatabase.Execute(database, @"INSERT INTO production_outbox_store_config
@@ -314,7 +314,7 @@ internal sealed partial class SqliteCommandStore
         // schema-36 configuration row, so an edited recovery budget fails closed everywhere.
         if (options.ManualRecovery is { } recovery &&
             AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
-                ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion)
+                ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion)
             RequireConfiguredProductionOutboxRecovery(database, options, recovery, deadline);
     }
 
@@ -337,7 +337,7 @@ internal sealed partial class SqliteCommandStore
             "AuditPolicyNotConfigured");
         var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         AuditChainDatabase.Require(schema is ProductionOutboxStoreOptions.SchemaVersion or
-            ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
+            ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion,
             "ProductionOutboxGovernedMigrationRequired");
         RequireConfiguredEvidenceReconciliation(database, options, deadline);
         // The schema-37 extension is bidirectional: a 37 store must declare it and a
@@ -345,7 +345,7 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(schema != ProductionOutboxRecoveryOptions.SchemaVersion || outbox.RecoveryEnabled,
             "ProductionOutboxRecoveryConfigurationRequired");
         AuditChainDatabase.Require(!outbox.RecoveryEnabled ||
-            schema is ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
+            schema is ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion,
             "ProductionOutboxRecoveryGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
@@ -724,7 +724,7 @@ internal sealed partial class SqliteCommandStore
                         break;
                     case OutboxEventKind.HandlerBlocked:
                         AuditChainDatabase.Require((options.RecoveryEnabled ||
-                            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion) &&
+                            AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion) &&
                             created.Contains(deliveryId) &&
                             !succeeded.Contains(deliveryId) && !activeAttempts.ContainsKey(deliveryId) &&
                             value.AttemptId is null && value.AttemptNumber is null && value.RuntimeEpoch is null &&

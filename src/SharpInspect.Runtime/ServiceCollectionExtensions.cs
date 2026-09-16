@@ -20,6 +20,10 @@ public static class ServiceCollectionExtensions
 {
     private static void RegisterDiagnostics(IServiceCollection services)
     {
+        services.TryAddSingleton<IDiagnosticSupportQuery>(p => p.GetRequiredService<IStationRuntime>() as IDiagnosticSupportQuery ??
+            throw new InvalidOperationException("DiagnosticSupportRuntimeUnavailable"));
+        services.TryAddSingleton<ISupportBundleReader>(p => p.GetRequiredService<IStationRuntime>() as ISupportBundleReader ??
+            throw new InvalidOperationException("DiagnosticSupportRuntimeUnavailable"));
         services.TryAddSingleton<IPerformanceMonitoringQuery>(p =>
             (p.GetRequiredService<IStationRuntime>() as StationRuntime)?.PerformanceQuery ??
             throw new InvalidOperationException("PerformanceRuntimeUnavailable"));

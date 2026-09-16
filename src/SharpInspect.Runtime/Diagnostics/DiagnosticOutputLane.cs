@@ -10,6 +10,7 @@ internal sealed class DiagnosticOutputLane
     private readonly DiagnosticQueueBudget _budget;
     private readonly Func<DiagnosticEnvelope, ValueTask> _write;
     private readonly Func<ValueTask>? _close;
+    private readonly Action? _fault;
     private readonly Queue<(DiagnosticEnvelope Item, bool Reserved)> _queue = new();
     private readonly AutoResetEvent _signal = new(false);
     private readonly TaskCompletionSource<bool> _retired = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -21,9 +22,9 @@ internal sealed class DiagnosticOutputLane
     private string _reason = "DiagnosticSinkHealthy";
 
     internal DiagnosticOutputLane(DiagnosticQueueBudget budget, Func<DiagnosticEnvelope, ValueTask> write,
-        Func<ValueTask>? close = null)
+        Func<ValueTask>? close = null, Action? fault = null)
     {
-        _budget = budget; _write = write; _close = close;
+        _budget = budget; _write = write; _close = close; _fault = fault;
         // A callback that blocks before returning a ValueTask still occupies this same fixed
         // thread. No per-event Task.Run, replacement thread or cancellation-based slot release.
         new Thread(Run) { IsBackground = true, Name = "SharpInspect.Diagnostics" }.Start();
@@ -51,6 +52,7 @@ internal sealed class DiagnosticOutputLane
 
     private void Charge(DiagnosticEnvelope item, bool reserved, int direction)
     {
+        if (direction > 0) item.Capture?.AddReference(); else item.Capture?.ReleaseReference();
         if (reserved) { _reservedCount += direction; _reservedBytes += direction * (long)item.Line.Length; }
         else { _normalCount += direction; _normalBytes += direction * (long)item.Line.Length; }
     }
@@ -65,6 +67,7 @@ internal sealed class DiagnosticOutputLane
     private void FailLocked(string reason)
     {
         _state = DiagnosticSinkState.Unavailable; _reason = reason; _failures++;
+        _fault?.Invoke(); // Runtime supplies only a callback-free atomic capture revocation.
         while (_queue.TryDequeue(out var pending))
         { Charge(pending.Item, pending.Reserved, -1); Interlocked.Increment(ref _dropped); }
         _stopping = true; _signal.Set();
@@ -100,7 +103,7 @@ internal sealed class DiagnosticOutputLane
         {
             try { _close?.Invoke().AsTask().GetAwaiter().GetResult(); }
             catch (Exception exception) when (exception is not OutOfMemoryException)
-            { lock (_sync) { _state = DiagnosticSinkState.Unavailable; _reason = "DiagnosticSinkCloseFailed"; _failures++; } }
+            { lock (_sync) { _state = DiagnosticSinkState.Unavailable; _reason = "DiagnosticSinkCloseFailed"; _failures++; _fault?.Invoke(); } }
             lock (_sync)
             {
                 if (_state != DiagnosticSinkState.Unavailable) { _state = DiagnosticSinkState.Stopped; _reason = "DiagnosticSinkStopped"; }

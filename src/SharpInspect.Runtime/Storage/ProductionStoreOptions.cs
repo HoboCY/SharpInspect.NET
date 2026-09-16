@@ -169,4 +169,7 @@ public sealed class ProductionStoreOptions
 
     /// <summary>Explicit immutable performance budgets and finite observation limits; no qualification authority.</summary>
     public Performance.PerformanceMonitoringOptions? PerformanceMonitoring { get; init; }
+
+    /// <summary>Explicit schema-40 audited capture and support-material operations.</summary>
+    public DiagnosticSupportStoreOptions? DiagnosticSupport { get; init; }
 }

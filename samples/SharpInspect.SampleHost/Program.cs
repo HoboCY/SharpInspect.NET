@@ -305,6 +305,11 @@ internal static class Program
             Math.Min(50, storeOptions.LoggingDiagnostics?.Policy.MaximumQueryRecords ?? 50),
             Math.Min(65536, storeOptions.LoggingDiagnostics?.Policy.MaximumQueryBytes ?? 65536),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        if (storeOptions.DiagnosticSupport is { } support && storeOptions.LoggingDiagnostics is { } logging)
+            services.AddSingleton(p => new DiagnosticSupportViewModel(p.GetRequiredService<IStationRuntime>(),
+                p.GetRequiredService<IDiagnosticSupportQuery>(), p.GetRequiredService<IStepUpAuthentication>(),
+                p.GetRequiredService<IInteractiveSessionService>(), logging.Policy, support.Policy,
+                new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionOutboxViewModel(p.GetService<IProductionOutboxQuery>(),
@@ -386,6 +391,8 @@ internal static class Program
         window.AttachEvidenceReconciliation(provider.GetRequiredService<EvidenceReconciliationViewModel>());
         window.AttachStorageRetention(provider.GetRequiredService<StorageRetentionViewModel>());
         window.AttachDiagnostics(provider.GetRequiredService<DiagnosticsViewModel>());
+        if (provider.GetService<DiagnosticSupportViewModel>() is { } diagnosticSupport)
+            window.AttachDiagnosticSupport(diagnosticSupport);
         window.AttachProductionOutbox(provider.GetRequiredService<ProductionOutboxViewModel>());
         var exitCode = 0;
         if (smoke)

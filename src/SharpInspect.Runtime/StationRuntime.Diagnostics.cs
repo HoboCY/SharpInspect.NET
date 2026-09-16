@@ -12,8 +12,11 @@ public sealed partial class StationRuntime : IManagedFaultBoundary
     internal IDiagnosticPipelineHealthQuery DiagnosticHealthQuery => _diagnostics!;
     internal IDiagnosticHistoryQuery DiagnosticHistoryQuery => _diagnostics!;
 
-    private void ConfigureDiagnostics(ProductionStoreOptions? options) =>
+    private void ConfigureDiagnostics(ProductionStoreOptions? options)
+    {
+        _diagnosticSupportOptions = options;
         _diagnostics = new(options, _snapshot.RuntimeEpoch, _storeInitialization, _authorization);
+    }
 
     private AlarmObservation? DiagnosticObservationLocked(AlarmPolicy policy)
     {

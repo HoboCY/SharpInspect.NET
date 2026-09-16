@@ -92,7 +92,8 @@ public sealed class SqliteProductionOutboxGovernanceQuery : IProductionOutboxGov
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            var expected = _options.StorageRetention is not null ? TraceStorageRetentionOptions.SchemaVersion
+            var expected = _options.DiagnosticSupport is not null ? DiagnosticSupportStoreOptions.SchemaVersion
+                : _options.StorageRetention is not null ? TraceStorageRetentionOptions.SchemaVersion
                 : _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
                 : ProductionOutboxRecoveryOptions.SchemaVersion;
             if (schema != expected)

@@ -171,6 +171,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PublishTraceStoragePolicyCommand => Permission.ManageProductionPolicy,
         ManualProductionRecoveryCommand => Permission.ManualRecovery,
         ChangeEvidenceRetentionCommand => Permission.DeleteEvidence,
+        StartDiagnosticCaptureCommand or StopDiagnosticCaptureCommand => Permission.StartDiagnosticCapture,
+        CreateSupportBundleCommand => Permission.ExportSupportBundle,
         RecoverOutboxDeliveryCommand => Permission.RecoverOutboxDelivery,
         CreateCorrectiveOutboxDeliveryCommand => Permission.CreateCorrectiveOutboxDelivery,
         GovernedAuditChangeCommand change => change.Change switch
@@ -208,6 +210,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             PublishTraceStoragePolicyCommand traceStorage => traceStorage.AuthorizationTarget,
             ManualProductionRecoveryCommand recovery => recovery.AuthorizationTarget,
             ChangeEvidenceRetentionCommand retention => retention.AuthorizationTarget,
+            DiagnosticSupportCommand diagnostic => diagnostic.AuthorizationTarget,
             RecoverOutboxDeliveryCommand outboxRecovery => outboxRecovery.AuthorizationTarget,
             CreateCorrectiveOutboxDeliveryCommand outboxCorrection => outboxCorrection.AuthorizationTarget,
             _ => _options.StationId
@@ -264,6 +267,8 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.PublishTraceStoragePolicy => Permission.ManageProductionPolicy,
         AuditedCommandKind.ManualProductionRecovery => Permission.ManualRecovery,
         AuditedCommandKind.ChangeEvidenceRetention => Permission.DeleteEvidence,
+        AuditedCommandKind.StartDiagnosticCapture or AuditedCommandKind.StopDiagnosticCapture => Permission.StartDiagnosticCapture,
+        AuditedCommandKind.CreateSupportBundle => Permission.ExportSupportBundle,
         AuditedCommandKind.RecoverOutboxDelivery => Permission.RecoverOutboxDelivery,
         AuditedCommandKind.CreateCorrectiveOutboxDelivery => Permission.CreateCorrectiveOutboxDelivery,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -309,6 +314,9 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         PublishTraceStoragePolicyCommand => AuditedCommandKind.PublishTraceStoragePolicy,
         ManualProductionRecoveryCommand => AuditedCommandKind.ManualProductionRecovery,
         ChangeEvidenceRetentionCommand => AuditedCommandKind.ChangeEvidenceRetention,
+        StartDiagnosticCaptureCommand => AuditedCommandKind.StartDiagnosticCapture,
+        StopDiagnosticCaptureCommand => AuditedCommandKind.StopDiagnosticCapture,
+        CreateSupportBundleCommand => AuditedCommandKind.CreateSupportBundle,
         RecoverOutboxDeliveryCommand => AuditedCommandKind.RecoverOutboxDelivery,
         CreateCorrectiveOutboxDeliveryCommand => AuditedCommandKind.CreateCorrectiveOutboxDelivery,
         SelectHistoricalCalibrationCommand => AuditedCommandKind.SelectHistoricalCalibration,
@@ -354,6 +362,9 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
     {
         // Never acquire the Session lock while holding the grant dictionary lock.
         var current = _sessions?.Current;
+        var support = Volatile.Read(ref _diagnosticAuthority);
+        if (current?.State != InteractiveSessionState.Authenticated || current.SessionId != support?.SessionId)
+            support?.Revoke();
         lock (_grantSync)
         {
             foreach (var id in _grants.Where(pair => current?.State != InteractiveSessionState.Authenticated ||
@@ -373,6 +384,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        RevokeDiagnosticAuthority();
         if (_sessions is not null) _sessions.Changed -= SessionChanged;
         lock (_grantSync) _grants.Clear();
     }

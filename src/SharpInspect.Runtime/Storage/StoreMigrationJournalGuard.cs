@@ -198,6 +198,12 @@ internal static class StoreMigrationJournalGuard
                 options.ImageFinalization?.BindingHash != data.ImageFinalizationConfigurationHash ||
                 LifecycleHashOrNull(options.RecipeLifecycle) != data.LifecycleConfigurationHash))
             throw new InvalidOperationException("StoreMigrationJournalRetentionConfigurationMismatch");
+        if (plan.DiagnosticSupport && (options.DiagnosticSupport is null ||
+                SqliteCommandStore.DiagnosticSupportConfigurationFor(options).BindingHash != data.DiagnosticSupportConfigurationHash ||
+                options.StorageRetention is null ||
+                SqliteCommandStore.RetentionConfigurationFor(options).BindingHash != data.StorageRetentionConfigurationHash ||
+                (options.Outbox is null ? null : options.Outbox.BindingHash) != data.ProductionOutboxConfigurationHash))
+            throw new InvalidOperationException("StoreMigrationJournalDiagnosticSupportConfigurationMismatch");
         if (plan.EvidenceReconciliation && (options.EvidenceReconciliation is null ||
                 SqliteCommandStore.ReconciliationConfiguration(options).BindingHash != data.EvidenceReconciliationConfigurationHash ||
                 options.Outbox?.ManualRecovery?.BindingHash != data.ProductionOutboxRecoveryConfigurationHash))

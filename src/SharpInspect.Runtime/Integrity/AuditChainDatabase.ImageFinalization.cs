@@ -150,7 +150,7 @@ internal static partial class AuditChainDatabase
         StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
+            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion,
             "ImageFinalizationSchemaRequired");
         options.Validate();
         var payload = options.EncodeActivationPayload();
@@ -180,7 +180,7 @@ internal static partial class AuditChainDatabase
         StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
+            ProductionImageFinalizationStoreOptions.SchemaVersion or ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion or DiagnosticSupportStoreOptions.SchemaVersion,
             "ImageFinalizationSchemaRequired");
         options.Validate();
         Require(futureReserve >= 0, "ImageFinalizationAuditReservationInvalid");
