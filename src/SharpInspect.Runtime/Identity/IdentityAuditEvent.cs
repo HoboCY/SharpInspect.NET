@@ -81,7 +81,8 @@ internal enum IdentityEventKind
     RecipeDraftAbandoned,
     RecipeRetired,
     OutboxDeliveryRecovered,
-    OutboxCorrectiveDeliveryCreated
+    OutboxCorrectiveDeliveryCreated,
+    EvidenceRetentionChanged
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -301,6 +302,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.ProductionRecoveryFailed), "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.RecipeSelectionChanged, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(storedSchemaVersion == TraceStorageRetentionOptions.SchemaVersion ||
+                    legacyKind != IdentityEventKind.EvidenceRetentionChanged, "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
                     legacyKind is not (IdentityEventKind.OutboxDeliveryRecovered or
                         IdentityEventKind.OutboxCorrectiveDeliveryCreated), "AuditIdentityPayloadInvalid");
@@ -397,6 +400,8 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      (storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
                          actionKind is not (AuditedCommandKind.RecoverOutboxDelivery or
                              AuditedCommandKind.CreateCorrectiveOutboxDelivery)) &&
+                     (storedSchemaVersion == TraceStorageRetentionOptions.SchemaVersion ||
+                         actionKind != AuditedCommandKind.ChangeEvidenceRetention) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even

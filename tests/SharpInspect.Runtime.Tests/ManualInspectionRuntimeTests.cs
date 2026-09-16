@@ -414,7 +414,9 @@ public sealed partial class ManualInspectionRuntimeTests
             ProductionImageFinalizationStoreOptions? imageFinalization = null,
             ProductionOutboxStoreOptions? outbox = null, Outbox.ProductionOutboxOptions? outboxTransports = null,
             EvidenceReconciliationStoreOptions? evidenceReconciliation = null,
-            Action<SqliteCommandStore>? beforeRuntime = null)
+            Action<SqliteCommandStore>? beforeRuntime = null,
+            TraceStorageRetentionOptions? storageRetention = null,
+            Func<string, long>? readWalLength = null)
         {
             enableRecipeLifecycle |= imageEvidence is not null;
             var policy = CreateAuthorizationPolicy(allowManual, requireManualStepUp);
@@ -423,6 +425,11 @@ public sealed partial class ManualInspectionRuntimeTests
                     policy.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
                         ? pair.Value.Concat(new[] { Permission.AbandonRecipeDraft, Permission.RetireRecipe }).Distinct()
                         : pair.Value.AsEnumerable()), policy.StepUpPermissions);
+            if (storageRetention is not null)
+                policy = new AuthorizationPolicy("V155.Retention.Authorization", "1",
+                    policy.RoleBundles.ToDictionary(pair => pair.Key, pair => pair.Key == HumanRoleBundle.Administrator
+                        ? pair.Value.Concat(new[] { Permission.DeleteEvidence }).Distinct() : pair.Value.AsEnumerable()),
+                    policy.StepUpPermissions.Concat(new[] { Permission.DeleteEvidence }).Distinct());
             if (!allowPartIdentityCorrection)
                 policy = new AuthorizationPolicy("V143.CorrectionDenied.Authorization", "1",
                     policy.RoleBundles.ToDictionary(pair => pair.Key,
@@ -458,6 +465,12 @@ public sealed partial class ManualInspectionRuntimeTests
                     new AlarmPolicyRule("ImageEvidenceBacklog", "Runtime.ImageEvidence", AlarmSeverity.Warning,
                         ProductionImpact.BlockNewTriggers, false, AlarmNotification.None, null)
                 }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
+            if (storageRetention is not null)
+                alarm = new AlarmPolicy("V155.Capacity.Alarm", "1", alarm.Rules.Concat(new[]
+                {
+                    new AlarmPolicyRule("TraceStorageCapacityBlocked", "Runtime.TraceStorage", AlarmSeverity.Warning,
+                        ProductionImpact.BlockNewTriggers, true, AlarmNotification.None, null)
+                }), alarm.SourceObservationFreshness, alarm.MaximumActiveInstances, alarm.MaximumPlcEntries);
             if (productionTestAlarm is not null)
                 alarm = new AlarmPolicy("V145.Production.Alarm", "1",
                     alarm.Rules.Concat(new[] { productionTestAlarm }), alarm.SourceObservationFreshness,
@@ -488,7 +501,7 @@ public sealed partial class ManualInspectionRuntimeTests
                     (imageEvidence is null ? null : new ProductionArmStoreOptions()),
                 recipeLifecycle: enableRecipeLifecycle ? new RecipeLifecycleStoreOptions() : null,
                 imageEvidence: imageEvidence, imageFinalization: imageFinalization, outbox: outbox,
-                evidenceReconciliation: evidenceReconciliation);
+                evidenceReconciliation: evidenceReconciliation, storageRetention: storageRetention, readWalLength: readWalLength);
 
             ServiceProvider? services = null;
             ClockPump? pump = null;

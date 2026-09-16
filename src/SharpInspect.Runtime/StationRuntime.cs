@@ -133,9 +133,13 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureManualInspectionStartup(productionStoreOptions?.ManualInspections is not null);
         ConfigureStationQualificationStartup(productionStoreOptions?.StationQualifications is not null);
         _storeInitialization = InitializeStoreAsync();
+        ConfigureRetentionWorker(productionStoreOptions);
         ConfigureEvidenceReconciliation(productionStoreOptions);
         ConfigureImageFinalization(productionStoreOptions);
+        ConfigureStorageCapacity(productionStoreOptions);
         _heartbeat = PublishHeartbeatAsync(interval);
+        if (productionStoreOptions?.StorageRetention is not null && _audit is SqliteCommandStore retentionStore)
+            retentionStore.RegisterStorageRuntimeOwner(RetireStorageOwnerAsync);
     }
 
     public ValueTask<StationStateSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
@@ -226,6 +230,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             return await SubmitPartIdentityCorrectionAsync(partIdentityCorrection, cancellationToken).ConfigureAwait(false);
         if (command is ManualProductionRecoveryCommand productionRecovery)
             return await SubmitProductionRecoveryAsync(productionRecovery, cancellationToken).ConfigureAwait(false);
+        if (command is ChangeEvidenceRetentionCommand retention)
+            return await SubmitRetentionAsync(retention, cancellationToken).ConfigureAwait(false);
         if (command is RecoverOutboxDeliveryCommand or CreateCorrectiveOutboxDeliveryCommand)
             return await SubmitOutboxGovernanceAsync(command, cancellationToken).ConfigureAwait(false);
         if (command is ManualInspectionCommand manual)
@@ -761,6 +767,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         // ACK observer alive for the accepted cycle, under one monotonic deadline.
         try { await ShutdownProductionInspectionAsync().ConfigureAwait(false); }
         finally { _lifetime.Cancel(); }
+        await ShutdownStorageCapacityAsync().ConfigureAwait(false);
+        await ShutdownRetentionAsync().ConfigureAwait(false);
         await ShutdownEvidenceReconciliationAsync().ConfigureAwait(false);
         await ShutdownOutboxAsync().ConfigureAwait(false);
         await ShutdownImageFinalizationAsync().ConfigureAwait(false);

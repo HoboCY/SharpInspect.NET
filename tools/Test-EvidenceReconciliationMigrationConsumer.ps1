@@ -193,6 +193,12 @@ foreach ($migrationPhase in $Phases) {
         $current.assemblyHash -cne $migrationNew.runtimeHash -or -not $current.auditLedgerChanged) {
         throw 'The current public writer did not reopen the completed migration with verified signed history.'
     }
+    if ($current.preCommandStartupCompleted -cne $true -or $current.commandSubmissions -ne 1 -or
+        $current.preCommandAuditSequence -le 0 -or
+        $current.preCommandVerifiedThroughSequence -lt $current.preCommandAuditSequence -or
+        $current.postWriteAuditSequence -le $current.preCommandAuditSequence) {
+        throw 'The sole current command did not follow completed startup and its verified audit tail.'
+    }
     if ($SourceSchema -ne 35 -and (-not $current.outbox.available -or $current.outbox.items -ne 0 -or $current.outbox.routeCount -ne 1 -or
         $current.outbox.routeSetHash -notmatch '^[0-9A-Fa-f]{64}$' -or $current.outbox.backlogRouteCount -ne 0 -or
         $current.outbox.throughAuditSequence -le 0 -or
@@ -224,7 +230,9 @@ foreach ($migrationPhase in $Phases) {
         outbox=$current.outbox; evidenceState=$current.evidenceState; preservedImages=$current.preservedImages;
         operations=$current.operations; sourceRowsPreserved=$resumed.sourceRowsPreserved;
         seedPostWriteAuditSequence=$seed.postWriteAuditSequence; seedVerifiedThroughSequence=$seed.auditVerifiedThroughSequence;
-        currentPostWriteAuditSequence=$current.postWriteAuditSequence; currentVerifiedThroughSequence=$current.auditVerifiedThroughSequence }
+        currentPostWriteAuditSequence=$current.postWriteAuditSequence; currentVerifiedThroughSequence=$current.auditVerifiedThroughSequence;
+        preCommandStartupCompleted=$current.preCommandStartupCompleted; commandSubmissions=$current.commandSubmissions;
+        preCommandAuditSequence=$current.preCommandAuditSequence; preCommandVerifiedThroughSequence=$current.preCommandVerifiedThroughSequence }
     Write-Output "$migrationVerificationPrefix schema $SourceSchema phase $migrationPhase crash/resume, old writer refusal and schema $migrationTargetSchema evidence query PASS"
 }
 $migrationEvidence = [ordered]@{ id=($migrationVerificationPrefix + '_N01'); result='Pass';

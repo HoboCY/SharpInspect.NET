@@ -56,6 +56,10 @@ internal sealed partial class EvidenceReconciliationWorker
             {
                 startup.CancelAfter(_options.StartupTimeout);
                 await initialization.WaitAsync(startup.Token).ConfigureAwait(false);
+                await _store.EvidenceFileGate.WaitAsync(startup.Token).ConfigureAwait(false);
+                try
+                {
+                await ReadRetentionStateAsync(startup.Token).ConfigureAwait(false);
                 var prior = await _query.ReadStateAsync(startup.Token).ConfigureAwait(false);
                 var run = await StartRunAsync(null, 0, startup.Token).ConfigureAwait(false);
                 await ReconcileQuarantinesAsync(run, prior, startup.Token).ConfigureAwait(false);
@@ -82,6 +86,12 @@ internal sealed partial class EvidenceReconciliationWorker
                     }
                 }
                 await CompleteRunAsync(run, startup.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await RetireEvidenceFilesAsync().ConfigureAwait(false);
+                    _store.EvidenceFileGate.Release();
+                }
             }
             _startup.TrySetResult(true);
             while (true)
@@ -99,10 +109,7 @@ internal sealed partial class EvidenceReconciliationWorker
         }
         finally
         {
-            var physical = _quarantines.Select(x => x.PhysicalCompletion)
-                .Concat(_files is null ? Array.Empty<Task>() : new[] { _files.PhysicalCompletion });
-            try { await Task.WhenAll(physical).ConfigureAwait(false); }
-            catch (Exception error) when (error is not OutOfMemoryException) { }
+            await RetireEvidenceFilesAsync().ConfigureAwait(false);
         }
     }
 

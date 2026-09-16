@@ -417,7 +417,7 @@ internal sealed partial class SqliteCommandStore
     {
         if (Integrity?.State == AuditIntegrityState.Faulted)
             return ProductionInspectionRejected(work, Integrity.ReasonCode);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if ((_options.StorageRetention is null || work.Admission is not null) && WalCapacityBlocksNewWork())
             return ProductionInspectionRejected(work, "TraceStoreWalLimit");
         if (work.Admission is not null)
             return AppendProductionInspectionAdmissionCore(database, work, deadline);

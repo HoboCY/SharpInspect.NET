@@ -39,7 +39,9 @@ internal static class TraceStoragePreflightEvaluator
         TraceStorageDeploymentScope? scope, TraceStorageVolumeObservation volume,
         SqliteCommandStore.VerifiedSqliteProfile? profile, DateTimeOffset now,
         OutboxBacklogSnapshot? outboxBacklog = null, EvidenceReconciliationSnapshot? reconciliation = null,
-        EvidenceReconciliationStoreOptions? reconciliationOptions = null)
+        EvidenceReconciliationStoreOptions? reconciliationOptions = null,
+        bool retentionConfigured = false, TraceCheckpointObservation? checkpoint = null,
+        bool imageConfigured = false, ImageBacklogSnapshot? imageBacklog = null)
     {
         var policy = current.Available ? current.Publication?.Policy : null;
         var rows = new List<TraceStoragePreflightRow>();
@@ -74,8 +76,33 @@ internal static class TraceStoragePreflightEvaluator
             policy is null || volume.WalBytes is null ? "TraceStorageWalUnobserved" :
             volume.WalBytes < policy.MaximumWalBytes ? "TraceStorageWalWithinPolicy" : "TraceStorageWalPolicyLimitReached",
             Number(policy?.MaximumWalBytes), Number(volume.WalBytes));
-        Row(TraceStoragePreflightGate.Checkpoint, TraceStoragePreflightStatus.NotImplemented, "TraceStoragePolicyCheckpointEnforcementUnavailable");
-        Row(TraceStoragePreflightGate.ImageBacklog, TraceStoragePreflightStatus.NotImplemented, "TraceStorageImageBacklogUnobserved");
+        if (!retentionConfigured)
+        {
+            Row(TraceStoragePreflightGate.Checkpoint, TraceStoragePreflightStatus.NotImplemented, "TraceStoragePolicyCheckpointEnforcementUnavailable");
+            Row(TraceStoragePreflightGate.ImageBacklog, TraceStoragePreflightStatus.NotImplemented, "TraceStorageImageBacklogUnobserved");
+        }
+        else
+        {
+            var checkpointStatus = checkpoint?.Status;
+            var matches = current.Snapshot is not null && checkpoint?.PolicySnapshotHash == current.Snapshot.ContentHash;
+            var completed = checkpointStatus == TraceCheckpointStatus.Completed && matches;
+            Row(TraceStoragePreflightGate.Checkpoint, completed ? TraceStoragePreflightStatus.Passed :
+                checkpointStatus == TraceCheckpointStatus.Completed ? TraceStoragePreflightStatus.Mismatch :
+                checkpointStatus is null or TraceCheckpointStatus.Awaiting or TraceCheckpointStatus.NotConfigured ?
+                    TraceStoragePreflightStatus.Missing : TraceStoragePreflightStatus.Failed,
+                completed ? "TraceStorageApprovedCheckpointRecorded" : checkpointStatus == TraceCheckpointStatus.Completed ?
+                    "TraceStorageCheckpointPolicyChanged" : checkpoint?.ReasonCode ?? "TraceStorageCheckpointUnobserved",
+                current.Snapshot?.ContentHash, checkpoint?.PolicySnapshotHash);
+            var imageAvailable = imageBacklog is not null && TraceStorageCapacityEvaluator.ImageBacklogValid(imageBacklog);
+            var imageFailure = imageAvailable && policy is not null ?
+                TraceStorageCapacityEvaluator.ImageBacklogFailures(policy, imageBacklog!, now).FirstOrDefault() : null;
+            Row(TraceStoragePreflightGate.ImageBacklog, !imageConfigured ? TraceStoragePreflightStatus.NotConfigured :
+                !imageAvailable || policy is null ? TraceStoragePreflightStatus.Missing :
+                imageFailure is null ? TraceStoragePreflightStatus.Passed : TraceStoragePreflightStatus.Failed,
+                !imageConfigured ? "TraceStorageImagesNotConfigured" : !imageAvailable || policy is null ?
+                    "TraceStorageImageBacklogUnobserved" : imageFailure ?? "TraceStorageImageBacklogWithinPolicy",
+                observed: imageAvailable ? Number(imageBacklog!.ThroughAuditSequence) : null);
+        }
         if (outboxBacklog is not null && current.Snapshot is { } trace)
         {
             var routeFailure = Outbox.ProductionOutboxBinding.RequiredBacklogFailure(trace, outboxBacklog, now);

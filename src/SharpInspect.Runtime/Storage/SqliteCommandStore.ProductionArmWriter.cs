@@ -48,7 +48,7 @@ internal sealed partial class SqliteCommandStore
         var options = _options.ProductionArming ??
             throw new InvalidOperationException("ProductionArmConfigurationRequired");
         if (Integrity?.State == AuditIntegrityState.Faulted) return new(false, Integrity.ReasonCode);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes) return new(false, "TraceStoreWalLimit");
+        if (WalCapacityBlocksNewWork()) return new(false, "TraceStoreWalLimit");
         var started = false;
         var committed = false;
         try

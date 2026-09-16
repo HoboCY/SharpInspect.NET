@@ -6,7 +6,7 @@ namespace SharpInspect.Runtime.Images;
 internal sealed partial class ProductionImageFinalizer
 {
     internal Task VerifyReconciliationMetadataAsync(ImageFinalizationReplayItem item,
-        TimeSpan timeout, CancellationToken token) => RunMaintenanceAsync(deadline =>
+        TimeSpan timeout, CancellationToken token, bool finalRetired = false) => RunMaintenanceAsync(deadline =>
     {
         RequireWork(item.Work);
         var names = item.Events.Where(x => x.Kind == ProductionImageFinalizationKind.AttemptStarted)
@@ -15,11 +15,17 @@ internal sealed partial class ProductionImageFinalizer
             .Append(Path.Combine(_stage.StageRoot, item.Work.Manifest.StageFileName)))
         {
             SqliteNative.EnsureDeadline(deadline, token);
+            if (finalRetired)
+            {
+                try { _ = File.GetAttributes(path); }
+                catch (FileNotFoundException) { continue; }
+                throw new InvalidOperationException("RetentionRetiredImageArtifactReappeared");
+            }
             if (!File.Exists(path)) continue;
             using var file = OpenProtected(path);
             EvidenceQuarantine.RequireUniqueFile(file);
         }
-        if (item.State.Success is not null &&
+        if (!finalRetired && item.State.Success is not null &&
             !File.Exists(Path.Combine(_finalRoot, item.Work.Manifest.ManifestId.ToString("N") + ".png")))
             throw new InvalidOperationException("ProductionImageReferencedFinalMissing");
         return true;

@@ -35,6 +35,9 @@ internal sealed partial class EvidenceReconciliationWorker
             var subject = completed.Payload.Subject!;
             try
             {
+                using var retired = await VerifyRetainedAbsenceAsync(new(EvidenceRetentionOwnerKind.QuarantinedFile,
+                    subject.OrphanId!.Value), null, token).ConfigureAwait(false);
+                if (retired is not null) continue;
                 using var protectedFile = await Quarantine(subject.FileArea!.Value)
                     .VerifyCompletedAsync(Descriptor(subject), _options.FileTimeout, token).ConfigureAwait(false);
             }

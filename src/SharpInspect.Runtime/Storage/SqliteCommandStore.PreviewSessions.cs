@@ -157,7 +157,7 @@ internal sealed partial class SqliteCommandStore
         if (integrity?.State != AuditIntegrityState.Verified)
             return new(false, integrity?.ReasonCode ?? "PreviewSessionAuditUnavailable",
                 RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (WalCapacityBlocksNewWork())
             return new(false, "TraceStoreWalLimit");
 
         var options = _options.PreviewSessions;

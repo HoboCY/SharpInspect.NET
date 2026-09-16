@@ -54,7 +54,8 @@ internal sealed partial class SqliteCommandStore
         if (integrity?.State != AuditIntegrityState.Verified)
             return new(false, integrity?.ReasonCode ?? "TraceStoragePolicyAuditUnavailable",
                 RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        var storageRecovery = WalCapacityBlocksNewWork();
+        if (storageRecovery && _options.StorageRetention is null)
             return new(false, "TraceStoreWalLimit");
 
         var committed = false;
@@ -108,6 +109,7 @@ internal sealed partial class SqliteCommandStore
                     options.DeploymentScope, observed.TotalBytes);
                 if (validation.Count > 0)
                     throw new InvalidOperationException(validation[0]);
+                RequireStorageRecoveryPlan(database, work.Command.Policy, deadline);
                 var prior = ReadTraceStoragePolicyPublications(database, options, deadline);
                 var current = prior.Count == 0 ? null : prior[^1];
                 AuditChainDatabase.Require(work.Command.ExpectedVersion == (current?.Version ?? 0),
@@ -131,6 +133,8 @@ internal sealed partial class SqliteCommandStore
                     TraceStoragePolicyStorageCodec.EncodePublication(publication).Length, deadline);
             }
 
+            if (storageRecovery)
+                RequireStorageRecoveryCapacity(database, evaluated.Events.Count + (publication is null ? 0 : 1), deadline);
             long identitySequence = 0;
             foreach (var identityEvent in evaluated.Events)
                 identitySequence = AuditChainDatabase.AppendIdentity(database, _policy!, _signingKey!,
@@ -171,6 +175,8 @@ internal sealed partial class SqliteCommandStore
             var committedAuditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             SqliteNative.Execute(database, "COMMIT;", deadline, work.CancellationToken);
             committed = true;
+            if (_options.StorageRetention is not null && publication is not null)
+                Volatile.Write(ref _retentionWalLimit, publication.Policy.MaximumWalBytes);
             work.Result = result;
             try { guard?.Commit(); } catch { }
             Interlocked.Exchange(ref _lastCommittedAuditSequence, committedAuditSequence);

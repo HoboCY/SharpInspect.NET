@@ -458,7 +458,8 @@ internal sealed partial class SqliteCommandStore
         string reasonCode, Permission permission, AuditedCommandKind commandKind, Guid actorPrincipalId,
         Guid actorSessionId, Guid stepUpGrantId, string policyId, string policyVersion, string policyHash,
         Guid commandCorrelationId, Guid commandEventId, long commandAuditSequence, string commandAuditHash,
-        string targetBinding, string operationBinding, StoreDeadline deadline)
+        string targetBinding, string operationBinding, StoreDeadline deadline,
+        int authoritySchemaVersion = ProductionOutboxRecoveryOptions.SchemaVersion)
     {
         var authorization = AuditChainDatabase.Read(database, @"SELECT Sequence,IdentityPosition,Payload,Hash
             FROM audit_entries WHERE Sequence=? AND Kind='IdentityEvent' LIMIT 2;", deadline,
@@ -478,7 +479,7 @@ internal sealed partial class SqliteCommandStore
         catch (InvalidOperationException exception)
         { throw new InvalidOperationException("ProductionOutboxRecoveryAuthorizationAuditInvalid", exception); }
         IdentityAuditEvent.VerifyPayload(payload, authorization[0].Ordinal, station,
-            ProductionOutboxRecoveryOptions.SchemaVersion);
+            authoritySchemaVersion);
         AuditChainDatabase.Require(fields.Length == 49 && fields[1] == authorizationEventId.ToString("D") &&
             fields[2] == kind.ToString() && fields[4] == station && fields[5] == actorPrincipalId.ToString("D") &&
             fields[9] == reasonCode && fields[25] == actorSessionId.ToString("D") &&

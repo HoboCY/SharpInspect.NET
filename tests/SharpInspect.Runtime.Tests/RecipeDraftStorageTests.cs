@@ -550,7 +550,9 @@ public sealed class RecipeDraftStorageTests
              ProductionImageEvidenceStoreOptions? imageEvidence = null,
              ProductionImageFinalizationStoreOptions? imageFinalization = null,
              ProductionOutboxStoreOptions? outbox = null,
-             EvidenceReconciliationStoreOptions? evidenceReconciliation = null)
+             EvidenceReconciliationStoreOptions? evidenceReconciliation = null,
+             TraceStorageRetentionOptions? storageRetention = null,
+             Func<string, long>? readWalLength = null)
         {
             if (!OperatingSystem.IsWindows())
                 throw SkipException.ForSkip("Recipe Draft storage requires Windows machine key protection.");
@@ -613,6 +615,7 @@ public sealed class RecipeDraftStorageTests
                 ImageFinalization = imageFinalization,
                 Outbox = outbox,
                 EvidenceReconciliation = evidenceReconciliation,
+                StorageRetention = storageRetention,
                 AlgorithmResultArchive = enableArchive ? new AlgorithmResultArchiveOptions() : null,
                 CommitTimeout = TimeSpan.FromSeconds(4), QueryTimeout = TimeSpan.FromSeconds(4), QueueCapacity = 8
             };
@@ -620,7 +623,7 @@ public sealed class RecipeDraftStorageTests
             SqliteCommandStore? store = null;
             try
             {
-                store = new SqliteCommandStore(options);
+                store = readWalLength is null ? new SqliteCommandStore(options) : new SqliteCommandStore(options, readWalLength);
                 var initialized = await store.Initialization.WaitAsync(TimeSpan.FromSeconds(15));
                 Assert.True(initialized.Committed, initialized.ReasonCode);
                 await WaitForVerifiedAsync(store, allowTransientAnchorPending: requireExternalAnchor);

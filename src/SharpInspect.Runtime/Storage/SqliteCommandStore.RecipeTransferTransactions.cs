@@ -119,7 +119,7 @@ internal sealed partial class SqliteCommandStore
         if (integrity?.State != AuditIntegrityState.Verified)
             return new StoreWriteResult(false, integrity?.ReasonCode ?? "RecipeTransferAuditUnavailable",
                 RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (WalCapacityBlocksNewWork())
             return new StoreWriteResult(false, "TraceStoreWalLimit");
 
         var committed = false;

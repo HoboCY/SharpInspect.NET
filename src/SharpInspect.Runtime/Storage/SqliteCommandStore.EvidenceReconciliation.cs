@@ -66,7 +66,7 @@ internal sealed partial class SqliteCommandStore
     {
         if (Integrity?.State == AuditIntegrityState.Faulted)
             return new(false, Integrity.ReasonCode);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (WalCapacityBlocksNewWork())
             return new(false, "TraceStoreWalLimit");
         var started = false;
         var committed = false;
@@ -88,7 +88,7 @@ internal sealed partial class SqliteCommandStore
                 "EvidenceReconciliationEventAlreadyRecorded");
             var needsFileProtection = work.Facts.Any(x => x.Kind is EvidenceReconciliationEventKind.ImageVerified or
                 EvidenceReconciliationEventKind.ImageFinalRecovered or EvidenceReconciliationEventKind.QuarantineIntent or
-                EvidenceReconciliationEventKind.Quarantined);
+                EvidenceReconciliationEventKind.Quarantined || x.ReasonCode == "RetainedImageTombstoneVerified");
             AuditChainDatabase.Require(!needsFileProtection || work.VerifyProtectedFiles is not null,
                 "EvidenceReconciliationProtectedObservationRequired");
             work.VerifyProtectedFiles?.Invoke();
@@ -111,6 +111,7 @@ internal sealed partial class SqliteCommandStore
                 var row = new EvidenceReconciliationStoredRow(position, fact,
                     EvidenceReconciliationStorageCodec.ContentHash(position, configuration.BindingHash, payload),
                     audit.Sequence, audit.Hash);
+                RequireRetentionReconciliationFact(database, row, deadline);
                 replay.Apply(row);
                 AuditChainDatabase.Execute(database, @"INSERT INTO evidence_reconciliation_events
                     (Position,EventId,RunId,Kind,OrphanId,Payload,ContentHash,AuditSequence,AuditHash)

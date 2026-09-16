@@ -110,7 +110,7 @@ internal sealed partial class SqliteCommandStore
             return ImageFinalizationRejected(work, "ImageFinalizationGovernedRecoveryUnavailable");
         if (Integrity?.State == AuditIntegrityState.Faulted)
             return ImageFinalizationRejected(work, Integrity.ReasonCode);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (_options.StorageRetention is null && WalCapacityBlocksNewWork())
             return ImageFinalizationRejected(work, "TraceStoreWalLimit");
         if (work.Start is not null) return AppendImageFinalizationAttemptStart(database, work, deadline);
         if (work.Failure is not null) return AppendImageFinalizationFailure(database, work, deadline);

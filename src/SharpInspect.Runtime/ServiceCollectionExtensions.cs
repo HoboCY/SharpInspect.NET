@@ -369,6 +369,15 @@ public static class ServiceCollectionExtensions
             services.TryAddSingleton<IProductionInspectionHistoryQuery>(_ => new SqliteProductionInspectionHistoryQuery(options));
             services.TryAddSingleton<IProductionRecoveryHistoryQuery>(_ => new SqliteProductionRecoveryHistoryQuery(options));
         }
+        if (options.StorageRetention is not null)
+        {
+            services.TryAddSingleton<ITraceStorageCapacityQuery>(p =>
+                ((StationRuntime)p.GetRequiredService<IStationRuntime>()).StorageCapacityQuery);
+            services.TryAddSingleton<IEvidenceRetentionQuery>(_ => new SqliteEvidenceRetentionQuery(options));
+            services.TryAddSingleton<IEvidenceRetentionService>(p => new EvidenceRetentionService(options,
+                p.GetRequiredService<LocalAuthorizationService>(), p.GetRequiredService<IEvidenceRetentionQuery>(),
+                () => p.GetRequiredService<IStationRuntime>().GetSnapshotAsync()));
+        }
         if (options.EvidenceReconciliation is not null)
             services.TryAddSingleton<IEvidenceReconciliationQuery>(_ => new SqliteEvidenceReconciliationQuery(options));
         if (options.ImageFinalization is not null)
@@ -397,6 +406,8 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>());
             runtime.ConfigureOutbox(options, p.GetService<Outbox.ProductionOutboxOptions>());
+            if (p.GetService<IEvidenceRetentionService>() is { } retention)
+                runtime.ConfigureRetentionService(retention);
             if (p.GetService<IProductionOutboxRecoveryService>() is { } outboxRecovery)
                 runtime.ConfigureOutboxRecoveryService(outboxRecovery);
             if (p.GetService<IRecipeReleaseService>() is { } releases) runtime.ConfigureRecipeReleaseService(releases);

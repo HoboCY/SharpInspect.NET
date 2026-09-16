@@ -202,7 +202,7 @@ internal sealed partial class SqliteCommandStore
         ValidateWriteRequest(work.Request);
         if (Integrity?.State == AuditIntegrityState.Faulted)
             return new(false, Integrity.ReasonCode);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (WalCapacityBlocksNewWork())
             return new(false, "TraceStoreWalLimit");
 
         var started = false;

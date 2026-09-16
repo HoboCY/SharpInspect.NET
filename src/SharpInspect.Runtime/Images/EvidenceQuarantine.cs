@@ -207,7 +207,7 @@ internal sealed class EvidenceQuarantine
         catch (FileNotFoundException) { return false; }
     }
 
-    private static void RequireName(string name)
+    internal static void RequireName(string name)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." ||
             name.IndexOfAny(new[] { '\\', '/', ':', '*', '?', '"', '<', '>', '|' }) >= 0 ||
@@ -220,7 +220,7 @@ internal sealed class EvidenceQuarantine
             throw new ArgumentException("EvidenceQuarantineRelativeNameInvalid");
     }
 
-    private static string HashFile(FileStream file, long expectedLength, StoreDeadline deadline, CancellationToken token)
+    internal static string HashFile(FileStream file, long expectedLength, StoreDeadline deadline, CancellationToken token)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[64 * 1024]; long bytes = 0;
@@ -247,7 +247,10 @@ internal sealed class EvidenceQuarantine
             for (var directory = new DirectoryInfo(root); directory is not null; directory = directory.Parent)
             {
                 if (!seen.Add(directory.FullName)) continue;
-                var handle = CreateFile(directory.FullName, 0x80, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+                // FILE_READ_ATTRIBUTES alone does not participate in Windows share-access
+                // accounting. Include directory read access so omitting FILE_SHARE_DELETE
+                // really prevents a rename after the last child file has been removed.
+                var handle = CreateFile(directory.FullName, 0x80000080, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
                 if (handle.IsInvalid) { handle.Dispose(); throw NativeFailure("EvidenceQuarantineRootProtectionUnavailable"); }
                 handles.Add(handle);
                 var info = Information(handle);
@@ -267,7 +270,7 @@ internal sealed class EvidenceQuarantine
             throw new InvalidOperationException("EvidenceReconciliationFileUniquenessInvalid");
     }
 
-    private static FileStream OpenFile(string path)
+    internal static FileStream OpenFile(string path)
     {
         var handle = CreateFile(path, 0x80010000, 1, IntPtr.Zero, 3, 0x08200000, IntPtr.Zero);
         if (handle.IsInvalid) { handle.Dispose(); throw NativeFailure("EvidenceQuarantineFileProtectionUnavailable"); }
@@ -286,6 +289,8 @@ internal sealed class EvidenceQuarantine
         AuditCanonical.Encode("EvidenceQuarantineFileIdentityV1", info.Volume.ToString("X8"),
             info.IndexHigh.ToString("X8"), info.IndexLow.ToString("X8"),
             info.CreationHigh.ToString("X8"), info.CreationLow.ToString("X8"))));
+
+    internal static string IdentityHash(FileStream file) => IdentityHash(Information(file.SafeFileHandle));
 
     private static FileInformation Information(SafeFileHandle handle)
     {

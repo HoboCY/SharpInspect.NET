@@ -316,6 +316,7 @@ public partial class ShellWindow : Window
     private void ShowPrivacyCover()
     {
         IsPrivacyLocked = true;
+        DeactivateStorageRetention();
         DeactivateProductionImageEvidence();
         DeactivateEvidenceReconciliation();
         DeactivateProductionOutbox();
@@ -458,6 +459,7 @@ public partial class ShellWindow : Window
         DeactivateEvidenceReconciliation();
         DeactivateProductionOutbox();
         _viewModel.PropertyChanged -= Refresh;
+        DeactivateStorageRetention();
         _viewModel.State.PropertyChanged -= Refresh;
         if (_traceViewModel is not null) _traceViewModel.PropertyChanged -= TraceChanged;
         if (_integrityViewModel is not null) _integrityViewModel.PropertyChanged -= IntegrityChanged;
@@ -525,6 +527,7 @@ public partial class ShellWindow : Window
         RenderEvidenceReconciliation(traceSelected);
         RenderProductionOutbox(traceSelected);
         var maintenanceSelected = _viewModel.SelectedSection == "Maintenance";
+        RenderStorageRetention(maintenanceSelected);
         var alarmSelected = _viewModel.SelectedSection == "Alarms";
         var recipeSelected = _viewModel.SelectedSection == "Recipes";
         var engineeringSelected = _viewModel.SelectedSection == "Engineering";

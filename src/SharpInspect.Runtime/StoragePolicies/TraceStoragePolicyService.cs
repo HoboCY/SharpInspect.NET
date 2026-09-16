@@ -63,9 +63,12 @@ internal sealed class TraceStoragePolicyService : ITraceStoragePolicyService
             await new SqliteProductionOutboxQuery(_options).ReadBacklogAsync(cancellationToken).ConfigureAwait(false)) : null;
         var reconciliation = _options.EvidenceReconciliation is null ? null :
             await new SqliteEvidenceReconciliationQuery(_options).ReadAsync(new(PageSize: 1), cancellationToken).ConfigureAwait(false);
+        var images = _options.StorageRetention is not null && _options.ImageFinalization is not null ?
+            await new SqliteProductionImageEvidenceQuery(_options).ReadBacklogAsync(cancellationToken).ConfigureAwait(false) : null;
         return TraceStoragePreflightEvaluator.Evaluate(current, _options.TraceStoragePolicies?.DeploymentScope,
             volume, _store.VerifiedProfile, _authorization.TraceStoragePolicyUtcNow, outboxBacklog,
-            reconciliation, _options.EvidenceReconciliation);
+            reconciliation, _options.EvidenceReconciliation, _options.StorageRetention is not null,
+            _options.StorageRetention is null ? null : _store.Checkpoint, _options.ImageFinalization is not null, images);
     }
 
     private static TraceStoragePolicyResult Failure(PublishTraceStoragePolicyCommand command, string reason) =>

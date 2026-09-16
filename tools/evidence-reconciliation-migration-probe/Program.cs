@@ -80,6 +80,10 @@ else
     object? preservedImages = null;
     object? operations = null;
     long? postWriteAuditSequence = null;
+    long? preCommandAuditSequence = null;
+    long? preCommandVerifiedThroughSequence = null;
+    bool? preCommandStartupCompleted = null;
+    var commandSubmissions = 0;
     await using (var provider = services.BuildServiceProvider())
     {
         var runtime = provider.GetRequiredService<IStationRuntime>();
@@ -92,8 +96,38 @@ else
             if (DateTime.UtcNow >= deadline) throw new TimeoutException("ProbeStoreStartupTimeout: " + snapshot.Store.ReasonCode);
             await Task.Delay(25);
         } while (true);
+#if CURRENT_MIGRATION
+        if (snapshot.Store.State == HealthState.Healthy)
+        {
+            // Initialization can expose Verified before reconciliation appends its
+            // startup facts. Await the completed startup and its verified tail
+            // before the sole command; an unavailable write is never retried.
+            var startupQuery = provider.GetRequiredService<IEvidenceReconciliationQuery>();
+            do
+            {
+                var startup = await startupQuery.ReadAsync(new());
+                snapshot = await runtime.GetSnapshotAsync();
+                if (!startup.Available || startup.IntegrityFaultRecorded ||
+                    snapshot.Store.State == HealthState.Faulted ||
+                    snapshot.AuditIntegrity?.State == AuditIntegrityState.Faulted)
+                    throw new InvalidOperationException("ProbeSourceStartupUnavailable:" + startup.ReasonCode);
+                if (startup.LatestStartup?.Completed == true &&
+                    snapshot.AuditIntegrity is { State: AuditIntegrityState.Verified } verified &&
+                    verified.VerifiedThroughSequence >= startup.ThroughAuditSequence)
+                {
+                    preCommandStartupCompleted = true;
+                    preCommandAuditSequence = startup.ThroughAuditSequence;
+                    preCommandVerifiedThroughSequence = verified.VerifiedThroughSequence;
+                    break;
+                }
+                if (DateTime.UtcNow >= deadline) throw new TimeoutException("ProbeSourceStartupTimeout");
+                await Task.Delay(25);
+            } while (true);
+        }
+#endif
         // An unsupported command produces a rejected audit fact through the
         // actual public writer path. It requests no device or production action.
+        commandSubmissions++;
         result = await runtime.SubmitAsync(new ProbeUnsupportedCommand(Guid.NewGuid(),
             new CommandInvocation(CommandSource.PhysicalConsole)));
 #if CURRENT_MIGRATION
@@ -180,6 +214,7 @@ else
         reason = snapshot.Store.ReasonCode, audit = result.Audit.ToString(), result.ReasonCode,
         auditIntegrity = snapshot.AuditIntegrity?.State.ToString(), schema = Schema(options.DatabasePath),
         postWriteAuditSequence, auditVerifiedThroughSequence = snapshot.AuditIntegrity?.VerifiedThroughSequence,
+        preCommandStartupCompleted, preCommandAuditSequence, preCommandVerifiedThroughSequence, commandSubmissions,
         assemblyHash = AssemblyHash(), auditLedgerBefore, auditLedgerAfter, sourceRows = RowDigests(options.DatabasePath),
         auditLedgerChanged = auditLedgerBefore != auditLedgerAfter, outbox = outboxWork,
         evidenceState = snapshot.Evidence.State.ToString(), preservedImages, operations };

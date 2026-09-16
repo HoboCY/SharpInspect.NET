@@ -146,11 +146,11 @@ internal sealed partial class SqliteCommandStore
         var version = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
         if (store.EvidenceReconciliation is null)
         {
-            AuditChainDatabase.Require(version != EvidenceReconciliationStoreOptions.SchemaVersion,
+            AuditChainDatabase.Require(version is not (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion),
                 "EvidenceReconciliationConfigurationRequired");
             return;
         }
-        AuditChainDatabase.Require(version == EvidenceReconciliationStoreOptions.SchemaVersion,
+        AuditChainDatabase.Require(version is EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
             "EvidenceReconciliationGovernedMigrationRequired");
         AuditChainDatabase.Require(ReadEvidenceReconciliationConfiguration(database, deadline) ==
             ReconciliationConfiguration(store), "EvidenceReconciliationConfigurationMismatch");
@@ -182,6 +182,7 @@ internal sealed partial class SqliteCommandStore
                 var row = new EvidenceReconciliationStoredRow(position, fact, hash,
                     SqliteNative.ColumnInt64(statement, 7), SqliteNative.ColumnText(statement, 8)!);
                 RequireEvidenceReconciliationSource(database, configuration, fact.Subject, deadline, row.AuditSequence);
+                RequireRetentionReconciliationFact(database, row, deadline);
                 replay.Apply(row);
                 return row;
             });

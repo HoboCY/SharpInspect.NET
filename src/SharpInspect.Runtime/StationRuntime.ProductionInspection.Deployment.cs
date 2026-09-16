@@ -89,6 +89,8 @@ public sealed partial class StationRuntime
 
     private ProductionAdmissionGateResult ProductionDeploymentGate(ProductionAdmissionGate gate)
     {
+        if (gate == ProductionAdmissionGate.StoreCapacity && StorageCapacityFailureLocked() is { } capacityFailure)
+            return new(gate, ProductionAdmissionGateStatus.Blocked, capacityFailure);
         var observation = _productionDeploymentObservation;
         var fresh = observation is not null && observation.ActivationHash == _activeActivation?.Snapshot.ContentHash &&
             DateTimeOffset.UtcNow - observation.ObservedAtUtc < TimeSpan.FromSeconds(10);

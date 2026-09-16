@@ -552,7 +552,9 @@ internal sealed partial class SqliteCommandStore
         if (integrity?.State != AuditIntegrityState.Verified)
             return new(false, integrity?.ReasonCode ?? "IdentityAuditUnavailable",
                 RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes) return new(false, "TraceStoreWalLimit");
+        var storageRecovery = WalCapacityBlocksNewWork();
+        if (storageRecovery && (_options.StorageRetention is null || work.Update is null))
+            return new(false, "TraceStoreWalLimit");
         var committed = false;
         IdentityUpdate? decision = null;
         IIdentityTransactionGuard? guard = null;
@@ -660,7 +662,7 @@ internal sealed partial class SqliteCommandStore
                 work.PlcResultContractUpdate is not null || work.RecipeActivationUpdate is not null ||
                 work.PreviewSessionUpdate is not null || work.CalibrationImportUpdate is not null ||
                 work.ManualInspectionUpdate is not null || work.StationQualificationUpdate is not null ||
-                work.OutboxGovernanceUpdate is not null) &&
+                work.OutboxGovernanceUpdate is not null || work.RetentionUpdate is not null) &&
                 Exists(database, "SELECT 1 FROM command_attempts WHERE CorrelationId=? AND OutcomeDisposition=0 LIMIT 1;",
                     work.CommandCorrelationId!.Value, deadline);
             var existingRecoveryOperation = work.RecoveryOperationUpdate is null ? null :
@@ -713,6 +715,7 @@ internal sealed partial class SqliteCommandStore
                 ReadRecipeActivationCommandState(database, deadline);
             var lifecycleState = work.RecipeLifecycleCommand is null ? null :
                 ReadRecipeLifecycleCommandState(database, _options, deadline);
+            var retentionState = work.RetentionCommand is null ? null : ReadRetentionGovernanceState(database, deadline);
             var outboxGovernanceState = work.OutboxGovernanceCommand is null ? null :
                 ReadOutboxGovernanceCommandState(database, work.OutboxGovernanceCommand, deadline);
             var previewState = work.PreviewSessionCommand is null ? null :
@@ -733,16 +736,35 @@ internal sealed partial class SqliteCommandStore
                     work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                         cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                         releaseState, contractState, activationState, previewState, previewInput, importState,
-                        manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState)
+                        manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState, retentionState)
                 : work.Evaluate(state, alarmState, duplicateCorrelation, existingRecoveryOperation,
                     cameraState, duplicateCameraOperation, imagingState, duplicateImagingOperation, governanceState,
                     releaseState, contractState, activationState, previewState, previewInput, importState,
-                    manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState);
+                    manualState, manualInput, stationQualificationState, stationQualificationInput, selectionState, lifecycleState, outboxGovernanceState, retentionState);
             if (evaluated.Result is ProductionAdmissionTerminalRequest terminalRequest)
                 evaluated = BuildProductionAdmissionTerminal(database, state, terminalRequest, deadline);
             decision = evaluated;
             guard = evaluated.CommitGuard;
+            if (storageRecovery && !evaluated.NoMutation)
+            {
+                if (!IsStorageRecoveryIdentityUpdate(evaluated.Events) || evaluated.CommandFacts is not null)
+                    return new(false, "IdentityStorageRecoveryActionDenied");
+                RequireStorageRecoveryCapacity(database, evaluated.Events.Count, deadline);
+            }
             OutboxGovernanceCapacity? outboxCapacity = null;
+            if (evaluated.Retention is not null)
+            {
+                try { PrepareRetentionGovernanceCapacity(database, evaluated, retentionState!, deadline); }
+                catch (InvalidOperationException error) when (AuditChainDatabase.IsCapacityReason(error.Message) ||
+                    error.Message is "RetentionLedgerCapacityExceeded" or "RetentionPayloadCapacityExceeded")
+                {
+                    guard?.Dispose();
+                    guard = null;
+                    evaluated = RejectOutboxGovernanceCapacity(evaluated, error.Message);
+                    decision = evaluated;
+                }
+            }
+
             if (evaluated.OutboxRecovery is not null || evaluated.OutboxCorrection is not null)
             {
                 try { outboxCapacity = PrepareOutboxGovernanceCapacity(database, evaluated, outboxGovernanceState!, deadline); }
@@ -776,7 +798,7 @@ internal sealed partial class SqliteCommandStore
                     evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
                     evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
                     evaluated.ProductionRecoveryFailure is null && evaluated.RecipeSelection is null && evaluated.RecipeLifecycle is null &&
-                    evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null &&
+                    evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null && evaluated.Retention is null &&
                     guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
@@ -1012,6 +1034,8 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.RecipeLifecycle is not null)
                 AppendRecipeLifecycleIdentityMutation(database, evaluated, lifecycleState!,
                     work.RecipeLifecycleCommand!, deadline);
+            if (evaluated.Retention is not null)
+                AppendRetentionIdentityMutation(database, evaluated, retentionState!, work.RetentionCommand!, work, deadline);
             if (evaluated.OutboxRecovery is not null || evaluated.OutboxCorrection is not null)
                 AppendOutboxGovernanceIdentityMutation(database, evaluated, outboxGovernanceState!,
                     work.OutboxGovernanceCommand!, work, deadline);
@@ -1032,7 +1056,7 @@ internal sealed partial class SqliteCommandStore
             if (evaluated.ManualInspection is null && evaluated.PartIdentity is null &&
                 evaluated.ProductionRecovery is null && evaluated.ProductionRecoveryCompletion is null &&
                 evaluated.ProductionRecoveryFailure is null &&
-                evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null &&
+                evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null && evaluated.Retention is null &&
                 evaluated.Result is not StationQualificationTransactionResult { Accepted: true, Event: not null })
                 work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
                     ? commit with { Revision = imagingRevision } : evaluated.Result;
@@ -1354,6 +1378,14 @@ internal sealed partial class SqliteCommandStore
 
     private sealed class IdentityWork
     {
+        internal IdentityWork(ChangeEvidenceRetentionCommand command,
+            Func<IdentityAuthorityState, EvidenceRetentionReadState, bool, IdentityUpdate> update)
+        {
+            CommandCorrelationId = command.CorrelationId;
+            RetentionCommand = command;
+            RetentionUpdate = update;
+        }
+
         internal IdentityWork(RuntimeCommand command,
             Func<IdentityAuthorityState, RecipeLifecycleCommandState, bool, IdentityUpdate> update)
         {
@@ -1515,6 +1547,8 @@ internal sealed partial class SqliteCommandStore
         internal ReleaseRecipeCommand? RecipeReleaseCommand { get; }
         internal Func<IdentityAuthorityState, RecipeReleaseCommandState, bool, IdentityUpdate>?
             RecipeReleaseUpdate { get; }
+        internal ChangeEvidenceRetentionCommand? RetentionCommand { get; }
+        internal Func<IdentityAuthorityState, EvidenceRetentionReadState, bool, IdentityUpdate>? RetentionUpdate { get; }
         internal RuntimeCommand? OutboxGovernanceCommand { get; }
         internal Func<IdentityAuthorityState, OutboxGovernanceCommandState, bool, IdentityUpdate>?
             OutboxGovernanceUpdate { get; }
@@ -1556,7 +1590,9 @@ internal sealed partial class SqliteCommandStore
             StationQualificationAdmissionInput? stationQualificationInput = null,
             RecipeSelectionCommandState? recipeSelectionState = null,
             RecipeLifecycleCommandState? recipeLifecycleState = null,
-            OutboxGovernanceCommandState? outboxGovernanceState = null) =>
+            OutboxGovernanceCommandState? outboxGovernanceState = null,
+            EvidenceRetentionReadState? retentionState = null) =>
+            RetentionUpdate is not null ? RetentionUpdate(state, retentionState!, duplicateCorrelation) :
             OutboxGovernanceUpdate is not null ? OutboxGovernanceUpdate(state, outboxGovernanceState!,
                 duplicateCorrelation) :
             RecipeLifecycleUpdate is not null ? RecipeLifecycleUpdate(state, recipeLifecycleState!, duplicateCorrelation) :
@@ -1609,5 +1645,6 @@ internal sealed record IdentityUpdate(
       RecipeSelectionMutation? RecipeSelection = null,
       RecipeLifecycleMutation? RecipeLifecycle = null,
       OutboxRecoveryMutation? OutboxRecovery = null,
-      OutboxCorrectionMutation? OutboxCorrection = null);
+      OutboxCorrectionMutation? OutboxCorrection = null,
+      EvidenceRetentionPayload? Retention = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

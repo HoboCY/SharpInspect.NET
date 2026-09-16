@@ -15,21 +15,24 @@ public sealed partial class StationRuntime
         if (options?.EvidenceReconciliation is null) return;
         if (_audit is not SqliteCommandStore store) throw new ArgumentException("EvidenceReconciliationSqliteStoreRequired");
         _evidenceReconciliationRequired = true;
-        _evidenceReconciliationWorker = new(store, options, _snapshot.RuntimeEpoch, _storeInitialization,
+        var initialization = _retentionWorker is null ? _storeInitialization :
+            Task.WhenAll(_storeInitialization, _retentionWorker.Startup);
+        _evidenceReconciliationWorker = new(store, options, _snapshot.RuntimeEpoch, initialization,
             options.Outbox is null ? Task.CompletedTask : WaitForEvidenceOutboxStartupAsync(),
             HandleEvidenceReconciliationFaultAsync, () =>
             {
                 lock (_sync) return !_disposed && !_shutdownRequested && !_snapshot.Busy &&
                     _productionInspectionOwner?.Current is null;
             });
+        _retentionReconciliationStartup.TrySetResult(_evidenceReconciliationWorker.Startup);
     }
     private async Task WaitForEvidenceOutboxStartupAsync()
     {
         var startup = await _evidenceOutboxStartup.Task.WaitAsync(_lifetime.Token).ConfigureAwait(false);
         await startup.WaitAsync(_lifetime.Token).ConfigureAwait(false);
     }
-    private bool EvidenceReconciliationReadyLocked() => !_evidenceReconciliationRequired ||
-        !_evidenceReconciliationFaulted && _evidenceReconciliationWorker?.Startup.IsCompletedSuccessfully == true;
+    private bool EvidenceReconciliationReadyLocked() => RetentionReadyLocked() && (!_evidenceReconciliationRequired ||
+        !_evidenceReconciliationFaulted && _evidenceReconciliationWorker?.Startup.IsCompletedSuccessfully == true);
     private async Task HandleEvidenceReconciliationFaultAsync(string reason)
     {
         lock (_sync)

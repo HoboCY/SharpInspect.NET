@@ -33,7 +33,7 @@ internal static partial class AuditChainDatabase
             name IN ('production_outbox_store_config','production_outbox_deliveries',
                 'production_outbox_events','production_outbox_work');", deadline);
         if (storedSchemaVersion < ProductionOutboxStoreOptions.SchemaVersion ||
-            storedSchemaVersion == EvidenceReconciliationStoreOptions.SchemaVersion && outboxOptions is null)
+            storedSchemaVersion is (EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion) && outboxOptions is null)
         {
             Require(outboxOptions is null && tableCount == 0, "ProductionOutboxGovernedMigrationRequired");
             return null;
@@ -179,7 +179,7 @@ internal static partial class AuditChainDatabase
         StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion,
+            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
             "ProductionOutboxSchemaRequired");
         options.Validate();
         var payload = options.EncodeActivationPayload();
@@ -201,7 +201,7 @@ internal static partial class AuditChainDatabase
     internal static void AppendProductionOutboxRecoveryActivation(sqlite3 database,
         AuditIntegrityPolicy policy, IAuditSigningKey key, ProductionOutboxStoreOptions options, StoreDeadline deadline)
     {
-        Require(Scalar(database, "PRAGMA user_version;", deadline) is (37 or 38) && options.RecoveryEnabled,
+        Require(Scalar(database, "PRAGMA user_version;", deadline) is (37 or 38 or 39) && options.RecoveryEnabled,
             "ProductionOutboxRecoverySchemaRequired");
         Require(Scalar(database, "SELECT COUNT(*) FROM audit_entries WHERE Kind='ProductionOutboxRecoveryActivated';",
             deadline) == 0, "ProductionOutboxRecoveryActivationConflict");
@@ -225,7 +225,7 @@ internal static partial class AuditChainDatabase
         ProductionOutboxStoreOptions options, long futureReserve, StoreDeadline deadline)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
-            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion,
+            ProductionOutboxStoreOptions.SchemaVersion or ProductionOutboxRecoveryOptions.SchemaVersion or EvidenceReconciliationStoreOptions.SchemaVersion or TraceStorageRetentionOptions.SchemaVersion,
             "ProductionOutboxSchemaRequired");
         options.Validate();
         Require(futureReserve >= 0, "ProductionOutboxAuditReservationInvalid");

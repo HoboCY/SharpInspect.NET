@@ -14,8 +14,12 @@ internal sealed partial class EvidenceReconciliationWorker
         using var turn = CancellationTokenSource.CreateLinkedTokenSource(token, _stop.Token);
         turn.CancelAfter(_options.Scrubber.MaximumRunTime);
         var budget = _options.Scrubber;
+        var fileGate = false;
         try
         {
+            await _store.EvidenceFileGate.WaitAsync(turn.Token).ConfigureAwait(false);
+            fileGate = true;
+            await ReadRetentionStateAsync(turn.Token).ConfigureAwait(false);
             var state = await _query.ReadStateAsync(turn.Token).ConfigureAwait(false);
             if (state.Replay.IntegrityFault) throw new InvalidOperationException("EvidenceReconciliationIntegrityFaultRecorded");
             var previous = state.Replay.Latest(EvidenceReconciliationPhase.HistoricalScrub);
@@ -75,6 +79,15 @@ internal sealed partial class EvidenceReconciliationWorker
                 }
                 try
                 {
+                    using var retired = await VerifyRetainedAbsenceAsync(new(EvidenceRetentionOwnerKind.ImageManifest,
+                        item.Work.Manifest.ManifestId), item.Work.Manifest, turn.Token).ConfigureAwait(false);
+                    if (retired is not null)
+                    {
+                        await _files!.VerifyReconciliationMetadataAsync(item, _options.FileTimeout, turn.Token, true).ConfigureAwait(false);
+                        await AppendPageAsync(run, source, EvidenceReconciliationEventKind.WorkDeferred,
+                            "RetainedImageTombstoneVerified", after, retired.VerifyCommitProtection, turn.Token).ConfigureAwait(false);
+                        continue;
+                    }
                     using var claim = await _files!.ReconcileAsync(item.Work, item.State.Success, true,
                         _options.FileTimeout, turn.Token).ConfigureAwait(false);
                     readBytes = checked(readBytes + claim.ReadBytes);
@@ -96,6 +109,14 @@ internal sealed partial class EvidenceReconciliationWorker
         }
         catch (OperationCanceledException) when (turn.IsCancellationRequested && !token.IsCancellationRequested) { }
         catch (Exception error) when (IsYield(error)) { }
-        finally { Volatile.Write(ref _scrubBusy, 0); }
+        finally
+        {
+            if (fileGate)
+            {
+                await RetireEvidenceFilesAsync().ConfigureAwait(false);
+                _store.EvidenceFileGate.Release();
+            }
+            Volatile.Write(ref _scrubBusy, 0);
+        }
     }
 }

@@ -159,4 +159,8 @@ public sealed class ProductionStoreOptions
     /// It preserves the configured image-only or Outbox profile; it does not enable a
     /// missing image finalizer, route or manual recovery capability.</summary>
     public EvidenceReconciliationStoreOptions? EvidenceReconciliation { get; init; }
+
+    /// <summary>Explicit schema-39 capacity and retention; requires schema-38 reconciliation
+    /// and the approved Trace Storage Policy. Absence preserves the previous generation.</summary>
+    public TraceStorageRetentionOptions? StorageRetention { get; init; }
 }

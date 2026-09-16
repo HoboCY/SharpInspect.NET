@@ -127,7 +127,8 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
         try
         {
             var schema = AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline);
-            var expected = _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
+            var expected = _options.StorageRetention is not null ? TraceStorageRetentionOptions.SchemaVersion
+                : _options.EvidenceReconciliation is not null ? EvidenceReconciliationStoreOptions.SchemaVersion
                 : outbox.RecoveryEnabled
                 ? ProductionOutboxRecoveryOptions.SchemaVersion : ProductionOutboxStoreOptions.SchemaVersion;
             if (schema == ProductionOutboxRecoveryOptions.SchemaVersion && !outbox.RecoveryEnabled)
@@ -136,6 +137,7 @@ public sealed class SqliteProductionOutboxQuery : IProductionOutboxQuery
                 throw new InvalidOperationException(schema > expected
                     ? "ProductionOutboxSchemaTooNew" : "ProductionOutboxGovernedMigrationRequired");
             SqliteCommandStore.VerifyProductionOutboxReadGuard(database, _options, deadline);
+            SqliteCommandStore.RequireConfiguredRetention(database, _options, deadline);
             SqliteCommandStore.ValidateProductionOutboxHistory(database, outbox, production, deadline);
             var auditSequence = AuditChainDatabase.Tail(database, deadline).Sequence;
             var result = select(new PageReader(database, outbox, auditSequence, deadline));

@@ -1694,7 +1694,7 @@ internal sealed partial class SqliteCommandStore
         if (integrity?.State != AuditIntegrityState.Verified)
             return new(false, integrity?.ReasonCode ?? "CalibrationAuditUnavailable",
                 RetryAfterIntegrityRecheck: integrity?.State == AuditIntegrityState.Verifying);
-        if (_walLimitExceeded || GetWalLength() > MaximumWalBytes)
+        if (WalCapacityBlocksNewWork())
             return new(false, "TraceStoreWalLimit");
         var committed = false;
         SqliteNative.Execute(database, "BEGIN IMMEDIATE;", deadline);

@@ -44,7 +44,9 @@ internal static class ProductionImageEvidenceBinding
             staged, store.ImageFinalization.BindingHash, ProductionImageFinalizationWorker.ExecutionProfile);
         var delivered = store.Outbox is null ? finalized : ProductionAdmissionCanonical.Hash("production-evidence-policy-v4",
             finalized, store.Outbox.BindingHash, Outbox.ProductionOutboxWorker.ExecutionProfile);
-        return store.EvidenceReconciliation is null ? delivered : ProductionAdmissionCanonical.Hash("production-evidence-policy-v5",
+        var reconciled = store.EvidenceReconciliation is null ? delivered : ProductionAdmissionCanonical.Hash("production-evidence-policy-v5",
             delivered, store.EvidenceReconciliation.BindingHash, Evidence.EvidenceReconciliationWorker.ExecutionProfile);
+        return store.StorageRetention is null ? reconciled : ProductionAdmissionCanonical.Hash("production-evidence-policy-v6",
+            reconciled, store.StorageRetention.BindingHash, TraceStorageRetentionOptions.ExecutionProfile);
     }
 }

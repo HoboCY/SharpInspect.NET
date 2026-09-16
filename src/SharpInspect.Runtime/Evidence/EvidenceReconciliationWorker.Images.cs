@@ -25,6 +25,13 @@ internal sealed partial class EvidenceReconciliationWorker
                 {
                     if (item.State.IntegrityConflict)
                         throw new InvalidOperationException("ImageFinalizationIntegrityConflictRecorded");
+                    using var retired = await VerifyRetainedAbsenceAsync(new(EvidenceRetentionOwnerKind.ImageManifest,
+                        item.Work.Manifest.ManifestId), item.Work.Manifest, token).ConfigureAwait(false);
+                    if (retired is not null)
+                    {
+                        await _files!.VerifyReconciliationMetadataAsync(item, _options.FileTimeout, token, true).ConfigureAwait(false);
+                        continue;
+                    }
                     await _files!.VerifyReconciliationMetadataAsync(item, _options.FileTimeout, token).ConfigureAwait(false);
                     if (item.State.Success is not null && item.State.CleanupState == ProductionImageCleanupState.Released)
                         continue; // Terminal history is scanned by the resumable scrubber without startup ledger growth.

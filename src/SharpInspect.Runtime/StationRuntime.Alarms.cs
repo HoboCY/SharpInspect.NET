@@ -384,6 +384,10 @@ public sealed partial class StationRuntime
             lock (_sync) imageBacklog = ImageBacklogObservationLocked(policy);
             if (imageBacklog is not null)
                 await ObserveAlarmCoreAsync(imageBacklog, _lifetime.Token).ConfigureAwait(false);
+            AlarmObservation? storageCapacity;
+            lock (_sync) storageCapacity = StorageCapacityObservationLocked(policy);
+            if (storageCapacity is not null)
+                await ObserveAlarmCoreAsync(storageCapacity, _lifetime.Token).ConfigureAwait(false);
             IReadOnlyList<AlarmObservation> outboxObservations;
             lock (_sync) outboxObservations = OutboxObservationsLocked(policy);
             foreach (var observation in outboxObservations)

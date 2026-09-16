@@ -295,6 +295,9 @@ internal static class Program
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new EvidenceReconciliationViewModel(p.GetService<IEvidenceReconciliationQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
+        services.AddSingleton(p => new StorageRetentionViewModel(p.GetService<ITraceStorageCapacityQuery>(),
+            p.GetService<IEvidenceRetentionService>(), p.GetService<IInteractiveSessionService>(),
+            p.GetService<IStepUpAuthentication>(), new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionImageEvidenceViewModel(p.GetService<IProductionImageEvidenceQuery>(),
             new DispatcherUiDispatcher(app.Dispatcher)));
         services.AddSingleton(p => new ProductionOutboxViewModel(p.GetService<IProductionOutboxQuery>(),
@@ -373,6 +376,7 @@ internal static class Program
             window.AttachProductionRecovery(productionRecovery);
         window.AttachProductionImageEvidence(provider.GetRequiredService<ProductionImageEvidenceViewModel>());
         window.AttachEvidenceReconciliation(provider.GetRequiredService<EvidenceReconciliationViewModel>());
+        window.AttachStorageRetention(provider.GetRequiredService<StorageRetentionViewModel>());
         window.AttachProductionOutbox(provider.GetRequiredService<ProductionOutboxViewModel>());
         var exitCode = 0;
         if (smoke)
