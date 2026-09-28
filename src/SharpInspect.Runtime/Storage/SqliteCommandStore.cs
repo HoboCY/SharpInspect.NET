@@ -114,6 +114,9 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     public SqliteCommandStore(ProductionStoreOptions options) : this(options, ReadFileLength) { }
 
     internal SqliteCommandStore(ProductionStoreOptions options, Func<string, long> readWalLength)
+        : this(options, readWalLength, startWriter: true) { }
+
+    private SqliteCommandStore(ProductionStoreOptions options, Func<string, long> readWalLength, bool startWriter)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
@@ -254,6 +257,13 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         _lockPath = path + ".lock";
         _initializationReason = string.Empty;
         _commitTimeout = options.CommitTimeout;
+        // The private maintenance schema model reuses the same validation and
+        // canonical definitions without opening a writer or starting background work.
+        if (!startWriter)
+        {
+            _worker = Task.CompletedTask;
+            return;
+        }
         _queue = Channel.CreateBounded<WriteRequest>(new BoundedChannelOptions(options.QueueCapacity)
         {
             SingleReader = true,
@@ -346,6 +356,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (_queue is null || _queueSlots is null)
         {
+            _signingKey?.Dispose();
             _queueSlots?.Dispose();
             _integrityLifetime.Dispose();
             _integrityWake.Dispose();
@@ -373,6 +384,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             {
                 PreflightAuditVersion();
                 lease = AcquireLease();
+                StoreMigrationJournalGuard.RequireWriterReady(_options, _databasePath!);
                 connection = SqliteNative.Open(_databasePath!, readOnly: false);
                 SqliteNative.ConfigureSqliteLimit(connection.Handle!, _options);
                 initializationResult = InitializeDatabase(connection);
@@ -406,7 +418,8 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             }
             catch (Exception ex)
             {
-                var reason = ex is InvalidOperationException && (ex.Message.StartsWith("Audit", StringComparison.Ordinal) ||
+                var reason = ex is InvalidOperationException && (ex.Message.StartsWith("StoreMigration", StringComparison.Ordinal) ||
+                    ex.Message.StartsWith("Audit", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("Identity", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("RecoveryOperation", StringComparison.Ordinal) ||
                     ex.Message.StartsWith("Alarm", StringComparison.Ordinal) ||
@@ -626,9 +639,10 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         }
         : "AuditGovernedMigrationRequired";
 
-    private StoreWriteResult InitializeDatabase(SqliteConnection connection)
+    private StoreWriteResult InitializeDatabase(SqliteConnection connection,
+        StoreDeadline? maintenanceDeadline = null, bool configureProfile = true)
     {
-        var deadline = new StoreDeadline(CommitTimeout);
+        var deadline = maintenanceDeadline ?? new StoreDeadline(CommitTimeout);
         var database = connection.Handle!;
         var version = ReadUserVersion(database, deadline);
         var objects = ReadSchemaObjects(database, deadline, includeInternalObjects: version == 0);
@@ -1015,7 +1029,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (PartIdentityEnabled && version is PartIdentityStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion)
             RequireConfiguredPartIdentity(database, _options.PartIdentities!, deadline);
 
-        if (!ConfigureProductionProfile(database, deadline))
+        if (!(configureProfile ? ConfigureProductionProfile(database, deadline) : ReadProductionProfile(database, deadline)))
             return new StoreWriteResult(false, "TraceStoreProfileUnsupported");
         if (RecipeSelectionEnabled && version == RecipeSelectionStoreOptions.SchemaVersion)
             RequireConfiguredRecipeSelections(database, _options.RecipeSelections!, deadline);
@@ -1146,6 +1160,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     {
         SqliteNative.Execute(database, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA wal_autocheckpoint=0;",
             deadline);
+        return ReadProductionProfile(database, deadline);
+    }
+
+    private bool ReadProductionProfile(SQLitePCL.sqlite3 database, StoreDeadline deadline)
+    {
         var journalMode = SqliteNative.WithStatement(database, "PRAGMA journal_mode;", deadline,
             statement => SqliteNative.Step(database, statement, deadline) == SQLitePCL.raw.SQLITE_ROW
                 ? SqliteNative.ColumnText(statement, 0) : null);
@@ -1554,6 +1573,21 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
     {
         using var canonical = SqliteNative.Open(":memory:", readOnly: false);
         var canonicalDatabase = canonical.Handle!;
+        InitializeCanonicalSchema(canonicalDatabase, deadline);
+        var actualDefinitions = ReadSchemaDefinitions(database, deadline);
+        var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
+        if (actualDefinitions.Count != expectedDefinitions.Count) return false;
+        foreach (var pair in expectedDefinitions)
+        {
+            if (!actualDefinitions.TryGetValue(pair.Key, out var actual) ||
+                !string.Equals(NormalizeSql(actual), NormalizeSql(pair.Value), StringComparison.Ordinal)) return false;
+        }
+
+        return true;
+    }
+
+    private void InitializeCanonicalSchema(SQLitePCL.sqlite3 canonicalDatabase, StoreDeadline deadline)
+    {
         SqliteNative.Execute(canonicalDatabase, SchemaSql, deadline);
         if (_policy is not null) SqliteNative.Execute(canonicalDatabase, AuditChainDatabase.SchemaSqlFor(SchemaVersion), deadline);
         if (_options.LocalIdentity is not null) SqliteNative.Execute(canonicalDatabase, IdentitySchemaSql, deadline);
@@ -1583,16 +1617,6 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         if (RecipeSelectionEnabled) SqliteNative.Execute(canonicalDatabase, RecipeSelectionSchemaSql, deadline);
         if (ProductionArmingEnabled) SqliteNative.Execute(canonicalDatabase, ProductionArmSchemaSql, deadline);
         if (RecipeLifecycleEnabled) SqliteNative.Execute(canonicalDatabase, RecipeLifecycleSchemaSql, deadline);
-        var actualDefinitions = ReadSchemaDefinitions(database, deadline);
-        var expectedDefinitions = ReadSchemaDefinitions(canonicalDatabase, deadline);
-        if (actualDefinitions.Count != expectedDefinitions.Count) return false;
-        foreach (var pair in expectedDefinitions)
-        {
-            if (!actualDefinitions.TryGetValue(pair.Key, out var actual) ||
-                !string.Equals(NormalizeSql(actual), NormalizeSql(pair.Value), StringComparison.Ordinal)) return false;
-        }
-
-        return true;
     }
 
     private static Dictionary<string, string> ReadSchemaDefinitions(SQLitePCL.sqlite3 database, StoreDeadline deadline) =>
