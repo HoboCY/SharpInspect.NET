@@ -67,7 +67,8 @@ public enum AuditedCommandKind
     ChangeEvidenceRetention = 59,
     StartDiagnosticCapture = 60,
     StopDiagnosticCapture = 61,
-    CreateSupportBundle = 62
+    CreateSupportBundle = 62,
+    PrepareStationMaintenance = 63
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 

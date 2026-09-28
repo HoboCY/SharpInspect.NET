@@ -333,6 +333,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
             _worker = Task.CompletedTask;
             return;
         }
+        AcquireStationOwnership();
         _queue = Channel.CreateBounded<WriteRequest>(new BoundedChannelOptions(options.QueueCapacity)
         {
             SingleReader = true,
@@ -421,7 +422,11 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
 
     public async ValueTask DisposeAsync()
     {
-        if (_options.StorageRetention is not null) await RetireStorageRuntimeOwnersAsync().ConfigureAwait(false);
+        if (_options.StorageRetention is not null || DeploymentOwnership is not null)
+        {
+            try { await RetireStorageRuntimeOwnersAsync().ConfigureAwait(false); }
+            catch { DeploymentOwnership?.RetainUntilProcessExit(); throw; }
+        }
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (_queue is null || _queueSlots is null)
         {
@@ -439,6 +444,7 @@ internal sealed partial class SqliteCommandStore : ICommandAuditWriter, IAsyncDi
         _integrityLifetime.Dispose();
         _integrityWake.Dispose();
         _queueSlots.Dispose();
+        DeploymentOwnership?.Dispose();
     }
 
     private async Task RunAsync()

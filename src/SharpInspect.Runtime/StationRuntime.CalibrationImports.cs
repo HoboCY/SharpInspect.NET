@@ -121,6 +121,7 @@ public sealed partial class StationRuntime
     {
         if (StationQualificationConfigurationBlockedLocked) return "StationQualificationSessionInProgress";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (!_storeReady || _auditFault) return "CalibrationImportAuditUnavailable";
         if (Volatile.Read(ref _pendingLocalStops) != 0) return "CalibrationImportLocalStopInProgress";
         if (command is ImportCalibrationPackageCommand) return null;

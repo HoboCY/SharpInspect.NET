@@ -39,7 +39,7 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     private Task? _shutdown;
     private CommandAuditFact? _pendingAudit;
     private Task<bool>? _pendingProductionStopRetirement;
-    private bool LocalStopPendingLocked => Volatile.Read(ref _pendingLocalStops) != 0 ||
+    private bool LocalStopPendingLocked => _maintenanceInhibit || Volatile.Read(ref _pendingLocalStops) != 0 ||
         _pendingAudit is not null ||
         _snapshot.LastCommand is { State: OperationState.Pending, ReasonCode: "StopAdmitted" };
     private bool _shutdownRequested;
@@ -141,7 +141,8 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
         ConfigureStorageCapacity(productionStoreOptions);
         ConfigurePerformance(productionStoreOptions, presentationPerformance);
         _heartbeat = PublishHeartbeatAsync(interval);
-        if (productionStoreOptions?.StorageRetention is not null && _audit is SqliteCommandStore retentionStore)
+        if ((productionStoreOptions?.StorageRetention is not null || productionStoreOptions?.StationInstallation is not null) &&
+            _audit is SqliteCommandStore retentionStore)
             retentionStore.RegisterStorageRuntimeOwner(RetireStorageOwnerAsync);
     }
 
@@ -226,9 +227,16 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
     public async ValueTask<RuntimeCommandOutcome> SubmitAsync(RuntimeCommand command,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(command);
+        if (command is PrepareStationMaintenanceCommand maintenance)
+            return await SubmitStationMaintenanceAsync(maintenance, cancellationToken).ConfigureAwait(false);
+        lock (_sync)
+            if (_maintenanceInhibit && !(command is GracefulProductionStopCommand &&
+                command.CorrelationId == _maintenanceStopCorrelation))
+                return new(command.CorrelationId, CommandDisposition.Rejected, "StationMaintenanceRequired",
+                    AuditPersistence.NotAttempted, Guid.NewGuid());
         if (command is StationQualificationCommand qualification)
             return await SubmitStationQualificationAsync(qualification, cancellationToken).ConfigureAwait(false);
-        ArgumentNullException.ThrowIfNull(command);
         if (command is DiagnosticSupportCommand diagnosticSupport)
             return await SubmitDiagnosticSupportAsync(diagnosticSupport, cancellationToken).ConfigureAwait(false);
         if (command is CorrectProductionPartIdentityCommand partIdentityCorrection)
@@ -749,6 +757,9 @@ public sealed partial class StationRuntime : IStationRuntime, ICameraSetupRuntim
             next.LastCommand is { } armProgress)
             next = next with { LastCommand = armProgress with
                 { State = OperationState.Failed, ReasonCode = "ProductionAdmissionChanged" } };
+        if (_maintenanceInhibit)
+            next = next with { Ready = false, ArmState = ProductionArmState.Disarmed,
+                AdmissionBlockers = new AdmissionBlockers(next.AdmissionBlockers.Append("StationMaintenanceRequired").Distinct()) };
         var published = next with { Revision = revision, ObservedAtUtc = DateTimeOffset.UtcNow,
             AlarmState = alarms, ProductionAdmission = admission };
         _snapshot = published;

@@ -63,7 +63,9 @@ public enum Permission : ushort
     /// <summary>Start or stop one bounded, freshly reauthenticated diagnostic elevation.</summary>
     StartDiagnosticCapture = 42,
     /// <summary>Create one scoped, re-redacted support bundle; conveys no raw-data authority.</summary>
-    ExportSupportBundle = 43
+    ExportSupportBundle = 43,
+    /// <summary>Authorize one graceful station shutdown and bounded maintenance handoff.</summary>
+    PrepareStationMaintenance = 44
 }
 
 /// <summary>

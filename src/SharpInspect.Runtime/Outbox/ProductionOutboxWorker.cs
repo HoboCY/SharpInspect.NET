@@ -225,6 +225,7 @@ internal sealed class ProductionOutboxWorker
             }
             var attempt = Guid.NewGuid();
             var binding = _transports.Resolve(delivery.Route);
+            if (binding is not null) _store.RequireProductionOwnership();
             var connectionHash = binding?.ConnectionBindingHash ?? OutboxValidation.HashParts(
                 "sharpinspect-outbox-missing-transport-v1", delivery.Route.ContentHash);
             // 先提交 AttemptStarted，再调用外部传输；中途崩溃也能留下可恢复的尝试身份。

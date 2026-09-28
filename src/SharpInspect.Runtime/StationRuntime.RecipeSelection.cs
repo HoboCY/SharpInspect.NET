@@ -164,6 +164,7 @@ public sealed partial class StationRuntime
         if (!_recipeSelectionStartupVerified) return "RecipeSelectionStartupVerificationPending";
         if (_recipeSelectionCacheDiverged) return "RecipeSelectionCacheReloadRequired";
         if (_disposed || _shutdownRequested || _snapshot.Lifecycle == RuntimeLifecycle.Stopped) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (Volatile.Read(ref _pendingLocalStops) != 0) return "RecipeSelectionLocalStop";
         // A Map change never disarms production: it is admitted only while already
         // not-ready and disarmed and never touches the arm axis itself.

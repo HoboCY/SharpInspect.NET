@@ -39,6 +39,9 @@ public sealed partial class StationRuntime
         ArgumentNullException.ThrowIfNull(storeOptions);
         ArgumentNullException.ThrowIfNull(executionOptions);
         ArgumentNullException.ThrowIfNull(clock);
+        if (_audit is not SqliteCommandStore ownershipStore)
+            throw new InvalidOperationException("StationDeploymentOwnershipRequired");
+        ownershipStore.RequireProductionOwnership();
         if (options.EvidenceRequirement != ProductionEvidenceRequirement.None)
             throw new ArgumentException("ProductionInspectionEvidenceRequirementUnavailable");
         if ((options.ImageStage is null) != (storeOptions.ImageEvidence is null) ||
@@ -98,6 +101,8 @@ public sealed partial class StationRuntime
     {
         lock (_sync)
         {
+            if (_audit is not SqliteCommandStore { DeploymentOwnership.IsHeld: true })
+                return RecipeActivationPhysicalPhaseClaim.Unavailable("StationDeploymentOwnershipRequired");
             if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Current is null ||
                 owner.Aborted || owner.FaultAbortRequested || owner.Cancellation.IsCancellationRequested || _disposed || _shutdownRequested)
                 return RecipeActivationPhysicalPhaseClaim.Unavailable("ProductionInspectionRevoked");

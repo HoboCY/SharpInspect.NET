@@ -17,6 +17,9 @@ public sealed class ProductionStoreOptions
 
     public string DatabasePath { get; init; } = string.Empty;
 
+    /// <summary>Explicit, pre-provisioned installation ownership. Independent of ledger schema opt-ins.</summary>
+    public Deployment.StationInstallationOptions? StationInstallation { get; init; }
+
     public TimeSpan CommitTimeout { get; init; } = TimeSpan.FromSeconds(2);
 
     public TimeSpan QueryTimeout { get; init; } = TimeSpan.FromSeconds(2);

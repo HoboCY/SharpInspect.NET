@@ -1,0 +1,23 @@
+<UserControl x:Class="SharpInspect.Wpf.StationMaintenancePanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI">
+    <Border Background="White" BorderBrush="#CCD7E3" BorderThickness="1" CornerRadius="4" Padding="16">
+        <StackPanel>
+            <TextBlock Text="停产与维护交接" FontSize="18" FontWeight="SemiBold" Foreground="#172B42" />
+            <TextBlock Text="申请后，工位会完成当前检测和结果确认，停止后台工作，再请求宿主退出。关闭或切换本页面只会关闭展示。"
+                       TextWrapping="Wrap" Foreground="#556679" Margin="0,6,0,12" />
+            <TextBlock Text="{Binding PhaseText}" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" Margin="0,4,0,12" />
+            <WrapPanel>
+                <TextBlock Text="维护原因" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox ItemsSource="{Binding ReasonOptions}" SelectedItem="{Binding SelectedReason}"
+                          DisplayMemberPath="Label" Width="160" Margin="0,0,16,0" />
+                <TextBlock Text="再次验证密码" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <PasswordBox x:Name="StepUpPasswordBox" Width="170" Margin="0,0,16,0" />
+                <Button Content="申请停产并退出宿主" IsEnabled="{Binding CanSubmit}" Click="PrepareClick" Padding="12,6" Margin="0,0,8,0" />
+                <Button Content="刷新状态" Command="{Binding RefreshCommand}" Padding="12,6" />
+            </WrapPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

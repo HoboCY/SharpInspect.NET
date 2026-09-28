@@ -115,7 +115,7 @@ public sealed partial class StationRuntime
             }
         }
         lock (_sync)
-            if (_shutdownRequested || _disposed) reason = "RuntimeStopping";
+            if (_shutdownRequested || _disposed || _maintenanceInhibit) reason = "RuntimeStopping";
         var authorization = await _authorization!.HandleCalibrationCommandAsync(command, epoch, attempt,
             input, existing?.Header, reason, deadline, cancellationToken).ConfigureAwait(false);
         if (authorization.Outcome.Disposition != CommandDisposition.Accepted || authorization.Header is null ||

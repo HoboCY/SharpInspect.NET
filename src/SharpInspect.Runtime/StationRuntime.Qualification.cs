@@ -104,6 +104,7 @@ public sealed partial class StationRuntime : IStationQualificationSessionService
         if (_qualificationModbusProfile is not null && HasActiveQualificationCycleAlarmLocked())
             return "QualificationCycleAlarmBlocksAdmission";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (_stationQualificationStartupPending) return "StationQualificationStartupRecoveryPending";
         if (_stationQualificationRecoveryBlocked) return "StationQualificationRecoveryRequired";
         if (_stationQualificationOwner is not null || _stationQualificationAdmissionPending)

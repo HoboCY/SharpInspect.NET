@@ -127,6 +127,7 @@ public sealed partial class StationRuntime
         InspectionCycleRequestObserver? observer = null;
         try
         {
+            ((SqliteCommandStore)_audit!).RequireProductionOwnership();
             await channel.ConnectAsync(token).ConfigureAwait(false);
             var initial = await channel.ReadRuntimeStateAsync(token).ConfigureAwait(false);
             if (initial.QualificationReady || initial.ProductionReady || initial.Busy || initial.ResultValid ||
@@ -385,6 +386,7 @@ public sealed partial class StationRuntime
     {
         lock (_sync)
         {
+            ((SqliteCommandStore)_audit!).RequireProductionOwnership();
             if (!ReferenceEquals(_productionInspectionOwner, owner) || owner.Aborted || _disposed ||
                 _shutdownRequested && _productionShutdownDeadline is not { Expired: false })
                 throw new PlcRequestRevokedException();

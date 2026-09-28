@@ -44,7 +44,7 @@ public sealed partial class StationRuntime
                     ManualInspectionConfigurationBlockedLocked || StationQualificationConfigurationBlockedLocked ||
                     _importPhysicalReservation is not null ||
                     _snapshot.LastCommand?.State == OperationState.Pending,
-                _snapshot.ActiveRecipe, _shutdownRequested, _disposed);
+                _snapshot.ActiveRecipe, _shutdownRequested || _maintenanceInhibit, _disposed);
         }
     }
 

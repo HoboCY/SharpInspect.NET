@@ -20,6 +20,8 @@ public static class ServiceCollectionExtensions
 {
     private static void RegisterDiagnostics(IServiceCollection services)
     {
+        services.TryAddSingleton<IStationMaintenanceQuery>(p => p.GetRequiredService<IStationRuntime>() as IStationMaintenanceQuery ??
+            throw new InvalidOperationException("StationMaintenanceRuntimeUnavailable"));
         services.TryAddSingleton<IDiagnosticSupportQuery>(p => p.GetRequiredService<IStationRuntime>() as IDiagnosticSupportQuery ??
             throw new InvalidOperationException("DiagnosticSupportRuntimeUnavailable"));
         services.TryAddSingleton<ISupportBundleReader>(p => p.GetRequiredService<IStationRuntime>() as ISupportBundleReader ??
@@ -428,6 +430,7 @@ public static class ServiceCollectionExtensions
             p.GetService<CameraRecoveryService>(), p.GetService<CalibrationSessionOptions>(),
             p.GetService<CalibrationProcedureRegistry>(), options, p.GetService<PhysicalCalibrationVerificationRegistry>(),
             presentationPerformance: p.GetService<IPresentationPerformanceQuery>());
+            runtime.ConfigureStationMaintenance(options, p.GetService<IStationHostShutdown>());
             runtime.ConfigureOutbox(options, p.GetService<Outbox.ProductionOutboxOptions>());
             if (p.GetService<IEvidenceRetentionService>() is { } retention)
                 runtime.ConfigureRetentionService(retention);

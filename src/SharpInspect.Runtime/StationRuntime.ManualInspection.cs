@@ -95,6 +95,7 @@ public sealed partial class StationRuntime : IManualInspectionSessionService
             _manualExecutionOptions is null || _manualAcquisitionClock is null || _frameBufferPool is null || _authorization is null ||
             _audit is not SqliteCommandStore) return "ManualInspectionUnavailable";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (_manualStartupPending) return "ManualInspectionStartupRecoveryPending";
         if (_manualRecoveryBlocked) return "ManualInspectionRecoveryRequired";
         if (_manualOwner is not null || _manualAdmissionPending) return "ManualInspectionSessionInProgress";

@@ -624,6 +624,8 @@ public sealed class RecipeDraftStorageTests
             };
             var options = new ProductionStoreOptions(Path.Combine(directory, "drafts.sqlite"))
             {
+                StationInstallation = productionInspections is not null || outbox is not null
+                    ? StationInstallationFixture.Provision(station, Path.Combine(directory, "drafts.sqlite")) : null,
                 AuditIntegrityPolicy = audit,
                 LocalIdentity = identityOptions,
                 AlarmPolicy = alarmPolicy,

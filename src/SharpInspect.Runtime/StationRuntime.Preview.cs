@@ -79,6 +79,7 @@ public sealed partial class StationRuntime : IPreviewSessionService
         if (_previewOptions is null || _previewDrafts is null || _authorization is null || _audit is not SqliteCommandStore)
             return "PreviewUnavailable";
         if (_disposed || _shutdownRequested) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (_previewStartupPending) return "PreviewStartupRecoveryPending";
         if (_previewRecoveryBlocked) return "PreviewRecoveryRequired";
         if (_previewOwner is not null || _previewAdmissionPending) return "PreviewSessionInProgress";

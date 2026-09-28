@@ -97,6 +97,7 @@ public sealed partial class StationRuntime
         if (_activationRecoveryBlocked) return "RecipeActivationRecoveryRequired";
         if (_cameraSetupRuntime.ConfigurationMutationInProgress) return "RecipeActivationCameraConfigurationInProgress";
         if (_disposed || _shutdownRequested || _snapshot.Lifecycle == RuntimeLifecycle.Stopped) return "RuntimeStopped";
+        if (_maintenanceInhibit) return "StationMaintenanceRequired";
         if (reservation is not null && !ReferenceEquals(_activationReservation, reservation)) return "RecipeActivationReservationLost";
         if (reservation?.StopRequested == true || reservation?.Cancellation.IsCancellationRequested == true ||
             Volatile.Read(ref _pendingLocalStops) != 0)
