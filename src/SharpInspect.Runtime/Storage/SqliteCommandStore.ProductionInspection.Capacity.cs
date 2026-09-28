@@ -100,7 +100,7 @@ internal sealed partial class SqliteCommandStore
                 productionRecoveryOptions: _options.ProductionRecovery,
                 productionInspectionOptions: production,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database,
                 verification, deadline, production);
             var rows = ReadProductionInspectionRows(database, production, deadline);

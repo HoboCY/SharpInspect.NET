@@ -237,7 +237,7 @@ public sealed class SqlitePreviewSessionQuery : IPreviewSessionHistoryQuery
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

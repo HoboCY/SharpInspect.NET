@@ -55,6 +55,13 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 SqliteNative.ConfigureSqliteLimit(db, _options, schema);
                 StationQualificationReadGuard.RequireConfiguration(schema, _options);
                 TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
+                if (_options.ProductionArming is null && schema == ProductionArmStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("ProductionArmConfigurationRequired");
+                if (_options.ProductionArming is not null && schema < ProductionArmStoreOptions.SchemaVersion)
+                    throw new InvalidOperationException("ProductionArmGovernedMigrationRequired");
+                if (schema == ProductionArmStoreOptions.SchemaVersion &&
+                    (_options.ProductionAdmission is null || _options.LocalIdentity is null))
+                    throw new InvalidOperationException("ProductionArmingRequiresAdmissionIdentityAndAudit");
                 if (_options.CalibrationSessions is not null && schema < CalibrationSessionStoreOptions.SchemaVersion)
                     throw new InvalidOperationException("CalibrationGovernedMigrationRequired");
                 if (_options.CalibrationSessions is null &&
@@ -296,7 +303,7 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             RecipeTransferReadGuard.RequireVerified(db, report, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(db, report, deadline, _options);
             StationQualificationReadGuard.RequireVerified(db, report, deadline, _options);
@@ -330,6 +337,8 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
                 if (productionAdmissionSchema)
                     AuditChainDatabase.RequireFullProductionAdmissionVerification(db, report, deadline,
                         _options.ProductionAdmission);
+                if (schema == ProductionArmStoreOptions.SchemaVersion)
+                    AuditChainDatabase.RequireFullProductionArmVerification(db, report, deadline);
                 if (qualificationCycleSchema)
                     AuditChainDatabase.RequireFullQualificationCycleVerification(db, report, deadline,
                         _options.QualificationCycles);
@@ -370,6 +379,9 @@ public sealed class SqliteAuditIntegrityQuery : IAuditIntegrityQuery
 
     internal static string FaultReason(Exception exception, string unavailable)
     {
+        if (exception is InvalidOperationException { Message: var armReason } &&
+            armReason.StartsWith("ProductionArm", StringComparison.Ordinal))
+            return armReason;
         if (exception is InvalidOperationException { Message: var selectionReason } &&
             (selectionReason.StartsWith("RecipeSelection", StringComparison.Ordinal) ||
              selectionReason.StartsWith("RecipeChange", StringComparison.Ordinal)))

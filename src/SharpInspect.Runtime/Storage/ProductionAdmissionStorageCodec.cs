@@ -144,7 +144,8 @@ internal static class ProductionAdmissionStorageCodec
     internal static string PayloadHash(ReadOnlySpan<byte> payload) =>
         Convert.ToHexString(SHA256.HashData(payload));
 
-    private static void WriteReport(BinaryWriter writer, ProductionAdmissionReport report)
+    /// <summary>The unchanged schema-22 report bytes, reusable by the schema-32 arm ledger.</summary>
+    internal static void WriteReport(BinaryWriter writer, ProductionAdmissionReport report)
     {
         WriteGuid(writer, report.RuntimeEpoch);
         writer.Write(report.SnapshotRevision);
@@ -172,7 +173,7 @@ internal static class ProductionAdmissionStorageCodec
         WriteString(writer, report.ContentHash, 64);
     }
 
-    private static ProductionAdmissionReport ReadReport(BinaryReader reader)
+    internal static ProductionAdmissionReport ReadReport(BinaryReader reader)
     {
         var epoch = ReadGuid(reader);
         var revision = reader.ReadInt64();

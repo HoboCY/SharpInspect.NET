@@ -182,7 +182,7 @@ public sealed class SqlitePartIdentityHistoryQuery : IPartIdentityHistoryQuery
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             AuditChainDatabase.RequireFullPartIdentityVerification(database, verification,
                 deadline, _options.PartIdentities);
             SqliteNative.EnsureDeadline(deadline, cancellationToken);

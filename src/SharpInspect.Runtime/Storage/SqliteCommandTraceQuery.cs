@@ -473,7 +473,7 @@ public sealed class SqliteCommandTraceQuery : ICommandTraceQuery
                 productionInspectionOptions: options.ProductionInspections,
                 productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities,
-                recipeSelectionOptions: options.RecipeSelections);
+                productionArmOptions: options.ProductionArming, recipeSelectionOptions: options.RecipeSelections);
             RecipeTransferReadGuard.RequireVerified(database, report, deadline, options);
             TraceStoragePolicyReadGuard.RequireVerified(database, report, deadline, options);
             StationQualificationReadGuard.RequireVerified(database, report, deadline, options);

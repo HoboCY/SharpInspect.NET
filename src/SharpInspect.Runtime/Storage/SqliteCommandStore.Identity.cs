@@ -84,6 +84,7 @@ internal sealed partial class SqliteCommandStore
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
             var recipeSelectionStore = RecipeSelectionEnabled;
+            var productionArmStore = ProductionArmingEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -107,7 +108,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -184,6 +185,7 @@ internal sealed partial class SqliteCommandStore
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
             var recipeSelectionStore = RecipeSelectionEnabled;
+            var productionArmStore = ProductionArmingEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -207,7 +209,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -574,6 +576,7 @@ internal sealed partial class SqliteCommandStore
             var partIdentityStore = PartIdentityEnabled;
             var productionRecoveryStore = ProductionRecoveryEnabled;
             var recipeSelectionStore = RecipeSelectionEnabled;
+            var productionArmStore = ProductionArmingEnabled;
             var verification = AuditChainDatabase.Verify(database, _policy!, _signingKey!.KeyId,
                 _signingKey.PublicKeyBase64,
                 alarmStore || archiveStore || draftStore || cameraStore || recoveryStore || networkStore || imagingStore || calibrationStore || releaseStore || contractStore || activationStore || previewStore || manualStore || productionAdmissionStore || stationQualificationStore || plcCommunicationStore || partIdentityStore ? new AuditVerificationRequest(0, _policy!.MaximumVerificationEntries) :
@@ -597,7 +600,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,

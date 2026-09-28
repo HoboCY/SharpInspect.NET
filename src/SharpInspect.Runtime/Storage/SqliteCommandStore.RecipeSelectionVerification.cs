@@ -28,7 +28,7 @@ internal sealed partial class SqliteCommandStore
             traceStoragePolicyOptions: options.TraceStoragePolicies, qualificationCycleOptions: options.QualificationCycles,
             plcCommunicationOptions: options.PlcCommunication, productionInspectionOptions: options.ProductionInspections,
             productionRecoveryOptions: options.ProductionRecovery, partIdentityOptions: options.PartIdentities,
-            recipeSelectionOptions: selections);
+            productionArmOptions: options.ProductionArming, recipeSelectionOptions: selections);
         AuditChainDatabase.RequireFullRecipeSelectionVerification(database, report, deadline);
     }
 }

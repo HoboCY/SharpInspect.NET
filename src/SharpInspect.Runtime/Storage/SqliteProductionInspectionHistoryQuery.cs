@@ -218,7 +218,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                  productionRecoveryOptions: _options.ProductionRecovery,
                  productionInspectionOptions: production,
                  partIdentityOptions: _options.PartIdentities,
-                 recipeSelectionOptions: _options.RecipeSelections);
+                 productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database, verification,
                 deadline, production);
             var rows = SqliteCommandStore.ReadProductionInspectionRows(database, production,

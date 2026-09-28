@@ -146,7 +146,7 @@ public sealed class SqliteQualificationCycleHistoryQuery : IQualificationCycleHi
                 productionInspectionOptions: _options.ProductionInspections,
                 productionRecoveryOptions: _options.ProductionRecovery,
                 partIdentityOptions: _options.PartIdentities,
-                recipeSelectionOptions: _options.RecipeSelections);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
             TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
             AuditChainDatabase.RequireFullQualificationCycleVerification(database, verification,
