@@ -104,7 +104,7 @@ internal static partial class AuditChainDatabase
         RecipeSelectionStoreOptions options, StoreDeadline deadline, long? recipeChangeReserveOverride = null)
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
-            or ProductionImageEvidenceStoreOptions.SchemaVersion,
+            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
             "RecipeSelectionSchemaRequired");
         Require(kind is "RecipeSelectionStoreActivated" or "RecipeSelectionRevision" or "RecipeChangeEvent",
             "RecipeSelectionAuditKindInvalid");

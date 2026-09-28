@@ -33,7 +33,8 @@ internal sealed partial class SqliteCommandStore
                 _model.DisposeAsync().GetAwaiter().GetResult();
                 throw new InvalidOperationException(_model._initializationReason);
             }
-            if (_model.SchemaVersion is not (32 or 33 or 34) || migrationTargetVersion is not (33 or 34) ||
+            if (_model.SchemaVersion is not (32 or 33 or 34 or 35) ||
+                migrationTargetVersion is not (33 or 34 or 35) ||
                 _model.SchemaVersion > migrationTargetVersion || options.RecipeDrafts is null ||
                 options.ProductionArming is null || options.LocalIdentity is null || _model._policy is null)
             {
@@ -82,7 +83,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: options.ProductionInspections, productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities, recipeSelectionOptions: options.RecipeSelections,
                 productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle,
-                imageEvidenceOptions: options.ImageEvidence);
+                imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization);
             var tail = AuditChainDatabase.Tail(database, deadline);
             if (report.State != AuditIntegrityState.Verified || report.VerifiedFromSequence != 1 ||
                 report.VerifiedThroughSequence != tail.Sequence)
@@ -104,7 +105,7 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34))
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35))
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
@@ -162,6 +163,14 @@ internal sealed partial class SqliteCommandStore
                 InitializeImageEvidenceSchema(database, Options.ImageEvidence, deadline, _model._policy!, key);
                 return;
             }
+            if (_migrationTargetVersion == ProductionImageFinalizationStoreOptions.SchemaVersion &&
+                Options.ImageFinalization is not null && Options.ImageEvidence is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=35;", deadline);
+                InitializeImageFinalizationSchema(database, Options.ImageFinalization, deadline,
+                    _model._policy!, key);
+                return;
+            }
             throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
         }
 
@@ -174,10 +183,13 @@ internal sealed partial class SqliteCommandStore
         }
 
         public void Dispose() => _model.DisposeAsync().GetAwaiter().GetResult();
-        private string StageName(string name) => _migrationTargetVersion ==
-            ProductionImageEvidenceStoreOptions.SchemaVersion
-                ? "__sharpinspect_migration33_34_" + name
-                : "__sharpinspect_migration32_33_" + name;
+        private string StageName(string name) => _migrationTargetVersion switch
+        {
+            ProductionImageFinalizationStoreOptions.SchemaVersion =>
+                "__sharpinspect_migration34_35_" + name,
+            ProductionImageEvidenceStoreOptions.SchemaVersion => "__sharpinspect_migration33_34_" + name,
+            _ => "__sharpinspect_migration32_33_" + name
+        };
         private static string Quote(string identifier) => "\"" + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
@@ -224,5 +236,36 @@ internal sealed partial class SqliteCommandStore
         PartIdentities = target.PartIdentities, ProductionRecovery = target.ProductionRecovery,
         RecipeSelections = target.RecipeSelections, ProductionArming = target.ProductionArming,
         RecipeLifecycle = target.RecipeLifecycle, ImageEvidence = null
+    };
+
+    /// <summary>
+    /// The schema-34 source profile of the governed schema-34 to schema-35 migration: the exact
+    /// target configuration with only the image finalization option removed. The image evidence
+    /// store is retained, because a schema-34 source already owns it and the source proof must
+    /// re-verify every store the source generation carries.
+    /// </summary>
+    internal static ProductionStoreOptions MigrationImageFinalizationSourceOptions(
+        ProductionStoreOptions target) => new()
+    {
+        DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout,
+        QueryTimeout = target.QueryTimeout, QueueCapacity = target.QueueCapacity,
+        AuditIntegrityPolicy = target.AuditIntegrityPolicy, LocalIdentity = target.LocalIdentity,
+        AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,
+        AlgorithmResultArchive = target.AlgorithmResultArchive, RecipeDrafts = target.RecipeDrafts,
+        CameraSetup = target.CameraSetup, CameraRecovery = target.CameraRecovery,
+        CameraNetwork = target.CameraNetwork, ImagingSetup = target.ImagingSetup,
+        CalibrationSessions = target.CalibrationSessions,
+        CalibrationGovernance = target.CalibrationGovernance, RecipeReleases = target.RecipeReleases,
+        PlcResultContracts = target.PlcResultContracts, RecipeActivations = target.RecipeActivations,
+        PreviewSessions = target.PreviewSessions, CalibrationImports = target.CalibrationImports,
+        ManualInspections = target.ManualInspections,
+        ProductionAdmission = target.ProductionAdmission,
+        StationQualifications = target.StationQualifications,
+        RecipeTransfers = target.RecipeTransfers, TraceStoragePolicies = target.TraceStoragePolicies,
+        QualificationCycles = target.QualificationCycles, PlcCommunication = target.PlcCommunication,
+        ProductionInspections = target.ProductionInspections, PartIdentities = target.PartIdentities,
+        ProductionRecovery = target.ProductionRecovery, RecipeSelections = target.RecipeSelections,
+        ProductionArming = target.ProductionArming, RecipeLifecycle = target.RecipeLifecycle,
+        ImageEvidence = target.ImageEvidence
     };
 }

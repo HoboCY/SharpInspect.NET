@@ -39,6 +39,9 @@ internal sealed partial class SqliteCommandStore
         AuditChainDatabase.Require(checked(used.Bytes + (reserved + 1) * 2 *
             ProductionInspectionStoredPayloadBytes(options.MaximumPayloadBytes)) <= options.MaxTotalBytes,
             "ProductionImageEvidenceTotalCapacityExceeded");
+        // Every obligation this admission will create must still be able to write its future
+        // Succeeded and StageReleased facts, in this ledger and in the shared central audit.
+        EnsureImageFinalizationReserveCapacity(database, checked(reserved + 1), deadline);
     }
 
     private static long CountImageReservations(IReadOnlyList<ProductionInspectionStoredRow> rows) =>
@@ -90,6 +93,7 @@ internal sealed partial class SqliteCommandStore
                 ProductionInspectionStoredPayloadBytes(workPayload.Length) + reserved * 2 *
                 ProductionInspectionStoredPayloadBytes(options.MaximumPayloadBytes)) <= options.MaxTotalBytes,
             "ProductionImageEvidenceCapacityExceeded");
+        EnsureImageFinalizationReserveCapacity(database, Math.Max(1, reserved), deadline);
         AuditChainDatabase.Execute(database, @"INSERT INTO pending_image_manifests
             (ManifestId,InspectionId,StageId,EvidencePolicyHash,ContentHash,PayloadHash,Payload) VALUES(?,?,?,?,?,?,?);", deadline,
             manifest.ManifestId.ToString("D"), manifest.InspectionId.ToString("D"), manifest.StageId.ToString("D"),

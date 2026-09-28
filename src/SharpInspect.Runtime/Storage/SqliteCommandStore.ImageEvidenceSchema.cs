@@ -163,8 +163,10 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("ImageEvidenceConfigurationRequired");
         imageEvidence.Validate();
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException("AuditPolicyNotConfigured");
-        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
-            ProductionImageEvidenceStoreOptions.SchemaVersion, "ImageEvidenceGovernedMigrationRequired");
+        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
+            ProductionImageEvidenceStoreOptions.SchemaVersion or
+            ProductionImageFinalizationStoreOptions.SchemaVersion,
+            "ImageEvidenceGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
             new AuditVerificationRequest(0, policy.MaximumVerificationEntries), startup: false, deadline,
@@ -183,7 +185,8 @@ internal sealed partial class SqliteCommandStore
             productionInspectionOptions: options.ProductionInspections,
             productionRecoveryOptions: options.ProductionRecovery, partIdentityOptions: options.PartIdentities,
             recipeSelectionOptions: options.RecipeSelections, productionArmOptions: options.ProductionArming,
-            recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: imageEvidence);
+            recipeLifecycleOptions: options.RecipeLifecycle, imageEvidenceOptions: imageEvidence,
+            imageFinalizationOptions: options.ImageFinalization);
         AuditChainDatabase.RequireFullImageEvidenceVerification(database, report, deadline);
     }
 

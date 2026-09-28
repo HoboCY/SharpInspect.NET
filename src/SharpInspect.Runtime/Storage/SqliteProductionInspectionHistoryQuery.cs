@@ -186,7 +186,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
             if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
                 PartIdentityStoreOptions.SchemaVersion or
                 ProductionRecoveryStoreOptions.SchemaVersion or
-                RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion))
+                RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion))
                 throw new InvalidOperationException(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -218,7 +218,7 @@ public sealed class SqliteProductionInspectionHistoryQuery : IProductionInspecti
                  productionRecoveryOptions: _options.ProductionRecovery,
                  productionInspectionOptions: production,
                  partIdentityOptions: _options.PartIdentities,
-                 productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence);
+                 productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database, verification,
                 deadline, production);
             var rows = SqliteCommandStore.ReadProductionInspectionRows(database, production,

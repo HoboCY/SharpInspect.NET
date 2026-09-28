@@ -119,7 +119,7 @@ internal static partial class AuditChainDatabase
     {
         Require(Scalar(database, "PRAGMA user_version;", deadline) is
             ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion
-            or ProductionImageEvidenceStoreOptions.SchemaVersion,
+            or ProductionImageEvidenceStoreOptions.SchemaVersion or ProductionImageFinalizationStoreOptions.SchemaVersion,
             "ProductionArmSchemaRequired");
         Require(kind is "ProductionArmStoreActivated" or "ProductionArmEvent", "ProductionArmAuditKindInvalid");
         options.Validate();

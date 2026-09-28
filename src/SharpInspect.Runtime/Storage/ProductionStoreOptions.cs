@@ -138,4 +138,12 @@ public sealed class ProductionStoreOptions
     /// option and its tables must match exactly. Leaving this null preserves every
     /// existing byte and generation, including a schema-33 store.</summary>
     public ProductionImageEvidenceStoreOptions? ImageEvidence { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 35 bounded production image finalization
+    /// lifecycle. It binds the qualified local NTFS final root, requires the existing image
+    /// evidence store (and therefore the whole production image stack) and stores only
+    /// immutable finalization facts and the current per-work projection through the one
+    /// existing store writer. Leaving this null preserves every existing byte and
+    /// generation, including a schema-34 store.</summary>
+    public ProductionImageFinalizationStoreOptions? ImageFinalization { get; init; }
 }
