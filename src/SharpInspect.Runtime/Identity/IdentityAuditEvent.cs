@@ -158,6 +158,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
             });
         }
 
+        schemaVersion = AuditChainDatabase.EnvelopeGeneration(schemaVersion);
         if (schemaVersion is < 3 or > RecipeLifecycleStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         if (PlcRecipeActivationEvidence is not null)
@@ -174,6 +175,7 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
 
     internal static long VerifyPayload(byte[] payload, long ordinal, string stationId, int schemaVersion = 6)
     {
+        schemaVersion = AuditChainDatabase.EnvelopeGeneration(schemaVersion);
         if (schemaVersion is < 3 or > RecipeLifecycleStoreOptions.SchemaVersion)
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
 

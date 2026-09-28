@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <PackageId>SharpInspect.NET.Runtime</PackageId>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Description>Headless SharpInspect station state authority and command boundary.</Description>
   </PropertyGroup>
   <ItemGroup>

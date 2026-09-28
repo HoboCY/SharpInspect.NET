@@ -42,7 +42,7 @@ public sealed partial class StationRuntime
         !_calibrationStartupBlocked && !_activationStartupPending && !_activationStartupBlocked &&
         !_activationRecoveryBlocked && !_previewStartupPending && !_previewRecoveryBlocked &&
         !_manualStartupPending && !_manualRecoveryBlocked && !_stationQualificationStartupPending &&
-        !_stationQualificationRecoveryBlocked && _snapshot.Evidence.PendingRequiredImages == 0 &&
+        !_stationQualificationRecoveryBlocked && ProductionImageBacklogReadyLocked(_snapshot) &&
         _snapshot.Evidence.PendingDeliveries == 0;
 
     private async ValueTask<ProductionDeploymentObservation?> CaptureProductionDeploymentAsync(

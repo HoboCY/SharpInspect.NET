@@ -72,6 +72,20 @@ public sealed class ProductionInspectionAdmission
         long acceptedMonotonicTimestamp, TraceStoragePolicySnapshot tracePolicySnapshot,
         IEnumerable<TraceRetentionObligation>? retentionObligations,
         PartIdentityEvidence? partIdentityEvidence)
+        : this(null, inspectionId, correlationId, runtimeEpoch, stationId, admissionGeneration,
+            controllerCycle, evidenceRequirement, activationReference, activationSnapshot,
+            endpointBindingHash, plcProfileHash, plcPolicyHash, connectionGeneration,
+            connectionAttempt, acceptedAtUtc, acceptedMonotonicTimestamp, tracePolicySnapshot,
+            retentionObligations, partIdentityEvidence) { }
+
+    internal ProductionInspectionAdmission(EvidenceCapturePolicySnapshot? evidenceCapturePolicy,
+        Guid inspectionId, Guid correlationId, Guid runtimeEpoch, string stationId, long admissionGeneration,
+        PlcControllerCycle controllerCycle, ProductionEvidenceRequirement evidenceRequirement,
+        RecipeActivationReference activationReference, RecipeActivationSnapshot activationSnapshot,
+        string endpointBindingHash, string plcProfileHash, string plcPolicyHash, long connectionGeneration,
+        int connectionAttempt, DateTimeOffset acceptedAtUtc, long acceptedMonotonicTimestamp,
+        TraceStoragePolicySnapshot tracePolicySnapshot, IEnumerable<TraceRetentionObligation>? retentionObligations,
+        PartIdentityEvidence? partIdentityEvidence)
     {
         if (inspectionId == Guid.Empty || correlationId == Guid.Empty || runtimeEpoch == Guid.Empty)
             throw new ArgumentException("ProductionInspectionAdmissionIdentityInvalid");
@@ -108,6 +122,11 @@ public sealed class ProductionInspectionAdmission
         AcceptedMonotonicTimestamp = acceptedMonotonicTimestamp;
         TracePolicySnapshot = tracePolicySnapshot ??
             throw new ArgumentNullException(nameof(tracePolicySnapshot));
+        var declaredCapture = activationSnapshot.Release.Source.Content.PolicyRequirements
+            .SingleOrDefault(value => value.Kind == RecipePolicyKind.EvidenceCapture)?.Contract;
+        if (declaredCapture != evidenceCapturePolicy?.Reference)
+            throw new InvalidOperationException("ProductionInspectionEvidencePolicyBindingMismatch");
+        EvidenceCapturePolicy = evidenceCapturePolicy;
         var declaredPartIdentity = activationSnapshot.Release.Source.Content.PartIdentityRequirement;
         if (declaredPartIdentity is null || declaredPartIdentity.Mode == PartIdentityRequirementMode.None)
         {
@@ -159,6 +178,7 @@ public sealed class ProductionInspectionAdmission
             TracePolicySnapshot, nameof(retentionObligations));
         var hashParts = new List<string?>
         {
+            evidenceCapturePolicy is not null ? "sharpinspect-production-inspection-admission-v3" :
             partIdentityEvidence is null ? "sharpinspect-production-inspection-admission-v1" :
                 "sharpinspect-production-inspection-admission-v2", InspectionId.ToString("D"),
             CorrelationId.ToString("D"), RuntimeEpoch.ToString("D"), StationId,
@@ -178,6 +198,9 @@ public sealed class ProductionInspectionAdmission
         hashParts.AddRange(RetentionObligations.Select(value => value.ContentHash));
         if (partIdentityEvidence is not null)
             hashParts.Add(partIdentityEvidence.ContentHash);
+        if (evidenceCapturePolicy is not null)
+            hashParts.AddRange(new[] { "evidence-capture-policy-v1", evidenceCapturePolicy.ContentHash,
+                partIdentityEvidence?.ContentHash });
         PartIdentityEvidence = partIdentityEvidence;
         ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
@@ -201,6 +224,8 @@ public sealed class ProductionInspectionAdmission
     public TraceStoragePolicySnapshot TracePolicySnapshot { get; }
     public ReadOnlyCollection<TraceRetentionObligation> RetentionObligations { get; }
     public PartIdentityEvidence? PartIdentityEvidence { get; }
+    /// <summary>Null is a historical undeclared policy, never an implicit current policy.</summary>
+    public EvidenceCapturePolicySnapshot? EvidenceCapturePolicy { get; }
     public string ContentHash { get; }
 
     private static string Hash(string value, string parameterName) =>
@@ -247,6 +272,23 @@ public sealed class ProductionInspectionCore
         FrameAcquisitionStart? acquisitionStart = null,
         long? executionAdmittedMonotonicTimestamp = null,
         long? executionMonotonicFrequency = null)
+        : this(null, admission, state, executionStatus, decision, reasonCode, acquisitionFailureKind,
+            acquisitionFailureReasonCode, frameMetadata, frameProvenance, preparedAlgorithmInstanceId,
+            algorithm, configuration, resultSchema, result, overlay, timing, plcPayload, structuredResultJson,
+            structuredResultHash, partIdentity, committedAtUtc, committedMonotonicTimestamp, retentionObligations,
+            acquisitionStart, executionAdmittedMonotonicTimestamp, executionMonotonicFrequency) { }
+
+    internal ProductionInspectionCore(ProductionImageEvidenceSnapshot? imageEvidence,
+        ProductionInspectionAdmission admission, ProductionInspectionState state, ExecutionStatus executionStatus,
+        InspectionDecision decision, string reasonCode, CameraAcquisitionFailureKind? acquisitionFailureKind,
+        string? acquisitionFailureReasonCode, FrameMetadata? frameMetadata, FrameProvenance? frameProvenance,
+        Guid preparedAlgorithmInstanceId, AlgorithmIdentity? algorithm, AlgorithmConfigurationSnapshot? configuration,
+        AlgorithmResultSchema? resultSchema, AlgorithmResult? result, FrameOverlaySnapshot? overlay,
+        AlgorithmExecutionTimingSnapshot? timing, PlcResultPayloadSnapshot? plcPayload, string? structuredResultJson,
+        string? structuredResultHash, string? partIdentity, DateTimeOffset committedAtUtc,
+        long committedMonotonicTimestamp, IEnumerable<TraceRetentionObligation>? retentionObligations,
+        FrameAcquisitionStart? acquisitionStart, long? executionAdmittedMonotonicTimestamp,
+        long? executionMonotonicFrequency)
     {
         Admission = admission ?? throw new ArgumentNullException(nameof(admission));
         if (Admission.EvidenceRequirement != ProductionEvidenceRequirement.None)
@@ -420,8 +462,11 @@ public sealed class ProductionInspectionCore
         ExecutionMonotonicFrequency = executionMonotonicFrequency;
         RetentionObligations = ProductionInspectionCoreValidation.CopyObligations(
             retentionObligations, admission.TracePolicySnapshot);
+        ValidateImageEvidence(imageEvidence);
+        ImageEvidence = imageEvidence;
         var hashParts = new List<string?>
         {
+            ImageEvidence is not null ? "sharpinspect-production-inspection-core-v3" :
             Admission.PartIdentityEvidence is null ? "sharpinspect-production-inspection-core-v1" :
                 "sharpinspect-production-inspection-core-v2", Admission.ContentHash, State.ToString(),
             ExecutionStatus.ToString(), Decision.ToString(), ReasonCode,
@@ -438,6 +483,7 @@ public sealed class ProductionInspectionCore
             RetentionObligations.Count.ToString(CultureInfo.InvariantCulture)
         };
         hashParts.AddRange(RetentionObligations.Select(value => value.ContentHash));
+        if (ImageEvidence is not null) hashParts.Add(ImageEvidence.ContentHash);
         ContentHash = AlgorithmContractValidation.HashParts(hashParts);
     }
 
@@ -467,7 +513,36 @@ public sealed class ProductionInspectionCore
     public long? ExecutionAdmittedMonotonicTimestamp { get; }
     public long? ExecutionMonotonicFrequency { get; }
     public ReadOnlyCollection<TraceRetentionObligation> RetentionObligations { get; }
+    public ProductionImageEvidenceSnapshot? ImageEvidence { get; }
     public string ContentHash { get; }
+
+    private void ValidateImageEvidence(ProductionImageEvidenceSnapshot? evidence)
+    {
+        var policy = Admission.EvidenceCapturePolicy;
+        if ((policy is null) != (evidence is null))
+            throw new ArgumentException("ProductionImageEvidencePolicyMissing");
+        if (policy is null) return;
+        var required = policy.RequiresImage(FrameMetadata is not null, ExecutionStatus, Decision);
+        var expected = FrameMetadata is null ? ProductionImageEvidenceState.NotAvailable :
+            required ? ProductionImageEvidenceState.Pending : ProductionImageEvidenceState.NotRequired;
+        if (evidence!.State != expected)
+            throw new ArgumentException("ProductionImageEvidenceStateMismatch");
+        if (FrameMetadata is null && (AcquisitionFailureReasonCode is null ||
+            evidence.ReasonCode != AcquisitionFailureReasonCode))
+            throw new ArgumentException("ProductionImageEvidenceAcquisitionReasonMismatch");
+        if (evidence.Manifest is not { } manifest) return;
+        var rule = Admission.TracePolicySnapshot.RetentionRules.Single(value =>
+            value.EvidenceClass == TraceRetentionClass.AuthoritativeImage);
+        if (manifest.InspectionId != Admission.InspectionId || manifest.AdmissionContentHash != Admission.ContentHash ||
+            manifest.EvidencePolicyContentHash != policy.ContentHash || manifest.Width != FrameMetadata!.Width ||
+            manifest.Height != FrameMetadata.Height || manifest.PixelFormat != FrameMetadata.PixelFormat ||
+            manifest.ValidBits != FrameMetadata.ValidBits || manifest.InputMetadataHash != FrameHash(FrameMetadata) ||
+            manifest.InputProvenanceHash != ProvenanceHash(FrameProvenance) ||
+            manifest.TracePolicySnapshotHash != Admission.TracePolicySnapshot.ContentHash ||
+            manifest.RetentionRuleHash != rule.ContentHash || manifest.CreatedAtUtc < Admission.AcceptedAtUtc ||
+            manifest.CreatedAtUtc > CommittedAtUtc)
+            throw new ArgumentException("ProductionImageManifestCoreBindingMismatch");
+    }
 
     private static bool IsProductionCorrelation(ExecutionCorrelationId correlation, Guid value) =>
         correlation.Kind == ExecutionKind.Production && correlation.Value == value;
@@ -520,7 +595,7 @@ public sealed class ProductionInspectionCore
         string.Equals(left.ContractVersion, right.ContractVersion, StringComparison.Ordinal) &&
         left.Primitives.SequenceEqual(right.Primitives);
 
-    private static string? FrameHash(FrameMetadata? value) => value is null ? null :
+    internal static string? FrameHash(FrameMetadata? value) => value is null ? null :
         AlgorithmContractValidation.HashParts(new string?[]
         {
             "production-frame-metadata-v1", value.Correlation.Value.ToString("D"),
@@ -541,7 +616,7 @@ public sealed class ProductionInspectionCore
             value.EffectiveCameraConfiguration.TriggerDelayUs.ToString("R", CultureInfo.InvariantCulture)
         });
 
-    private static string? ProvenanceHash(FrameProvenance? value) => value is null ? null :
+    internal static string? ProvenanceHash(FrameProvenance? value) => value is null ? null :
         AlgorithmContractValidation.HashParts(new string?[]
         {
             "production-frame-provenance-v1", value.Correlation.Value.ToString("D"), value.ProviderId,

@@ -153,19 +153,20 @@ internal sealed class RecipeActivationChecks
         var traceMatchesOptions = evidence.TracePolicy.Version == evidence.InspectionOptions.TracePolicyVersion &&
             evidence.TracePolicy.ContentHash == evidence.InspectionOptions.TracePolicySnapshotHash;
         var policyPassed = evidence.InspectionOptions.EvidenceRequirement == ProductionEvidenceRequirement.None &&
-            noRoutes && traceMatchesOptions && evidence.StartupReconciled;
+            Images.ProductionImageEvidenceBinding.IsAvailable(evidence.InspectionOptions, evidence.StoreOptions,
+                snapshot.Release.Source.Content) && noRoutes && traceMatchesOptions && evidence.StartupReconciled;
         Observe(16, policyPassed, policyPassed ? "ProductionEvidencePolicyExactlyMatches" :
             evidence.InspectionOptions.EvidenceRequirement != ProductionEvidenceRequirement.None ?
                 "ProductionEvidenceRequirementMustBeNone" : !noRoutes ? "ProductionTraceRoutesMustBeEmpty" :
-            !traceMatchesOptions ? "ProductionTracePolicySnapshotMismatch" : "ProductionStartupReconciliationRequired",
+            !traceMatchesOptions ? "ProductionTracePolicySnapshotMismatch" : !evidence.StartupReconciled ?
+                "ProductionStartupReconciliationRequired" : "ProductionEvidenceCapturePolicyUnavailable",
             evidence.TracePolicy.ContentHash, evidence.InspectionOptions.TracePolicySnapshotHash);
 
         var expectedStation = ProductionAdmissionCanonical.Hash("production-station-v1",
             evidence.InspectionOptions.StationId, evidence.StoreOptions.LocalIdentity?.StationId,
             evidence.StoreOptions.AuditIntegrityPolicy?.StationId);
-        var expectedPolicy = ProductionAdmissionCanonical.Hash("production-evidence-policy-v1",
-            evidence.InspectionOptions.EvidenceRequirement.ToString(), evidence.TracePolicy.ContentHash,
-            scope?.ContentHash);
+        var expectedPolicy = Images.ProductionImageEvidenceBinding.PolicyFingerprint(evidence.InspectionOptions,
+            evidence.StoreOptions, evidence.TracePolicy);
         var deployment = evidence.InspectionOptions.Deployment;
         var deploymentPassed = evidence.Configuration.MissingBindings.Count == 0 &&
             deployment is not null &&
@@ -194,6 +195,7 @@ internal sealed class RecipeActivationChecks
             evidence.Configuration.Get(ProductionConfigurationBinding.PlcEndpoint) == profile.EndpointBindingHash &&
             partIdentityPassed &&
             content.AssetRequirements.Count == 0 && content.CameraProviderExtension is null &&
+            Images.ProductionImageEvidenceBinding.IsAvailable(evidence.InspectionOptions, evidence.StoreOptions, content) &&
             evidence.InspectionOptions.EvidenceRequirement == ProductionEvidenceRequirement.None;
         Observe(18, cyclePassed, cyclePassed ? "ProductionCycleWriterExactlyMatches" :
             !snapshot.ProductionAuthority ? "ProductionActivationAuthorityRequired" :

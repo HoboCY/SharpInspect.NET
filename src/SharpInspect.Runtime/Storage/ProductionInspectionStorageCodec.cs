@@ -11,12 +11,13 @@ namespace SharpInspect.Runtime.Storage;
 /// The production ledger has its own wire domain and uses only the explicitly
 /// production-scoped structured result codec.
 /// </summary>
-internal static class ProductionInspectionStorageCodec
+internal static partial class ProductionInspectionStorageCodec
 {
     internal const int MaximumStringBytes = 4 * 1024 * 1024;
     private const int LegacyEnvelopeVersion = 1;
     private const int PartIdentityEnvelopeVersion = 2;
     private const int RecoveryEnvelopeVersion = 3;
+    private const int ImageEvidenceEnvelopeVersion = 4;
     private const int MaximumEnvelopeBytes = 16 * 1024 * 1024;
     private const int MaximumSegments = 2048;
     private const int MaximumObligations = 64;
@@ -27,6 +28,7 @@ internal static class ProductionInspectionStorageCodec
         ArgumentNullException.ThrowIfNull(value);
         var fields = new List<string?>
         {
+            value.EvidenceCapturePolicy is not null ? "ProductionInspectionAdmissionV3" :
             value.PartIdentityEvidence is null ? "ProductionInspectionAdmissionV1" :
                 "ProductionInspectionAdmissionV2", value.InspectionId.ToString("D"),
         value.CorrelationId.ToString("D"), value.RuntimeEpoch.ToString("D"), value.StationId,
@@ -48,6 +50,7 @@ internal static class ProductionInspectionStorageCodec
         };
         if (value.PartIdentityEvidence is { } evidence)
             fields.Add(evidence.ContentHash);
+        if (value.EvidenceCapturePolicy is { } capturePolicy) fields.Add(capturePolicy.ContentHash);
         return AuditCanonical.Encode(fields[0]!, fields.Skip(1).ToArray());
     }
 
@@ -56,6 +59,7 @@ internal static class ProductionInspectionStorageCodec
         ArgumentNullException.ThrowIfNull(value);
         var fields = new List<string?>
         {
+        value.ImageEvidence is not null ? "ProductionInspectionCoreV3" :
         value.Admission.PartIdentityEvidence is null ? "ProductionInspectionCoreV1" :
             "ProductionInspectionCoreV2", value.Admission.InspectionId.ToString("D"),
         value.Admission.ContentHash, value.State.ToString(), value.ExecutionStatus.ToString(),
@@ -76,6 +80,7 @@ internal static class ProductionInspectionStorageCodec
         };
         if (value.Admission.PartIdentityEvidence is { } evidence)
             fields.Add(evidence.ContentHash);
+        if (value.ImageEvidence is { } imageEvidence) fields.Add(imageEvidence.ContentHash);
         return AuditCanonical.Encode(fields[0]!, fields.Skip(1).ToArray());
     }
 
@@ -116,7 +121,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        var version = value.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        var version = value.EvidenceCapturePolicy is not null ? ImageEvidenceEnvelopeVersion :
+            value.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
         using (var writer = NewWriter(stream, EnvelopeKind.Admission, version))
         {
             WriteGuid(writer, value.InspectionId);
@@ -144,6 +150,7 @@ internal static class ProductionInspectionStorageCodec
             writer.Write(value.AcceptedAtUtc.UtcTicks);
             writer.Write(value.AcceptedMonotonicTimestamp);
             WriteObligations(writer, value.RetentionObligations);
+            if (version == ImageEvidenceEnvelopeVersion) WriteCapturePolicy(writer, value.EvidenceCapturePolicy!);
             WriteString(writer, value.ContentHash, 64);
         }
         return FinishEnvelope(stream);
@@ -182,9 +189,10 @@ internal static class ProductionInspectionStorageCodec
         var acceptedAt = ReadUtc(reader, "ProductionInspectionAcceptedAtInvalid");
         var acceptedMonotonic = reader.ReadInt64();
         var obligations = ReadObligations(reader, policySnapshot);
+        var capturePolicy = envelopeVersion == ImageEvidenceEnvelopeVersion ? ReadCapturePolicy(reader) : null;
         var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionAdmissionHashMissing");
         RequireEnd(stream, "ProductionInspectionAdmissionTrailingBytes");
-        var value = new ProductionInspectionAdmission(inspectionId, correlationId, runtimeEpoch,
+        var value = new ProductionInspectionAdmission(capturePolicy, inspectionId, correlationId, runtimeEpoch,
             stationId, admissionGeneration, new PlcControllerCycle(controllerEpoch, cycleSequence),
             evidence, new RecipeActivationReference(activationPosition, activationId, activationHash),
             activation, endpointHash, profileHash, policyHash, connectionGeneration,
@@ -198,7 +206,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        var version = value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
+        var version = value.ImageEvidence is not null ? ImageEvidenceEnvelopeVersion :
+            value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
         using (var writer = NewWriter(stream, EnvelopeKind.Core, version))
         {
             WriteString(writer, value.Admission.ContentHash, 64);
@@ -230,6 +239,7 @@ internal static class ProductionInspectionStorageCodec
                 writer.Write(admitted);
                 writer.Write(value.ExecutionMonotonicFrequency!.Value);
             }
+            if (version == ImageEvidenceEnvelopeVersion) WriteImageEvidence(writer, value.ImageEvidence!);
             WriteString(writer, value.ContentHash, 64);
         }
         return FinishEnvelope(stream);
@@ -239,7 +249,7 @@ internal static class ProductionInspectionStorageCodec
         ReadOnlyMemory<byte> payload, ProductionInspectionAdmission admission)
     {
         ArgumentNullException.ThrowIfNull(admission);
-        using var reader = OpenReader(payload, EnvelopeKind.Core, out var stream, out _);
+        using var reader = OpenReader(payload, EnvelopeKind.Core, out var stream, out var envelopeVersion);
         var admissionHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionAdmissionHashMissing");
         RequireHash(admission.ContentHash, admissionHash, "ProductionInspectionAdmissionMissing");
         var state = ReadEnum<ProductionInspectionState>(reader.ReadByte(), "ProductionInspectionStateInvalid");
@@ -270,6 +280,7 @@ internal static class ProductionInspectionStorageCodec
             executionAdmitted = reader.ReadInt64();
             executionFrequency = reader.ReadInt64();
         }
+        var imageEvidence = envelopeVersion == ImageEvidenceEnvelopeVersion ? ReadImageEvidence(reader) : null;
         var expectedHash = ReadString(reader, 64) ?? throw Corrupt("ProductionInspectionCoreHashMissing");
         RequireEnd(stream, "ProductionInspectionCoreTrailingBytes");
 
@@ -303,7 +314,7 @@ internal static class ProductionInspectionStorageCodec
                 result.OverlaySet, structuredHash);
         }
 
-        var value = new ProductionInspectionCore(admission, state, executionStatus, decision,
+        var value = new ProductionInspectionCore(imageEvidence, admission, state, executionStatus, decision,
             reason, failureKind, failureReason, frame, provenance, prepared, algorithm,
             configuration, resultSchema, result, overlay, timing, plc, structuredJson,
             structuredHash, admission.PartIdentityEvidence?.Value, committedAt, committedMonotonic,
@@ -317,7 +328,8 @@ internal static class ProductionInspectionStorageCodec
     {
         ArgumentNullException.ThrowIfNull(value);
         using var stream = new MemoryStream();
-        var version = value.Recovery is not null ? RecoveryEnvelopeVersion :
+        var version = value.Admission.EvidenceCapturePolicy is not null ? ImageEvidenceEnvelopeVersion :
+            value.Recovery is not null ? RecoveryEnvelopeVersion :
             value.Admission.PartIdentityEvidence is null ? LegacyEnvelopeVersion : PartIdentityEnvelopeVersion;
         using (var writer = NewWriter(stream, EnvelopeKind.Event, version))
         {
@@ -332,7 +344,8 @@ internal static class ProductionInspectionStorageCodec
             writer.Write(value.Core is not null);
             if (value.Core is not null)
                 WriteBytes(writer, EncodeCoreEnvelope(value.Core), MaximumEnvelopeBytes);
-            if (version >= RecoveryEnvelopeVersion)
+            if (version == ImageEvidenceEnvelopeVersion) writer.Write(value.Recovery is not null);
+            if (version == RecoveryEnvelopeVersion || version == ImageEvidenceEnvelopeVersion && value.Recovery is not null)
                 WriteRecoveryRecord(writer, value.Recovery ??
                     throw Corrupt("ProductionRecoveryEnvelopeRecordMissing"));
             WriteString(writer, value.ContentHash, 64);
@@ -358,7 +371,7 @@ internal static class ProductionInspectionStorageCodec
         if (reader.ReadBoolean())
             core = DecodeCoreEnvelope(ReadBytes(reader, MaximumEnvelopeBytes), admission);
         ProductionRecoveryRecord? recovery = null;
-        if (envelopeVersion >= RecoveryEnvelopeVersion)
+        if (envelopeVersion == RecoveryEnvelopeVersion || envelopeVersion == ImageEvidenceEnvelopeVersion && reader.ReadBoolean())
         {
             if (kind is not (ProductionInspectionEventKind.RecoveryRequired or
                 ProductionInspectionEventKind.RecoveryCompleted))
@@ -410,7 +423,7 @@ internal static class ProductionInspectionStorageCodec
         var magic = reader.ReadBytes(EnvelopeMagic.Length);
         version = reader.ReadInt32();
         if (!magic.AsSpan().SequenceEqual(EnvelopeMagic) ||
-            (version is not (LegacyEnvelopeVersion or PartIdentityEnvelopeVersion) &&
+            (version is not (LegacyEnvelopeVersion or PartIdentityEnvelopeVersion or ImageEvidenceEnvelopeVersion) &&
              !(version == RecoveryEnvelopeVersion && kind == EnvelopeKind.Event)) ||
             reader.ReadByte() != (byte)kind)
             throw Corrupt("ProductionInspectionEnvelopeVersionInvalid");

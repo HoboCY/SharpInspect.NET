@@ -1646,7 +1646,7 @@ internal sealed partial class SqliteCommandStore
                 productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
                 productionRecoveryOptions: _options.ProductionRecovery,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence);
         RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         TraceStoragePolicyReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.AlarmPolicy is not null)

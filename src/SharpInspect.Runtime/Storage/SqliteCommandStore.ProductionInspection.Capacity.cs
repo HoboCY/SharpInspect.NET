@@ -68,7 +68,7 @@ internal sealed partial class SqliteCommandStore
             if (schema == ProductionRecoveryStoreOptions.SchemaVersion && !ProductionRecoveryEnabled)
                 return Unavailable("ProductionRecoveryConfigurationRequired");
             if (schema is not (ProductionInspectionStoreOptions.SchemaVersion or
-                PartIdentityStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion))
+                PartIdentityStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion))
                 return Unavailable(schema > ProductionInspectionStoreOptions.SchemaVersion
                     ? "ProductionInspectionGovernedMigrationRequired"
                     : "ProductionInspectionConfigurationRequired");
@@ -100,7 +100,7 @@ internal sealed partial class SqliteCommandStore
                 productionRecoveryOptions: _options.ProductionRecovery,
                 productionInspectionOptions: production,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle);
+                productionArmOptions: _options.ProductionArming, recipeSelectionOptions: _options.RecipeSelections, recipeLifecycleOptions: _options.RecipeLifecycle, imageEvidenceOptions: _options.ImageEvidence);
             AuditChainDatabase.RequireFullProductionInspectionVerification(database,
                 verification, deadline, production);
             var rows = ReadProductionInspectionRows(database, production, deadline);

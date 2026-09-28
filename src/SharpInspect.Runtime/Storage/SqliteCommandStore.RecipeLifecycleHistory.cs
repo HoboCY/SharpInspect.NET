@@ -126,8 +126,9 @@ internal sealed partial class SqliteCommandStore
             throw new InvalidOperationException("RecipeLifecycleConfigurationRequired");
         lifecycleOptions.Validate();
         var policy = options.AuditIntegrityPolicy ?? throw new InvalidOperationException("AuditPolicyNotConfigured");
-        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) ==
-            RecipeLifecycleStoreOptions.SchemaVersion, "RecipeLifecycleGovernedMigrationRequired");
+        AuditChainDatabase.Require(AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is
+            RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion,
+            "RecipeLifecycleGovernedMigrationRequired");
         using var key = WindowsMachineAuditKey.Open(policy, false, out _);
         var report = AuditChainDatabase.Verify(database, policy, key.KeyId, key.PublicKeyBase64,
             new AuditVerificationRequest(0, policy.MaximumVerificationEntries), startup: false, deadline,
@@ -146,7 +147,7 @@ internal sealed partial class SqliteCommandStore
             productionInspectionOptions: options.ProductionInspections,
             productionRecoveryOptions: options.ProductionRecovery, partIdentityOptions: options.PartIdentities,
             recipeSelectionOptions: options.RecipeSelections, productionArmOptions: options.ProductionArming,
-            recipeLifecycleOptions: lifecycleOptions);
+            recipeLifecycleOptions: lifecycleOptions, imageEvidenceOptions: options.ImageEvidence);
         AuditChainDatabase.RequireFullRecipeLifecycleVerification(database, report, deadline, lifecycleOptions);
     }
 

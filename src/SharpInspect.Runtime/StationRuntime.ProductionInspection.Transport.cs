@@ -19,6 +19,11 @@ public sealed partial class StationRuntime
                 .WaitAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedRecipeChangesAsync(_lifetime.Token).ConfigureAwait(false);
             await FinalizeInterruptedProductionArmAttemptsAsync(_lifetime.Token).ConfigureAwait(false);
+            if (options.ImageStage is not null)
+            {
+                await ReadProductionInspectionPolicyAsync(_lifetime.Token).ConfigureAwait(false);
+                await VerifyProductionImageStartupAsync(_lifetime.Token).ConfigureAwait(false);
+            }
             lock (_sync)
                 if (!ProductionStartupDependenciesReconciledLocked())
                     throw new InvalidOperationException("ProductionInspectionStartupDependencyUnavailable");

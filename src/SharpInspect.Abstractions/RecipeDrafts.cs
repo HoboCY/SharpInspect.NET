@@ -18,7 +18,12 @@ public sealed record RecipeContractReference
 }
 
 public enum RecipeAssetKind { Calibration, AlgorithmModel }
-public enum RecipePolicyKind { AlgorithmExecution, ImageAcquisition, RecipeGovernance, CalibrationAcceptance }
+public enum RecipePolicyKind
+{
+    AlgorithmExecution, ImageAcquisition, RecipeGovernance, CalibrationAcceptance,
+    // Appended, never inserted: existing ordinals and canonical payload bytes stay frozen.
+    EvidenceCapture
+}
 public enum RecipeDraftValueOrigin { Explicit, AuthoringDefault }
 public sealed record RecipeDraftFieldOrigin
 {

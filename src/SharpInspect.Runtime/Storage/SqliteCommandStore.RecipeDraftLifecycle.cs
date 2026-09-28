@@ -37,7 +37,8 @@ internal sealed partial class SqliteCommandStore
     {
         var lineage = content.LifecycleLineage ?? throw new InvalidOperationException("RecipeDraftLifecycleLineageRequired");
         if (draftId == lineage.SourceDraft.DraftId) throw new InvalidOperationException("RecipeDraftDerivationRequiresNewIdentity");
-        if (AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) != RecipeLifecycleStoreOptions.SchemaVersion)
+        if (AuditChainDatabase.Scalar(database, "PRAGMA user_version;", deadline) is not
+            (RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion))
             throw new InvalidOperationException("RecipeDraftLifecycleConfigurationRequired");
         var transitions = AuditChainDatabase.Read(database, @"SELECT Payload,TransitionId,RecordContentHash,AuditSequence
             FROM recipe_lifecycle_events WHERE Position=? LIMIT 2;", deadline, row =>

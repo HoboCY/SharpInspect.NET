@@ -16,16 +16,25 @@ internal sealed partial class SqliteCommandStore
     {
         private static readonly string[] RebuiltTables = { "command_attempts", "command_facts", "audit_entries" };
         private readonly SqliteCommandStore _model;
+        private readonly int _migrationTargetVersion;
 
-        internal StartupMaintenanceSchema(ProductionStoreOptions options)
+        /// <summary>
+        /// One private, non-running schema model for one maintenance operation. The
+        /// operation's target generation is explicit, so the source and target profiles
+        /// of the same operation stage and rebuild the identical tables even though
+        /// their own schema versions differ by one.
+        /// </summary>
+        internal StartupMaintenanceSchema(ProductionStoreOptions options, int migrationTargetVersion)
         {
+            _migrationTargetVersion = migrationTargetVersion;
             _model = new SqliteCommandStore(options, ReadFileLength, startWriter: false);
             if (_model._initializationReason.Length != 0)
             {
                 _model.DisposeAsync().GetAwaiter().GetResult();
                 throw new InvalidOperationException(_model._initializationReason);
             }
-            if (_model.SchemaVersion is not (32 or 33) || options.RecipeDrafts is null ||
+            if (_model.SchemaVersion is not (32 or 33 or 34) || migrationTargetVersion is not (33 or 34) ||
+                _model.SchemaVersion > migrationTargetVersion || options.RecipeDrafts is null ||
                 options.ProductionArming is null || options.LocalIdentity is null || _model._policy is null)
             {
                 _model.DisposeAsync().GetAwaiter().GetResult();
@@ -72,7 +81,8 @@ internal sealed partial class SqliteCommandStore
                 qualificationCycleOptions: options.QualificationCycles, plcCommunicationOptions: options.PlcCommunication,
                 productionInspectionOptions: options.ProductionInspections, productionRecoveryOptions: options.ProductionRecovery,
                 partIdentityOptions: options.PartIdentities, recipeSelectionOptions: options.RecipeSelections,
-                productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle);
+                productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle,
+                imageEvidenceOptions: options.ImageEvidence);
             var tail = AuditChainDatabase.Tail(database, deadline);
             if (report.State != AuditIntegrityState.Verified || report.VerifiedFromSequence != 1 ||
                 report.VerifiedThroughSequence != tail.Sequence)
@@ -94,7 +104,8 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != 33) throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34))
+                throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
             var definitions = ReadSchemaDefinitions(canonical.Handle!, deadline);
@@ -125,13 +136,33 @@ internal sealed partial class SqliteCommandStore
             RequireForeignKeys(database, deadline);
         }
 
-        internal void AddLifecycle(sqlite3 database, StoreDeadline deadline)
+        /// <summary>
+        /// Adds the one feature of the operation's target generation inside the caller's
+        /// transaction: the lifecycle ledger for schema 33, the production image evidence
+        /// store for schema 34. Both write their single immutable configuration row and
+        /// their signed activation entry, and both raise PRAGMA user_version to their own
+        /// generation, so the target proof always observes the exact migration target.
+        /// </summary>
+        internal void AddTargetFeature(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != 33 || Options.RecipeLifecycle is null)
-                throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var key = WindowsMachineAuditKey.Open(_model._policy!, allowCreation: false, out _);
-            SqliteNative.Execute(database, "PRAGMA user_version=33;", deadline);
-            InitializeRecipeLifecycleSchema(database, Options.RecipeLifecycle, deadline, _model._policy!, key);
+            if (Version != _migrationTargetVersion)
+                throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
+            if (_migrationTargetVersion == RecipeLifecycleStoreOptions.SchemaVersion &&
+                Options.RecipeLifecycle is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=33;", deadline);
+                InitializeRecipeLifecycleSchema(database, Options.RecipeLifecycle, deadline, _model._policy!, key);
+                return;
+            }
+            if (_migrationTargetVersion == ProductionImageEvidenceStoreOptions.SchemaVersion &&
+                Options.ImageEvidence is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=34;", deadline);
+                InitializeImageEvidenceSchema(database, Options.ImageEvidence, deadline, _model._policy!, key);
+                return;
+            }
+            throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
         }
 
         internal static void RequireForeignKeys(sqlite3 database, StoreDeadline deadline)
@@ -143,7 +174,10 @@ internal sealed partial class SqliteCommandStore
         }
 
         public void Dispose() => _model.DisposeAsync().GetAwaiter().GetResult();
-        private static string StageName(string name) => "__sharpinspect_migration32_33_" + name;
+        private string StageName(string name) => _migrationTargetVersion ==
+            ProductionImageEvidenceStoreOptions.SchemaVersion
+                ? "__sharpinspect_migration33_34_" + name
+                : "__sharpinspect_migration32_33_" + name;
         private static string Quote(string identifier) => "\"" + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 
@@ -164,5 +198,31 @@ internal sealed partial class SqliteCommandStore
         PlcCommunication = target.PlcCommunication, ProductionInspections = target.ProductionInspections,
         PartIdentities = target.PartIdentities, ProductionRecovery = target.ProductionRecovery,
         RecipeSelections = target.RecipeSelections, ProductionArming = target.ProductionArming, RecipeLifecycle = null
+    };
+
+    /// <summary>
+    /// The schema-33 source profile of the governed schema-33 to schema-34 migration:
+    /// the exact target configuration with only the image evidence option removed. The
+    /// recipe lifecycle ledger is retained, because a schema-33 source already owns it
+    /// and the source proof must re-verify every store the source generation carries.
+    /// </summary>
+    internal static ProductionStoreOptions MigrationImageEvidenceSourceOptions(ProductionStoreOptions target) => new()
+    {
+        DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout, QueryTimeout = target.QueryTimeout,
+        QueueCapacity = target.QueueCapacity, AuditIntegrityPolicy = target.AuditIntegrityPolicy,
+        LocalIdentity = target.LocalIdentity, AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,
+        AlgorithmResultArchive = target.AlgorithmResultArchive, RecipeDrafts = target.RecipeDrafts,
+        CameraSetup = target.CameraSetup, CameraRecovery = target.CameraRecovery, CameraNetwork = target.CameraNetwork,
+        ImagingSetup = target.ImagingSetup, CalibrationSessions = target.CalibrationSessions,
+        CalibrationGovernance = target.CalibrationGovernance, RecipeReleases = target.RecipeReleases,
+        PlcResultContracts = target.PlcResultContracts, RecipeActivations = target.RecipeActivations,
+        PreviewSessions = target.PreviewSessions, CalibrationImports = target.CalibrationImports,
+        ManualInspections = target.ManualInspections, ProductionAdmission = target.ProductionAdmission,
+        StationQualifications = target.StationQualifications, RecipeTransfers = target.RecipeTransfers,
+        TraceStoragePolicies = target.TraceStoragePolicies, QualificationCycles = target.QualificationCycles,
+        PlcCommunication = target.PlcCommunication, ProductionInspections = target.ProductionInspections,
+        PartIdentities = target.PartIdentities, ProductionRecovery = target.ProductionRecovery,
+        RecipeSelections = target.RecipeSelections, ProductionArming = target.ProductionArming,
+        RecipeLifecycle = target.RecipeLifecycle, ImageEvidence = null
     };
 }
