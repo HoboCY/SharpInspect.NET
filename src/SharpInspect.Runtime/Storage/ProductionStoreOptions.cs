@@ -129,4 +129,13 @@ public sealed class ProductionStoreOptions
     /// and central audit integrity; released recipes, activations, selections and the
     /// arm ledger stay optional, but a present option and its tables must match exactly.</summary>
     public RecipeLifecycleStoreOptions? RecipeLifecycle { get; init; }
+
+    /// <summary>Explicit opt-in for the schema 34 bounded production image evidence store.
+    /// It binds the qualified local NTFS production image stage and stores only pending
+    /// manifest and pending work facts. Requires production inspections, recipe drafts,
+    /// released recipes, the recipe lifecycle ledger, production arming, local identity
+    /// and central audit integrity; every other option stays optional, but a present
+    /// option and its tables must match exactly. Leaving this null preserves every
+    /// existing byte and generation, including a schema-33 store.</summary>
+    public ProductionImageEvidenceStoreOptions? ImageEvidence { get; init; }
 }

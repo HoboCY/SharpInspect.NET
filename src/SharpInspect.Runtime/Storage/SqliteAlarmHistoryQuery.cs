@@ -84,7 +84,7 @@ public sealed class SqliteAlarmHistoryQuery : IAlarmHistoryQuery
             var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
             var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
             var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
-            var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion;
+            var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion;
             var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25;
             SqliteNative.ConfigureSqliteLimit(database, _options, schema);
             TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
@@ -998,7 +998,7 @@ internal sealed partial class SqliteCommandStore
              var schema22 = schema == ProductionAdmissionStoreOptions.SchemaVersion;
              var schema23 = schema == StationQualificationStoreOptions.SchemaVersion;
              var schema24 = schema == RecipeTransferStoreOptions.SchemaVersion;
-             var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion;
+             var schema25 = schema is TraceStoragePolicyStoreOptions.SchemaVersion or QualificationCycleStoreOptions.SchemaVersion or PlcCommunicationStoreOptions.SchemaVersion or ProductionInspectionStoreOptions.SchemaVersion or ProductionRecoveryStoreOptions.SchemaVersion or RecipeSelectionStoreOptions.SchemaVersion or PartIdentityStoreOptions.SchemaVersion or ProductionArmStoreOptions.SchemaVersion or RecipeLifecycleStoreOptions.SchemaVersion or ProductionImageEvidenceStoreOptions.SchemaVersion;
              var modernOptional = schema16 || schema17 || schema18 || schema19 || schema20 || schema21 || schema22 || schema23 || schema24 || schema25;
              SqliteNative.ConfigureSqliteLimit(database, _options, schema);
              TraceStoragePolicyReadGuard.RequireConfiguration(schema, _options);
