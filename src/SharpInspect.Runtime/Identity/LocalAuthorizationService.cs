@@ -173,6 +173,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         ChangeEvidenceRetentionCommand => Permission.DeleteEvidence,
         StartDiagnosticCaptureCommand or StopDiagnosticCaptureCommand => Permission.StartDiagnosticCapture,
         CreateSupportBundleCommand => Permission.ExportSupportBundle,
+        PrepareStationMaintenanceCommand => Permission.PrepareStationMaintenance,
         RecoverOutboxDeliveryCommand => Permission.RecoverOutboxDelivery,
         CreateCorrectiveOutboxDeliveryCommand => Permission.CreateCorrectiveOutboxDelivery,
         GovernedAuditChangeCommand change => change.Change switch
@@ -211,6 +212,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
             ManualProductionRecoveryCommand recovery => recovery.AuthorizationTarget,
             ChangeEvidenceRetentionCommand retention => retention.AuthorizationTarget,
             DiagnosticSupportCommand diagnostic => diagnostic.AuthorizationTarget,
+            PrepareStationMaintenanceCommand maintenance => maintenance.AuthorizationTarget,
             RecoverOutboxDeliveryCommand outboxRecovery => outboxRecovery.AuthorizationTarget,
             CreateCorrectiveOutboxDeliveryCommand outboxCorrection => outboxCorrection.AuthorizationTarget,
             _ => _options.StationId
@@ -269,6 +271,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         AuditedCommandKind.ChangeEvidenceRetention => Permission.DeleteEvidence,
         AuditedCommandKind.StartDiagnosticCapture or AuditedCommandKind.StopDiagnosticCapture => Permission.StartDiagnosticCapture,
         AuditedCommandKind.CreateSupportBundle => Permission.ExportSupportBundle,
+        AuditedCommandKind.PrepareStationMaintenance => Permission.PrepareStationMaintenance,
         AuditedCommandKind.RecoverOutboxDelivery => Permission.RecoverOutboxDelivery,
         AuditedCommandKind.CreateCorrectiveOutboxDelivery => Permission.CreateCorrectiveOutboxDelivery,
         AuditedCommandKind.RotateSigningKey or AuditedCommandKind.RetireSigningKey => Permission.ManageAuditSigningKeys,
@@ -317,6 +320,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         StartDiagnosticCaptureCommand => AuditedCommandKind.StartDiagnosticCapture,
         StopDiagnosticCaptureCommand => AuditedCommandKind.StopDiagnosticCapture,
         CreateSupportBundleCommand => AuditedCommandKind.CreateSupportBundle,
+        PrepareStationMaintenanceCommand => AuditedCommandKind.PrepareStationMaintenance,
         RecoverOutboxDeliveryCommand => AuditedCommandKind.RecoverOutboxDelivery,
         CreateCorrectiveOutboxDeliveryCommand => AuditedCommandKind.CreateCorrectiveOutboxDelivery,
         SelectHistoricalCalibrationCommand => AuditedCommandKind.SelectHistoricalCalibration,
@@ -365,6 +369,9 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
         var support = Volatile.Read(ref _diagnosticAuthority);
         if (current?.State != InteractiveSessionState.Authenticated || current.SessionId != support?.SessionId)
             support?.Revoke();
+        var maintenance = Volatile.Read(ref _stationMaintenanceAuthority);
+        if (current?.State != InteractiveSessionState.Authenticated || current.SessionId != maintenance?.SessionId)
+            maintenance?.Revoke();
         lock (_grantSync)
         {
             foreach (var id in _grants.Where(pair => current?.State != InteractiveSessionState.Authenticated ||
@@ -385,6 +392,7 @@ internal sealed partial class LocalAuthorizationService : IIdentityAdministratio
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         RevokeDiagnosticAuthority();
+        RevokeStationMaintenanceAuthority();
         if (_sessions is not null) _sessions.Changed -= SessionChanged;
         lock (_grantSync) _grants.Clear();
     }

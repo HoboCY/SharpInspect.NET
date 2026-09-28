@@ -110,7 +110,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, diagnosticSupportOptions: _options);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, storeOptions: _options);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -147,6 +147,8 @@ internal sealed partial class SqliteCommandStore
                 _options.PartIdentities);
             if (DiagnosticSupportEnabled)
                 AuditChainDatabase.RequireFullDiagnosticSupportVerification(database, verification, deadline, _options);
+            if (StationMaintenanceEnabled)
+                AuditChainDatabase.RequireFullStationMaintenanceVerification(database, verification, deadline, _options);
             var state = ReadIdentityState(database, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
             return state;
@@ -214,7 +216,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, diagnosticSupportOptions: _options);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, storeOptions: _options);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -251,6 +253,8 @@ internal sealed partial class SqliteCommandStore
                 _options.PartIdentities);
             if (DiagnosticSupportEnabled)
                 AuditChainDatabase.RequireFullDiagnosticSupportVerification(database, verification, deadline, _options);
+            if (StationMaintenanceEnabled)
+                AuditChainDatabase.RequireFullStationMaintenanceVerification(database, verification, deadline, _options);
             _ = ReadIdentityState(database, deadline);
             var operation = ReadRecoveryOperation(database, operationId, deadline);
             SqliteNative.Execute(database, "COMMIT;", deadline, cancellationToken);
@@ -609,7 +613,7 @@ internal sealed partial class SqliteCommandStore
                  productionRecoveryOptions: productionRecoveryStore ? _options.ProductionRecovery : null,
                  productionInspectionOptions: _options.ProductionInspections,
                 partIdentityOptions: _options.PartIdentities,
-                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, diagnosticSupportOptions: _options);
+                productionArmOptions: productionArmStore ? _options.ProductionArming : null, recipeSelectionOptions: recipeSelectionStore ? _options.RecipeSelections : null, recipeLifecycleOptions: recipeLifecycleStore ? _options.RecipeLifecycle : null, imageEvidenceOptions: _options.ImageEvidence, imageFinalizationOptions: _options.ImageFinalization, productionOutboxOptions: _options.Outbox, storeOptions: _options);
             RecipeTransferReadGuard.RequireVerified(database, verification, deadline, _options);
         if (_options.PlcCommunication is not null)
             AuditChainDatabase.RequireFullPlcCommunicationVerification(database, verification, deadline,
@@ -646,6 +650,8 @@ internal sealed partial class SqliteCommandStore
                 _options.PartIdentities);
             if (DiagnosticSupportEnabled)
                 AuditChainDatabase.RequireFullDiagnosticSupportVerification(database, verification, deadline, _options);
+            if (StationMaintenanceEnabled)
+                AuditChainDatabase.RequireFullStationMaintenanceVerification(database, verification, deadline, _options);
             var state = ReadIdentityState(database, deadline);
             state.Revision = checked(state.Revision + 1);
             var stationQualificationState = work.StationQualificationCommand is { } stationQualificationCommand
@@ -767,6 +773,15 @@ internal sealed partial class SqliteCommandStore
                     return new(false, error.Message);
                 }
             }
+            StationMaintenanceAdmissionPlan? stationMaintenancePlan = null;
+            if (evaluated.StationMaintenance is not null)
+            {
+                try { stationMaintenancePlan = PrepareStationMaintenanceAdmission(database, evaluated, deadline); }
+                catch (InvalidOperationException error) when (AuditChainDatabase.IsCapacityReason(error.Message))
+                {
+                    return new(false, error.Message);
+                }
+            }
             if (evaluated.Retention is not null)
             {
                 try { PrepareRetentionGovernanceCapacity(database, evaluated, retentionState!, deadline); }
@@ -815,6 +830,7 @@ internal sealed partial class SqliteCommandStore
                     evaluated.ProductionRecoveryFailure is null && evaluated.RecipeSelection is null && evaluated.RecipeLifecycle is null &&
                     evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null && evaluated.Retention is null &&
                     evaluated.DiagnosticOperation is null &&
+                    evaluated.StationMaintenance is null &&
                     guard is null,
                     "IdentityNoMutationInvalid");
                 Rollback(database);
@@ -871,7 +887,8 @@ internal sealed partial class SqliteCommandStore
                     productionAdmissionReserveOverride: productionAdmission?.TakeReserve(),
                     stationQualificationReserveOverride: stationQualification?.TakeReserve(),
                     partIdentityReserveOverride: evaluated.PartIdentity is null ? null : 1,
-                    diagnosticSupportReserveOverride: diagnosticSupportPlan?.IdentityReserve);
+                    diagnosticSupportReserveOverride: diagnosticSupportPlan?.IdentityReserve,
+                    stationMaintenanceReserveOverride: stationMaintenancePlan?.IdentityReserve);
                 if (evaluated.CompletedRecoveryOperation is { } operation &&
                     fact.OperationId == operation.OperationId)
                 {
@@ -933,9 +950,12 @@ internal sealed partial class SqliteCommandStore
                 productionAdmission: productionAdmission,
                 stationQualification: stationQualification,
                 partIdentityReserveOverride: evaluated.PartIdentity is null ? null : 1,
-                diagnosticSupportReserveOverride: diagnosticSupportPlan?.CommandReserve);
+                diagnosticSupportReserveOverride: diagnosticSupportPlan?.CommandReserve,
+                stationMaintenanceReserveOverride: stationMaintenancePlan?.CommandReserve);
             if (evaluated.DiagnosticOperation is not null)
                 AppendDiagnosticSupportIdentityMutation(database, evaluated, work, identitySequence, deadline);
+            if (evaluated.StationMaintenance is not null)
+                AppendStationMaintenanceIdentityMutation(database, evaluated, work, identitySequence, deadline);
             if (evaluated.ProductionRecovery is { } persistedRecoveryRequest && productionRecovery is { } recoveryContext)
             {
                 var commandFact = evaluated.CommandFacts?.FirstOrDefault(value =>
@@ -1078,6 +1098,7 @@ internal sealed partial class SqliteCommandStore
                 evaluated.ProductionRecoveryFailure is null &&
                 evaluated.OutboxRecovery is null && evaluated.OutboxCorrection is null && evaluated.Retention is null &&
                 evaluated.DiagnosticOperation is null &&
+                evaluated.StationMaintenance is null &&
                 evaluated.Result is not StationQualificationTransactionResult { Accepted: true, Event: not null })
                 work.Result = evaluated.ImagingRevision is not null && evaluated.Result is ImagingSetupPersistenceCommit commit
                     ? commit with { Revision = imagingRevision } : evaluated.Result;
@@ -1668,5 +1689,6 @@ internal sealed record IdentityUpdate(
       OutboxRecoveryMutation? OutboxRecovery = null,
       OutboxCorrectionMutation? OutboxCorrection = null,
       EvidenceRetentionPayload? Retention = null,
-      DiagnosticOperationMutation? DiagnosticOperation = null);
+      DiagnosticOperationMutation? DiagnosticOperation = null,
+      StationMaintenanceAdmission? StationMaintenance = null);
 internal sealed record IdentityWriteResult(bool Committed, string ReasonCode, object? Result = null);

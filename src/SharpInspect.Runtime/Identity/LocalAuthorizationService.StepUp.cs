@@ -50,6 +50,9 @@ internal sealed partial class LocalAuthorizationService
             if (request.Binding.CommandKind is AuditedCommandKind.StartDiagnosticCapture or
                 AuditedCommandKind.StopDiagnosticCapture or AuditedCommandKind.CreateSupportBundle && !_store.DiagnosticSupportEnabled)
                 return await RejectStepUpAsync(request, "DiagnosticSupportConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
+            if (request.Binding.CommandKind == AuditedCommandKind.PrepareStationMaintenance &&
+                !_store.StationMaintenanceEnabled)
+                return await RejectStepUpAsync(request, "StationMaintenanceConfigurationRequired", null, cancellationToken).ConfigureAwait(false);
             var before = await _store.ReadIdentityAsync(cancellationToken).ConfigureAwait(false);
             if (!TryLease(request.Invocation, out var initialLease, out var reason))
                 return await RejectStepUpAsync(request, reason, null, cancellationToken).ConfigureAwait(false);
@@ -171,6 +174,8 @@ internal sealed partial class LocalAuthorizationService
                     _store.RecipeTransferEnabled) &&
                 (request.Binding.CommandKind is not (AuditedCommandKind.StartDiagnosticCapture or
                     AuditedCommandKind.StopDiagnosticCapture or AuditedCommandKind.CreateSupportBundle) || _store.DiagnosticSupportEnabled) &&
+                (request.Binding.CommandKind != AuditedCommandKind.PrepareStationMaintenance ||
+                    _store.StationMaintenanceEnabled) &&
                 (request.Binding.CommandKind != AuditedCommandKind.PublishTraceStoragePolicy ||
                     _store.TraceStoragePolicyEnabled) ? request.Binding : null,
             actorId, actorId.HasValue ? request.Invocation?.SessionId : null,

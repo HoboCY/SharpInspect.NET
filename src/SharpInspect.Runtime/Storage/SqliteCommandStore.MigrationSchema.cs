@@ -39,10 +39,18 @@ internal sealed partial class SqliteCommandStore
             // One operation stages the identical schema on both sides, so the model's own
             // generation may never pass the declared target generation; the identity and
             // central-audit stack is the one prerequisite every governed plan shares.
-            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 or 37 or 38 or 39 or 40 &&
+            var supported = migrationTargetVersion is 33 or 34 or 35 or 36 or 37 or 38 or 39 or 40 or 41 &&
                 _model.SchemaVersion <= migrationTargetVersion && options.LocalIdentity is not null &&
                 _model._policy is not null;
-            if (supported && migrationTargetVersion == DiagnosticSupportStoreOptions.SchemaVersion)
+            if (supported && migrationTargetVersion == StationMaintenanceStoreOptions.SchemaVersion)
+            {
+                supported = _model.SchemaVersion is 40 or 41 && options.DiagnosticSupport is not null &&
+                    options.StorageRetention is not null && options.TraceStoragePolicies is not null &&
+                    options.EvidenceReconciliation is not null &&
+                    (_model.SchemaVersion != StationMaintenanceStoreOptions.SchemaVersion ||
+                        options.StationMaintenance is not null);
+            }
+            else if (supported && migrationTargetVersion == DiagnosticSupportStoreOptions.SchemaVersion)
             {
                 supported = _model.SchemaVersion is 39 or 40 && options.StorageRetention is not null &&
                     options.TraceStoragePolicies is not null &&
@@ -140,7 +148,7 @@ internal sealed partial class SqliteCommandStore
                 partIdentityOptions: options.PartIdentities, recipeSelectionOptions: options.RecipeSelections,
                 productionArmOptions: options.ProductionArming, recipeLifecycleOptions: options.RecipeLifecycle,
                 imageEvidenceOptions: options.ImageEvidence, imageFinalizationOptions: options.ImageFinalization,
-                productionOutboxOptions: options.Outbox, diagnosticSupportOptions: options);
+                productionOutboxOptions: options.Outbox, storeOptions: options);
             var tail = AuditChainDatabase.Tail(database, deadline);
             if (report.State != AuditIntegrityState.Verified || report.VerifiedFromSequence != 1 ||
                 report.VerifiedThroughSequence != tail.Sequence)
@@ -162,7 +170,7 @@ internal sealed partial class SqliteCommandStore
 
         internal void RebuildConstraintTables(sqlite3 database, StoreDeadline deadline)
         {
-            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36 or 37 or 38 or 39 or 40))
+            if (Version != _migrationTargetVersion || _migrationTargetVersion is not (33 or 34 or 35 or 36 or 37 or 38 or 39 or 40 or 41))
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
             using var canonical = SqliteNative.Open(":memory:", readOnly: false);
             _model.InitializeCanonicalSchema(canonical.Handle!, deadline);
@@ -210,6 +218,14 @@ internal sealed partial class SqliteCommandStore
             using var key = WindowsMachineAuditKey.Open(_model._policy!, allowCreation: false, out _);
             if (Version != _migrationTargetVersion)
                 throw new InvalidOperationException("StoreMigrationTargetSchemaRequired");
+            if (_migrationTargetVersion == StationMaintenanceStoreOptions.SchemaVersion &&
+                Options.StationMaintenance is not null)
+            {
+                SqliteNative.Execute(database, "PRAGMA user_version=41;", deadline);
+                InitializeStationMaintenanceTables(database, Options, deadline);
+                AuditChainDatabase.AppendStationMaintenanceActivation(database, Options, _model._policy!, key, deadline);
+                return;
+            }
             if (_migrationTargetVersion == DiagnosticSupportStoreOptions.SchemaVersion &&
                 Options.DiagnosticSupport is not null)
             {
@@ -283,6 +299,7 @@ internal sealed partial class SqliteCommandStore
         public void Dispose() => _model.DisposeAsync().GetAwaiter().GetResult();
         private string StageName(string name) => _migrationTargetVersion switch
         {
+            StationMaintenanceStoreOptions.SchemaVersion => "__sharpinspect_migration40_41_" + name,
             EvidenceReconciliationStoreOptions.SchemaVersion => "__sharpinspect_migration_to38_" + name,
             ProductionOutboxRecoveryOptions.SchemaVersion => "__sharpinspect_migration36_37_" + name,
             ProductionOutboxStoreOptions.SchemaVersion => "__sharpinspect_migration35_36_" + name,
@@ -317,8 +334,7 @@ internal sealed partial class SqliteCommandStore
     };
 
     /// <summary>Preserve the exact schema-39 source profile and remove only the diagnostic ledger.</summary>
-    internal static ProductionStoreOptions MigrationDiagnosticSupportSourceOptions(ProductionStoreOptions target) => new()
-    {
+    internal static ProductionStoreOptions MigrationDiagnosticSupportSourceOptions(ProductionStoreOptions target) => new()    {
         DatabasePath = target.DatabasePath, CommitTimeout = target.CommitTimeout, QueryTimeout = target.QueryTimeout,
         QueueCapacity = target.QueueCapacity, AuditIntegrityPolicy = target.AuditIntegrityPolicy,
         LocalIdentity = target.LocalIdentity, AlarmPolicy = target.AlarmPolicy, ExternalAuditAnchor = target.ExternalAuditAnchor,

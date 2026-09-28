@@ -85,6 +85,12 @@ internal sealed record StoreMigrationJournalData
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public string? DiagnosticSupportConfigurationHash { get; init; }
+    /// <summary>
+    /// The exact station-maintenance configuration binding of a schema-40 to schema-41
+    /// operation. It stays null for every earlier plan.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public string? StationMaintenanceConfigurationHash { get; init; }
 }
 
 internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data, string ContentHash);
@@ -96,7 +102,7 @@ internal sealed record StoreMigrationJournalEntry(StoreMigrationJournalData Data
 /// </summary>
 internal readonly record struct StoreMigrationPlanBinding(bool Lifecycle, bool ImageEvidence,
     bool ImageFinalization, bool ProductionOutbox, bool FlexibleFeatures = false, bool EvidenceReconciliation = false,
-    bool StorageRetention = false, bool DiagnosticSupport = false);
+    bool StorageRetention = false, bool DiagnosticSupport = false, bool StationMaintenance = false);
 
 /// <summary>
 /// A framed, hash-linked external journal. Only a complete frame followed by a
@@ -128,6 +134,7 @@ internal sealed class StoreMigrationJournal : IDisposable
     internal const string EvidenceReconciliation37PlanId = "SharpInspect.StoreMigration.37-38.v1";
     internal const string StorageRetentionPlanId = "SharpInspect.StoreMigration.38-39.v1";
     internal const string DiagnosticSupportPlanId = "SharpInspect.StoreMigration.39-40.v1";
+    internal const string StationMaintenancePlanId = "SharpInspect.StoreMigration.40-41.v1";
     private static readonly byte[] Magic = Encoding.ASCII.GetBytes("SI-MJ01\n");
     private static readonly byte[] HashDomain = Encoding.ASCII.GetBytes("SharpInspect.StoreMigrationJournal.v1\0");
     private const int MaximumRecordBytes = 128 * 1024;
@@ -266,7 +273,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
         if (!TryResolvePlan(data.SourceSchemaVersion, data.TargetSchemaVersion, data.PlanId, out var plan))
             throw new InvalidOperationException("StoreMigrationJournalRecordInvalid");
-        if (!plan.DiagnosticSupport && (plan.EvidenceReconciliation
+        if (!plan.DiagnosticSupport && !plan.StationMaintenance && (plan.EvidenceReconciliation
                 ? !IsHash(data.EvidenceReconciliationConfigurationHash) ||
                   (plan.StorageRetention ? data.ProductionOutboxRecoveryConfigurationHash is not null &&
                         !IsHash(data.ProductionOutboxRecoveryConfigurationHash)
@@ -275,7 +282,9 @@ internal sealed class StoreMigrationJournal : IDisposable
                   (data.ImageEvidenceConfigurationHash is null) != (data.ImageFinalizationConfigurationHash is null)
                 : data.EvidenceReconciliationConfigurationHash is not null || data.ProductionOutboxRecoveryConfigurationHash is not null))
             throw new InvalidOperationException("StoreMigrationJournalConfigurationInvalid");
-        if (!plan.DiagnosticSupport && (plan.StorageRetention ? !IsHash(data.StorageRetentionConfigurationHash) ||
+        if (plan.StationMaintenance && StationMaintenanceConfigurationInvalid(data))
+            throw new InvalidOperationException("StoreMigrationJournalStationMaintenanceConfigurationInvalid");
+        if (!plan.DiagnosticSupport && !plan.StationMaintenance && (plan.StorageRetention ? !IsHash(data.StorageRetentionConfigurationHash) ||
                 data.ProductionOutboxConfigurationHash is null && data.ImageFinalizationConfigurationHash is null ||
                 data.ProductionOutboxRecoveryConfigurationHash is not null && data.ProductionOutboxConfigurationHash is null
             : data.StorageRetentionConfigurationHash is not null))
@@ -290,7 +299,12 @@ internal sealed class StoreMigrationJournal : IDisposable
         // generation can claim a later binding and no later generation can omit one it declares.
         // The schema-37 plan binds the outbox hard and accepts each optional legacy feature as
         // independently present or absent, because a schema-36 source may carry any combination.
-        if (plan.DiagnosticSupport)
+        if (plan.StationMaintenance)
+        {
+            // The exact schema-41 binding shape has already been proved above; every
+            // feature the schema-40 source generation carried is intentionally optional here.
+        }
+        else if (plan.DiagnosticSupport)
         {
             if (data.ProductionOutboxConfigurationHash is not null &&
                     !IsHash(data.ProductionOutboxConfigurationHash) ||
@@ -400,6 +414,7 @@ internal sealed class StoreMigrationJournal : IDisposable
             data.EvidenceReconciliationConfigurationHash != old.EvidenceReconciliationConfigurationHash ||
             data.StorageRetentionConfigurationHash != old.StorageRetentionConfigurationHash ||
             data.DiagnosticSupportConfigurationHash != old.DiagnosticSupportConfigurationHash ||
+            data.StationMaintenanceConfigurationHash != old.StationMaintenanceConfigurationHash ||
             old.SourceFingerprint is not null && data.SourceFingerprint != old.SourceFingerprint ||
             old.TargetFingerprint is not null && data.Attempt == old.Attempt && data.TargetFingerprint != old.TargetFingerprint ||
             old.CommitIntentDurable && data.Attempt == old.Attempt && !data.CommitIntentDurable ||
@@ -418,6 +433,23 @@ internal sealed class StoreMigrationJournal : IDisposable
 
     private static bool RequiredText(string? value, int maximum) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= maximum && value.IndexOf('\0') < 0;
+
+    /// <summary>
+    /// The schema-40 to schema-41 frame binds the exact maintenance configuration plus every
+    /// feature the schema-40 source generation carried. The source generation always carries the
+    /// diagnostic-support, retention and reconciliation ledgers; outbox, image and lifecycle
+    /// bindings stay optional and half a binding is never legal.
+    /// </summary>
+    private static bool StationMaintenanceConfigurationInvalid(StoreMigrationJournalData data) =>
+        !IsHash(data.StationMaintenanceConfigurationHash) || !IsHash(data.DiagnosticSupportConfigurationHash) ||
+        !IsHash(data.StorageRetentionConfigurationHash) || !IsHash(data.EvidenceReconciliationConfigurationHash) ||
+        (data.ImageEvidenceConfigurationHash is null) != (data.ImageFinalizationConfigurationHash is null) ||
+        data.ImageEvidenceConfigurationHash is not null && !IsHash(data.ImageEvidenceConfigurationHash) ||
+        data.ImageFinalizationConfigurationHash is not null && !IsHash(data.ImageFinalizationConfigurationHash) ||
+        data.ProductionOutboxConfigurationHash is not null && !IsHash(data.ProductionOutboxConfigurationHash) ||
+        data.ProductionOutboxRecoveryConfigurationHash is not null && !IsHash(data.ProductionOutboxRecoveryConfigurationHash) ||
+        data.ProductionOutboxRecoveryConfigurationHash is not null && data.ProductionOutboxConfigurationHash is null ||
+        data.LifecycleConfigurationHash is not null && !IsHash(data.LifecycleConfigurationHash);
 
     private static bool IsSupportedPlan(int sourceSchemaVersion, int targetSchemaVersion, string planId) =>
         TryResolvePlan(sourceSchemaVersion, targetSchemaVersion, planId, out _);
@@ -474,6 +506,8 @@ internal sealed class StoreMigrationJournal : IDisposable
             binding = new(false, false, false, false, true, true, true);
         else if (sourceSchemaVersion == 39 && targetSchemaVersion == 40 && planId == DiagnosticSupportPlanId)
             binding = new(false, false, false, false, true, false, false, true);
+        else if (sourceSchemaVersion == 40 && targetSchemaVersion == 41 && planId == StationMaintenancePlanId)
+            binding = new(false, false, false, false, true, false, false, false, true);
         else
             return false;
         return true;

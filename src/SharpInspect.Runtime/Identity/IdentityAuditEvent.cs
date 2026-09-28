@@ -83,7 +83,8 @@ internal enum IdentityEventKind
     OutboxDeliveryRecovered,
     OutboxCorrectiveDeliveryCreated,
     EvidenceRetentionChanged,
-    DiagnosticOperationAuthorized
+    DiagnosticOperationAuthorized,
+    StationMaintenanceAuthorized
 }
 
 /// <summary>Closed, non-secret identity evidence. Credential material never belongs in this type.</summary>
@@ -303,10 +304,12 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                         IdentityEventKind.ProductionRecoveryFailed), "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(schemaVersion >= RecipeSelectionStoreOptions.SchemaVersion ||
                     legacyKind != IdentityEventKind.RecipeSelectionChanged, "AuditIdentityPayloadInvalid");
-                AuditChainDatabase.Require(storedSchemaVersion is 39 or 40 ||
+                AuditChainDatabase.Require(storedSchemaVersion is 39 or 40 or 41 ||
                     legacyKind != IdentityEventKind.EvidenceRetentionChanged, "AuditIdentityPayloadInvalid");
-                AuditChainDatabase.Require(storedSchemaVersion == 40 ||
+                AuditChainDatabase.Require(storedSchemaVersion is 40 or 41 ||
                     legacyKind != IdentityEventKind.DiagnosticOperationAuthorized, "AuditIdentityPayloadInvalid");
+                AuditChainDatabase.Require(storedSchemaVersion == 41 ||
+                    legacyKind != IdentityEventKind.StationMaintenanceAuthorized, "AuditIdentityPayloadInvalid");
                 AuditChainDatabase.Require(storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
                     legacyKind is not (IdentityEventKind.OutboxDeliveryRecovered or
                         IdentityEventKind.OutboxCorrectiveDeliveryCreated), "AuditIdentityPayloadInvalid");
@@ -403,17 +406,20 @@ internal sealed record IdentityAuditEvent(Guid EventId, IdentityEventKind Kind, 
                      (storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ||
                          actionKind is not (AuditedCommandKind.RecoverOutboxDelivery or
                              AuditedCommandKind.CreateCorrectiveOutboxDelivery)) &&
-                     (storedSchemaVersion is 39 or 40 ||
+                     (storedSchemaVersion is 39 or 40 or 41 ||
                          actionKind != AuditedCommandKind.ChangeEvidenceRetention) &&
-                     (storedSchemaVersion == 40 || actionKind is not (AuditedCommandKind.StartDiagnosticCapture or
+                     (storedSchemaVersion is 40 or 41 || actionKind is not (AuditedCommandKind.StartDiagnosticCapture or
                          AuditedCommandKind.StopDiagnosticCapture or AuditedCommandKind.CreateSupportBundle)) &&
+                     (storedSchemaVersion == 41 ||
+                         actionKind != AuditedCommandKind.PrepareStationMaintenance) &&
                       fields[39] == actionKind.ToString()),
                     "AuditAuthorizationPayloadInvalid");
                 // Permission 31 is part of the current default role bundle even
                 // for identity-only/alarm schema 7/8 stores. It is a capability
                 // carried by the signed permission list; the draft mutation/event
                 // itself remains schema-9 gated below and in the store dispatcher.
-                var maximumPermissions = storedSchemaVersion == 40 ? 43 :
+                var maximumPermissions = storedSchemaVersion == 41 ? 44 :
+                    storedSchemaVersion == 40 ? 43 :
                     storedSchemaVersion >= ProductionOutboxRecoveryOptions.SchemaVersion ? 41 :
                     schemaVersion >= RecipeTransferStoreOptions.SchemaVersion ? 38 :
                     schemaVersion >= ManualInspectionStoreOptions.SchemaVersion ? 36 :

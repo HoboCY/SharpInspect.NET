@@ -204,6 +204,20 @@ internal static class StoreMigrationJournalGuard
                 SqliteCommandStore.RetentionConfigurationFor(options).BindingHash != data.StorageRetentionConfigurationHash ||
                 (options.Outbox is null ? null : options.Outbox.BindingHash) != data.ProductionOutboxConfigurationHash))
             throw new InvalidOperationException("StoreMigrationJournalDiagnosticSupportConfigurationMismatch");
+        if (plan.StationMaintenance && (options.StationMaintenance is null ||
+                SqliteCommandStore.StationMaintenanceConfigurationFor(options).BindingHash != data.StationMaintenanceConfigurationHash ||
+                options.DiagnosticSupport is null ||
+                SqliteCommandStore.DiagnosticSupportConfigurationFor(options).BindingHash != data.DiagnosticSupportConfigurationHash ||
+                options.StorageRetention is null ||
+                SqliteCommandStore.RetentionConfigurationFor(options).BindingHash != data.StorageRetentionConfigurationHash ||
+                options.EvidenceReconciliation is null ||
+                SqliteCommandStore.ReconciliationConfiguration(options).BindingHash != data.EvidenceReconciliationConfigurationHash ||
+                (options.Outbox is null ? null : options.Outbox.BindingHash) != data.ProductionOutboxConfigurationHash ||
+                (options.Outbox?.ManualRecovery is null ? null : options.Outbox.ManualRecovery.BindingHash) !=
+                    data.ProductionOutboxRecoveryConfigurationHash ||
+                (options.ImageEvidence is null ? null : options.ImageEvidence.BindingHash) != data.ImageEvidenceConfigurationHash ||
+                (options.ImageFinalization is null ? null : options.ImageFinalization.BindingHash) != data.ImageFinalizationConfigurationHash))
+            throw new InvalidOperationException("StoreMigrationJournalStationMaintenanceConfigurationMismatch");
         if (plan.EvidenceReconciliation && (options.EvidenceReconciliation is null ||
                 SqliteCommandStore.ReconciliationConfiguration(options).BindingHash != data.EvidenceReconciliationConfigurationHash ||
                 options.Outbox?.ManualRecovery?.BindingHash != data.ProductionOutboxRecoveryConfigurationHash))
