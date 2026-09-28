@@ -64,7 +64,10 @@ public enum AuditedCommandKind
     RetireReleasedRecipe = 56,
     RecoverOutboxDelivery = 57,
     CreateCorrectiveOutboxDelivery = 58,
-    ChangeEvidenceRetention = 59
+    ChangeEvidenceRetention = 59,
+    StartDiagnosticCapture = 60,
+    StopDiagnosticCapture = 61,
+    CreateSupportBundle = 62
 }
 public enum AuditPersistence { NotAttempted, Persisted, Unavailable }
 
