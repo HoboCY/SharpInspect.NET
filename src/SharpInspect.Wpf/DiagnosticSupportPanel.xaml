@@ -1,0 +1,107 @@
+<UserControl x:Class="SharpInspect.Wpf.DiagnosticSupportPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             FontFamily="Microsoft YaHei UI">
+    <Border Background="White" BorderBrush="#CCD7E3" BorderThickness="1" CornerRadius="4" Padding="16">
+        <StackPanel>
+            <TextBlock Text="诊断支持（维护）" FontSize="18" FontWeight="SemiBold" Foreground="#172B42" />
+            <TextBlock Text="有界维护操作：仅单个已部署组件、Trace/Debug、明确时长与事件上限、封闭原因，以及显式 UTC 支持包范围。不会改变部署日志政策或字节、磁盘预算；不提供原始数据、任意路径、保存、复制或读取材料入口。每项操作都需要与命令精确绑定的新鲜 Step-Up；Accepted 只表示 Runtime 已受理，不表示完成。"
+                       Foreground="#6B7888" FontSize="11" TextWrapping="Wrap" Margin="0,6,0,10" />
+
+            <WrapPanel Margin="0,0,0,6">
+                <Button Content="刷新权威状态" Command="{Binding RefreshCommand}" Padding="12,6" Margin="0,0,10,0" />
+                <TextBlock Text="{Binding StatusMessage}" VerticalAlignment="Center" Foreground="#334E68" TextWrapping="Wrap" />
+            </WrapPanel>
+            <TextBlock Text="{Binding PolicyLimitsText}" Foreground="#6B7888" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,0,0,10">
+                <StackPanel>
+                    <TextBlock Text="权威状态 · 只读" FontWeight="SemiBold" Foreground="#172B42" />
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition />
+                            <RowDefinition />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="Runtime Epoch" Grid.Row="0" Grid.Column="0" Foreground="#556679" />
+                        <TextBlock Text="{Binding RuntimeEpochText}" Grid.Row="0" Grid.Column="1" Foreground="#172B42" TextWrapping="Wrap" />
+                        <TextBlock Text="捕获阶段" Grid.Row="0" Grid.Column="2" Foreground="#556679" />
+                        <TextBlock Text="{Binding CapturePhaseText}" Grid.Row="0" Grid.Column="3" Foreground="#172B42" />
+                        <TextBlock Text="事件 / 上限" Grid.Row="1" Grid.Column="0" Foreground="#556679" />
+                        <TextBlock Text="{Binding CaptureEventsText}" Grid.Row="1" Grid.Column="1" Foreground="#172B42" TextWrapping="Wrap" />
+                        <TextBlock Text="捕获时间窗（UTC）" Grid.Row="1" Grid.Column="2" Foreground="#556679" />
+                        <TextBlock Text="{Binding CaptureWindowText}" Grid.Row="1" Grid.Column="3" Foreground="#172B42" TextWrapping="Wrap" />
+                        <TextBlock Text="支持包阶段" Grid.Row="2" Grid.Column="0" Foreground="#556679" />
+                        <TextBlock Text="{Binding BundlePhaseText}" Grid.Row="2" Grid.Column="1" Foreground="#172B42" />
+                        <TextBlock Text="支持包 ID（完成后）" Grid.Row="2" Grid.Column="2" Foreground="#556679" />
+                        <TextBlock Text="{Binding BundleIdText}" Grid.Row="2" Grid.Column="3" Foreground="#172B42" TextWrapping="Wrap" />
+                    </Grid>
+                    <TextBlock Text="仅当权威支持包阶段为“已完成”时才显示受控 ID、内容哈希与字节数；哈希与字节：" Foreground="#6B7888" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding BundleHashText}" Foreground="#334E68" TextWrapping="Wrap" FontFamily="Consolas" />
+                    <TextBlock Text="{Binding BundleBytesText}" Foreground="#334E68" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding BundleExpiryText}" Foreground="#334E68" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,0,0,10">
+                <StackPanel>
+                    <TextBlock Text="有界捕获提升" FontWeight="SemiBold" Foreground="#172B42" />
+                    <TextBlock Text="启动与停止共用 StartDiagnosticCapture 权限；每次都要求当前账号的新鲜 Step-Up，并绑定到该命令的授权目标。"
+                               Foreground="#6B7888" FontSize="11" Margin="0,4,0,8" TextWrapping="Wrap" />
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="单个组件" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding Components}" SelectedItem="{Binding SelectedComponent, Mode=TwoWay}"
+                                  Width="170" Margin="0,0,16,0" />
+                        <TextBlock Text="级别" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding CaptureLevels}" SelectedItem="{Binding SelectedCaptureLevel, Mode=TwoWay}"
+                                  Width="96" Margin="0,0,16,0" />
+                        <TextBlock Text="时长（秒）" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Text="{Binding DurationSecondsText, UpdateSourceTrigger=PropertyChanged}" Width="70" MaxLength="6" />
+                    </WrapPanel>
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="事件上限" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Text="{Binding MaximumEventsText, UpdateSourceTrigger=PropertyChanged}" Width="80" MaxLength="7" Margin="0,0,16,0" />
+                        <TextBlock Text="封闭原因" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding ReasonOptions}" DisplayMemberPath="Label"
+                                  SelectedItem="{Binding SelectedReason, Mode=TwoWay}" Width="150" />
+                    </WrapPanel>
+                    <WrapPanel Margin="0,4,0,0">
+                        <Button Content="启动有界捕获" IsEnabled="{Binding CanStartCapture}" Click="StartCaptureClick"
+                                Padding="12,6" Margin="0,0,10,0" />
+                        <Button Content="停止当前捕获" IsEnabled="{Binding CanStopCapture}" Click="StopCaptureClick"
+                                Padding="12,6" />
+                    </WrapPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Background="#F8FAFC" BorderBrush="#DAE1E8" BorderThickness="1" Padding="12" Margin="0,0,0,10">
+                <StackPanel>
+                    <TextBlock Text="默认支持包" FontWeight="SemiBold" Foreground="#172B42" />
+                    <TextBlock Text="范围由显式 UTC 起止时间和当前 Runtime Epoch 组成。不支持任意目标路径；Runtime 生成受控构件，界面只读取权威状态。"
+                               Foreground="#6B7888" FontSize="11" Margin="0,4,0,8" TextWrapping="Wrap" />
+                    <WrapPanel Margin="0,0,0,6">
+                        <TextBlock Text="起始（UTC，如 2026-09-16T00:00:00Z）" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Text="{Binding FromUtcText, UpdateSourceTrigger=PropertyChanged}" Width="220" MaxLength="32" Margin="0,0,16,0" />
+                        <TextBlock Text="结束（UTC）" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <TextBox Text="{Binding ThroughUtcText, UpdateSourceTrigger=PropertyChanged}" Width="220" MaxLength="32" />
+                    </WrapPanel>
+                    <Button Content="创建默认支持包" IsEnabled="{Binding CanCreateBundle}" Click="CreateBundleClick"
+                            Padding="12,6" Margin="0,4,0,0" HorizontalAlignment="Left" />
+                </StackPanel>
+            </Border>
+
+            <WrapPanel>
+                <TextBlock Text="当前人员 Step-Up 密码" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <PasswordBox x:Name="StepUpPasswordBox" MaxLength="1024" Width="280" />
+                <TextBlock Text="密码只用于本次认证，提交前清空，不保存在界面状态中。" VerticalAlignment="Center"
+                           Foreground="#6B7888" FontSize="11" Margin="10,0,0,0" />
+            </WrapPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

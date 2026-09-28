@@ -64,7 +64,12 @@ public sealed record DiagnosticProperty(string Name, DiagnosticScalar Value);
 /// <summary>Bounded safe/protected query projection; Runtime authorizes the protected channel.</summary>
 public sealed record DiagnosticRecord(Guid EventId, string Code, int SchemaVersion, DiagnosticLevel Level,
     string Component, Guid RuntimeEpoch, DateTimeOffset ObservedAtUtc, ExecutionCorrelationId? Execution,
-    Guid? CommandCorrelationId, string PolicyHash, IReadOnlyList<DiagnosticProperty> Properties);
+    Guid? CommandCorrelationId, string PolicyHash, IReadOnlyList<DiagnosticProperty> Properties)
+{
+    /// <summary>Runtime-owned capture attribution; never supplied by a diagnostic producer.</summary>
+    public Guid? CaptureSessionId { get; init; }
+    public string? CaptureProfileHash { get; init; }
+}
 
 public sealed record DiagnosticSinkHealth(DiagnosticSinkState State, string ReasonCode,
     int QueuedRecords, long QueuedBytes, int PhysicalCalls, long Written, long Dropped, long Failures);

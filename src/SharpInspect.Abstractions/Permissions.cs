@@ -59,7 +59,11 @@ public enum Permission : ushort
     /// <summary>Grant a fresh bounded attempt allowance to one blocked outbox obligation.</summary>
     RecoverOutboxDelivery = 40,
     /// <summary>Create a linked corrective outbox delivery with new identity and explicit bytes.</summary>
-    CreateCorrectiveOutboxDelivery = 41
+    CreateCorrectiveOutboxDelivery = 41,
+    /// <summary>Start or stop one bounded, freshly reauthenticated diagnostic elevation.</summary>
+    StartDiagnosticCapture = 42,
+    /// <summary>Create one scoped, re-redacted support bundle; conveys no raw-data authority.</summary>
+    ExportSupportBundle = 43
 }
 
 /// <summary>
