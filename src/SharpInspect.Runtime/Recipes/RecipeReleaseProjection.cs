@@ -119,6 +119,10 @@ internal static class RecipeReleaseProjection
         var execution = content.PolicyRequirements.Where(value => value.Kind == RecipePolicyKind.AlgorithmExecution).ToArray();
         if (execution.Length != 1)
             result.Add(new("PolicyDependency", "AlgorithmExecution", false, "RecipeReleaseExecutionPolicyRequired"));
+        // A declared Evidence Capture requirement is resolved against the deployment catalog's
+        // exact identity only. An absent, renamed, wrong-version or wrong-hash catalog rejects,
+        // while a legacy recipe that declares no capture policy keeps its existing outcome.
+        var evidenceCapturePolicies = releaseOptions.EvidenceCapturePolicies;
         foreach (var policy in content.PolicyRequirements.OrderBy(value => value.Kind))
         {
             var resolved = policy.Kind switch
@@ -126,6 +130,8 @@ internal static class RecipeReleaseProjection
                 RecipePolicyKind.AlgorithmExecution => policy.Contract == new RecipeContractReference(
                     draftOptions.ExecutionPolicy.Id, draftOptions.ExecutionPolicy.Version, draftOptions.ExecutionPolicy.ContentHash),
                 RecipePolicyKind.RecipeGovernance => policy.Contract == releaseOptions.Policy.Reference,
+                RecipePolicyKind.EvidenceCapture => evidenceCapturePolicies is not null &&
+                    evidenceCapturePolicies.Resolve(policy.Contract) is not null,
                 _ => false
             };
             result.Add(new("PolicyDependency", policy.Kind.ToString(), resolved,

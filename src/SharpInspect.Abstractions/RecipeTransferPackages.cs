@@ -39,7 +39,8 @@ public static class RecipeTransferPackageLimits
     public static bool IsAllowedDependencyKind(string kind) => kind is "Algorithm" or
         "ConfigurationSchema" or "ResultSchema" or "OverlayContract" or "AlgorithmModel" or
         "AlgorithmExecutionPolicy" or "ImageAcquisitionPolicy" or "RecipeGovernancePolicy" or
-        "CalibrationAcceptancePolicy" or "CalibrationCoefficientContract" or "PartIdentityFormat";
+        "CalibrationAcceptancePolicy" or "CalibrationCoefficientContract" or "PartIdentityFormat" or
+        "EvidenceCapturePolicy";
 }
 
 /// <summary>

@@ -213,7 +213,8 @@ internal sealed class RecipeSelectionService : IRecipeSelectionService
             if (algorithm is null)
                 return RecipeSelectionPreparation.Rejected("RecipeSelectionReleasedAlgorithmUnavailable");
             if (!CurrentPolicyRequirementsSatisfied(content, ExecutionPolicy, GovernancePolicy,
-                    _options.RecipeDrafts!.ExecutionPolicy.MaximumExecutionTimeout))
+                    _options.RecipeDrafts!.ExecutionPolicy.MaximumExecutionTimeout,
+                    _options.RecipeReleases!.EvidenceCapturePolicies))
                 return RecipeSelectionPreparation.Rejected("RecipeSelectionCurrentPolicyMismatch");
             // Calibration dependencies stay activatable-deferred here: no historical or
             // latest profile is ever chosen, and the real activation checks remain
@@ -252,7 +253,18 @@ internal sealed class RecipeSelectionService : IRecipeSelectionService
     /// <summary>Exact current execution and governance policy requirements, including the bound timeout.</summary>
     internal static bool CurrentPolicyRequirementsSatisfied(RecipeDraftContent content,
         RecipeContractReference executionPolicy, RecipeContractReference governancePolicy,
-        TimeSpan maximumExecutionTimeout)
+        TimeSpan maximumExecutionTimeout) =>
+        CurrentPolicyRequirementsSatisfied(content, executionPolicy, governancePolicy,
+            maximumExecutionTimeout, null);
+
+    /// <summary>
+    /// Exact current policy requirements including the deployment Evidence Capture catalog.
+    /// A declared Evidence Capture requirement resolves by exact identity only; a recipe that
+    /// declares no capture policy keeps the same outcome without a catalog.
+    /// </summary>
+    internal static bool CurrentPolicyRequirementsSatisfied(RecipeDraftContent content,
+        RecipeContractReference executionPolicy, RecipeContractReference governancePolicy,
+        TimeSpan maximumExecutionTimeout, EvidenceCapturePolicyCatalog? evidenceCapturePolicies)
     {
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(executionPolicy);
@@ -262,6 +274,8 @@ internal sealed class RecipeSelectionService : IRecipeSelectionService
             {
                 RecipePolicyKind.AlgorithmExecution => value.Contract == executionPolicy,
                 RecipePolicyKind.RecipeGovernance => value.Contract == governancePolicy,
+                RecipePolicyKind.EvidenceCapture => evidenceCapturePolicies is not null &&
+                    evidenceCapturePolicies.Resolve(value.Contract) is not null,
                 _ => false
             }))
             return false;
@@ -283,6 +297,8 @@ internal sealed class RecipeSelectionService : IRecipeSelectionService
         ArgumentNullException.ThrowIfNull(governancePolicy);
         ArgumentNullException.ThrowIfNull(plcContract);
         ArgumentNullException.ThrowIfNull(binding);
+        // A declared Evidence Capture reference is already bound through the Recipe content
+        // hash, so no deployment catalog identity or additional authority enters this proof.
         return AlgorithmContractValidation.HashParts(new[]
         {
             "sharpinspect-recipe-selection-portable-validation-v1", content.ContentHash,

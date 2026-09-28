@@ -48,11 +48,16 @@ internal sealed class RecipeActivationPreparation
 
         var execution = _options.RecipeDrafts!.ExecutionPolicy;
         var executionReference = new RecipeContractReference(execution.Id, execution.Version, execution.ContentHash);
+        // A declared Evidence Capture requirement must resolve from the deployment catalog's
+        // exact identity; an undeclared requirement keeps the existing legacy outcome.
+        var evidenceCapturePolicies = _options.RecipeReleases!.EvidenceCapturePolicies;
         var policyValid = content.PolicyRequirements.Count(value => value.Kind == RecipePolicyKind.AlgorithmExecution) == 1 &&
             content.PolicyRequirements.All(value => value.Kind switch
             {
                 RecipePolicyKind.AlgorithmExecution => value.Contract == executionReference,
                 RecipePolicyKind.RecipeGovernance => value.Contract == _options.RecipeReleases!.Policy.Reference,
+                RecipePolicyKind.EvidenceCapture => evidenceCapturePolicies is not null &&
+                    evidenceCapturePolicies.Resolve(value.Contract) is not null,
                 _ => false
             });
         var assetsValid = content.AssetRequirements.Count == 0 && content.CameraProviderExtension is null;
