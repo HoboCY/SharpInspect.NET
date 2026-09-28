@@ -122,6 +122,9 @@ internal sealed class DiagnosticOutputLane
                 _physical, _written, Interlocked.Read(ref _dropped), _failures);
         }
     }
+    // Read-only physical-lifetime observation: completes only when the fixed writer thread
+    // (including its close callback) actually exited. A bounded stop never claims completion.
+    internal Task Retirement => _retired.Task;
     internal Task Stop()
     { lock (_sync) { _stopping = true; if (!_signalDisposed) _signal.Set(); return _retired.Task; } }
 }

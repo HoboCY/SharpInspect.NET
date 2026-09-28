@@ -266,4 +266,10 @@ internal sealed class DiagnosticPipeline : IDiagnosticPipelineHealthQuery, IAsyn
         // Timed-out physical callbacks retain their lane, payload and local writer ownership.
         _ = ReadHealth();
     }
+
+    // Read-only physical-lifetime observation for the maintenance witness: the three fixed lane
+    // threads (writer plus close callback).  It is pending while a bounded DisposeAsync returned
+    // with a still-running callback and never projects "stopped" health into completion.
+    internal Task PhysicalRetirement =>
+        Task.WhenAll(_safe.Retirement, _protected.Retirement, _forwarded?.Retirement ?? Task.CompletedTask);
 }

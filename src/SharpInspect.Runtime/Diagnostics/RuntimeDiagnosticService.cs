@@ -14,6 +14,7 @@ internal sealed class RuntimeDiagnosticService : IDiagnosticPipelineHealthQuery,
     private readonly ISafeDiagnosticSink? _forwarded;
     private readonly Action? _beforeInstallationVerificationForTesting;
     private Task? _activation;
+    private Task? _physicalQuery;
     private readonly object _sync = new();
     private DiagnosticPipeline? _pipeline;
     private LocalDiagnosticStore? _safe, _protected;
@@ -44,6 +45,12 @@ internal sealed class RuntimeDiagnosticService : IDiagnosticPipelineHealthQuery,
 
     internal DiagnosticPipeline? Pipeline => Volatile.Read(ref _pipeline);
     internal Task Initialization => _initialization;
+    // Read-only physical-lifetime observations for the maintenance witness. The activation task
+    // can outlive a bounded DisposeAsync flush wait, and a query releases its physical slot only
+    // when the actual filesystem read returns, never at the caller deadline.
+    internal Task ActivationCompletion => Volatile.Read(ref _activation) ?? Task.CompletedTask;
+    internal Task PhysicalQueryCompletion => Volatile.Read(ref _physicalQuery) ?? Task.CompletedTask;
+    internal bool QueryPhysicalActive => Volatile.Read(ref _queryActive) != 0;
     internal bool Matches(TraceStoragePolicySnapshot? trace)
     {
         if (Volatile.Read(ref _stopping) || _options is null || !_options.Matches(trace)) return false;
@@ -147,6 +154,7 @@ internal sealed class RuntimeDiagnosticService : IDiagnosticPipelineHealthQuery,
             { return Unavailable("DiagnosticQueryUnavailable"); }
             finally { Interlocked.Exchange(ref _queryActive, 0); }
         }, CancellationToken.None);
+        Volatile.Write(ref _physicalQuery, operation);
         try { return await operation.WaitAsync(_storeOptions!.QueryTimeout, token).ConfigureAwait(false); }
         catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
         { return Unavailable("DiagnosticQueryDeadlineExceeded"); }

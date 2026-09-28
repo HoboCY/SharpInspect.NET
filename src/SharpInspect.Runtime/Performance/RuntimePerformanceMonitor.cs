@@ -20,6 +20,7 @@ internal sealed partial class RuntimePerformanceMonitor : IPerformanceMonitoring
     private bool _cycleViolated;
     private string _reason = "PerformanceObservationPending";
     private Task? _resourceWorker;
+    private Task? _physicalSample;
     private PerformanceRawCapture? _sealedCapture;
     private int _terminalPublication;
     private Func<long, PerformanceEvent[], PerformanceResourceSample[], PerformanceFrameObservation[],
@@ -141,6 +142,7 @@ internal sealed partial class RuntimePerformanceMonitor : IPerformanceMonitoring
                 // Exactly one physical sampling slot. Caller timeout never releases it or launches a replacement.
                 Interlocked.Exchange(ref _physicalOperations, 1);
                 physical = Task.Run(() => sample(++sequence));
+                Volatile.Write(ref _physicalSample, physical);
                 PerformanceResourceSample value;
                 try { value = await physical.WaitAsync(_options.Contract.Capture.ResourceSampleTimeout).ConfigureAwait(false); }
                 catch (Exception exception) when (exception is not OutOfMemoryException)
@@ -211,6 +213,29 @@ internal sealed partial class RuntimePerformanceMonitor : IPerformanceMonitoring
                     Volatile.Write(ref _sealedCapture, incomplete);
                 }
             }
+        }
+    }
+
+    // Read-only physical-lifetime observation for the maintenance witness. It completes after the
+    // resource worker (which owns the ledger seal) and the single retained physical sampler really
+    // exited. PhysicalOperationActive stays true while a native/property read is still owned, even
+    // when a bounded DisposeAsync already wrote its incomplete capture.
+    internal bool PhysicalOperationActive => Volatile.Read(ref _physicalOperations) != 0;
+    internal Task PhysicalCompletion => AwaitPhysicalCompletionAsync();
+
+    private async Task AwaitPhysicalCompletionAsync()
+    {
+        if (_resourceWorker is { } worker)
+        {
+            try { await worker.ConfigureAwait(false); }
+            catch (Exception exception) when (exception is not OutOfMemoryException) { }
+        }
+        while (Volatile.Read(ref _physicalSample) is { } sample)
+        {
+            try { await sample.ConfigureAwait(false); }
+            catch (Exception exception) when (exception is not OutOfMemoryException) { }
+            if (ReferenceEquals(Volatile.Read(ref _physicalSample), sample))
+                Volatile.Write(ref _physicalSample, null);
         }
     }
 }
